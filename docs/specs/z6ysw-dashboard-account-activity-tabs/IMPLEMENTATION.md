@@ -11,7 +11,7 @@
 ## Coverage / rollout summary
 
 - 已修复账号活动 v2 coverage 的升级自愈：新的 live/archive repair generation 会先撤销旧 marker、仅清零 v2 派生字段并重置独立回放进度；完整小时只在该小时现存 live rows 全部越过 repair cursor 后写 marker，marker 缺口继续走 exact raw/archive fallback。整桶重算写入独立的 per-bucket invocation watermark，使滞后 repair 只跳过已被权威重算包含的行，但不会提前宣告 coverage；coverage、rollup、cursor 与 exact tail 固定在同一 SQLite 读事务。已覆盖错误 marker + 稀疏 rollup + 游标追平、重复启动幂等、部分回放与 covered-hour late live tail，通用 rollup、原始调用和 legacy 字段保持不变。
-- 已实现：`today / 1d / 7d` Dashboard 与上游账号活动 HTTP/SSE 共享 cache-backed memory-first baseline。terminal record 以 `(invokeId, occurredAt)` 幂等增量更新累计账号/总览 usage；`today` 以 60 秒 reconcile 与错误 last-good fallback 负责最终对账，rolling `1d / 7d` 在完整 expiry delta 落地前保留 5 秒精确窗口刷新边界。
+- 已实现：`today / 1d / 7d` Dashboard 与上游账号活动 HTTP/SSE 共享 cache-backed memory-first baseline。terminal record 以 `(invokeId, occurredAt)` 幂等增量更新累计账号/总览 usage；open range 以 60 秒 reconcile 与错误 last-good fallback 负责最终对账。rolling `1d / 7d` 的 baseline、in-flight replay 与后续 terminal 都写入按时间排序的 bounded expiry queue；expiry 覆盖不足或窗口跨入 archive 前缀时拒绝伪内存命中并明确 exact fallback。
 - 已实现：Dashboard 上游账号视图拆为汇总优先与快照绑定的 recent 批量补齐；首屏使用局部骨架，范围刷新保留旧卡片，recent 失败保留汇总并局部重试。
 - 已实现：`includeRecent=false` 的第一阶段对保留期外数据执行 archive 内部分组聚合，只返回账号指标而不读取、排序或传输 invocation preview；兼容 combined 响应与第二阶段 recent 接口继续按相同精确快照边界读取 bounded preview。
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。
@@ -72,19 +72,19 @@
 - 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
 - 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制；`upstream-account-activity` 与 dashboard full path 不再为整个 `7d` range 读取 persisted `running/pending` preview 行，缺失于 runtime store 的旧运行态只允许在 bounded recent 中出现，不再计入 owner-facing totals。
 - 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。
-- 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照缓存已收敛为“稳定请求参数 + `today` 本地日期锚点 + 5 秒 TTL”选择键，不再把移动中的 exact `rangeStart/rangeEnd`、live runtime 状态或最新持久化行 ID 放进 cache key；fresh live overlay、exact 响应边界与 `live_revision` 继续在响应阶段叠加，允许 terminal totals 最多 `<=5s` 滞后，同时保持当前态与 recent 的 owner-facing 实时语义不变。
+- 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照使用“稳定请求参数 + `today` 本地日期锚点”选择键；terminal totals 同步投影到有界内存累计态并按 `<=5s` 发布，SQLite baseline 每 selection 最多每 `60s` 对账一次。fresh live overlay、exact 响应边界与 `live_revision` 继续在响应阶段叠加。
 - 已实现：`/api/stats/upstream-account-activity` 改走独立账户活动 builder，不再借道 dashboard full snapshot 的 summary/model-performance 组装；后端新增 `route / builder / purpose / in_progress_only / limit / preview_read_mode / candidate_preview_id_count / hydrated_preview_row_count / cache_bypass_reason / cache_ttl_ms / cache_entry_age_ms / cache_entry_count / in_flight_count` 结构化 telemetry，用于复盘读侧放大、缓存命中率与 DB 压力重合。
-- 已实现：`dashboard.activity.current` 的 open-range topic refresh 不再在每个 `records` / `DashboardActivityLive` 广播上反向调用完整 `fetch_dashboard_activity`。live 广播现在直接覆写 subscription hub 内存 snapshot 的当前态字段并立即 fanout，terminal `records` 仅触发 `<=5s` 节流后的 DB refresh，且 refresh 前会主动失效内部 dashboard snapshot cache，避免 topic 层 deferred refresh 又命中旧 TTL 快照。
+- 已实现：`dashboard.activity.current` 的 open-range topic refresh 不再在每个 `records` / `DashboardActivityLive` 广播上反向调用完整 DB builder。live 广播直接覆写 subscription hub 内存 snapshot 的当前态字段；terminal `records` 只触发固定 `<=5s` 的内存发布，不再失效 snapshot cache 或安排同频 DB refresh。
 - 已实现：summary / Dashboard full / `/api/stats/upstream-account-activity` 共享 `usage_breakdown` range builder 现已切到 `upstream_account_usage_breakdown_hourly` 内部 rollup + exact boundary tail。`7d` / `previous7d` 健康路径不再对整段 live raw rows 做 `model + reasoning` 聚合；archive 缺 replay marker 时仅按缺口 batch 触发显式 fallback，并统一输出 `route / builder / window / full_hour_bucket_count / rollup_row_count / partial_hour_row_count / archive_batch_count / fallback_reason` telemetry。
 - 已补齐 rollout repair：`dashboard / upstream-account` 共享的 `usage_breakdown` builder 不再把 `upstream_account_usage_breakdown_hourly` 误当成“历史 materialized archive 必然已 replay”的 legacy target；bootstrap 会把缺真实 breakdown rows 的旧 archive batch 重新标成 pending，由 historical rollup materialization 回补，而不是把 `7d` 精度问题静默留在线上。
 - 已补齐 legacy pruned archive fallback 收口：`upstream_account_usage_breakdown_hourly` 从 full-payload-required target 集合拆出，裁剪 payload 的历史 batch 会结构化 replay 并写入 breakdown replay marker，读侧健康路径不再因该 target 缺口反复打开 archive fallback；新增 telemetry 区分 `structured_rollup_unknown_reasoning` 与 `blocked_payload_required`。
-- 已实现账号活动 v2 hourly rollup：`upstream_account_stats_hourly` 新增独立 v2 聚合字段与 replay target，Dashboard full 和 upstream-account 共用“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail” builder。live 与 archive repair 使用独立 cursor，marker 完成前不消费默认零值；缓存继续保持稳定 selection + 5 秒 TTL，并新增 refresh/invalidation reason、selection fingerprint 与 coverage telemetry。
+- 已实现账号活动 v2 hourly rollup：`upstream_account_stats_hourly` 新增独立 v2 聚合字段与 replay target，Dashboard full 和 upstream-account 共用“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail” builder。live 与 archive repair 使用独立 cursor，marker 完成前不消费默认零值；活跃窗口缺口按 `2 buckets / 2s` 优先修复，历史无进展回填按 `15s -> 1m -> 5m -> 15m` 退避。
 - 已实现：Summary `non_success_tokens` 复用同一账号活动 v2 coverage planner，完整小时从 `activity_v2_non_success_tokens` 汇总，边界/缺口使用有界 scalar exact tail，移除健康路径对整窗账号活动 raw aggregate 的依赖。
-- 已实现：Dashboard 与 Summary topic 刷新均以连接级 owner subscriber lease 为门控；无 active owner subscriber 时缓存只标记 dirty，重连时重新构建 fresh snapshot。Dashboard 的 5 秒 TTL 未改变，日志新增 `refresh_reason`、`invalidation_reason`、`active_subscriber_count`、`selection_fingerprint` 与 `base_snapshot_age_ms`。
+- 已实现：Dashboard 与 Summary topic 刷新均以连接级 owner subscriber lease 为门控；无 active owner subscriber 时缓存只标记 dirty，重连时重新构建 fresh snapshot。Dashboard 保持 `<=5s` owner-visible terminal 时效，但 DB reconcile 收敛为 `60s`；日志可区分内存发布、DB build、last-good、hard-limit、coverage repair 与 backoff。
 
 ## Remaining Gaps
 
-- 无功能性缺口。提交前仅需完成最终 review、测试收口与截图提交授权确认。
+- 当前无已知 contract gap；线上仍需用新增 telemetry 验证 RSS、coverage hole、reconcile cadence 与 SQLite pressure 的实际收敛情况。
 
 ## Related Changes
 

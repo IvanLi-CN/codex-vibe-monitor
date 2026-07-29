@@ -70,6 +70,8 @@
 - 后台任务拿到唯一 background slot 后再判断是否 due，会把“未到期的空跑 tick”变成对其他维护任务的饥饿源。
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
 - write controller 必须有有界队列、flush 触发（时间窗口 / row count / 最大等待）、coalesced row count、oldest age、flush elapsed、queue depth、enqueue failed 与 dropped count 证据；否则只是把 SQLite 锁问题藏到内存里。
+- 面向累计读模型的 terminal queue 不能长期保留完整业务记录。应在 enqueue 时投影为紧凑 delta，同时设置字节数与条数双硬限；触限时保留 last-good totals 并进入 dirty reconcile，不能静默截断后继续宣称 healthy。
+- terminal 持久化 ACK 必须携带单调 row cursor，并在所有 warm selection 与 in-flight baseline cursor 越过后才回收 delta。只按时间 TTL 清理会在 flush lag 或多 selection 并发时造成漏计。
 - buffered progress 不能立刻广播“已持久化”的 DB snapshot；要么广播内存态，要么等后续 reconcile/terminal 更新。否则会把 stale DB state 伪装成实时状态。
 - 如果选择内存态广播，就必须让所有相关读方共享同一个 runtime store，包括 SSE、records open-resync、current summary、current timeseries、账号活动 in-flight 统计与 prompt-cache working conversations；否则去掉 DB running 写后会产生多套不一致实时视图。
 - Dashboard / account activity 这类短 TTL 聚合快照，如果允许 `<=2s` 的服务端合并刷新预算，就不应再把 live runtime 状态或最新持久化行 ID 放进 cache key；否则表面上有 singleflight，实测仍会长期 `wait_on_in_flight=0`，既保不住实时性，也保不住 SQLite。
@@ -82,6 +84,7 @@
 - proxy snapshot/broadcast 在 `database is locked` 下应 fail-soft skip 并记录结构化证据，依赖已发出的 SSE 事件和后续 HTTP reconcile 补齐 UI；不要在请求尾部立即重试并放大锁争用。
 - write-side live read model 只有在维护成本本身也受控时才值得做：前台请求内同步维护最小必要 working-set / in-progress truth，后台 rebuild 和补偿刷新则继续挂到统一 pressure gate/cooldown，避免为了止住读热点又新增一组不受控维护写入。
 - 对 Dashboard 这类连续 terminal 流量下的累计 KPI，不能把固定 SSE publish cadence 等同于 DB reconcile cadence。terminal enqueue 后应以稳定 event key 幂等更新内存 baseline，5 秒窗口仅合并 fanout；SQLite 只承担 warm restore、最长间隔的 reconcile 与异常 fallback。reconcile lock/error 时保留 last-good snapshot，并记录 baseline age、delta/duplicate count、reconcile outcome 与 sequence-gap 证据。
+- baseline cursor、聚合查询与 pending-key 判定应共享同一 SQLite read transaction；构建完成后重放 cursor 之后的 compact delta 即可接受 baseline。因并发写入而丢弃完整构建并立即重试，会在稳定流量下形成 build-and-discard 风暴。
 - 不要让 P1 terminal flush 在同一锁窗口内继续执行 P2 rollup/account-touch 派生写；这会把“记录最终一致”重新变成“请求尾锁放大”。P1 成功后把 P2 放回队列，等待下一轮时间窗口或 pressure 允许。
 
 ## 何时升级方案

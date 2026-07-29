@@ -1684,6 +1684,8 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
         );
     }
 
+    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut tx = state.pool.begin().await?;
     let recovered_attempts = match pending_attempt_record.attempt_id {
         Some(attempt_id) => {
@@ -1787,6 +1789,8 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
 ) -> Result<()> {
     state.sqlite_batch_writer.flush_now(&state.pool).await?;
 
+    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let recovered_invocations = recover_proxy_invocations_with_scope(
         &state.pool,
         ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
@@ -1846,6 +1850,8 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .clone();
+    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut tx = state.pool.begin().await?;
     let stale_candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
         tx.as_mut(),
@@ -3471,10 +3477,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     record,
                     capture_started: None,
                     raw_capture: false,
+                    dashboard_terminal_sequence: delta.terminal_sequence,
                 },
             ));
     if !terminal_enqueued {
-        rollback_dashboard_activity_terminal_record(state, &persisted_record).await;
+        rollback_dashboard_activity_terminal_record(
+            state,
+            &persisted_record,
+            delta.terminal_sequence,
+        )
+        .await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
             .clear_terminal_tombstone(&persisted_record.invoke_id, &persisted_record.occurred_at);

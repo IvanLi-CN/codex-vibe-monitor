@@ -3894,7 +3894,11 @@ mod tests {
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
                     last_reconcile_attempted_at: Instant::now(),
+                    last_reconcile_failed: false,
                     baseline_snapshot_cursor: 0,
+                    expiry_covered_until: None,
+                    expiry_terminal_deltas: VecDeque::new(),
+                    expiry_delta_estimated_bytes: 0,
                     response: DashboardActivitySnapshot::test_stub("today"),
                 },
             );
@@ -3903,7 +3907,11 @@ mod tests {
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
                     last_reconcile_attempted_at: Instant::now(),
+                    last_reconcile_failed: false,
                     baseline_snapshot_cursor: 0,
+                    expiry_covered_until: None,
+                    expiry_terminal_deltas: VecDeque::new(),
+                    expiry_delta_estimated_bytes: 0,
                     response: DashboardActivitySnapshot::test_stub("7d"),
                 },
             );
@@ -3912,6 +3920,7 @@ mod tests {
                 DashboardActivitySnapshotInFlight {
                     signal: signal_a,
                     waiter_count: 2,
+                    baseline_cursor: None,
                 },
             );
             guard.in_flight.insert(
@@ -3919,6 +3928,7 @@ mod tests {
                 DashboardActivitySnapshotInFlight {
                     signal: signal_b,
                     waiter_count: 3,
+                    baseline_cursor: None,
                 },
             );
         }

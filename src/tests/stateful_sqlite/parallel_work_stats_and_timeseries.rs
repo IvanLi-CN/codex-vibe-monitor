@@ -15501,7 +15501,7 @@ async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
 }
 
 #[tokio::test]
-async fn dashboard_activity_cache_selection_reuses_today_snapshot_within_five_second_ttl() {
+async fn dashboard_activity_cache_selection_reuses_today_snapshot_within_reconcile_interval() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -16086,6 +16086,398 @@ async fn account_activity_v2_partial_merge_reads_only_covered_hours_from_rollup(
     assert_eq!(account.success_count, 2);
     assert_eq!(account.total_tokens, 300);
     assert_f64_close(account.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn account_activity_v2_priority_repair_materializes_active_closed_hours() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    let repair_hour_epoch = current_hour_epoch - 2 * 3_600;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, 1, datetime('now'))
+        "#,
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    let occurred_at = Utc
+        .timestamp_opt(repair_hour_epoch + 10 * 60, 0)
+        .single()
+        .expect("priority repair invocation time");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-priority-repair', ?1, ?2, 'failed', ?3, 45, 0.45, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert priority repair source row");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-priority-running', ?1, ?2, 'running', ?3, 99, 0.99, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        (occurred_at + ChronoDuration::minutes(1))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert in-flight row in priority repair bucket");
+    let archived_hour_epoch = current_hour_epoch - 6 * 24 * 3_600;
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch, source, upstream_account_id,
+            activity_v2_request_count, activity_v2_total_tokens
+        )
+        VALUES (?1, ?2, 42, 9, 900)
+        "#,
+    )
+    .bind(archived_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert archive-derived v2 rollup outside live coverage");
+
+    let outcome = repair_active_account_activity_v2_coverage(&state.pool)
+        .await
+        .expect("repair active account activity coverage");
+
+    assert_eq!(outcome.priority_bucket_count, 2);
+    assert_eq!(outcome.repaired_bucket_count, 2);
+    let covered = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_materialized_buckets
+        WHERE target = ?1 AND bucket_start_epoch = ?2 AND source = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(repair_hour_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load priority repair marker");
+    assert_eq!(covered, 1);
+    let current_hour_covered = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_materialized_buckets
+        WHERE target = ?1 AND bucket_start_epoch = ?2 AND source = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(current_hour_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load current-hour marker");
+    assert_eq!(current_hour_covered, 0);
+    let rollup = sqlx::query_as::<_, (i64, i64, i64, f64)>(
+        r#"
+        SELECT activity_v2_request_count,
+               activity_v2_failure_count,
+               activity_v2_non_success_tokens,
+               activity_v2_total_cost
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = 42
+        "#,
+    )
+    .bind(repair_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load priority repaired rollup");
+    assert_eq!(rollup.0, 1);
+    assert_eq!(rollup.1, 1);
+    assert_eq!(rollup.2, 45);
+    assert_f64_close(rollup.3, 0.45);
+    let repair_watermark = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM account_activity_v2_bucket_repair_watermarks WHERE bucket_start_epoch = ?1",
+    )
+    .bind(repair_hour_epoch)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load terminal-only priority repair watermark");
+    assert_eq!(repair_watermark, 1);
+    assert_eq!(
+        replay_live_invocation_hourly_rollups(&state.pool)
+            .await
+            .expect("replay rows after priority repair"),
+        2
+    );
+    let replayed_request_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT activity_v2_request_count
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = 42
+        "#,
+    )
+    .bind(repair_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load v2 request count after shared replay");
+    assert_eq!(replayed_request_count, 1);
+    let archived_rollup = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT activity_v2_request_count, activity_v2_total_tokens
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = 42
+        "#,
+    )
+    .bind(archived_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved archive-derived v2 rollup");
+    assert_eq!(archived_rollup, (9, 900));
+}
+
+#[tokio::test]
+async fn account_activity_v2_priority_repair_skips_archive_overlapping_live_hours() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    let overlap_hour_epoch = current_hour_epoch - 2 * 3_600;
+    let overlap_start = Utc
+        .timestamp_opt(overlap_hour_epoch, 0)
+        .single()
+        .expect("archive overlap start");
+    let overlap_end = overlap_start + ChronoDuration::hours(1);
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, 1, datetime('now'))
+        "#,
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-overlap-live', ?1, ?2, 'success', ?3, 10, 0.10, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        (overlap_start + ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert live row overlapping archive coverage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch, source, upstream_account_id,
+            activity_v2_request_count, activity_v2_total_tokens
+        )
+        VALUES (?1, ?2, 42, 9, 900)
+        "#,
+    )
+    .bind(overlap_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert archive-derived values in overlapping hour");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at, created_at
+        )
+        VALUES (?1, ?2, ?3, 'overlap-sha', 1, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(
+        overlap_start
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind("/tmp/account-activity-v2-overlap.sqlite.gz")
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(format_naive(
+        overlap_start.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        (overlap_end - ChronoDuration::seconds(1))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("insert overlapping archive manifest");
+
+    repair_active_account_activity_v2_coverage(&state.pool)
+        .await
+        .expect("run active coverage repair");
+
+    let overlap_rollup = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT activity_v2_request_count, activity_v2_total_tokens
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = 42
+        "#,
+    )
+    .bind(overlap_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved overlap rollup");
+    assert_eq!(overlap_rollup, (9, 900));
+    let overlap_covered = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_materialized_buckets
+        WHERE target = ?1 AND bucket_start_epoch = ?2 AND source = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(overlap_hour_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load overlap coverage marker");
+    assert_eq!(overlap_covered, 0);
+}
+
+#[tokio::test]
+async fn account_activity_v2_priority_repair_preserves_unknown_archive_coverage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    let repair_hour_epoch = current_hour_epoch - 2 * 3_600;
+    let repair_time = Utc
+        .timestamp_opt(repair_hour_epoch + 10 * 60, 0)
+        .single()
+        .expect("repair invocation time");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+         VALUES (?1, 1, datetime('now'))",
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-unknown-archive-live', ?1, ?2, 'success', ?3, 10, 0.10, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        repair_time.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert live row in unknown archive month");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch, source, upstream_account_id,
+            activity_v2_request_count, activity_v2_total_tokens
+        )
+        VALUES (?1, ?2, 42, 9, 900)
+        "#,
+    )
+    .bind(repair_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert archive-derived values with unknown coverage");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status, created_at
+        )
+        VALUES (?1, ?2, ?3, 'unknown-coverage-sha', 1, ?4, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(
+        repair_time
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind("/tmp/account-activity-v2-unknown-coverage.sqlite.gz")
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert archive manifest without coverage bounds");
+
+    repair_active_account_activity_v2_coverage(&state.pool)
+        .await
+        .expect("run active coverage repair");
+
+    let rollup = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT activity_v2_request_count, activity_v2_total_tokens \
+         FROM upstream_account_stats_hourly \
+         WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = 42",
+    )
+    .bind(repair_hour_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved unknown-coverage rollup");
+    assert_eq!(rollup, (9, 900));
+    let covered = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets \
+         WHERE target = ?1 AND bucket_start_epoch = ?2 AND source = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(repair_hour_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load unknown-coverage marker");
+    assert_eq!(covered, 0);
 }
 
 #[tokio::test]

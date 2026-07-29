@@ -8245,71 +8245,55 @@ impl ModelPerformanceAccumulator {
     }
 
     fn add_terminal_record(&mut self, record: &ApiInvocation) {
+        self.add_terminal_delta(&dashboard_activity_terminal_delta(record));
+    }
+
+    fn add_terminal_delta(&mut self, delta: &DashboardActivityTerminalDelta) {
         let group = UsageBreakdownGroupKey {
-            model: record
-                .response_model
-                .as_deref()
-                .or(record.model.as_deref())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("unknown")
-                .to_string(),
-            reasoning_effort: record
-                .reasoning_effort
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
+            model: delta.model.clone(),
+            reasoning_effort: delta.reasoning_effort.clone(),
         };
-        self.add_terminal_record_values(record);
+        self.add_terminal_delta_values(delta);
         self.models
             .entry(group)
             .or_default()
-            .add_terminal_record_values(record);
+            .add_terminal_delta_values(delta);
     }
 
-    fn add_terminal_record_values(&mut self, record: &ApiInvocation) {
-        let classification = resolve_failure_classification(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable.map(i64::from),
-        );
-        let success_like = runtime_record_is_success_for_summary(record)
-            && classification.failure_class == FailureClass::None;
-        let success_billed = success_like && record.cost.is_some();
+    fn add_terminal_delta_values(&mut self, delta: &DashboardActivityTerminalDelta) {
+        let success_like = delta.success;
+        let success_billed = success_like && delta.has_cost;
         if success_billed {
-            self.total_tokens += record.total_tokens.unwrap_or_default().max(0);
+            self.total_tokens += delta.total_tokens;
         }
         if let Some(stream_duration_ms) = success_like
-            .then_some(record.t_upstream_stream_ms)
+            .then_some(delta.t_upstream_stream_ms)
             .flatten()
             .filter(|value| value.is_finite() && *value > 0.0)
         {
             if success_billed {
-                self.stream_output_tokens += record.output_tokens.unwrap_or_default().max(0);
+                self.stream_output_tokens += delta.output_tokens;
                 self.stream_duration_ms += stream_duration_ms;
             }
             self.response_sample_count += 1;
             self.response_sum_ms += stream_duration_ms;
         }
         if success_billed
-            && record
+            && delta
                 .t_upstream_ttfb_ms
                 .is_some_and(|value| value.is_finite() && value > 0.0)
             && let Some(first_response_byte_total_ms) =
                 crate::stats::resolve_first_response_byte_total_ms(
-                    record.t_req_read_ms,
-                    record.t_req_parse_ms,
-                    record.t_upstream_connect_ms,
-                    record.t_upstream_ttfb_ms,
+                    delta.t_req_read_ms,
+                    delta.t_req_parse_ms,
+                    delta.t_upstream_connect_ms,
+                    delta.t_upstream_ttfb_ms,
                 )
         {
             self.first_byte_sample_count += 1;
             self.first_byte_sum_ms += first_response_byte_total_ms;
         }
-        if let Some(first_token_ms) = record
+        if let Some(first_token_ms) = delta
             .first_token_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
@@ -8317,7 +8301,7 @@ impl ModelPerformanceAccumulator {
             self.first_token_sum_ms += first_token_ms;
         }
         if success_billed
-            && let Some(total_ms) = record
+            && let Some(total_ms) = delta
                 .t_total_ms
                 .filter(|value| value.is_finite() && *value >= 0.0)
         {
@@ -8325,6 +8309,80 @@ impl ModelPerformanceAccumulator {
             self.cumulative_usage_duration_sum_ms += total_ms;
             // The persisted baseline stores only the prior interval union, so a single new
             // interval cannot be merged exactly until reconciliation rebuilds that union.
+            self.wall_clock_usage_duration_ms = None;
+        }
+    }
+
+    fn subtract_terminal_delta(&mut self, delta: &DashboardActivityTerminalDelta) {
+        let group = UsageBreakdownGroupKey {
+            model: delta.model.clone(),
+            reasoning_effort: delta.reasoning_effort.clone(),
+        };
+        self.subtract_terminal_delta_values(delta);
+        if let Some(model) = self.models.get_mut(&group) {
+            model.subtract_terminal_delta_values(delta);
+            if model.total_tokens == 0
+                && model.response_sample_count == 0
+                && model.first_byte_sample_count == 0
+                && model.first_token_sample_count == 0
+                && model.cumulative_usage_duration_sample_count == 0
+            {
+                self.models.remove(&group);
+            }
+        }
+    }
+
+    fn subtract_terminal_delta_values(&mut self, delta: &DashboardActivityTerminalDelta) {
+        let success_billed = delta.success && delta.has_cost;
+        if success_billed {
+            self.total_tokens = self.total_tokens.saturating_sub(delta.total_tokens);
+        }
+        if let Some(stream_duration_ms) = delta
+            .success
+            .then_some(delta.t_upstream_stream_ms)
+            .flatten()
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            if success_billed {
+                self.stream_output_tokens = self
+                    .stream_output_tokens
+                    .saturating_sub(delta.output_tokens);
+                self.stream_duration_ms = (self.stream_duration_ms - stream_duration_ms).max(0.0);
+            }
+            self.response_sample_count = self.response_sample_count.saturating_sub(1);
+            self.response_sum_ms = (self.response_sum_ms - stream_duration_ms).max(0.0);
+        }
+        if success_billed
+            && delta
+                .t_upstream_ttfb_ms
+                .is_some_and(|value| value.is_finite() && value > 0.0)
+            && let Some(value) = crate::stats::resolve_first_response_byte_total_ms(
+                delta.t_req_read_ms,
+                delta.t_req_parse_ms,
+                delta.t_upstream_connect_ms,
+                delta.t_upstream_ttfb_ms,
+            )
+        {
+            self.first_byte_sample_count = self.first_byte_sample_count.saturating_sub(1);
+            self.first_byte_sum_ms = (self.first_byte_sum_ms - value).max(0.0);
+        }
+        if let Some(value) = delta
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.first_token_sample_count = self.first_token_sample_count.saturating_sub(1);
+            self.first_token_sum_ms = (self.first_token_sum_ms - value).max(0.0);
+        }
+        if success_billed
+            && let Some(value) = delta
+                .t_total_ms
+                .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.cumulative_usage_duration_sample_count = self
+                .cumulative_usage_duration_sample_count
+                .saturating_sub(1);
+            self.cumulative_usage_duration_sum_ms =
+                (self.cumulative_usage_duration_sum_ms - value).max(0.0);
             self.wall_clock_usage_duration_ms = None;
         }
     }
@@ -10096,8 +10154,8 @@ async fn query_live_upstream_account_activity_existing_invocation_ids(
     Ok(existing_ids)
 }
 
-async fn query_live_dashboard_activity_persisted_terminal_ids(
-    pool: &Pool<Sqlite>,
+async fn query_live_dashboard_activity_persisted_terminal_ids_tx(
+    connection: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     keys: &[(String, String)],
 ) -> Result<HashMap<(String, String), i64>, ApiError> {
@@ -10130,7 +10188,7 @@ async fn query_live_dashboard_activity_persisted_terminal_ids(
         persisted.extend(
             query
                 .build_query_as::<(i64, String, String)>()
-                .fetch_all(pool)
+                .fetch_all(&mut *connection)
                 .await?
                 .into_iter()
                 .map(|(id, invoke_id, occurred_at)| ((invoke_id, occurred_at), id)),
@@ -10139,14 +10197,81 @@ async fn query_live_dashboard_activity_persisted_terminal_ids(
     Ok(persisted)
 }
 
-async fn query_live_dashboard_activity_snapshot_cursor(
-    pool: &Pool<Sqlite>,
+async fn query_live_dashboard_activity_snapshot_cursor_tx(
+    connection: &mut SqliteConnection,
 ) -> Result<i64, ApiError> {
     Ok(
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-            .fetch_one(pool)
+            .fetch_one(&mut *connection)
             .await?,
     )
+}
+
+async fn query_live_dashboard_activity_reconcile_probe(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    keys: &[(String, String)],
+) -> Result<(i64, HashMap<(String, String), i64>), ApiError> {
+    let mut tx = pool.begin().await?;
+    let cursor = query_live_dashboard_activity_snapshot_cursor_tx(tx.as_mut()).await?;
+    let persisted =
+        query_live_dashboard_activity_persisted_terminal_ids_tx(tx.as_mut(), source_scope, keys)
+            .await?;
+    tx.commit().await?;
+    Ok((cursor, persisted))
+}
+
+async fn query_live_dashboard_activity_snapshot_cursor(
+    pool: &Pool<Sqlite>,
+) -> Result<i64, ApiError> {
+    let mut connection = pool.acquire().await?;
+    query_live_dashboard_activity_snapshot_cursor_tx(&mut connection).await
+}
+
+async fn try_begin_dashboard_activity_consistency_barrier(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<sqlx::Transaction<'static, Sqlite>>, ApiError> {
+    match tokio::time::timeout(
+        Duration::from_millis(10),
+        pool.begin_with("BEGIN IMMEDIATE"),
+    )
+    .await
+    {
+        Ok(Ok(transaction)) => Ok(Some(transaction)),
+        Ok(Err(err)) => {
+            let err = anyhow::Error::new(err);
+            if crate::is_sqlite_lock_error(&err) {
+                debug!(error = %err, "dashboard consistency barrier is currently unavailable");
+                Ok(None)
+            } else {
+                Err(err.into())
+            }
+        }
+        Err(_) => {
+            debug!(
+                "dashboard consistency barrier timed out before acquiring the write reservation"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn begin_dashboard_activity_consistency_barrier(
+    pool: &Pool<Sqlite>,
+) -> Result<sqlx::Transaction<'static, Sqlite>, ApiError> {
+    Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
+}
+
+async fn finish_dashboard_activity_consistency_barrier(
+    transaction: sqlx::Transaction<'static, Sqlite>,
+    commit: bool,
+) -> Result<(), ApiError> {
+    if commit {
+        transaction.commit().await?;
+    } else {
+        transaction.rollback().await?;
+    }
+    Ok(())
 }
 
 async fn query_archive_upstream_account_activity_overlapping_live_ids(
@@ -11252,9 +11377,11 @@ pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
 /// layered onto the cached baseline synchronously, so this is not an owner-visible freshness
 /// budget.
 pub(crate) const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 60;
-const DASHBOARD_ACTIVITY_ROLLING_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
 const DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS: usize = 50_000;
 const DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS: usize = 10_000;
+const DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES: usize = 64;
+const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_EXPIRY_BYTES: usize = 64 * 1024 * 1024;
 const DASHBOARD_ACTIVITY_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone)]
@@ -11369,38 +11496,74 @@ impl DashboardActivityAccountLatencyAccumulator {
         }
     }
 
-    fn add_terminal_record(&mut self, record: &ApiInvocation, success: bool) {
-        if let Some(first_token_ms) = record
+    fn add_terminal_delta(&mut self, delta: &DashboardActivityTerminalDelta) {
+        if let Some(first_token_ms) = delta
             .first_token_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
             self.first_token_sample_count += 1;
             self.first_token_sum_ms += first_token_ms;
         }
-        if !success {
+        if !delta.success {
             return;
         }
-        if record
+        if delta
             .t_upstream_ttfb_ms
             .filter(|value| value.is_finite() && *value > 0.0)
             .is_some()
             && let Some(first_response_byte_total_ms) =
                 crate::stats::resolve_first_response_byte_total_ms(
-                    record.t_req_read_ms,
-                    record.t_req_parse_ms,
-                    record.t_upstream_connect_ms,
-                    record.t_upstream_ttfb_ms,
+                    delta.t_req_read_ms,
+                    delta.t_req_parse_ms,
+                    delta.t_upstream_connect_ms,
+                    delta.t_upstream_ttfb_ms,
                 )
         {
             self.first_response_byte_total_sample_count += 1;
             self.first_response_byte_total_sum_ms += first_response_byte_total_ms;
         }
-        if let Some(total_latency_ms) = record
+        if let Some(total_latency_ms) = delta
             .t_total_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
             self.total_latency_sample_count += 1;
             self.total_latency_sum_ms += total_latency_ms;
+        }
+    }
+
+    fn subtract_terminal_delta(&mut self, delta: &DashboardActivityTerminalDelta) {
+        if let Some(value) = delta
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.first_token_sample_count = self.first_token_sample_count.saturating_sub(1);
+            self.first_token_sum_ms = (self.first_token_sum_ms - value).max(0.0);
+        }
+        if !delta.success {
+            return;
+        }
+        if delta
+            .t_upstream_ttfb_ms
+            .is_some_and(|value| value.is_finite() && value > 0.0)
+            && let Some(value) = crate::stats::resolve_first_response_byte_total_ms(
+                delta.t_req_read_ms,
+                delta.t_req_parse_ms,
+                delta.t_upstream_connect_ms,
+                delta.t_upstream_ttfb_ms,
+            )
+        {
+            self.first_response_byte_total_sample_count = self
+                .first_response_byte_total_sample_count
+                .saturating_sub(1);
+            self.first_response_byte_total_sum_ms =
+                (self.first_response_byte_total_sum_ms - value).max(0.0);
+        }
+        if let Some(value) = delta
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.total_latency_sample_count = self.total_latency_sample_count.saturating_sub(1);
+            self.total_latency_sum_ms = (self.total_latency_sum_ms - value).max(0.0);
         }
     }
 
@@ -11433,11 +11596,24 @@ struct DashboardActivitySnapshotCacheOutcome {
     selection_fingerprint: u64,
     terminal_delta_count: u64,
     duplicate_delta_count: u64,
+    pending_delta_count: usize,
+    pending_delta_estimated_bytes: usize,
+    persisted_ack_pending_count: usize,
+    delta_pruned_count: u64,
+    expiry_delta_count: usize,
+    hard_limit_reason: &'static str,
+    baseline_cursor: i64,
+    sequence_gap_count: u64,
+    build_attempted: bool,
+    snapshot_origin: &'static str,
 }
 
 fn dashboard_activity_read_model_state(
     outcome: DashboardActivitySnapshotCacheOutcome,
 ) -> &'static str {
+    if outcome.hard_limit_reason != "none" || outcome.sequence_gap_count > 0 {
+        return "dirty_last_good";
+    }
     match outcome.cache_hit_or_miss {
         "last_good_fallback" => "stale_last_good",
         "cache_miss_build" => "reconciled",
@@ -11459,15 +11635,17 @@ pub(crate) struct DashboardActivityTerminalDeltaOutcome {
     pub(crate) applied_selection_count: usize,
     pub(crate) duplicate: bool,
     pub(crate) skipped_out_of_range_count: usize,
+    pub(crate) hard_limit_reason: Option<&'static str>,
+    pub(crate) terminal_sequence: Option<u64>,
 }
 
-fn dashboard_activity_selection_includes_terminal(
+fn dashboard_activity_selection_includes_compact_terminal(
     selection: &DashboardActivitySnapshotSelection,
-    record: &ApiInvocation,
+    delta: &DashboardActivityTerminalDelta,
     occurred_at: DateTime<Utc>,
 ) -> bool {
     if !matches!(selection.range.as_str(), "today" | "1d" | "7d")
-        || (selection.source_scope == "proxy_only" && record.source != SOURCE_PROXY)
+        || (selection.source_scope == "proxy_only" && delta.source != SOURCE_PROXY)
     {
         return false;
     }
@@ -11478,6 +11656,18 @@ fn dashboard_activity_selection_includes_terminal(
         return false;
     };
     occurred_at >= range.start && occurred_at < range.end
+}
+
+fn dashboard_activity_selection_includes_terminal(
+    selection: &DashboardActivitySnapshotSelection,
+    record: &ApiInvocation,
+    occurred_at: DateTime<Utc>,
+) -> bool {
+    dashboard_activity_selection_includes_compact_terminal(
+        selection,
+        &dashboard_activity_terminal_delta(record),
+        occurred_at,
+    )
 }
 
 fn dashboard_activity_selection_source_scope(
@@ -11492,41 +11682,64 @@ fn dashboard_activity_selection_source_scope(
 
 fn dashboard_activity_entry_includes_terminal(
     entry: &DashboardActivitySnapshotCacheEntry,
-    record: &ApiInvocation,
+    delta: &DashboardActivityTerminalDelta,
 ) -> bool {
-    record.id > 0 && record.id <= entry.baseline_snapshot_cursor
+    delta
+        .persisted_row_id
+        .is_some_and(|row_id| row_id <= entry.baseline_snapshot_cursor)
 }
 
-fn dashboard_activity_terminal_costs(record: &ApiInvocation) -> Option<UsageCostBreakdownResponse> {
-    record.cost.map(|total_cost| {
-        if let (Some(input), Some(cache_write), Some(cache_read), Some(output), Some(reasoning)) = (
-            record.cost_input,
-            record.cost_cache_write,
-            record.cost_cache_read,
-            record.cost_output,
-            record.cost_reasoning,
-        ) {
-            UsageCostBreakdownResponse {
-                input,
-                cache_write,
-                cache_read,
-                output,
-                reasoning,
-                unknown: 0.0,
-            }
-        } else {
-            UsageCostBreakdownResponse {
-                unknown: total_cost,
-                ..UsageCostBreakdownResponse::default()
-            }
+fn dashboard_activity_baseline_includes_pending_delta(
+    delta: &DashboardActivityTerminalDelta,
+    baseline_cursor: i64,
+    persisted_terminal_ids: &HashMap<(String, String), i64>,
+) -> bool {
+    delta
+        .persisted_row_id
+        .is_some_and(|row_id| row_id <= baseline_cursor)
+        || persisted_terminal_ids.contains_key(&delta.key())
+}
+
+fn replay_dashboard_activity_pending_deltas_without_expiry(
+    snapshot: &mut DashboardActivitySnapshot,
+    selection: &DashboardActivitySnapshotSelection,
+    pending_terminal_deltas: &VecDeque<DashboardActivityTerminalDelta>,
+    baseline_cursor: i64,
+    persisted_terminal_ids: &HashMap<(String, String), i64>,
+) -> usize {
+    let mut replayed = 0usize;
+    for delta in pending_terminal_deltas {
+        let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
+            continue;
+        };
+        if dashboard_activity_selection_includes_compact_terminal(selection, delta, occurred_at)
+            && !dashboard_activity_baseline_includes_pending_delta(
+                delta,
+                baseline_cursor,
+                persisted_terminal_ids,
+            )
+        {
+            apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
+            replayed += 1;
         }
-    })
+    }
+    replayed
 }
 
-fn add_dashboard_activity_terminal_usage(
-    usage: &mut UsageBreakdownResponse,
-    record: &ApiInvocation,
-) {
+fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivityTerminalDelta {
+    let classification = resolve_failure_classification(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        record.failure_class.as_deref(),
+        record.is_actionable.map(i64::from),
+    );
+    let success = runtime_record_is_success_for_summary(record)
+        && classification.failure_class == FailureClass::None;
+    let failure = matches!(
+        classification.failure_class,
+        FailureClass::ServiceFailure | FailureClass::ClientFailure | FailureClass::ClientAbort
+    );
     let cache_read_tokens = record.cache_input_tokens.unwrap_or_default().max(0);
     let cache_write_tokens = record
         .cache_write_tokens
@@ -11537,12 +11750,105 @@ fn add_dashboard_activity_terminal_usage(
                 .saturating_sub(cache_read_tokens)
         })
         .max(0);
-    let output_tokens = record.output_tokens.unwrap_or_default().max(0);
-    let costs = dashboard_activity_terminal_costs(record);
+    let model = record
+        .response_model
+        .as_deref()
+        .or(record.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    let reasoning_effort = record
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let upstream_account_name = record
+        .upstream_account_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let breakdown_complete = record.cost.is_some()
+        && record.cost_input.is_some()
+        && record.cost_cache_write.is_some()
+        && record.cost_cache_read.is_some()
+        && record.cost_output.is_some()
+        && record.cost_reasoning.is_some();
+    let total_cost = record.cost.unwrap_or_default().max(0.0);
+    let string_bytes = record.invoke_id.len()
+        + record.occurred_at.len()
+        + record.source.len()
+        + model.len()
+        + reasoning_effort.as_ref().map_or(0, String::len)
+        + upstream_account_name.as_ref().map_or(0, String::len);
+    DashboardActivityTerminalDelta {
+        terminal_sequence: 0,
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: record.occurred_at.clone(),
+        source: record.source.clone(),
+        model,
+        reasoning_effort,
+        upstream_account_id: record.upstream_account_id,
+        upstream_account_name,
+        success,
+        failure,
+        total_tokens: record.total_tokens.unwrap_or_default().max(0),
+        cache_write_tokens,
+        cache_read_tokens,
+        output_tokens: record.output_tokens.unwrap_or_default().max(0),
+        has_cost: record.cost.is_some(),
+        total_cost,
+        cost_input: record
+            .cost_input
+            .filter(|_| breakdown_complete)
+            .unwrap_or_default(),
+        cost_cache_write: record
+            .cost_cache_write
+            .filter(|_| breakdown_complete)
+            .unwrap_or_default(),
+        cost_cache_read: record
+            .cost_cache_read
+            .filter(|_| breakdown_complete)
+            .unwrap_or_default(),
+        cost_output: record
+            .cost_output
+            .filter(|_| breakdown_complete)
+            .unwrap_or_default(),
+        cost_reasoning: record
+            .cost_reasoning
+            .filter(|_| breakdown_complete)
+            .unwrap_or_default(),
+        cost_unknown: if breakdown_complete { 0.0 } else { total_cost },
+        t_total_ms: record.t_total_ms,
+        t_req_read_ms: record.t_req_read_ms,
+        t_req_parse_ms: record.t_req_parse_ms,
+        t_upstream_connect_ms: record.t_upstream_connect_ms,
+        t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+        first_token_ms: record.first_token_ms,
+        t_upstream_stream_ms: record.t_upstream_stream_ms,
+        persisted_row_id: (record.id > 0).then_some(record.id),
+        estimated_bytes: std::mem::size_of::<DashboardActivityTerminalDelta>() + string_bytes,
+    }
+}
 
-    usage.cache_write_tokens += cache_write_tokens;
-    usage.cache_read_tokens += cache_read_tokens;
-    usage.output_tokens += output_tokens;
+fn add_dashboard_activity_terminal_usage(
+    usage: &mut UsageBreakdownResponse,
+    delta: &DashboardActivityTerminalDelta,
+) {
+    let costs = delta.has_cost.then_some(UsageCostBreakdownResponse {
+        input: delta.cost_input,
+        cache_write: delta.cost_cache_write,
+        cache_read: delta.cost_cache_read,
+        output: delta.cost_output,
+        reasoning: delta.cost_reasoning,
+        unknown: delta.cost_unknown,
+    });
+
+    usage.cache_write_tokens += delta.cache_write_tokens;
+    usage.cache_read_tokens += delta.cache_read_tokens;
+    usage.output_tokens += delta.output_tokens;
     if let Some(costs) = &costs {
         let target = usage
             .costs
@@ -11555,27 +11861,16 @@ fn add_dashboard_activity_terminal_usage(
         target.unknown += costs.unknown;
     }
 
-    let model = record
-        .response_model
-        .as_deref()
-        .or(record.model.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("unknown");
-    let reasoning_effort = record
-        .reasoning_effort
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let model_usage = usage.models.iter_mut().find(|entry| {
-        entry.model == model && entry.reasoning_effort.as_deref() == reasoning_effort
+        entry.model == delta.model
+            && entry.reasoning_effort.as_deref() == delta.reasoning_effort.as_deref()
     });
     let entry = if let Some(entry) = model_usage {
         entry
     } else {
         usage.models.push(UsageBreakdownModelResponse {
-            model: model.to_string(),
-            reasoning_effort: reasoning_effort.map(str::to_string),
+            model: delta.model.clone(),
+            reasoning_effort: delta.reasoning_effort.clone(),
             cache_write_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 0,
@@ -11583,9 +11878,9 @@ fn add_dashboard_activity_terminal_usage(
         });
         usage.models.last_mut().expect("just inserted usage model")
     };
-    entry.cache_write_tokens += cache_write_tokens;
-    entry.cache_read_tokens += cache_read_tokens;
-    entry.output_tokens += output_tokens;
+    entry.cache_write_tokens += delta.cache_write_tokens;
+    entry.cache_read_tokens += delta.cache_read_tokens;
+    entry.output_tokens += delta.output_tokens;
     if let Some(costs) = costs {
         let target = entry
             .costs
@@ -11604,18 +11899,72 @@ fn add_dashboard_activity_terminal_usage(
     });
 }
 
+fn subtract_dashboard_activity_terminal_usage(
+    usage: &mut UsageBreakdownResponse,
+    delta: &DashboardActivityTerminalDelta,
+) {
+    usage.cache_write_tokens = usage
+        .cache_write_tokens
+        .saturating_sub(delta.cache_write_tokens);
+    usage.cache_read_tokens = usage
+        .cache_read_tokens
+        .saturating_sub(delta.cache_read_tokens);
+    usage.output_tokens = usage.output_tokens.saturating_sub(delta.output_tokens);
+    if let Some(costs) = usage.costs.as_mut() {
+        costs.input = (costs.input - delta.cost_input).max(0.0);
+        costs.cache_write = (costs.cache_write - delta.cost_cache_write).max(0.0);
+        costs.cache_read = (costs.cache_read - delta.cost_cache_read).max(0.0);
+        costs.output = (costs.output - delta.cost_output).max(0.0);
+        costs.reasoning = (costs.reasoning - delta.cost_reasoning).max(0.0);
+        costs.unknown = (costs.unknown - delta.cost_unknown).max(0.0);
+    }
+    if let Some(entry) = usage.models.iter_mut().find(|entry| {
+        entry.model == delta.model
+            && entry.reasoning_effort.as_deref() == delta.reasoning_effort.as_deref()
+    }) {
+        entry.cache_write_tokens = entry
+            .cache_write_tokens
+            .saturating_sub(delta.cache_write_tokens);
+        entry.cache_read_tokens = entry
+            .cache_read_tokens
+            .saturating_sub(delta.cache_read_tokens);
+        entry.output_tokens = entry.output_tokens.saturating_sub(delta.output_tokens);
+        if let Some(costs) = entry.costs.as_mut() {
+            costs.input = (costs.input - delta.cost_input).max(0.0);
+            costs.cache_write = (costs.cache_write - delta.cost_cache_write).max(0.0);
+            costs.cache_read = (costs.cache_read - delta.cost_cache_read).max(0.0);
+            costs.output = (costs.output - delta.cost_output).max(0.0);
+            costs.reasoning = (costs.reasoning - delta.cost_reasoning).max(0.0);
+            costs.unknown = (costs.unknown - delta.cost_unknown).max(0.0);
+        }
+    }
+    usage.models.retain(|entry| {
+        entry.cache_write_tokens != 0
+            || entry.cache_read_tokens != 0
+            || entry.output_tokens != 0
+            || entry.costs.as_ref().is_some_and(|costs| {
+                costs.input != 0.0
+                    || costs.cache_write != 0.0
+                    || costs.cache_read != 0.0
+                    || costs.output != 0.0
+                    || costs.reasoning != 0.0
+                    || costs.unknown != 0.0
+            })
+    });
+}
+
 fn dashboard_activity_terminal_account(
     snapshot: &DashboardActivitySnapshot,
-    record: &ApiInvocation,
+    delta: &DashboardActivityTerminalDelta,
 ) -> DashboardActivityAccountResponse {
-    let upstream_account_id = record.upstream_account_id;
+    let upstream_account_id = delta.upstream_account_id;
     DashboardActivityAccountResponse {
         account_key: upstream_account_id
             .map(|id| format!("upstream:{id}"))
             .unwrap_or_else(|| "unassigned".to_string()),
         upstream_account_id,
         display_name: upstream_account_id
-            .and_then(|_| record.upstream_account_name.clone())
+            .and_then(|_| delta.upstream_account_name.clone())
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| {
                 upstream_account_id
@@ -11683,43 +12032,28 @@ fn dashboard_activity_terminal_account(
     }
 }
 
-fn apply_dashboard_activity_terminal_delta(
+fn apply_dashboard_activity_compact_terminal_delta(
     snapshot: &mut DashboardActivitySnapshot,
-    record: &ApiInvocation,
+    delta: &DashboardActivityTerminalDelta,
 ) {
-    let classification = resolve_failure_classification(
-        record.status.as_deref(),
-        record.error_message.as_deref(),
-        record.failure_kind.as_deref(),
-        record.failure_class.as_deref(),
-        record.is_actionable.map(i64::from),
-    );
-    let success = runtime_record_is_success_for_summary(record)
-        && classification.failure_class == FailureClass::None;
-    let failure = matches!(
-        classification.failure_class,
-        FailureClass::ServiceFailure | FailureClass::ClientFailure | FailureClass::ClientAbort
-    );
-    let non_success = !success;
-    let total_tokens = record.total_tokens.unwrap_or_default().max(0);
-    let total_cost = record.cost.unwrap_or_default().max(0.0);
+    let non_success = !delta.success;
 
     let stats = &mut snapshot.summary.stats;
     stats.total_count += 1;
-    stats.success_count += i64::from(success);
-    stats.failure_count += i64::from(failure);
-    stats.total_tokens += total_tokens;
-    stats.total_cost += total_cost;
+    stats.success_count += i64::from(delta.success);
+    stats.failure_count += i64::from(delta.failure);
+    stats.total_tokens += delta.total_tokens;
+    stats.total_cost += delta.total_cost;
     if non_success {
         if let Some(non_success_cost) = stats.non_success_cost.as_mut() {
-            *non_success_cost += total_cost;
+            *non_success_cost += delta.total_cost;
         }
         if let Some(non_success_tokens) = stats.non_success_tokens.as_mut() {
-            *non_success_tokens += total_tokens;
+            *non_success_tokens += delta.total_tokens;
         }
     }
     if let Some(usage) = stats.usage_breakdown.as_mut() {
-        add_dashboard_activity_terminal_usage(usage, record);
+        add_dashboard_activity_terminal_usage(usage, delta);
     }
 
     let model_performance_available = snapshot.summary.model_performance.available;
@@ -11730,20 +12064,20 @@ fn apply_dashboard_activity_terminal_delta(
     if snapshot.model_performance_accumulator_ready {
         snapshot
             .summary_model_performance_accumulator
-            .add_terminal_record(record);
+            .add_terminal_delta(delta);
         snapshot.summary.model_performance = snapshot
             .summary_model_performance_accumulator
             .clone()
             .into_response(snapshot_range, model_performance_available);
         snapshot
             .account_model_performance_accumulators
-            .entry(record.upstream_account_id)
+            .entry(delta.upstream_account_id)
             .or_default()
-            .add_terminal_record(record);
+            .add_terminal_delta(delta);
     }
     let account_model_performance = snapshot
         .account_model_performance_accumulators
-        .get(&record.upstream_account_id)
+        .get(&delta.upstream_account_id)
         .cloned()
         .unwrap_or_default()
         .into_response(snapshot_range, model_performance_available);
@@ -11751,54 +12085,193 @@ fn apply_dashboard_activity_terminal_delta(
     if !snapshot
         .accounts
         .iter()
-        .any(|account| account.upstream_account_id == record.upstream_account_id)
+        .any(|account| account.upstream_account_id == delta.upstream_account_id)
     {
         snapshot
             .accounts
-            .push(dashboard_activity_terminal_account(snapshot, record));
+            .push(dashboard_activity_terminal_account(snapshot, delta));
     }
     let account_latency = snapshot
         .account_latency_accumulators
-        .entry(record.upstream_account_id)
+        .entry(delta.upstream_account_id)
         .or_default();
-    account_latency.add_terminal_record(record, success);
+    account_latency.add_terminal_delta(delta);
     let account_latency = *account_latency;
     let account = snapshot
         .accounts
         .iter_mut()
-        .find(|account| account.upstream_account_id == record.upstream_account_id)
+        .find(|account| account.upstream_account_id == delta.upstream_account_id)
         .expect("terminal account inserted when absent");
     account.request_count += 1;
-    account.success_count += i64::from(success);
-    account.failure_count += i64::from(failure);
+    account.success_count += i64::from(delta.success);
+    account.failure_count += i64::from(delta.failure);
     account.non_success_count += i64::from(non_success);
-    account.total_tokens += total_tokens;
-    account.total_cost += total_cost;
-    if success {
-        account.success_tokens += total_tokens;
+    account.total_tokens += delta.total_tokens;
+    account.total_cost += delta.total_cost;
+    if delta.success {
+        account.success_tokens += delta.total_tokens;
     } else {
-        account.non_success_tokens += total_tokens;
+        account.non_success_tokens += delta.total_tokens;
     }
-    if failure {
-        account.failure_tokens += total_tokens;
-        account.failure_cost += total_cost;
+    if delta.failure {
+        account.failure_tokens += delta.total_tokens;
+        account.failure_cost += delta.total_cost;
     }
     if non_success {
-        account.non_success_cost += total_cost;
+        account.non_success_cost += delta.total_cost;
     }
     if account
         .last_invocation_at
         .as_deref()
-        .is_none_or(|current| record.occurred_at.as_str() > current)
+        .is_none_or(|current| delta.occurred_at.as_str() > current)
     {
-        account.last_invocation_at = Some(record.occurred_at.clone());
+        account.last_invocation_at = Some(delta.occurred_at.clone());
     }
-    add_dashboard_activity_terminal_usage(&mut account.usage_breakdown, record);
+    add_dashboard_activity_terminal_usage(&mut account.usage_breakdown, delta);
     account_latency.apply_to_account(account);
     account.cache_hit_rate = (account.total_tokens > 0)
         .then_some(account.usage_breakdown.cache_read_tokens as f64 / account.total_tokens as f64);
     account.model_performance = account_model_performance;
     sort_dashboard_activity_accounts(&mut snapshot.accounts);
+}
+
+fn apply_dashboard_activity_terminal_delta(
+    snapshot: &mut DashboardActivitySnapshot,
+    record: &ApiInvocation,
+) {
+    apply_dashboard_activity_compact_terminal_delta(
+        snapshot,
+        &dashboard_activity_terminal_delta(record),
+    );
+}
+
+fn subtract_dashboard_activity_compact_terminal_delta(
+    snapshot: &mut DashboardActivitySnapshot,
+    delta: &DashboardActivityTerminalDelta,
+) {
+    let non_success = !delta.success;
+    let stats = &mut snapshot.summary.stats;
+    stats.total_count = stats.total_count.saturating_sub(1);
+    stats.success_count = stats.success_count.saturating_sub(i64::from(delta.success));
+    stats.failure_count = stats.failure_count.saturating_sub(i64::from(delta.failure));
+    stats.total_tokens = stats.total_tokens.saturating_sub(delta.total_tokens);
+    stats.total_cost = (stats.total_cost - delta.total_cost).max(0.0);
+    if non_success {
+        if let Some(value) = stats.non_success_cost.as_mut() {
+            *value = (*value - delta.total_cost).max(0.0);
+        }
+        if let Some(value) = stats.non_success_tokens.as_mut() {
+            *value = value.saturating_sub(delta.total_tokens);
+        }
+    }
+    if let Some(usage) = stats.usage_breakdown.as_mut() {
+        subtract_dashboard_activity_terminal_usage(usage, delta);
+    }
+    let snapshot_range = ExactUtcRange {
+        start: snapshot.range_start,
+        end: snapshot.range_end,
+    };
+    let available = snapshot.summary.model_performance.available;
+    if snapshot.model_performance_accumulator_ready {
+        snapshot
+            .summary_model_performance_accumulator
+            .subtract_terminal_delta(delta);
+        snapshot.summary.model_performance = snapshot
+            .summary_model_performance_accumulator
+            .clone()
+            .into_response(snapshot_range, available);
+        if let Some(accumulator) = snapshot
+            .account_model_performance_accumulators
+            .get_mut(&delta.upstream_account_id)
+        {
+            accumulator.subtract_terminal_delta(delta);
+        }
+    }
+    if let Some(latency) = snapshot
+        .account_latency_accumulators
+        .get_mut(&delta.upstream_account_id)
+    {
+        latency.subtract_terminal_delta(delta);
+    }
+    let account_performance = snapshot
+        .account_model_performance_accumulators
+        .get(&delta.upstream_account_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_response(snapshot_range, available);
+    if let Some(account) = snapshot
+        .accounts
+        .iter_mut()
+        .find(|account| account.upstream_account_id == delta.upstream_account_id)
+    {
+        account.request_count = account.request_count.saturating_sub(1);
+        account.success_count = account
+            .success_count
+            .saturating_sub(i64::from(delta.success));
+        account.failure_count = account
+            .failure_count
+            .saturating_sub(i64::from(delta.failure));
+        account.non_success_count = account
+            .non_success_count
+            .saturating_sub(i64::from(non_success));
+        account.total_tokens = account.total_tokens.saturating_sub(delta.total_tokens);
+        account.total_cost = (account.total_cost - delta.total_cost).max(0.0);
+        if delta.success {
+            account.success_tokens = account.success_tokens.saturating_sub(delta.total_tokens);
+        } else {
+            account.non_success_tokens = account
+                .non_success_tokens
+                .saturating_sub(delta.total_tokens);
+        }
+        if delta.failure {
+            account.failure_tokens = account.failure_tokens.saturating_sub(delta.total_tokens);
+            account.failure_cost = (account.failure_cost - delta.total_cost).max(0.0);
+        }
+        if non_success {
+            account.non_success_cost = (account.non_success_cost - delta.total_cost).max(0.0);
+        }
+        if account.last_invocation_at.as_deref() == Some(delta.occurred_at.as_str()) {
+            account.last_invocation_at = None;
+        }
+        subtract_dashboard_activity_terminal_usage(&mut account.usage_breakdown, delta);
+        if let Some(latency) = snapshot
+            .account_latency_accumulators
+            .get(&delta.upstream_account_id)
+            .copied()
+        {
+            latency.apply_to_account(account);
+        }
+        account.cache_hit_rate = (account.total_tokens > 0).then_some(
+            account.usage_breakdown.cache_read_tokens as f64 / account.total_tokens as f64,
+        );
+        account.model_performance = account_performance;
+    }
+    snapshot
+        .accounts
+        .retain(|account| account.request_count > 0);
+    sort_dashboard_activity_accounts(&mut snapshot.accounts);
+}
+
+fn restore_dashboard_activity_last_invocation_after_expiry(
+    snapshot: &mut DashboardActivitySnapshot,
+    expired: &DashboardActivityTerminalDelta,
+    remaining_expiry_deltas: &VecDeque<DashboardActivityTerminalDelta>,
+) {
+    let Some(account) = snapshot
+        .accounts
+        .iter_mut()
+        .find(|account| account.upstream_account_id == expired.upstream_account_id)
+    else {
+        return;
+    };
+    if account.last_invocation_at.is_some() || account.request_count <= 0 {
+        return;
+    }
+    account.last_invocation_at = remaining_expiry_deltas
+        .iter()
+        .filter(|delta| delta.upstream_account_id == expired.upstream_account_id)
+        .max_by_key(|delta| parse_to_utc_datetime(&delta.occurred_at))
+        .map(|delta| delta.occurred_at.clone());
 }
 
 /// Applies an accepted terminal record to every warm open-range baseline. This is deliberately
@@ -11808,10 +12281,11 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
     state: &AppState,
     record: &ApiInvocation,
 ) -> DashboardActivityTerminalDeltaOutcome {
-    let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
+    let mut delta = dashboard_activity_terminal_delta(record);
+    let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
         return DashboardActivityTerminalDeltaOutcome::default();
     };
-    let key = (record.invoke_id.clone(), record.occurred_at.clone());
+    let key = delta.key();
     let mut outcome = DashboardActivityTerminalDeltaOutcome::default();
     let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
     if cache.read_model.applied_terminal_keys.contains_key(&key) {
@@ -11819,63 +12293,281 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         outcome.duplicate = true;
         return outcome;
     }
-    cache
-        .read_model
-        .applied_terminal_keys
-        .insert(key, Instant::now());
+    cache.read_model.next_terminal_sequence =
+        cache.read_model.next_terminal_sequence.saturating_add(1);
+    delta.terminal_sequence = cache.read_model.next_terminal_sequence;
+    outcome.terminal_sequence = Some(delta.terminal_sequence);
+    insert_dashboard_activity_applied_terminal_key(&mut cache.read_model, key);
     cache.read_model.terminal_delta_count += 1;
-    cache
-        .read_model
-        .applied_terminal_keys
-        .retain(|_, applied_at| applied_at.elapsed() <= Duration::from_secs(7 * 24 * 60 * 60));
-    if cache.read_model.applied_terminal_keys.len()
-        > DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
-    {
-        let mut keys = cache
-            .read_model
-            .applied_terminal_keys
-            .iter()
-            .map(|(key, applied_at)| (key.clone(), *applied_at))
-            .collect::<Vec<_>>();
-        keys.sort_by_key(|(_, applied_at)| *applied_at);
-        for (key, _) in keys.into_iter().take(
-            cache.read_model.applied_terminal_keys.len()
-                - DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS,
-        ) {
-            cache.read_model.applied_terminal_keys.remove(&key);
-        }
+    prune_dashboard_activity_applied_terminal_keys(&mut cache.read_model);
+    if delta.persisted_row_id.is_some() {
+        settle_dashboard_activity_terminal_sequence(&mut cache.read_model, delta.terminal_sequence);
     }
-
+    let hard_limit_reason = dashboard_activity_terminal_delta_needs_persistence_ack(&delta)
+        .then(|| dashboard_activity_terminal_delta_hard_limit_reason(&cache.read_model, &delta))
+        .flatten();
+    if let Some(reason) = hard_limit_reason {
+        cache.read_model.hard_limit_reason = Some(reason);
+        cache.read_model.hard_limit_sequence = Some(delta.terminal_sequence);
+        cache.read_model.pending_terminal_overflow_count += 1;
+        outcome.hard_limit_reason = Some(reason);
+        tracing::warn!(
+            hard_limit_reason = reason,
+            pending_delta_count = cache.read_model.pending_terminal_deltas.len(),
+            pending_delta_estimated_bytes = cache.read_model.pending_delta_estimated_bytes,
+            persisted_ack_pending_count = cache.read_model.persisted_ack_pending_count,
+            "dashboard activity read model entered dirty last-good protection"
+        );
+        return outcome;
+    }
+    let mut expiry_hard_limit = None;
     for (selection, entry) in &mut cache.entries {
-        if !dashboard_activity_selection_includes_terminal(selection, record, occurred_at) {
+        if !dashboard_activity_selection_includes_compact_terminal(selection, &delta, occurred_at) {
             outcome.skipped_out_of_range_count += 1;
             continue;
         }
-        if dashboard_activity_entry_includes_terminal(entry, record) {
+        if dashboard_activity_entry_includes_terminal(entry, &delta) {
             continue;
         }
-        apply_dashboard_activity_terminal_delta(&mut entry.response, record);
+        if let Err(reason) = insert_dashboard_activity_expiry_delta(
+            &mut entry.expiry_terminal_deltas,
+            &mut entry.expiry_delta_estimated_bytes,
+            entry.expiry_covered_until,
+            &delta,
+            occurred_at,
+        ) {
+            entry.expiry_covered_until = Some(DateTime::<Utc>::MIN_UTC);
+            expiry_hard_limit = Some(reason);
+            continue;
+        }
+        apply_dashboard_activity_compact_terminal_delta(&mut entry.response, &delta);
         outcome.applied_selection_count += 1;
     }
-    cache
-        .read_model
-        .pending_terminal_records
-        .push_back(record.clone());
-    let oldest_supported = Utc::now() - ChronoDuration::days(7);
-    cache.read_model.pending_terminal_records.retain(|pending| {
-        parse_to_utc_datetime(&pending.occurred_at)
-            .is_some_and(|occurred_at| occurred_at >= oldest_supported)
-    });
-    if cache.read_model.pending_terminal_records.len()
-        > DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS
-    {
-        cache.read_model.pending_terminal_overflow_count += 1;
-        tracing::warn!(
-            pending_terminal_record_count = cache.read_model.pending_terminal_records.len(),
-            "dashboard activity read model retained pending terminal records beyond the advisory limit"
+    let evicted_entry_count = prune_dashboard_activity_snapshot_entries(&mut cache, None);
+    if evicted_entry_count > 0 {
+        prune_dashboard_activity_terminal_deltas(&mut cache);
+        tracing::debug!(
+            evicted_entry_count,
+            cache_entry_count = cache.entries.len(),
+            "evicted dashboard activity snapshots to enforce the global cache budget"
         );
     }
+    if let Some(reason) = expiry_hard_limit {
+        cache.read_model.hard_limit_reason = Some(reason);
+        cache.read_model.pending_terminal_overflow_count += 1;
+        outcome.hard_limit_reason = Some(reason);
+    }
+    if !dashboard_activity_terminal_delta_needs_persistence_ack(&delta) {
+        return outcome;
+    }
+    cache.read_model.pending_delta_estimated_bytes = cache
+        .read_model
+        .pending_delta_estimated_bytes
+        .saturating_add(delta.estimated_bytes);
+    cache.read_model.pending_terminal_deltas.push_back(delta);
     outcome
+}
+
+fn prune_dashboard_activity_applied_terminal_keys(read_model: &mut DashboardActivityReadModel) {
+    let max_age = Duration::from_secs(7 * 24 * 60 * 60);
+    while let Some((key, applied_at)) = read_model.applied_terminal_key_order.front() {
+        let is_live_entry = read_model.applied_terminal_keys.get(key) == Some(applied_at);
+        if is_live_entry
+            && read_model.applied_terminal_keys.len()
+                <= DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
+            && applied_at.elapsed() <= max_age
+        {
+            break;
+        }
+        let key = key.clone();
+        let applied_at = *applied_at;
+        read_model.applied_terminal_key_order.pop_front();
+        if read_model.applied_terminal_keys.get(&key) == Some(&applied_at) {
+            read_model.applied_terminal_keys.remove(&key);
+        }
+    }
+}
+
+fn insert_dashboard_activity_applied_terminal_key(
+    read_model: &mut DashboardActivityReadModel,
+    key: (String, String),
+) {
+    let applied_at = Instant::now();
+    read_model
+        .applied_terminal_keys
+        .insert(key.clone(), applied_at);
+    read_model
+        .applied_terminal_key_order
+        .push_back((key, applied_at));
+}
+
+fn dashboard_activity_terminal_delta_hard_limit_reason(
+    read_model: &DashboardActivityReadModel,
+    delta: &DashboardActivityTerminalDelta,
+) -> Option<&'static str> {
+    if read_model.pending_terminal_deltas.len()
+        >= DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS
+    {
+        Some("count_limit")
+    } else if read_model
+        .pending_delta_estimated_bytes
+        .saturating_add(delta.estimated_bytes)
+        > DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES
+    {
+        Some("byte_limit")
+    } else {
+        None
+    }
+}
+
+fn dashboard_activity_terminal_delta_needs_persistence_ack(
+    delta: &DashboardActivityTerminalDelta,
+) -> bool {
+    delta.persisted_row_id.is_none()
+}
+
+fn prune_dashboard_activity_terminal_deltas(cache: &mut DashboardActivitySnapshotCacheState) {
+    let minimum_cursor = cache
+        .entries
+        .values()
+        .map(|entry| entry.baseline_snapshot_cursor)
+        .chain(
+            cache
+                .in_flight
+                .values()
+                .filter_map(|flight| flight.baseline_cursor),
+        )
+        .min();
+    let can_prune_all_persisted = cache.entries.is_empty() && cache.in_flight.is_empty();
+    let before = cache.read_model.pending_terminal_deltas.len();
+    cache.read_model.pending_terminal_deltas.retain(|delta| {
+        let Some(row_id) = delta.persisted_row_id else {
+            return true;
+        };
+        !(can_prune_all_persisted || minimum_cursor.is_some_and(|cursor| cursor >= row_id))
+    });
+    let pruned = before.saturating_sub(cache.read_model.pending_terminal_deltas.len());
+    cache.read_model.delta_pruned_count = cache
+        .read_model
+        .delta_pruned_count
+        .saturating_add(pruned as u64);
+    cache.read_model.pending_delta_estimated_bytes = cache
+        .read_model
+        .pending_terminal_deltas
+        .iter()
+        .map(|delta| delta.estimated_bytes)
+        .sum();
+    cache.read_model.persisted_ack_pending_count = cache
+        .read_model
+        .pending_terminal_deltas
+        .iter()
+        .filter(|delta| delta.persisted_row_id.is_some())
+        .count();
+}
+
+fn prune_dashboard_activity_snapshot_entries(
+    cache: &mut DashboardActivitySnapshotCacheState,
+    protected_selection: Option<&DashboardActivitySnapshotSelection>,
+) -> usize {
+    let mut evicted = 0usize;
+    loop {
+        let expiry_bytes = cache
+            .entries
+            .values()
+            .map(|entry| entry.expiry_delta_estimated_bytes)
+            .sum::<usize>();
+        if cache.entries.len() <= DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES
+            && expiry_bytes <= DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_EXPIRY_BYTES
+        {
+            break;
+        }
+
+        let candidate = cache
+            .entries
+            .iter()
+            .filter(|(selection, _)| protected_selection != Some(*selection))
+            .min_by_key(|(_, entry)| entry.cached_at)
+            .map(|(selection, _)| selection.clone())
+            .or_else(|| protected_selection.cloned());
+        let Some(candidate) = candidate else {
+            break;
+        };
+        cache.entries.remove(&candidate);
+        cache.invalidation_reasons.remove(&candidate);
+        evicted += 1;
+    }
+    evicted
+}
+
+fn dashboard_activity_hard_limit_is_settled(read_model: &DashboardActivityReadModel) -> bool {
+    read_model
+        .hard_limit_sequence
+        .is_none_or(|sequence| read_model.settled_terminal_sequence >= sequence)
+}
+
+fn dashboard_activity_read_model_requires_reconcile(
+    read_model: &DashboardActivityReadModel,
+) -> bool {
+    read_model.hard_limit_reason.is_some() && dashboard_activity_hard_limit_is_settled(read_model)
+}
+
+fn settle_dashboard_activity_terminal_sequence(
+    read_model: &mut DashboardActivityReadModel,
+    terminal_sequence: u64,
+) {
+    if terminal_sequence <= read_model.settled_terminal_sequence {
+        return;
+    }
+    read_model
+        .settled_terminal_sequences
+        .insert(terminal_sequence);
+    while let Some(next_sequence) = read_model.settled_terminal_sequence.checked_add(1)
+        && read_model.settled_terminal_sequences.remove(&next_sequence)
+    {
+        read_model.settled_terminal_sequence = next_sequence;
+    }
+}
+
+fn clear_dashboard_activity_hard_limit_after_baseline(read_model: &mut DashboardActivityReadModel) {
+    if dashboard_activity_hard_limit_is_settled(read_model)
+        && read_model.pending_terminal_deltas.len()
+            < DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS
+        && read_model.pending_delta_estimated_bytes
+            < DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES
+    {
+        read_model.hard_limit_reason = None;
+        read_model.hard_limit_sequence = None;
+    }
+}
+
+pub(crate) async fn acknowledge_dashboard_activity_terminal_record(
+    cache: &Arc<tokio::sync::Mutex<DashboardActivitySnapshotCacheState>>,
+    invoke_id: &str,
+    occurred_at: &str,
+    row_id: i64,
+    terminal_sequence: Option<u64>,
+) {
+    let mut cache = cache.lock().await;
+    if let Some(terminal_sequence) = terminal_sequence {
+        settle_dashboard_activity_terminal_sequence(&mut cache.read_model, terminal_sequence);
+    }
+    let mut ack_sequence_gap = false;
+    for delta in &mut cache.read_model.pending_terminal_deltas {
+        if delta.invoke_id == invoke_id && delta.occurred_at == occurred_at {
+            ack_sequence_gap = delta
+                .persisted_row_id
+                .is_some_and(|persisted| persisted != row_id);
+            delta.persisted_row_id = Some(row_id);
+            break;
+        }
+    }
+    if ack_sequence_gap {
+        cache.read_model.sequence_gap_count += 1;
+        cache.read_model.hard_limit_reason = Some("ack_sequence_gap");
+    }
+    // A writer retry can acknowledge a delta after every warm cursor already allowed it to be
+    // pruned. Matching row IDs are therefore idempotent; only a conflicting ACK is a gap.
+    prune_dashboard_activity_terminal_deltas(&mut cache);
 }
 
 /// The write-side delta is registered before an asynchronous SQLite enqueue. If the queue
@@ -11884,16 +12576,33 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
 pub(crate) async fn rollback_dashboard_activity_terminal_record(
     state: &AppState,
     record: &ApiInvocation,
+    terminal_sequence: Option<u64>,
 ) {
     let key = (record.invoke_id.clone(), record.occurred_at.clone());
     let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
     cache.read_model.applied_terminal_keys.remove(&key);
     cache
         .read_model
-        .pending_terminal_records
-        .retain(|pending| (pending.invoke_id.clone(), pending.occurred_at.clone()) != key);
+        .pending_terminal_deltas
+        .retain(|pending| pending.key() != key);
+    cache.read_model.pending_delta_estimated_bytes = cache
+        .read_model
+        .pending_terminal_deltas
+        .iter()
+        .map(|delta| delta.estimated_bytes)
+        .sum();
+    cache.read_model.persisted_ack_pending_count = cache
+        .read_model
+        .pending_terminal_deltas
+        .iter()
+        .filter(|delta| delta.persisted_row_id.is_some())
+        .count();
+    if let Some(terminal_sequence) = terminal_sequence {
+        settle_dashboard_activity_terminal_sequence(&mut cache.read_model, terminal_sequence);
+    }
     cache.entries.clear();
     cache.invalidation_reasons.clear();
+    clear_dashboard_activity_hard_limit_after_baseline(&mut cache.read_model);
 }
 
 /// Recovery can replace a previously persisted running row with its terminal form. Its positive
@@ -12606,12 +13315,142 @@ fn dashboard_activity_snapshot_selection_anchor(
         .to_string()
 }
 
-fn dashboard_activity_snapshot_cache_ttl(range_name: &str) -> Duration {
-    if parse_duration_spec(range_name).is_ok() {
-        Duration::from_secs(DASHBOARD_ACTIVITY_ROLLING_SNAPSHOT_CACHE_TTL_SECS)
-    } else {
-        Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+fn dashboard_activity_snapshot_cache_ttl(_range_name: &str) -> Duration {
+    Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+}
+
+fn dashboard_activity_snapshot_cache_can_track_expiry(
+    range_name: &str,
+    range: ExactUtcRange,
+    retention_cutoff: DateTime<Utc>,
+) -> bool {
+    parse_duration_spec(range_name).is_err() || range.start >= retention_cutoff
+}
+
+fn dashboard_activity_entry_expiry_covers(
+    entry: &DashboardActivitySnapshotCacheEntry,
+    range: ExactUtcRange,
+) -> bool {
+    entry
+        .expiry_covered_until
+        .is_none_or(|covered_until| range.start <= covered_until)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardActivitySnapshotReuseMode {
+    Current,
+    LastGoodReconcileBackoff,
+}
+
+fn dashboard_activity_snapshot_reuse_mode(
+    entry: &DashboardActivitySnapshotCacheEntry,
+    range: ExactUtcRange,
+    cache_ttl: Duration,
+) -> Option<DashboardActivitySnapshotReuseMode> {
+    let within_reconcile_deadline = entry.last_reconcile_attempted_at.elapsed() <= cache_ttl;
+    if dashboard_activity_entry_expiry_covers(entry, range) {
+        return within_reconcile_deadline.then_some(DashboardActivitySnapshotReuseMode::Current);
     }
+    if !entry.last_reconcile_failed || !within_reconcile_deadline {
+        return None;
+    }
+    Some(DashboardActivitySnapshotReuseMode::LastGoodReconcileBackoff)
+}
+
+fn mark_dashboard_activity_reconcile_failed(entry: &mut DashboardActivitySnapshotCacheEntry) {
+    entry.last_reconcile_attempted_at = Instant::now();
+    entry.last_reconcile_failed = true;
+}
+
+fn insert_dashboard_activity_expiry_delta(
+    deltas: &mut VecDeque<DashboardActivityTerminalDelta>,
+    estimated_bytes: &mut usize,
+    expiry_covered_until: Option<DateTime<Utc>>,
+    delta: &DashboardActivityTerminalDelta,
+    occurred_at: DateTime<Utc>,
+) -> Result<(), &'static str> {
+    if expiry_covered_until.is_none_or(|covered_until| occurred_at >= covered_until) {
+        return Ok(());
+    }
+    if deltas.len() >= DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS {
+        return Err("expiry_count_limit");
+    }
+    if estimated_bytes.saturating_add(delta.estimated_bytes)
+        > DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES
+    {
+        return Err("expiry_byte_limit");
+    }
+    let insert_at = deltas
+        .iter()
+        .position(|existing| {
+            parse_to_utc_datetime(&existing.occurred_at)
+                .is_some_and(|existing_at| existing_at > occurred_at)
+        })
+        .unwrap_or(deltas.len());
+    deltas.insert(insert_at, delta.clone());
+    *estimated_bytes = estimated_bytes.saturating_add(delta.estimated_bytes);
+    Ok(())
+}
+
+async fn load_dashboard_activity_expiry_deltas(
+    pool: &Pool<Sqlite>,
+    selection: &DashboardActivitySnapshotSelection,
+    range: ExactUtcRange,
+    baseline_cursor: i64,
+) -> Result<
+    (
+        VecDeque<DashboardActivityTerminalDelta>,
+        Option<DateTime<Utc>>,
+        usize,
+        Option<&'static str>,
+    ),
+    ApiError,
+> {
+    if parse_duration_spec(&selection.range).is_err() {
+        return Ok((VecDeque::new(), None, 0, None));
+    }
+    // Resolve the moving range immediately before the query. The resulting upper bound is also
+    // stored on the cache entry, so time spent querying can only shorten reuse instead of leaving
+    // an uncovered expiry interval after a slow baseline build.
+    let expiry_covered_until = resolve_dashboard_activity_cached_range(
+        &selection.range,
+        selection
+            .time_zone
+            .parse::<Tz>()
+            .map_err(|_| ApiError::from(anyhow!("invalid dashboard activity cache timezone")))?,
+    )?
+    .start
+        + ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64);
+    let mut query = build_invocation_select_query();
+    query
+        .push(" AND id <= ")
+        .push_bind(baseline_cursor)
+        .push(" AND occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(expiry_covered_until))
+        .push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    if selection.source_scope == "proxy_only" {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC, id ASC");
+    let mut rows = query.build_query_as::<ApiInvocation>().fetch(pool);
+    let mut deltas = VecDeque::new();
+    let mut estimated_bytes = 0usize;
+    while let Some(record) = rows.try_next().await? {
+        let delta = dashboard_activity_terminal_delta(&record);
+        if deltas.len() >= DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS {
+            return Ok((VecDeque::new(), None, 0, Some("expiry_count_limit")));
+        }
+        if estimated_bytes.saturating_add(delta.estimated_bytes)
+            > DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES
+        {
+            return Ok((VecDeque::new(), None, 0, Some("expiry_byte_limit")));
+        }
+        estimated_bytes = estimated_bytes.saturating_add(delta.estimated_bytes);
+        deltas.push_back(delta);
+    }
+    Ok((deltas, Some(expiry_covered_until), estimated_bytes, None))
 }
 
 fn resolve_dashboard_activity_exact_range(
@@ -14459,6 +15298,16 @@ async fn load_dashboard_activity_snapshot_cached(
                 selection_fingerprint: 0,
                 terminal_delta_count: 0,
                 duplicate_delta_count: 0,
+                pending_delta_count: 0,
+                pending_delta_estimated_bytes: 0,
+                persisted_ack_pending_count: 0,
+                delta_pruned_count: 0,
+                expiry_delta_count: 0,
+                hard_limit_reason: "none",
+                baseline_cursor: 0,
+                sequence_gap_count: 0,
+                build_attempted: true,
+                snapshot_origin: "exact_db",
             },
         ));
     }
@@ -14474,10 +15323,136 @@ async fn load_dashboard_activity_snapshot_cached(
         include_accounts,
         include_recent,
     );
+    let baseline_build_gate = {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        cache.baseline_build_gate.clone()
+    };
+    if !dashboard_activity_snapshot_cache_can_track_expiry(
+        range_name,
+        range,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    ) {
+        let started_at = Instant::now();
+        let _baseline_build_guard = baseline_build_gate.lock().await;
+        let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let reconcile_guard = reconcile_gate.lock().await;
+        let mut consistency_connection =
+            Some(begin_dashboard_activity_consistency_barrier(&state.pool).await?);
+        // Once BEGIN IMMEDIATE owns the SQLite write barrier, the batch writer can drain its
+        // channel into its retained batch instead of backing up behind this process-local gate.
+        drop(reconcile_guard);
+        let build_result: Result<_, ApiError> = async {
+            let baseline_cursor = if let Some(connection) = consistency_connection.as_mut() {
+                query_live_dashboard_activity_snapshot_cursor_tx(connection.as_mut()).await?
+            } else {
+                query_live_dashboard_activity_snapshot_cursor(&state.pool).await?
+            };
+            let snapshot = load_dashboard_activity_snapshot_for_range(
+                state,
+                range_name,
+                reporting_tz,
+                range,
+                recent_limit,
+                include_accounts,
+                include_recent,
+                in_progress_counts_override,
+            )
+            .await?;
+            let pending_terminal_keys_after_build = {
+                let cache = state.dashboard_activity_snapshot_cache.lock().await;
+                cache
+                    .read_model
+                    .pending_terminal_deltas
+                    .iter()
+                    .filter_map(|delta| {
+                        let occurred_at = parse_to_utc_datetime(&delta.occurred_at)?;
+                        dashboard_activity_selection_includes_compact_terminal(
+                            &selection,
+                            delta,
+                            occurred_at,
+                        )
+                        .then_some(delta.key())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let persisted_terminal_ids = if let Some(connection) = consistency_connection.as_mut() {
+                query_live_dashboard_activity_persisted_terminal_ids_tx(
+                    connection.as_mut(),
+                    dashboard_activity_selection_source_scope(&selection),
+                    &pending_terminal_keys_after_build,
+                )
+                .await?
+            } else {
+                HashMap::new()
+            };
+            Ok((snapshot, baseline_cursor, persisted_terminal_ids))
+        }
+        .await;
+        // Keep ACK pruning behind the exact snapshot replay. Once the consistency transaction
+        // is released, the writer may persist and acknowledge a terminal that arrived during the
+        // build; without this guard it could remove the pending delta before this older baseline
+        // has incorporated it.
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        if let Some(connection) = consistency_connection.take() {
+            finish_dashboard_activity_consistency_barrier(connection, build_result.is_ok()).await?;
+        }
+        let (mut snapshot, baseline_cursor, persisted_terminal_ids) = build_result?;
+        if !dashboard_activity_hard_limit_is_settled(&cache.read_model) {
+            return Err(ApiError::from(anyhow!(
+                "dashboard activity hard-limit terminal writes are not persisted yet"
+            )));
+        }
+        let replayed_pending_delta_count = replay_dashboard_activity_pending_deltas_without_expiry(
+            &mut snapshot,
+            &selection,
+            &cache.read_model.pending_terminal_deltas,
+            baseline_cursor,
+            &persisted_terminal_ids,
+        );
+        tracing::debug!(
+            selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
+            replayed_pending_delta_count,
+            "replayed pending dashboard deltas over archive-prefix exact snapshot"
+        );
+        let terminal_delta_count = cache.read_model.terminal_delta_count;
+        let duplicate_delta_count = cache.read_model.duplicate_delta_count;
+        let pending_delta_count = cache.read_model.pending_terminal_deltas.len();
+        let pending_delta_estimated_bytes = cache.read_model.pending_delta_estimated_bytes;
+        let persisted_ack_pending_count = cache.read_model.persisted_ack_pending_count;
+        let delta_pruned_count = cache.read_model.delta_pruned_count;
+        let hard_limit_reason = cache.read_model.hard_limit_reason.unwrap_or("none");
+        let sequence_gap_count = cache.read_model.sequence_gap_count;
+        return Ok((
+            snapshot,
+            DashboardActivitySnapshotCacheOutcome {
+                cache_hit_or_miss: "uncached",
+                cache_bypass_reason: "archive_expiry_unavailable",
+                coalesced_waiter_count: 0,
+                db_build_elapsed_ms: started_at.elapsed().as_millis() as u64,
+                cache_ttl_ms: 0,
+                cache_entry_age_ms: 0,
+                cache_entry_count: 0,
+                in_flight_count: 0,
+                refresh_reason: "exact_uncached",
+                selection_fingerprint: 0,
+                terminal_delta_count,
+                duplicate_delta_count,
+                pending_delta_count,
+                pending_delta_estimated_bytes,
+                persisted_ack_pending_count,
+                delta_pruned_count,
+                expiry_delta_count: 0,
+                hard_limit_reason,
+                baseline_cursor,
+                sequence_gap_count,
+                build_attempted: true,
+                snapshot_origin: "exact_db_with_pending_overlay",
+            },
+        ));
+    }
     let mut waited_on_in_flight = false;
     let mut max_waiter_count = 0_usize;
     let mut saw_expired_entry = false;
-    let mut concurrent_reconcile_retry_count = 0usize;
     let cache_ttl = dashboard_activity_snapshot_cache_ttl(range_name);
     let cache_ttl_ms = cache_ttl.as_millis() as u64;
     let selection_fingerprint = dashboard_activity_selection_fingerprint(&selection);
@@ -14485,8 +15460,6 @@ async fn load_dashboard_activity_snapshot_cached(
     loop {
         let mut wait_on: Option<tokio::sync::watch::Receiver<bool>> = None;
         let mut flight_guard: Option<DashboardActivitySnapshotFlightGuard> = None;
-        let mut terminal_delta_count_before_build = 0_u64;
-        let mut pending_terminal_keys_before_build = Vec::new();
         {
             let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
             saw_expired_entry |= cache
@@ -14500,29 +15473,84 @@ async fn load_dashboard_activity_snapshot_cached(
             let in_flight_count = cache.in_flight.len();
             let terminal_delta_count = cache.read_model.terminal_delta_count;
             let duplicate_delta_count = cache.read_model.duplicate_delta_count;
-            if let Some(entry) = cache.entries.get(&selection)
-                && entry.last_reconcile_attempted_at.elapsed() <= cache_ttl
+            let pending_delta_count = cache.read_model.pending_terminal_deltas.len();
+            let pending_delta_estimated_bytes = cache.read_model.pending_delta_estimated_bytes;
+            let persisted_ack_pending_count = cache.read_model.persisted_ack_pending_count;
+            let delta_pruned_count = cache.read_model.delta_pruned_count;
+            let hard_limit_reason = cache.read_model.hard_limit_reason.unwrap_or("none");
+            let sequence_gap_count = cache.read_model.sequence_gap_count;
+            let settled_dirty_state =
+                dashboard_activity_read_model_requires_reconcile(&cache.read_model);
+            if !settled_dirty_state
+                && let Some(entry) = cache.entries.get_mut(&selection)
+                && let Some(reuse_mode) =
+                    dashboard_activity_snapshot_reuse_mode(entry, range, cache_ttl)
             {
+                let mut expired_count = 0usize;
+                if reuse_mode == DashboardActivitySnapshotReuseMode::Current {
+                    while entry.expiry_terminal_deltas.front().is_some_and(|delta| {
+                        parse_to_utc_datetime(&delta.occurred_at)
+                            .is_some_and(|occurred_at| occurred_at < range.start)
+                    }) {
+                        if let Some(delta) = entry.expiry_terminal_deltas.pop_front() {
+                            entry.expiry_delta_estimated_bytes = entry
+                                .expiry_delta_estimated_bytes
+                                .saturating_sub(delta.estimated_bytes);
+                            subtract_dashboard_activity_compact_terminal_delta(
+                                &mut entry.response,
+                                &delta,
+                            );
+                            restore_dashboard_activity_last_invocation_after_expiry(
+                                &mut entry.response,
+                                &delta,
+                                &entry.expiry_terminal_deltas,
+                            );
+                            expired_count += 1;
+                        }
+                    }
+                }
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
+                let is_last_good =
+                    reuse_mode == DashboardActivitySnapshotReuseMode::LastGoodReconcileBackoff;
                 return Ok((
                     entry.response.clone(),
                     DashboardActivitySnapshotCacheOutcome {
-                        cache_hit_or_miss: if waited_on_in_flight {
+                        cache_hit_or_miss: if is_last_good {
+                            "last_good_fallback"
+                        } else if waited_on_in_flight {
                             "wait_on_in_flight"
                         } else {
                             "cache_hit"
                         },
-                        cache_bypass_reason: "none",
+                        cache_bypass_reason: if is_last_good {
+                            "expiry_reconcile_backoff"
+                        } else {
+                            "none"
+                        },
                         coalesced_waiter_count: max_waiter_count,
                         db_build_elapsed_ms: 0,
                         cache_ttl_ms,
                         cache_entry_age_ms,
                         cache_entry_count,
                         in_flight_count,
-                        refresh_reason: "within_ttl",
+                        refresh_reason: if is_last_good {
+                            "reconcile_backoff"
+                        } else {
+                            "within_ttl"
+                        },
                         selection_fingerprint,
                         terminal_delta_count,
                         duplicate_delta_count,
+                        pending_delta_count,
+                        pending_delta_estimated_bytes,
+                        persisted_ack_pending_count,
+                        delta_pruned_count,
+                        expiry_delta_count: expired_count,
+                        hard_limit_reason,
+                        baseline_cursor: entry.baseline_snapshot_cursor,
+                        sequence_gap_count,
+                        build_attempted: false,
+                        snapshot_origin: if is_last_good { "last_good" } else { "memory" },
                     },
                 ));
             }
@@ -14532,27 +15560,13 @@ async fn load_dashboard_activity_snapshot_cached(
                 max_waiter_count = max_waiter_count.max(in_flight.waiter_count);
                 wait_on = Some(in_flight.signal.subscribe());
             } else {
-                terminal_delta_count_before_build = cache.read_model.terminal_delta_count;
-                pending_terminal_keys_before_build = cache
-                    .read_model
-                    .pending_terminal_records
-                    .iter()
-                    .filter_map(|record| {
-                        let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
-                        dashboard_activity_selection_includes_terminal(
-                            &selection,
-                            record,
-                            occurred_at,
-                        )
-                        .then_some((record.invoke_id.clone(), record.occurred_at.clone()))
-                    })
-                    .collect();
                 let (signal, _receiver) = tokio::sync::watch::channel(false);
                 cache.in_flight.insert(
                     selection.clone(),
                     DashboardActivitySnapshotInFlight {
                         signal,
                         waiter_count: 0,
+                        baseline_cursor: None,
                     },
                 );
                 flight_guard = Some(DashboardActivitySnapshotFlightGuard::new(
@@ -14571,20 +15585,94 @@ async fn load_dashboard_activity_snapshot_cached(
         }
 
         let build_started_at = Instant::now();
-        let (snapshot_cursor_before_build, persisted_terminal_ids_before_build, probe_error) =
-            match query_live_dashboard_activity_snapshot_cursor(&state.pool).await {
-                Ok(snapshot_cursor) => match query_live_dashboard_activity_persisted_terminal_ids(
-                    &state.pool,
-                    dashboard_activity_selection_source_scope(&selection),
-                    &pending_terminal_keys_before_build,
-                )
-                .await
-                {
-                    Ok(persisted_terminal_ids) => (snapshot_cursor, persisted_terminal_ids, None),
-                    Err(err) => (snapshot_cursor, HashMap::new(), Some(err)),
-                },
-                Err(err) => (0, HashMap::new(), Some(err)),
+        let _baseline_build_guard = baseline_build_gate.lock().await;
+        let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let reconcile_guard = reconcile_gate.lock().await;
+        let has_last_good = {
+            let cache = state.dashboard_activity_snapshot_cache.lock().await;
+            cache.entries.contains_key(&selection)
+        };
+        let mut consistency_connection = if has_last_good {
+            try_begin_dashboard_activity_consistency_barrier(&state.pool).await?
+        } else {
+            Some(begin_dashboard_activity_consistency_barrier(&state.pool).await?)
+        };
+        // SQLite now serializes commits against the consistency transaction. Releasing the
+        // process-local gate lets the writer retain failed work without filling its input queue.
+        drop(reconcile_guard);
+        let consistency_barrier_unavailable = consistency_connection.is_none();
+        if consistency_barrier_unavailable {
+            let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            if let Some(entry) = cache.entries.get_mut(&selection) {
+                mark_dashboard_activity_reconcile_failed(entry);
+                let response = entry.response.clone();
+                let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
+                let baseline_cursor = entry.baseline_snapshot_cursor;
+                let in_flight = cache.in_flight.remove(&selection);
+                if let Some(guard) = flight_guard.as_mut() {
+                    guard.disarm();
+                }
+                let coalesced_waiter_count =
+                    in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
+                if let Some(in_flight) = in_flight {
+                    let _ = in_flight.signal.send(true);
+                }
+                return Ok((
+                    response,
+                    DashboardActivitySnapshotCacheOutcome {
+                        cache_hit_or_miss: "last_good_fallback",
+                        cache_bypass_reason: "consistency_barrier_unavailable",
+                        coalesced_waiter_count,
+                        db_build_elapsed_ms: build_started_at.elapsed().as_millis() as u64,
+                        cache_ttl_ms,
+                        cache_entry_age_ms,
+                        cache_entry_count: cache.entries.len(),
+                        in_flight_count: cache.in_flight.len(),
+                        refresh_reason: "reconcile_lock_contended",
+                        selection_fingerprint,
+                        terminal_delta_count: cache.read_model.terminal_delta_count,
+                        duplicate_delta_count: cache.read_model.duplicate_delta_count,
+                        pending_delta_count: cache.read_model.pending_terminal_deltas.len(),
+                        pending_delta_estimated_bytes: cache
+                            .read_model
+                            .pending_delta_estimated_bytes,
+                        persisted_ack_pending_count: cache.read_model.persisted_ack_pending_count,
+                        delta_pruned_count: cache.read_model.delta_pruned_count,
+                        expiry_delta_count: 0,
+                        hard_limit_reason: cache.read_model.hard_limit_reason.unwrap_or("none"),
+                        baseline_cursor,
+                        sequence_gap_count: cache.read_model.sequence_gap_count,
+                        build_attempted: false,
+                        snapshot_origin: "last_good",
+                    },
+                ));
+            }
+            let in_flight = cache.in_flight.remove(&selection);
+            if let Some(guard) = flight_guard.as_mut() {
+                guard.disarm();
+            }
+            if let Some(in_flight) = in_flight {
+                let _ = in_flight.signal.send(true);
+            }
+            return Err(ApiError::from(anyhow!(
+                "dashboard activity consistency barrier unavailable for initial snapshot"
+            )));
+        }
+        let (snapshot_cursor_before_build, probe_error) =
+            match if let Some(connection) = consistency_connection.as_mut() {
+                query_live_dashboard_activity_snapshot_cursor_tx(connection.as_mut()).await
+            } else {
+                query_live_dashboard_activity_snapshot_cursor(&state.pool).await
+            } {
+                Ok(snapshot_cursor) => (snapshot_cursor, None),
+                Err(err) => (0, Some(err)),
             };
+        {
+            let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            if let Some(flight) = cache.in_flight.get_mut(&selection) {
+                flight.baseline_cursor = Some(snapshot_cursor_before_build);
+            }
+        }
         let mut result = if let Some(err) = probe_error {
             Err(err)
         } else {
@@ -14600,39 +15688,80 @@ async fn load_dashboard_activity_snapshot_cached(
             )
             .await
         };
-        let pending_terminal_keys_after_build = {
-            let cache = state.dashboard_activity_snapshot_cache.lock().await;
-            cache
-                .read_model
-                .pending_terminal_records
-                .iter()
-                .filter_map(|record| {
-                    let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
-                    dashboard_activity_selection_includes_terminal(&selection, record, occurred_at)
-                        .then_some((record.invoke_id.clone(), record.occurred_at.clone()))
-                })
-                .collect::<HashSet<_>>()
-        };
-        let persisted_terminal_ids_after_build = if result.is_ok() {
-            match query_live_dashboard_activity_persisted_terminal_ids(
-                &state.pool,
-                dashboard_activity_selection_source_scope(&selection),
-                &pending_terminal_keys_after_build
+        let (snapshot_cursor_after_build, persisted_terminal_ids_after_build) = if result.is_ok() {
+            let pending_terminal_keys_after_build = {
+                let cache = state.dashboard_activity_snapshot_cache.lock().await;
+                cache
+                    .read_model
+                    .pending_terminal_deltas
                     .iter()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-            .await
-            {
-                Ok(persisted_terminal_ids) => persisted_terminal_ids,
+                    .filter_map(|delta| {
+                        let occurred_at = parse_to_utc_datetime(&delta.occurred_at)?;
+                        dashboard_activity_selection_includes_compact_terminal(
+                            &selection,
+                            delta,
+                            occurred_at,
+                        )
+                        .then_some(delta.key())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let probe = if let Some(connection) = consistency_connection.as_mut() {
+                query_live_dashboard_activity_persisted_terminal_ids_tx(
+                    connection.as_mut(),
+                    dashboard_activity_selection_source_scope(&selection),
+                    &pending_terminal_keys_after_build,
+                )
+                .await
+                .map(|ids| (snapshot_cursor_before_build, ids))
+            } else {
+                Ok((snapshot_cursor_before_build, HashMap::new()))
+            };
+            match probe {
+                Ok(probe) => probe,
                 Err(err) => {
                     result = Err(err);
-                    HashMap::new()
+                    (snapshot_cursor_before_build, HashMap::new())
                 }
             }
         } else {
-            HashMap::new()
+            (snapshot_cursor_before_build, HashMap::new())
         };
+        let (
+            mut expiry_terminal_deltas,
+            mut expiry_covered_until,
+            mut expiry_delta_estimated_bytes,
+            mut expiry_tracking_failure_reason,
+        ) = if result.is_ok() {
+            match load_dashboard_activity_expiry_deltas(
+                &state.pool,
+                &selection,
+                range,
+                snapshot_cursor_after_build,
+            )
+            .await
+            {
+                Ok(expiry) => expiry,
+                Err(err) => {
+                    result = Err(err);
+                    (VecDeque::new(), None, 0, None)
+                }
+            }
+        } else {
+            (VecDeque::new(), None, 0, None)
+        };
+        if consistency_barrier_unavailable {
+            expiry_tracking_failure_reason = Some("consistency_barrier_unavailable");
+            expiry_terminal_deltas.clear();
+            expiry_delta_estimated_bytes = 0;
+            expiry_covered_until = None;
+        }
+        if let Some(connection) = consistency_connection.take()
+            && let Err(err) =
+                finish_dashboard_activity_consistency_barrier(connection, result.is_ok()).await
+        {
+            result = Err(err);
+        }
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
         let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
@@ -14650,96 +15779,80 @@ async fn load_dashboard_activity_snapshot_cached(
             guard.disarm();
         }
         let coalesced_waiter_count = in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
-        let pending_terminal_keys_before_build = pending_terminal_keys_before_build
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let relevant_terminal_persisted_during_build =
-            pending_terminal_keys_after_build.iter().any(|key| {
-                !persisted_terminal_ids_before_build.contains_key(key)
-                    && persisted_terminal_ids_after_build.contains_key(key)
-            });
-        if relevant_terminal_persisted_during_build {
-            if let Some(entry) = cache.entries.get_mut(&selection) {
-                // The write-side delta has already been applied to this last-good entry. Do not
-                // renew its reconciliation deadline: rolling ranges must rebuild from their
-                // current boundary even while terminal persistence is continuously advancing.
-                let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
-                let snapshot = entry.response.clone();
-                if let Some(in_flight) = in_flight {
-                    let _ = in_flight.signal.send(true);
-                }
-                tracing::debug!(
-                    selection_fingerprint,
-                    snapshot_cursor_before_build,
-                    terminal_delta_count_before_build,
-                    terminal_delta_count_after_build = cache.read_model.terminal_delta_count,
-                    pending_terminal_key_count_before_build =
-                        pending_terminal_keys_before_build.len(),
-                    pending_terminal_key_count_after_build =
-                        pending_terminal_keys_after_build.len(),
-                    cache_entry_age_ms,
-                    "dashboard activity reconciliation observed a concurrent terminal write; retained last-good snapshot"
-                );
-                return Ok((
-                    snapshot,
-                    DashboardActivitySnapshotCacheOutcome {
-                        cache_hit_or_miss: "last_good_fallback",
-                        cache_bypass_reason: "reconcile_write_advanced",
-                        coalesced_waiter_count,
-                        db_build_elapsed_ms,
-                        cache_ttl_ms,
-                        cache_entry_age_ms,
-                        cache_entry_count: cache.entries.len(),
-                        in_flight_count: cache.in_flight.len(),
-                        refresh_reason: "reconcile_write_advanced",
-                        selection_fingerprint,
-                        terminal_delta_count: cache.read_model.terminal_delta_count,
-                        duplicate_delta_count: cache.read_model.duplicate_delta_count,
-                    },
-                ));
-            }
-            if let Some(in_flight) = in_flight.as_ref() {
-                let _ = in_flight.signal.send(true);
-            }
-            if concurrent_reconcile_retry_count == 0 {
-                concurrent_reconcile_retry_count += 1;
-                drop(cache);
-                continue;
-            }
-            tracing::warn!(
-                selection_fingerprint,
-                concurrent_reconcile_retry_count,
-                "dashboard activity reconciliation accepted a bounded concurrent-write retry"
-            );
+        if result.is_ok() && !dashboard_activity_hard_limit_is_settled(&cache.read_model) {
+            result = Err(ApiError::from(anyhow!(
+                "dashboard activity hard-limit terminal writes are not persisted yet"
+            )));
         }
         if let Ok(snapshot) = result.as_mut() {
             // Pending records are shared by every in-flight selection. Do not consume them from
             // the first completed build: another selection may have started before the same
             // terminal reached SQLite and still needs to replay its delta.
-            for record in &cache.read_model.pending_terminal_records {
-                let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
+            for delta in &cache.read_model.pending_terminal_deltas {
+                let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
                     continue;
                 };
-                if dashboard_activity_selection_includes_terminal(&selection, record, occurred_at) {
-                    let key = (record.invoke_id.clone(), record.occurred_at.clone());
-                    if persisted_terminal_ids_before_build.contains_key(&key) {
+                if dashboard_activity_selection_includes_compact_terminal(
+                    &selection,
+                    delta,
+                    occurred_at,
+                ) {
+                    if dashboard_activity_baseline_includes_pending_delta(
+                        delta,
+                        snapshot_cursor_after_build,
+                        &persisted_terminal_ids_after_build,
+                    ) {
                         continue;
                     }
-                    apply_dashboard_activity_terminal_delta(snapshot, record);
+                    if expiry_tracking_failure_reason.is_none()
+                        && let Err(reason) = insert_dashboard_activity_expiry_delta(
+                            &mut expiry_terminal_deltas,
+                            &mut expiry_delta_estimated_bytes,
+                            expiry_covered_until,
+                            delta,
+                            occurred_at,
+                        )
+                    {
+                        expiry_tracking_failure_reason = Some(reason);
+                        expiry_terminal_deltas.clear();
+                        expiry_delta_estimated_bytes = 0;
+                        expiry_covered_until = None;
+                    }
+                    apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
                 }
             }
         }
         if let Some(in_flight) = in_flight {
-            if let Ok(snapshot) = &result {
+            if let Ok(snapshot) = &result
+                && expiry_tracking_failure_reason.is_none()
+            {
                 cache.entries.insert(
                     selection.clone(),
                     DashboardActivitySnapshotCacheEntry {
                         cached_at: Instant::now(),
                         last_reconcile_attempted_at: Instant::now(),
-                        baseline_snapshot_cursor: snapshot_cursor_before_build,
+                        last_reconcile_failed: false,
+                        baseline_snapshot_cursor: snapshot_cursor_after_build,
+                        expiry_covered_until,
+                        expiry_terminal_deltas,
+                        expiry_delta_estimated_bytes,
                         response: snapshot.clone(),
                     },
                 );
+                let evicted_entry_count =
+                    prune_dashboard_activity_snapshot_entries(&mut cache, Some(&selection));
+                if evicted_entry_count > 0 {
+                    tracing::debug!(
+                        selection_fingerprint,
+                        evicted_entry_count,
+                        cache_entry_count = cache.entries.len(),
+                        "evicted dashboard activity snapshots after baseline insertion"
+                    );
+                }
+                prune_dashboard_activity_terminal_deltas(&mut cache);
+                clear_dashboard_activity_hard_limit_after_baseline(&mut cache.read_model);
+            } else if expiry_tracking_failure_reason.is_some() {
+                cache.entries.remove(&selection);
             }
             let _ = in_flight.signal.send(true);
         }
@@ -14747,13 +15860,23 @@ async fn load_dashboard_activity_snapshot_cached(
         let in_flight_count = cache.in_flight.len();
         let terminal_delta_count = cache.read_model.terminal_delta_count;
         let duplicate_delta_count = cache.read_model.duplicate_delta_count;
+        let pending_delta_count = cache.read_model.pending_terminal_deltas.len();
+        let pending_delta_estimated_bytes = cache.read_model.pending_delta_estimated_bytes;
+        let persisted_ack_pending_count = cache.read_model.persisted_ack_pending_count;
+        let delta_pruned_count = cache.read_model.delta_pruned_count;
+        let hard_limit_reason = cache.read_model.hard_limit_reason.unwrap_or("none");
+        let sequence_gap_count = cache.read_model.sequence_gap_count;
 
         return match result {
             Ok(snapshot) => Ok((
                 snapshot,
                 DashboardActivitySnapshotCacheOutcome {
-                    cache_hit_or_miss: "cache_miss_build",
-                    cache_bypass_reason: "none",
+                    cache_hit_or_miss: if expiry_tracking_failure_reason.is_some() {
+                        "uncached"
+                    } else {
+                        "cache_miss_build"
+                    },
+                    cache_bypass_reason: expiry_tracking_failure_reason.unwrap_or("none"),
                     coalesced_waiter_count,
                     db_build_elapsed_ms,
                     cache_ttl_ms,
@@ -14764,13 +15887,27 @@ async fn load_dashboard_activity_snapshot_cached(
                     selection_fingerprint,
                     terminal_delta_count,
                     duplicate_delta_count,
+                    pending_delta_count,
+                    pending_delta_estimated_bytes,
+                    persisted_ack_pending_count,
+                    delta_pruned_count,
+                    expiry_delta_count: 0,
+                    hard_limit_reason,
+                    baseline_cursor: snapshot_cursor_after_build,
+                    sequence_gap_count,
+                    build_attempted: true,
+                    snapshot_origin: if expiry_tracking_failure_reason.is_some() {
+                        "exact_db_expiry_untracked"
+                    } else {
+                        "db_reconciled"
+                    },
                 },
             )),
             Err(err) => {
                 let Some(entry) = cache.entries.get_mut(&selection) else {
                     return Err(err);
                 };
-                entry.last_reconcile_attempted_at = Instant::now();
+                mark_dashboard_activity_reconcile_failed(entry);
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
                 tracing::warn!(
                     selection_fingerprint,
@@ -14795,6 +15932,16 @@ async fn load_dashboard_activity_snapshot_cached(
                         selection_fingerprint,
                         terminal_delta_count,
                         duplicate_delta_count,
+                        pending_delta_count,
+                        pending_delta_estimated_bytes,
+                        persisted_ack_pending_count,
+                        delta_pruned_count,
+                        expiry_delta_count: 0,
+                        hard_limit_reason,
+                        baseline_cursor: entry.baseline_snapshot_cursor,
+                        sequence_gap_count,
+                        build_attempted: true,
+                        snapshot_origin: "last_good",
                     },
                 ))
             }
@@ -14987,10 +16134,22 @@ pub(crate) async fn fetch_dashboard_activity(
             invalidation_reason = "none",
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
-            response_source = if cache_outcome.cache_hit_or_miss == "cache_miss_build" { "fallback_db" } else { "memory" },
+            response_source = if cache_outcome.build_attempted { "fallback_db" } else { "memory" },
             read_model_state = dashboard_activity_read_model_state(cache_outcome),
+            build_attempted = cache_outcome.build_attempted,
+            build_source = if cache_outcome.build_attempted { "sqlite_baseline" } else { "none" },
+            snapshot_origin = cache_outcome.snapshot_origin,
+            baseline_cursor = cache_outcome.baseline_cursor,
             terminal_delta_count = cache_outcome.terminal_delta_count,
             duplicate_delta_count = cache_outcome.duplicate_delta_count,
+            pending_delta_count = cache_outcome.pending_delta_count,
+            pending_delta_estimated_bytes = cache_outcome.pending_delta_estimated_bytes,
+            persisted_ack_pending_count = cache_outcome.persisted_ack_pending_count,
+            delta_pruned_count = cache_outcome.delta_pruned_count,
+            expiry_delta_count = cache_outcome.expiry_delta_count,
+            hard_limit_reason = cache_outcome.hard_limit_reason,
+            sequence_gap_count = cache_outcome.sequence_gap_count,
+            reconcile_outcome = cache_outcome.cache_bypass_reason,
             live_overlay_elapsed_ms,
             preview_read_mode = build_telemetry.preview_read_mode,
             candidate_preview_id_count = build_telemetry.candidate_preview_id_count,
@@ -15030,10 +16189,22 @@ pub(crate) async fn fetch_dashboard_activity(
             invalidation_reason = "none",
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
-            response_source = if cache_outcome.cache_hit_or_miss == "cache_miss_build" { "fallback_db" } else { "memory" },
+            response_source = if cache_outcome.build_attempted { "fallback_db" } else { "memory" },
             read_model_state = dashboard_activity_read_model_state(cache_outcome),
+            build_attempted = cache_outcome.build_attempted,
+            build_source = if cache_outcome.build_attempted { "sqlite_baseline" } else { "none" },
+            snapshot_origin = cache_outcome.snapshot_origin,
+            baseline_cursor = cache_outcome.baseline_cursor,
             terminal_delta_count = cache_outcome.terminal_delta_count,
             duplicate_delta_count = cache_outcome.duplicate_delta_count,
+            pending_delta_count = cache_outcome.pending_delta_count,
+            pending_delta_estimated_bytes = cache_outcome.pending_delta_estimated_bytes,
+            persisted_ack_pending_count = cache_outcome.persisted_ack_pending_count,
+            delta_pruned_count = cache_outcome.delta_pruned_count,
+            expiry_delta_count = cache_outcome.expiry_delta_count,
+            hard_limit_reason = cache_outcome.hard_limit_reason,
+            sequence_gap_count = cache_outcome.sequence_gap_count,
+            reconcile_outcome = cache_outcome.cache_bypass_reason,
             live_overlay_elapsed_ms,
             preview_read_mode = build_telemetry.preview_read_mode,
             candidate_preview_id_count = build_telemetry.candidate_preview_id_count,
@@ -16722,7 +17893,7 @@ mod dashboard_activity_read_model_tests {
             .expect("insert terminal invocation");
         }
 
-        let persisted = query_live_dashboard_activity_persisted_terminal_ids(
+        let (cursor, persisted) = query_live_dashboard_activity_reconcile_probe(
             &pool,
             InvocationSourceScope::All,
             &[
@@ -16733,7 +17904,9 @@ mod dashboard_activity_read_model_tests {
         .await
         .expect("look up multiple persisted terminal records");
 
+        assert_eq!(cursor, 2);
         assert_eq!(persisted.len(), 2);
+        assert!(persisted.values().all(|row_id| *row_id <= cursor));
         assert_eq!(
             persisted.get(&("terminal-a".to_string(), "2026-07-28 10:00:00".to_string())),
             Some(&1)
@@ -16745,14 +17918,14 @@ mod dashboard_activity_read_model_tests {
     }
 
     #[test]
-    fn rolling_snapshots_refresh_before_the_reported_window_drifts() {
+    fn open_range_snapshots_share_the_sixty_second_reconcile_cadence() {
         assert_eq!(
             dashboard_activity_snapshot_cache_ttl("1d"),
-            Duration::from_secs(5)
+            Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
         );
         assert_eq!(
             dashboard_activity_snapshot_cache_ttl("7d"),
-            Duration::from_secs(5)
+            Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
         );
         assert_eq!(
             dashboard_activity_snapshot_cache_ttl("today"),
@@ -16842,6 +18015,335 @@ mod dashboard_activity_read_model_tests {
     }
 
     #[test]
+    fn expiry_delta_reverses_terminal_totals_without_a_database_build() {
+        let mut snapshot = DashboardActivitySnapshot::test_stub("7d");
+        snapshot.summary.stats.usage_breakdown = Some(UsageBreakdownResponse {
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            costs: None,
+            models: Vec::new(),
+        });
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let delta = dashboard_activity_terminal_delta(&record);
+        apply_dashboard_activity_compact_terminal_delta(&mut snapshot, &delta);
+        subtract_dashboard_activity_compact_terminal_delta(&mut snapshot, &delta);
+
+        assert_eq!(snapshot.summary.stats.total_count, 0);
+        assert_eq!(snapshot.summary.stats.total_tokens, 0);
+        assert_eq!(snapshot.summary.stats.total_cost, 0.0);
+        assert!(snapshot.accounts.is_empty());
+        assert_eq!(
+            snapshot
+                .summary
+                .stats
+                .usage_breakdown
+                .as_ref()
+                .expect("usage breakdown")
+                .output_tokens,
+            0
+        );
+    }
+
+    #[test]
+    fn expiry_restores_the_latest_retained_invocation_for_the_account() {
+        let mut snapshot = DashboardActivitySnapshot::test_stub("7d");
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let expired = dashboard_activity_terminal_delta(&record);
+        apply_dashboard_activity_compact_terminal_delta(&mut snapshot, &expired);
+
+        let mut retained = expired.clone();
+        retained.invoke_id = "retained-latest".to_string();
+        retained.occurred_at = "2026-07-20 10:30:00".to_string();
+        apply_dashboard_activity_compact_terminal_delta(&mut snapshot, &retained);
+        snapshot
+            .accounts
+            .first_mut()
+            .expect("account")
+            .last_invocation_at = Some(expired.occurred_at.clone());
+
+        subtract_dashboard_activity_compact_terminal_delta(&mut snapshot, &expired);
+        restore_dashboard_activity_last_invocation_after_expiry(
+            &mut snapshot,
+            &expired,
+            &VecDeque::from([retained.clone()]),
+        );
+
+        assert_eq!(
+            snapshot
+                .accounts
+                .first()
+                .and_then(|account| account.last_invocation_at.as_deref()),
+            Some(retained.occurred_at.as_str())
+        );
+    }
+
+    #[test]
+    fn rolling_cache_reuse_stops_at_captured_expiry_horizon() {
+        let covered_until = Utc::now();
+        let entry = DashboardActivitySnapshotCacheEntry {
+            cached_at: Instant::now(),
+            last_reconcile_attempted_at: Instant::now(),
+            last_reconcile_failed: false,
+            baseline_snapshot_cursor: 42,
+            expiry_covered_until: Some(covered_until),
+            expiry_terminal_deltas: VecDeque::new(),
+            expiry_delta_estimated_bytes: 0,
+            response: DashboardActivitySnapshot::test_stub("7d"),
+        };
+
+        assert!(dashboard_activity_entry_expiry_covers(
+            &entry,
+            ExactUtcRange {
+                start: covered_until,
+                end: covered_until + ChronoDuration::days(7),
+            },
+        ));
+        assert!(!dashboard_activity_entry_expiry_covers(
+            &entry,
+            ExactUtcRange {
+                start: covered_until + ChronoDuration::milliseconds(1),
+                end: covered_until + ChronoDuration::days(7),
+            },
+        ));
+
+        let uncovered_range = ExactUtcRange {
+            start: covered_until + ChronoDuration::milliseconds(1),
+            end: covered_until + ChronoDuration::days(7),
+        };
+        assert_eq!(
+            dashboard_activity_snapshot_reuse_mode(
+                &entry,
+                uncovered_range,
+                Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS),
+            ),
+            None
+        );
+
+        let mut failed_entry = entry;
+        failed_entry.last_reconcile_failed = true;
+        assert_eq!(
+            dashboard_activity_snapshot_reuse_mode(
+                &failed_entry,
+                uncovered_range,
+                Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS),
+            ),
+            Some(DashboardActivitySnapshotReuseMode::LastGoodReconcileBackoff)
+        );
+
+        let mut retry_due = failed_entry;
+        retry_due.last_reconcile_attempted_at =
+            Instant::now() - Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS + 1);
+        assert_eq!(
+            dashboard_activity_snapshot_reuse_mode(
+                &retry_due,
+                uncovered_range,
+                Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reconcile_failure_starts_last_good_backoff() {
+        let covered_until = Utc::now() - ChronoDuration::seconds(1);
+        let range = ExactUtcRange {
+            start: Utc::now(),
+            end: Utc::now() + ChronoDuration::days(7),
+        };
+        let mut entry = DashboardActivitySnapshotCacheEntry {
+            cached_at: Instant::now()
+                - Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS + 1),
+            last_reconcile_attempted_at: Instant::now()
+                - Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS + 1),
+            last_reconcile_failed: false,
+            baseline_snapshot_cursor: 42,
+            expiry_covered_until: Some(covered_until),
+            expiry_terminal_deltas: VecDeque::new(),
+            expiry_delta_estimated_bytes: 0,
+            response: DashboardActivitySnapshot::test_stub("7d"),
+        };
+
+        assert_eq!(
+            dashboard_activity_snapshot_reuse_mode(
+                &entry,
+                range,
+                Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS),
+            ),
+            None
+        );
+        mark_dashboard_activity_reconcile_failed(&mut entry);
+        assert_eq!(
+            dashboard_activity_snapshot_reuse_mode(
+                &entry,
+                range,
+                Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS),
+            ),
+            Some(DashboardActivitySnapshotReuseMode::LastGoodReconcileBackoff)
+        );
+    }
+
+    #[test]
+    fn snapshot_cache_enforces_global_entry_and_expiry_budgets() {
+        fn selection(index: usize) -> DashboardActivitySnapshotSelection {
+            DashboardActivitySnapshotSelection {
+                range: "7d".to_string(),
+                range_anchor: "rolling".to_string(),
+                time_zone: "UTC".to_string(),
+                source_scope: "all".to_string(),
+                recent_limit: index,
+                include_accounts: true,
+                include_recent: true,
+            }
+        }
+
+        fn entry(age_secs: u64, expiry_bytes: usize) -> DashboardActivitySnapshotCacheEntry {
+            DashboardActivitySnapshotCacheEntry {
+                cached_at: Instant::now() - Duration::from_secs(age_secs),
+                last_reconcile_attempted_at: Instant::now(),
+                last_reconcile_failed: false,
+                baseline_snapshot_cursor: 42,
+                expiry_covered_until: None,
+                expiry_terminal_deltas: VecDeque::new(),
+                expiry_delta_estimated_bytes: expiry_bytes,
+                response: DashboardActivitySnapshot::test_stub("7d"),
+            }
+        }
+
+        let mut cache = DashboardActivitySnapshotCacheState::default();
+        for index in 0..=DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES {
+            cache.entries.insert(
+                selection(index),
+                entry(
+                    (DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES - index) as u64,
+                    0,
+                ),
+            );
+        }
+        assert_eq!(
+            prune_dashboard_activity_snapshot_entries(&mut cache, None),
+            1
+        );
+        assert_eq!(
+            cache.entries.len(),
+            DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES
+        );
+        assert!(!cache.entries.contains_key(&selection(0)));
+
+        cache.entries.clear();
+        let protected = selection(2);
+        cache.entries.insert(
+            selection(1),
+            entry(
+                2,
+                DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_EXPIRY_BYTES / 2 + 1,
+            ),
+        );
+        cache.entries.insert(
+            protected.clone(),
+            entry(
+                1,
+                DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_EXPIRY_BYTES / 2 + 1,
+            ),
+        );
+        assert_eq!(
+            prune_dashboard_activity_snapshot_entries(&mut cache, Some(&protected)),
+            1
+        );
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.entries.contains_key(&protected));
+    }
+
+    #[test]
+    fn rolling_cache_bypasses_ranges_with_an_archive_prefix() {
+        let now = Utc::now();
+        let range = ExactUtcRange {
+            start: now - ChronoDuration::days(7),
+            end: now,
+        };
+
+        assert!(!dashboard_activity_snapshot_cache_can_track_expiry(
+            "7d",
+            range,
+            now - ChronoDuration::days(1),
+        ));
+        assert!(dashboard_activity_snapshot_cache_can_track_expiry(
+            "7d",
+            range,
+            now - ChronoDuration::days(8),
+        ));
+        assert!(dashboard_activity_snapshot_cache_can_track_expiry(
+            "today",
+            range,
+            now - ChronoDuration::days(1),
+        ));
+    }
+
+    #[test]
+    fn rolling_expiry_queue_orders_live_deltas_and_enforces_hard_limits() {
+        let covered_until = Utc::now() + ChronoDuration::minutes(1);
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let mut later = dashboard_activity_terminal_delta(&record);
+        later.occurred_at = format_naive(
+            (covered_until - ChronoDuration::seconds(10))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut earlier = later.clone();
+        earlier.invoke_id = "expiry-earlier".to_string();
+        earlier.occurred_at = format_naive(
+            (covered_until - ChronoDuration::seconds(20))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut deltas = VecDeque::new();
+        let mut estimated_bytes = 0usize;
+
+        insert_dashboard_activity_expiry_delta(
+            &mut deltas,
+            &mut estimated_bytes,
+            Some(covered_until),
+            &later,
+            parse_to_utc_datetime(&later.occurred_at).expect("later timestamp"),
+        )
+        .expect("insert later expiry delta");
+        insert_dashboard_activity_expiry_delta(
+            &mut deltas,
+            &mut estimated_bytes,
+            Some(covered_until),
+            &earlier,
+            parse_to_utc_datetime(&earlier.occurred_at).expect("earlier timestamp"),
+        )
+        .expect("insert earlier expiry delta");
+
+        assert_eq!(
+            deltas.front().map(|delta| delta.invoke_id.as_str()),
+            Some("expiry-earlier")
+        );
+        assert_eq!(
+            estimated_bytes,
+            later.estimated_bytes + earlier.estimated_bytes
+        );
+
+        let mut full = std::iter::repeat_n(
+            later.clone(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS,
+        )
+        .collect::<VecDeque<_>>();
+        let mut full_bytes = 0usize;
+        assert_eq!(
+            insert_dashboard_activity_expiry_delta(
+                &mut full,
+                &mut full_bytes,
+                Some(covered_until),
+                &earlier,
+                parse_to_utc_datetime(&earlier.occurred_at).expect("earlier timestamp"),
+            ),
+            Err("expiry_count_limit")
+        );
+    }
+
+    #[test]
     fn terminal_delta_model_performance_matches_sql_qualification() {
         let mut accumulator = ModelPerformanceAccumulator::default();
         let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
@@ -16868,13 +18370,381 @@ mod dashboard_activity_read_model_tests {
         let entry = DashboardActivitySnapshotCacheEntry {
             cached_at: Instant::now(),
             last_reconcile_attempted_at: Instant::now(),
+            last_reconcile_failed: false,
             baseline_snapshot_cursor: 42,
+            expiry_covered_until: None,
+            expiry_terminal_deltas: VecDeque::new(),
+            expiry_delta_estimated_bytes: 0,
             response: DashboardActivitySnapshot::test_stub("7d"),
         };
 
-        assert!(dashboard_activity_entry_includes_terminal(&entry, &record));
+        assert!(dashboard_activity_entry_includes_terminal(
+            &entry,
+            &dashboard_activity_terminal_delta(&record),
+        ));
         record.id = 43;
-        assert!(!dashboard_activity_entry_includes_terminal(&entry, &record));
+        assert!(!dashboard_activity_entry_includes_terminal(
+            &entry,
+            &dashboard_activity_terminal_delta(&record),
+        ));
+    }
+
+    #[test]
+    fn acknowledged_terminal_below_baseline_cursor_is_not_replayed() {
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let mut delta = dashboard_activity_terminal_delta(&record);
+        delta.persisted_row_id = Some(42);
+
+        assert!(dashboard_activity_baseline_includes_pending_delta(
+            &delta,
+            42,
+            &HashMap::new(),
+        ));
+        assert!(!dashboard_activity_baseline_includes_pending_delta(
+            &delta,
+            41,
+            &HashMap::new(),
+        ));
+    }
+
+    #[test]
+    fn terminal_persisted_during_build_is_suppressed_by_the_post_build_probe() {
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let delta = dashboard_activity_terminal_delta(&record);
+        let persisted_after_build = HashMap::from([(delta.key(), 43)]);
+
+        assert!(dashboard_activity_baseline_includes_pending_delta(
+            &delta,
+            43,
+            &persisted_after_build,
+        ));
+    }
+
+    #[test]
+    fn archive_prefix_snapshot_replays_only_unpersisted_terminal_deltas() {
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
+        record.occurred_at = (Utc::now() - ChronoDuration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let unpersisted = dashboard_activity_terminal_delta(&record);
+        let mut persisted = unpersisted.clone();
+        persisted.invoke_id = "already-persisted".to_string();
+        persisted.persisted_row_id = Some(42);
+        let occurred_at = parse_to_utc_datetime(&unpersisted.occurred_at)
+            .expect("terminal timestamp should parse");
+        let selection = build_dashboard_activity_snapshot_selection(
+            "7d",
+            ExactUtcRange {
+                start: occurred_at - ChronoDuration::days(1),
+                end: occurred_at + ChronoDuration::days(1),
+            },
+            chrono_tz::UTC,
+            InvocationSourceScope::All,
+            4,
+            true,
+            true,
+        );
+        let mut snapshot = DashboardActivitySnapshot::test_stub("7d");
+
+        let replayed = replay_dashboard_activity_pending_deltas_without_expiry(
+            &mut snapshot,
+            &selection,
+            &VecDeque::from([unpersisted, persisted]),
+            42,
+            &HashMap::new(),
+        );
+
+        assert_eq!(replayed, 1);
+        assert_eq!(snapshot.summary.stats.total_count, 1);
+    }
+
+    #[test]
+    fn compact_terminal_delta_enforces_count_and_byte_hard_limits() {
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let delta = dashboard_activity_terminal_delta(&record);
+        let mut read_model = DashboardActivityReadModel {
+            pending_terminal_deltas: std::iter::repeat_n(
+                delta.clone(),
+                DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS,
+            )
+            .collect(),
+            ..DashboardActivityReadModel::default()
+        };
+        assert_eq!(
+            dashboard_activity_terminal_delta_hard_limit_reason(&read_model, &delta),
+            Some("count_limit")
+        );
+
+        read_model.pending_terminal_deltas.clear();
+        read_model.pending_delta_estimated_bytes =
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES - delta.estimated_bytes + 1;
+        assert_eq!(
+            dashboard_activity_terminal_delta_hard_limit_reason(&read_model, &delta),
+            Some("byte_limit")
+        );
+    }
+
+    #[test]
+    fn persisted_recovery_delta_does_not_wait_for_a_writer_ack() {
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 42;
+        let delta = dashboard_activity_terminal_delta(&record);
+
+        assert!(!dashboard_activity_terminal_delta_needs_persistence_ack(
+            &delta
+        ));
+    }
+
+    #[test]
+    fn hard_limit_dirty_state_waits_for_the_rejected_terminal_to_settle() {
+        let mut read_model = DashboardActivityReadModel {
+            hard_limit_reason: Some("count_limit"),
+            hard_limit_sequence: Some(10),
+            settled_terminal_sequence: 9,
+            ..DashboardActivityReadModel::default()
+        };
+
+        clear_dashboard_activity_hard_limit_after_baseline(&mut read_model);
+        assert_eq!(read_model.hard_limit_reason, Some("count_limit"));
+        assert_eq!(read_model.hard_limit_sequence, Some(10));
+
+        read_model.settled_terminal_sequence = 10;
+        clear_dashboard_activity_hard_limit_after_baseline(&mut read_model);
+        assert_eq!(read_model.hard_limit_reason, None);
+        assert_eq!(read_model.hard_limit_sequence, None);
+    }
+
+    #[test]
+    fn settled_hard_limit_forces_reconcile_before_cache_reuse() {
+        let mut read_model = DashboardActivityReadModel {
+            hard_limit_reason: Some("count_limit"),
+            hard_limit_sequence: Some(10),
+            settled_terminal_sequence: 9,
+            ..DashboardActivityReadModel::default()
+        };
+
+        assert!(!dashboard_activity_read_model_requires_reconcile(
+            &read_model
+        ));
+        read_model.settled_terminal_sequence = 10;
+        assert!(dashboard_activity_read_model_requires_reconcile(
+            &read_model
+        ));
+    }
+
+    #[test]
+    fn twenty_thousand_terminal_deltas_never_exceed_the_hard_limits() {
+        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let mut read_model = DashboardActivityReadModel::default();
+        let mut rejected = 0usize;
+
+        for index in 0..20_000 {
+            let mut delta = dashboard_activity_terminal_delta(&record);
+            delta.invoke_id = format!("terminal-{index}");
+            if dashboard_activity_terminal_delta_hard_limit_reason(&read_model, &delta).is_some() {
+                rejected += 1;
+                continue;
+            }
+            read_model.pending_delta_estimated_bytes = read_model
+                .pending_delta_estimated_bytes
+                .saturating_add(delta.estimated_bytes);
+            read_model.pending_terminal_deltas.push_back(delta);
+        }
+
+        assert_eq!(
+            read_model.pending_terminal_deltas.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS
+        );
+        assert_eq!(rejected, 10_000);
+        assert!(
+            read_model.pending_delta_estimated_bytes
+                <= DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES
+        );
+    }
+
+    #[test]
+    fn applied_terminal_keys_remain_bounded_on_hard_limit_rejection() {
+        let mut read_model = DashboardActivityReadModel::default();
+        for index in 0..=DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS {
+            insert_dashboard_activity_applied_terminal_key(
+                &mut read_model,
+                (
+                    format!("invoke-{index}"),
+                    format!("2026-07-28 10:{:02}:00", index % 60),
+                ),
+            );
+        }
+
+        prune_dashboard_activity_applied_terminal_keys(&mut read_model);
+
+        assert_eq!(
+            read_model.applied_terminal_keys.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
+        );
+        assert_eq!(
+            read_model.applied_terminal_key_order.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
+        );
+
+        let rolled_back_key = read_model
+            .applied_terminal_key_order
+            .front()
+            .expect("oldest applied key")
+            .0
+            .clone();
+        read_model.applied_terminal_keys.remove(&rolled_back_key);
+        prune_dashboard_activity_applied_terminal_keys(&mut read_model);
+        assert_eq!(
+            read_model.applied_terminal_key_order.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS - 1
+        );
+
+        insert_dashboard_activity_applied_terminal_key(
+            &mut read_model,
+            (
+                "steady-state".to_string(),
+                "2026-07-28 11:00:00".to_string(),
+            ),
+        );
+        prune_dashboard_activity_applied_terminal_keys(&mut read_model);
+        assert_eq!(
+            read_model.applied_terminal_keys.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
+        );
+        assert_eq!(
+            read_model.applied_terminal_key_order.len(),
+            DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS
+        );
+    }
+
+    #[test]
+    fn acknowledged_delta_waits_for_every_warm_cursor_before_pruning() {
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 42;
+        let delta = dashboard_activity_terminal_delta(&record);
+        let mut cache = DashboardActivitySnapshotCacheState::default();
+        cache.read_model.pending_delta_estimated_bytes = delta.estimated_bytes;
+        cache.read_model.persisted_ack_pending_count = 1;
+        cache.read_model.pending_terminal_deltas.push_back(delta);
+        let selection = build_dashboard_activity_snapshot_selection(
+            "7d",
+            ExactUtcRange {
+                start: Utc::now() - ChronoDuration::days(7),
+                end: Utc::now(),
+            },
+            chrono_tz::UTC,
+            InvocationSourceScope::All,
+            4,
+            true,
+            true,
+        );
+        cache.entries.insert(
+            selection,
+            DashboardActivitySnapshotCacheEntry {
+                cached_at: Instant::now(),
+                last_reconcile_attempted_at: Instant::now(),
+                last_reconcile_failed: false,
+                baseline_snapshot_cursor: 41,
+                expiry_covered_until: None,
+                expiry_terminal_deltas: VecDeque::new(),
+                expiry_delta_estimated_bytes: 0,
+                response: DashboardActivitySnapshot::test_stub("7d"),
+            },
+        );
+
+        prune_dashboard_activity_terminal_deltas(&mut cache);
+        assert_eq!(cache.read_model.pending_terminal_deltas.len(), 1);
+        cache
+            .entries
+            .values_mut()
+            .next()
+            .expect("warm selection")
+            .baseline_snapshot_cursor = 42;
+        prune_dashboard_activity_terminal_deltas(&mut cache);
+        assert!(cache.read_model.pending_terminal_deltas.is_empty());
+        assert_eq!(cache.read_model.delta_pruned_count, 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_ack_after_safe_prune_is_idempotent() {
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 42;
+        let mut delta = dashboard_activity_terminal_delta(&record);
+        delta.terminal_sequence = 1;
+        let terminal_sequence = delta.terminal_sequence;
+        let mut cache = DashboardActivitySnapshotCacheState::default();
+        cache
+            .read_model
+            .applied_terminal_keys
+            .insert(delta.key(), Instant::now());
+        cache.read_model.pending_delta_estimated_bytes = delta.estimated_bytes;
+        cache.read_model.pending_terminal_deltas.push_back(delta);
+        let cache = Arc::new(tokio::sync::Mutex::new(cache));
+
+        acknowledge_dashboard_activity_terminal_record(
+            &cache,
+            &record.invoke_id,
+            &record.occurred_at,
+            record.id,
+            Some(terminal_sequence),
+        )
+        .await;
+        acknowledge_dashboard_activity_terminal_record(
+            &cache,
+            &record.invoke_id,
+            &record.occurred_at,
+            record.id,
+            Some(terminal_sequence),
+        )
+        .await;
+
+        let cache = cache.lock().await;
+        assert!(cache.read_model.pending_terminal_deltas.is_empty());
+        assert_eq!(cache.read_model.sequence_gap_count, 0);
+        assert_eq!(cache.read_model.hard_limit_reason, None);
+    }
+
+    #[test]
+    fn out_of_order_terminal_ack_only_advances_the_contiguous_watermark() {
+        let mut read_model = DashboardActivityReadModel::default();
+
+        settle_dashboard_activity_terminal_sequence(&mut read_model, 2);
+        assert_eq!(read_model.settled_terminal_sequence, 0);
+        assert!(read_model.settled_terminal_sequences.contains(&2));
+
+        settle_dashboard_activity_terminal_sequence(&mut read_model, 1);
+        assert_eq!(read_model.settled_terminal_sequence, 2);
+        assert!(read_model.settled_terminal_sequences.is_empty());
+    }
+
+    #[test]
+    fn expiry_keeps_model_with_first_byte_samples() {
+        let mut accumulator = ModelPerformanceAccumulator::default();
+        let mut expiring = dashboard_activity_terminal_delta(
+            &invocation_cost_audit_tests::sample_invocation(Some(25)),
+        );
+        expiring.t_upstream_stream_ms = Some(100.0);
+        expiring.first_token_ms = None;
+        expiring.t_total_ms = None;
+        expiring.t_upstream_ttfb_ms = None;
+        accumulator.add_terminal_delta(&expiring);
+
+        let mut retained = expiring.clone();
+        retained.invoke_id = "retained-first-byte".to_string();
+        retained.total_tokens = 0;
+        retained.output_tokens = 0;
+        retained.t_upstream_stream_ms = None;
+        retained.t_upstream_ttfb_ms = Some(250.0);
+        accumulator.add_terminal_delta(&retained);
+        accumulator.subtract_terminal_delta(&expiring);
+
+        let group = UsageBreakdownGroupKey {
+            model: retained.model,
+            reasoning_effort: retained.reasoning_effort,
+        };
+        let retained_model = accumulator.models.get(&group).expect("first-byte model");
+        assert_eq!(retained_model.first_byte_sample_count, 1);
     }
 }
 
