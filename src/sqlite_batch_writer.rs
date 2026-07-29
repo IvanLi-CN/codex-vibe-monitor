@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -18,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::*;
+use crate::terminal_journal::{
+    TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
+    TerminalJournalStats,
+};
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 100;
@@ -75,6 +80,15 @@ pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
     pub(crate) dashboard_terminal_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TerminalEnqueueOutcome {
+    pub(crate) enqueued: bool,
+    pub(crate) durability_mode: TerminalJournalDurabilityMode,
+    pub(crate) journal_sequence: Option<u64>,
+    pub(crate) journal_pending_records: usize,
+    pub(crate) journal_pending_bytes: u64,
 }
 
 impl BatchedTerminalInvocationWrite {
@@ -229,6 +243,34 @@ impl PendingBatch {
         std::mem::take(self)
     }
 
+    fn take_p1_terminals(&mut self) -> Self {
+        let terminal_invocations = std::mem::take(&mut self.terminal_invocations);
+        if terminal_invocations.is_empty() {
+            return Self::default();
+        }
+        Self {
+            enqueued_rows: terminal_invocations.len(),
+            terminal_invocations,
+            oldest_at: self.oldest_at,
+            ..Self::default()
+        }
+    }
+
+    fn merge_p2(&mut self, mut other: Self) {
+        self.attempt_progress.extend(other.attempt_progress.drain());
+        self.invocation_derived.extend(other.invocation_derived);
+        self.account_selected_touches
+            .extend(other.account_selected_touches.drain());
+        self.system_task_finishes
+            .extend(other.system_task_finishes.drain());
+        self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
+        self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
+        self.oldest_at = match (self.oldest_at, other.oldest_at) {
+            (Some(current), Some(other)) => Some(current.min(other)),
+            (current, other) => current.or(other),
+        };
+    }
+
     #[cfg(test)]
     fn into_writes(self) -> Vec<SqliteBatchWrite> {
         let mut writes = Vec::with_capacity(self.logical_rows());
@@ -276,10 +318,13 @@ pub(crate) struct SqliteBatchWriter {
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache:
         Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
+    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     #[cfg(test)]
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    journal_sync_shutdown: CancellationToken,
+    journal_sync_handle: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
     buffered_writes: Option<Arc<std::sync::Mutex<Vec<SqliteBatchWrite>>>>,
     #[cfg(test)]
@@ -289,8 +334,9 @@ pub(crate) struct SqliteBatchWriter {
 impl SqliteBatchWriter {
     pub(crate) fn spawn(
         pool: Pool<Sqlite>,
-        _shutdown: CancellationToken,
+        shutdown: CancellationToken,
         prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+        database_path: &Path,
     ) -> Arc<Self> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel(128);
@@ -298,7 +344,27 @@ impl SqliteBatchWriter {
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let terminal_journal = match TerminalJournal::open(database_path) {
+            Ok(journal) => Some(journal),
+            Err(err) => {
+                warn!(error = %err, path = %database_path.display(), "terminal journal unavailable; using memory durability fallback");
+                None
+            }
+        };
+        let replay_writes = terminal_journal
+            .as_ref()
+            .map(|journal| journal.stats().replay_count)
+            .unwrap_or_default();
+        let terminal_journal = Arc::new(std::sync::Mutex::new(terminal_journal));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+        let journal_sync_shutdown = shutdown.child_token();
+        #[cfg(not(test))]
+        let journal_sync_handle = Some(tokio::spawn(run_terminal_journal_sync(
+            terminal_journal.clone(),
+            journal_sync_shutdown.clone(),
+        )));
+        #[cfg(test)]
+        let journal_sync_handle = None;
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -309,23 +375,39 @@ impl SqliteBatchWriter {
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
             dashboard_reconcile_gate.clone(),
+            terminal_journal.clone(),
         ));
-        Arc::new(Self {
+        let writer = Arc::new(Self {
             write_sender,
             control_sender,
             pending_depth,
             dropped_writes,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            terminal_journal,
             dashboard_reconcile_gate,
             #[cfg(test)]
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(Some(handle)),
+            journal_sync_shutdown,
+            journal_sync_handle: Mutex::new(journal_sync_handle),
             #[cfg(test)]
             buffered_writes: None,
             #[cfg(test)]
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
-        })
+        });
+        writer.terminal_journal.lock().ok().and_then(|mut journal| {
+            journal
+                .as_mut()
+                .map(TerminalJournal::queue_replay_for_dispatch)
+        });
+        if replay_writes > 0 {
+            warn!(
+                replay_count = replay_writes,
+                "requeued terminal journal records during startup"
+            );
+        }
+        writer
     }
 
     #[cfg(test)]
@@ -348,9 +430,12 @@ impl SqliteBatchWriter {
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+            terminal_journal: Arc::new(std::sync::Mutex::new(None)),
             dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(None),
+            journal_sync_shutdown: CancellationToken::new(),
+            journal_sync_handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
         })
@@ -427,6 +512,103 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) fn enqueue_terminal(
+        &self,
+        terminal: BatchedTerminalInvocationWrite,
+    ) -> TerminalEnqueueOutcome {
+        #[cfg(test)]
+        if self.buffered_writes.is_some() {
+            let enqueued = self.enqueue(SqliteBatchWrite::TerminalInvocation(terminal));
+            return TerminalEnqueueOutcome {
+                enqueued,
+                durability_mode: TerminalJournalDurabilityMode::MemoryOverflow,
+                journal_sequence: None,
+                journal_pending_records: 0,
+                journal_pending_bytes: 0,
+            };
+        }
+
+        let journal = self
+            .terminal_journal
+            .lock()
+            .ok()
+            .and_then(|mut journal| {
+                journal.as_mut().map(|journal| {
+                    journal.append(
+                        &terminal.record,
+                        terminal.raw_capture,
+                        terminal.capture_started,
+                    )
+                })
+            })
+            .unwrap_or(TerminalJournalAppendOutcome {
+                durability_mode: TerminalJournalDurabilityMode::MemoryOverflow,
+                sequence: None,
+                pending_records: 0,
+                pending_bytes: 0,
+            });
+        let enqueued = self.enqueue_terminal_write(
+            SqliteBatchWrite::TerminalInvocation(terminal),
+            journal.durability_mode,
+        );
+        TerminalEnqueueOutcome {
+            enqueued,
+            durability_mode: journal.durability_mode,
+            journal_sequence: journal.sequence,
+            journal_pending_records: journal.pending_records,
+            journal_pending_bytes: journal.pending_bytes,
+        }
+    }
+
+    fn enqueue_terminal_write(
+        &self,
+        write: SqliteBatchWrite,
+        durability_mode: TerminalJournalDurabilityMode,
+    ) -> bool {
+        self.pending_depth.fetch_add(1, Ordering::Relaxed);
+        match self.write_sender.try_send(write) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(write)) => {
+                self.pending_depth.fetch_sub(1, Ordering::Relaxed);
+                let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
+                    && self
+                        .terminal_journal
+                        .lock()
+                        .ok()
+                        .and_then(|mut journal| {
+                            journal.as_mut().map(|journal| match write {
+                                SqliteBatchWrite::TerminalInvocation(terminal) => {
+                                    journal.defer_write(terminal)
+                                }
+                                _ => false,
+                            })
+                        })
+                        .unwrap_or(false);
+                if !deferred {
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        "terminal journal-backed deferred queue could not accept sqlite batch write"
+                    );
+                }
+                deferred
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.pending_depth.fetch_sub(1, Ordering::Relaxed);
+                self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                warn!("terminal journal-backed retry could not reach closed sqlite batch writer");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn terminal_journal_stats(&self) -> TerminalJournalStats {
+        self.terminal_journal
+            .lock()
+            .ok()
+            .and_then(|journal| journal.as_ref().map(TerminalJournal::stats))
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
         #[cfg(test)]
         if self.buffered_writes.is_some() {
@@ -498,6 +680,12 @@ impl SqliteBatchWriter {
         }
         if let Err(err) = handle.await {
             warn!(error = %err, "sqlite batch writer task failed during shutdown");
+        }
+        self.journal_sync_shutdown.cancel();
+        if let Some(handle) = self.journal_sync_handle.lock().await.take()
+            && let Err(err) = handle.await
+        {
+            warn!(error = %err, "terminal journal sync task failed during shutdown");
         }
     }
 
@@ -599,9 +787,12 @@ pub(crate) async fn run_sqlite_batch_writer(
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
+    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut deferred_ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
+    deferred_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut pending = PendingBatch::default();
     let mut control_closed = false;
 
@@ -621,6 +812,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            usize::MAX,
+                        );
                         let result = match flush_pending_batch(
                             &pool,
                             pending.take(),
@@ -629,6 +825,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
                             &dashboard_reconcile_gate,
+                            &terminal_journal,
                         )
                         .await
                         {
@@ -658,6 +855,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &pending_depth,
                             queued_depth_snapshot,
                         );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            usize::MAX,
+                        );
                         let result = if pending.is_empty() {
                             Ok(())
                         } else {
@@ -669,6 +871,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 &terminal_runtime_store,
                                 &dashboard_activity_snapshot_cache,
                                 &dashboard_reconcile_gate,
+                                &terminal_journal,
                             )
                             .await
                             {
@@ -697,8 +900,21 @@ pub(crate) async fn run_sqlite_batch_writer(
                     control_closed = true;
                 }
             }
+            _ = deferred_ticker.tick() => {
+                let deferred_capacity = SQLITE_BATCH_MAX_ROWS.saturating_sub(pending.logical_rows());
+                drain_terminal_journal_deferred_writes(
+                    &terminal_journal,
+                    &mut pending,
+                    deferred_capacity,
+                );
+            }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
+                    drain_terminal_journal_deferred_writes(
+                        &terminal_journal,
+                        &mut pending,
+                        usize::MAX,
+                    );
                     if !pending.is_empty() {
                         let _ = flush_pending_batch(
                             &pool,
@@ -708,6 +924,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
                             &dashboard_reconcile_gate,
+                            &terminal_journal,
                         )
                         .await;
                     }
@@ -725,6 +942,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
                             &dashboard_reconcile_gate,
+                            &terminal_journal,
                         )
                         .await
                     {
@@ -766,6 +984,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
                             &dashboard_reconcile_gate,
+                            &terminal_journal,
                         )
                         .await
                     {
@@ -773,6 +992,60 @@ pub(crate) async fn run_sqlite_batch_writer(
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(not(test))]
+async fn run_terminal_journal_sync(
+    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    shutdown: CancellationToken,
+) {
+    let mut ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                if let Ok(mut guard) = terminal_journal.lock()
+                    && let Some(journal) = guard.as_mut()
+                    && let Err(err) = journal.force_sync()
+                {
+                    warn!(error = %err, "terminal journal final group commit failed during shutdown");
+                }
+                return;
+            }
+            _ = ticker.tick() => {
+                if let Ok(mut guard) = terminal_journal.lock()
+                    && let Some(journal) = guard.as_mut()
+                    && let Some(group_commit_elapsed_ms) = journal.sync_if_due()
+                {
+                    let stats = journal.stats();
+                    debug!(
+                        group_commit_elapsed_ms,
+                        journal_pending_records = stats.pending_records,
+                        journal_pending_bytes = stats.pending_bytes,
+                        journal_segment_count = stats.segment_count,
+                        "terminal journal group commit completed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn drain_terminal_journal_deferred_writes(
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    pending: &mut PendingBatch,
+    max_writes: usize,
+) {
+    if max_writes == 0 {
+        return;
+    }
+    if let Ok(mut guard) = terminal_journal.lock()
+        && let Some(journal) = guard.as_mut()
+    {
+        for terminal in journal.take_deferred_writes(max_writes) {
+            pending.push(SqliteBatchWrite::TerminalInvocation(terminal));
         }
     }
 }
@@ -796,9 +1069,13 @@ pub(crate) fn drain_queued_batch_writes(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Flush dependencies mirror the single-writer ownership boundaries."
+)]
 pub(crate) async fn flush_pending_batch(
     pool: &Pool<Sqlite>,
-    batch: PendingBatch,
+    mut batch: PendingBatch,
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
@@ -806,6 +1083,7 @@ pub(crate) async fn flush_pending_batch(
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
     if batch.is_empty() {
         return None;
@@ -822,27 +1100,69 @@ pub(crate) async fn flush_pending_batch(
     let oldest_age_ms = batch.age().as_millis() as u64;
 
     let flush_reason = reason.as_str();
+    let p1_batch = batch.take_p1_terminals();
+    if !p1_batch.is_empty() {
+        match flush_pending_batch_inner(
+            pool,
+            &p1_batch,
+            prompt_cache_conversation_cache,
+            terminal_runtime_store,
+            dashboard_activity_snapshot_cache,
+            dashboard_reconcile_gate,
+        )
+        .await
+        {
+            Ok(deferred) => {
+                if let Ok(mut journal) = terminal_journal.lock()
+                    && let Some(journal) = journal.as_mut()
+                {
+                    for terminal in p1_batch.terminal_invocations.values() {
+                        journal.acknowledge(
+                            &terminal.record.invoke_id,
+                            &terminal.record.occurred_at,
+                            terminal.raw_capture,
+                        );
+                    }
+                }
+                batch.merge_p2(deferred);
+            }
+            Err(err) => {
+                crate::db_pressure::global_db_pressure_gate()
+                    .record_error("sqlite_batch_writer_p1", &err);
+                warn!(
+                    error = %err,
+                    flush_priority = "P1",
+                    terminal_invocation_count,
+                    oldest_age_ms,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    flush_reason,
+                    "sqlite batch writer P1 terminal flush failed"
+                );
+                batch.terminal_invocations = p1_batch.terminal_invocations;
+                return Some(RetainedBatch {
+                    batch,
+                    failed: true,
+                });
+            }
+        }
+    }
+
+    if batch.is_empty() {
+        return None;
+    }
     let permit = if reason.bypass_pressure_gate() {
         None
     } else {
         match crate::db_pressure::global_db_pressure_gate()
-            .try_begin_background("sqlite_batch_writer")
+            .try_begin_background("sqlite_batch_writer_p2")
         {
             Ok(permit) => Some(permit),
-            Err(reason) => {
+            Err(deny_reason) => {
                 debug!(
-                    deny_reason = %reason,
-                    enqueued_rows,
-                    coalesced_rows,
-                    terminal_invocation_count,
-                    attempt_count,
-                    invocation_count,
-                    account_touch_count,
-                    system_task_count,
-                    system_task_scope = %system_task_scope,
-                    oldest_age_ms,
-                    flush_reason,
-                    "sqlite batch writer deferred flush because pressure gate is closed"
+                    deny_reason = %deny_reason,
+                    flush_priority = "P2",
+                    p2_deferred_count = batch.logical_rows(),
+                    "sqlite batch writer deferred P2 flush because pressure gate is closed"
                 );
                 return Some(RetainedBatch {
                     batch,
@@ -864,21 +1184,15 @@ pub(crate) async fn flush_pending_batch(
     {
         Ok(deferred_batch) => deferred_batch,
         Err(err) => {
-            crate::db_pressure::global_db_pressure_gate().record_error("sqlite_batch_writer", &err);
+            crate::db_pressure::global_db_pressure_gate()
+                .record_error("sqlite_batch_writer_p2", &err);
             warn!(
                 error = %err,
-                enqueued_rows,
-                coalesced_rows,
-                terminal_invocation_count,
-                attempt_count,
-                invocation_count,
-                account_touch_count,
-                system_task_count,
-                system_task_scope = %system_task_scope,
-                oldest_age_ms,
+                flush_priority = "P2",
+                p2_deferred_count = batch.logical_rows(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 flush_reason,
-                "sqlite batch writer flush failed"
+                "sqlite batch writer P2 flush failed"
             );
             drop(permit);
             return Some(RetainedBatch {
@@ -1472,6 +1786,7 @@ mod tests {
             pool.clone(),
             shutdown.clone(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
 
         assert!(
@@ -1520,6 +1835,7 @@ mod tests {
             pool.clone(),
             shutdown.clone(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
 
         assert!(
@@ -1873,6 +2189,41 @@ mod tests {
         writer.shutdown_and_drain().await;
     }
 
+    #[test]
+    fn barrier_drain_includes_deferred_journal_terminals() {
+        let root =
+            std::env::temp_dir().join(format!("batch-writer-deferred-{}", nanoid::nanoid!()));
+        std::fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let mut journal = TerminalJournal::open(&database_path).expect("open terminal journal");
+        let record = crate::tests::test_proxy_capture_record(
+            "batch-writer-deferred-terminal",
+            "2026-07-29T00:00:00Z",
+        );
+        assert!(journal.defer_write(BatchedTerminalInvocationWrite {
+            record,
+            capture_started: None,
+            raw_capture: true,
+            dashboard_terminal_sequence: None,
+        }));
+        let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
+        let mut pending = PendingBatch::default();
+
+        drain_terminal_journal_deferred_writes(&journal, &mut pending, usize::MAX);
+
+        assert_eq!(pending.terminal_invocations.len(), 1);
+        assert!(
+            journal
+                .lock()
+                .expect("lock terminal journal")
+                .as_mut()
+                .expect("terminal journal available")
+                .take_deferred_writes(usize::MAX)
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
     #[tokio::test]
     async fn shutdown_drain_flushes_terminal_invocations() {
         let pool = test_pool().await;
@@ -1910,6 +2261,7 @@ mod tests {
             pool.clone(),
             CancellationToken::new(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {

@@ -67,6 +67,8 @@ related_specs:
 - rolling duration 窗口若没有完整的到期反向 delta，不能只重写响应的 `rangeStart/rangeEnd` 后复用较旧 baseline；这会把窗口外记录伪装成当前 totals。此时必须把该窗口的缓存上限收紧到其允许的可见时效预算，或先实现可验证的 expiry delta，再延长 DB reconcile cadence。
 - expiry delta 本身也是内存队列：baseline boundary load、in-flight replay 和后续 live terminal 必须共用排序与容量约束。expiry horizon 应在 boundary query 前解析并随 entry 保存，命中不得越过已捕获上界；live-only expiry 无法覆盖 archive 前缀时应明确 fallback，不能缓存不完整的反向增量。
 - Dashboard open-range 的 5 秒 publish 与 60 秒 reconcile 必须由两个独立 deadline 驱动。terminal burst 只能合并内存发布；成功、并发写入后重放、last-good 和失败都要推进 reconcile attempt deadline，避免错误路径绕过节流。
+- 当 SQLite writer 已处于 busy/locked cooldown 时，60 秒 reconcile 不是提高优先级的理由。已有 baseline 的 open-range selection 应返回带 live overlay 的 last-good snapshot，并将 `reconcile_outcome=deferred`、`reconcile_skip_reason=writer_pressure`、baseline age 和下一次 due 时间写入 telemetry；超出明确的最大延后窗口后才尝试补偿构建。
+- terminal persistence journal 只负责有限窗口的 admission/replay，不取代累计 read model。5 秒 topic publish 必须继续只读内存 snapshot，不能因为 journal pending 就触发同步 DB builder；P1 SQLite ACK 与 P2 derived work 的延迟应分别判责。
 - coverage repair 应优先 owner 正在使用的闭合小时，并受 bucket 数与 elapsed 双预算约束；历史全量 backlog 连续无进展时应指数退避，永久 payload-required blocked target 不得被计入 actionable backlog 或触发高频 hourly refresh。
 - `response_source=memory` 只能描述实际请求没有执行 DB build 的结果。若本次先构建 DB baseline 再返回 last-good，必须同时记录 `build_attempted=true`、`build_source` 与 reconcile outcome，不能用最终 payload 来源掩盖本次数据库成本。
 - topic 刷新必须使用连接级 owner subscriber 引用计数，而不是内部 broadcast receiver 数量；没有 owner subscriber 时只标记 dirty。重新订阅时应清除旧 replay 连续性并构建 fresh snapshot，避免把失活期间积累的旧 ring 当作权威连续状态回放。

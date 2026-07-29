@@ -1094,6 +1094,7 @@ async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
             zero_update_streak: 0,
             next_run_after: &next_run_after,
             status: STARTUP_BACKFILL_STATUS_OK,
+            suspension_reason: None,
         },
     )
     .await
@@ -2402,6 +2403,7 @@ async fn upstream_last_activity_archive_backfill_retries_after_failed_progress()
             zero_update_streak: 0,
             next_run_after: &retry_due,
             status: STARTUP_BACKFILL_STATUS_FAILED,
+            suspension_reason: None,
         },
     )
     .await

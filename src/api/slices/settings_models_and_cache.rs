@@ -1364,7 +1364,7 @@ pub(crate) async fn invalidate_prompt_cache_conversations_cache(
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ParsedUsage {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -1373,7 +1373,7 @@ pub(crate) struct ParsedUsage {
     pub(crate) total_tokens: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct ProxyCostBreakdown {
     pub(crate) input: f64,
     pub(crate) cache_write: f64,
@@ -1388,7 +1388,7 @@ impl ProxyCostBreakdown {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct RawPayloadMeta {
     pub(crate) path: Option<String>,
     pub(crate) size_bytes: i64,
@@ -1440,7 +1440,7 @@ pub(crate) struct ResponseCaptureInfo {
     pub(crate) upstream_request_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct StageTimings {
     pub(crate) t_total_ms: f64,
     pub(crate) t_req_read_ms: f64,
@@ -1453,7 +1453,7 @@ pub(crate) struct StageTimings {
     pub(crate) t_persist_ms: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ProxyCaptureRecord {
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,

@@ -86,6 +86,9 @@
 - 对 Dashboard 这类连续 terminal 流量下的累计 KPI，不能把固定 SSE publish cadence 等同于 DB reconcile cadence。terminal enqueue 后应以稳定 event key 幂等更新内存 baseline，5 秒窗口仅合并 fanout；SQLite 只承担 warm restore、最长间隔的 reconcile 与异常 fallback。reconcile lock/error 时保留 last-good snapshot，并记录 baseline age、delta/duplicate count、reconcile outcome 与 sequence-gap 证据。
 - baseline cursor、聚合查询与 pending-key 判定应共享同一 SQLite read transaction；构建完成后重放 cursor 之后的 compact delta 即可接受 baseline。因并发写入而丢弃完整构建并立即重试，会在稳定流量下形成 build-and-discard 风暴。
 - 不要让 P1 terminal flush 在同一锁窗口内继续执行 P2 rollup/account-touch 派生写；这会把“记录最终一致”重新变成“请求尾锁放大”。P1 成功后把 P2 放回队列，等待下一轮时间窗口或 pressure 允许。
+- 对业务优先的 terminal admission，可在数据库同目录维护带校验的 append-only journal：先 journal append，再异步入 SQLite；按固定短窗口 group commit，SQLite ACK 后删除完整确认的 segment。必须把 journal pending records/bytes、ACK age、replay count 与 overflow durability mode 作为结构化 telemetry。journal overflow 选择内存可用性时，不得宣称 crash-safe。
+- Dashboard read model 遇到 writer pressure 时不得为了 60 秒 reconcile 再竞争一次 SQLite barrier。已有 last-good baseline 的 selection 应以 expiry delta 继续服务，并将 reconcile deferred 明确记录；必须设置最长 defer 上限，超过上限再做一次补偿尝试。
+- 不可恢复的历史 payload backlog 必须标为 source-unavailable，并退出 actionable backlog。仅在 archive/payload 恢复事件唤醒，外加每日受行数和耗时限制的 probe；否则退避 ticker 会把永久缺失输入伪装成持续工作。
 
 ## 何时升级方案
 

@@ -65,3 +65,8 @@
 
 - `./SPEC.md`
 - `./HISTORY.md`
+
+## Durable Terminal Admission
+
+- 当前自然日与 rolling KPI 的 terminal delta 在 SQLite 接纳受阻时仍保留于进程内 read model，并由同目录 terminal journal 保障有限窗口内的重启重放。
+- journal 达到容量上限时系统选择可用性优先：保留内存实时视图并以 `memory_overflow` telemetry 明确标识 durability downgrade；不将该状态伪装为健康持久化。

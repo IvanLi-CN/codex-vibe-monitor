@@ -943,6 +943,27 @@ pub(crate) async fn run_data_retention_maintenance(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+    if !dry_run && (pruned.1 > 0 || invocation_archive.1 > 0) {
+        let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false)
+            .await
+            .context("failed to refresh upstream activity manifest after invocation archive materialization")?;
+        debug!(
+            refreshed_batches = manifest_refresh.refreshed_batches,
+            pending_batches = manifest_refresh.pending_batches,
+            account_rows_written = manifest_refresh.account_rows_written,
+            "refreshed upstream activity manifest before waking archive backfill"
+        );
+        wake_source_unavailable_backfills(
+            pool,
+            StartupBackfillTask::UpstreamActivityArchives.name(),
+            if pruned.1 > 0 {
+                "invocation_detail_prune_archive_materialized"
+            } else {
+                "invocation_archive_materialized"
+            },
+        )
+        .await?;
+    }
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
