@@ -555,6 +555,14 @@ pub(crate) async fn archive_rows_into_month_batch(
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
+    let sha256 = sha256_hex_file(&temp_gzip_path)?;
+    reactivate_legacy_archive_cleanup_before_file_replace(
+        pool,
+        spec.dataset,
+        month_key,
+        &final_path,
+    )
+    .await?;
     if let Err(err) = fs::rename(&temp_gzip_path, &final_path).with_context(|| {
         format!(
             "failed to move archive batch into place: {} -> {}",
@@ -568,7 +576,6 @@ pub(crate) async fn archive_rows_into_month_batch(
     }
     let _ = fs::remove_file(&work_path);
 
-    let sha256 = sha256_hex_file(&final_path)?;
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,
         month_key: month_key.to_string(),
@@ -587,6 +594,32 @@ pub(crate) async fn archive_rows_into_month_batch(
         cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
         superseded_by: None,
     })
+}
+
+async fn reactivate_legacy_archive_cleanup_before_file_replace(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    month_key: &str,
+    file_path: &Path,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET cleanup_state = ?1
+        WHERE dataset = ?2
+          AND month_key = ?3
+          AND file_path = ?4
+          AND cleanup_state = ?5
+        "#,
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(dataset)
+    .bind(month_key)
+    .bind(file_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn archive_rows_into_segment_batch(

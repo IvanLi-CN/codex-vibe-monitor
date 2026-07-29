@@ -7574,12 +7574,16 @@ fn pool_account_supports_live_request_body_buffers_codex_rewrite() {
 
 #[tokio::test]
 async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_timeout_without_wait() {
+    const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
+    const BODY_REPLAY_DELAY: Duration = Duration::from_secs(3);
+    const UPSTREAM_HEADER_DELAY: Duration = Duration::from_secs(3);
+
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
 
     let (upstream_base, upstream_handle) =
-        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(250)).await;
+        spawn_oauth_codex_delayed_headers_upstream(UPSTREAM_HEADER_DELAY).await;
     oauth_bridge::set_test_oauth_codex_upstream_base_url(
         Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
@@ -7588,9 +7592,9 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
-    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
-    config.openai_proxy_handshake_timeout = Duration::from_millis(400);
+    config.pool_upstream_responses_total_timeout = TOTAL_TIMEOUT;
+    config.openai_proxy_request_read_timeout = Duration::from_secs(10);
+    config.openai_proxy_handshake_timeout = Duration::from_secs(10);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_oauth_account(&state, "Timeout OAuth", "oauth-timeout").await;
@@ -7600,7 +7604,7 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
         let _ = tx
             .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5.4\",")))
             .await;
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(BODY_REPLAY_DELAY).await;
         let _ = tx
             .send(Ok(Bytes::from_static(
                 b"\"stream\":false,\"input\":\"hello\"}",
@@ -7611,7 +7615,6 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
     let response = proxy_openai_v1_via_pool(
         state.clone(),
         6420,
@@ -7636,7 +7639,6 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
         None,
     )
     .await;
-    let elapsed = started.elapsed();
 
     let err = response.expect_err("oauth replay request should hit total timeout");
     let status = err.status;
@@ -7644,18 +7646,8 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
         message,
-        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+        pool_total_timeout_exhausted_message(TOTAL_TIMEOUT),
         "unexpected oauth replay timeout error: {message}"
-    );
-    assert!(
-        elapsed >= Duration::from_millis(70),
-        "request should spend time buffering before exhausting the shared budget, elapsed={elapsed:?}"
-    );
-    // The request budget must remain anchored at the first body byte. Allow CI scheduling
-    // jitter around the 90ms timer without masking a replay that starts a second budget.
-    assert!(
-        elapsed < Duration::from_millis(250),
-        "replay send should keep the total timeout anchored at request start, elapsed={elapsed:?}"
     );
 
     upstream_handle.abort();

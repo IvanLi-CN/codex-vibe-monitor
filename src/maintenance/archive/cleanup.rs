@@ -273,8 +273,240 @@ pub(crate) struct ArchiveBatchCleanupCandidate {
     dataset: String,
     file_path: String,
     sha256: String,
+    cleanup_state: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
+}
+
+async fn stage_archive_batch_deletion(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    dataset: &str,
+    file_path: &str,
+    expected_sha256: &str,
+    source_safe_start: Option<NaiveDate>,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let staged = sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET cleanup_state = ?1
+        WHERE id = ?2
+          AND dataset = ?3
+          AND file_path = ?4
+          AND sha256 = ?5
+          AND status = ?6
+          AND cleanup_state = ?7
+        "#,
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .execute(tx.as_mut())
+    .await?
+    .rows_affected()
+        != 0;
+    if !staged {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    if let Some(source_safe_start) = source_safe_start {
+        crate::long_term_stats::advance_long_term_integrity_source_start_tx(
+            tx.as_mut(),
+            source_safe_start,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+async fn delete_archive_batch_metadata_tx(
+    tx: &mut SqliteConnection,
+    archive_batch_id: i64,
+    dataset: &str,
+    file_path: &str,
+    expected_sha256: &str,
+) -> Result<bool> {
+    let still_pending = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM archive_batches
+            WHERE id = ?1
+              AND dataset = ?2
+              AND file_path = ?3
+              AND sha256 = ?4
+              AND status = ?5
+              AND cleanup_state = ?6
+        )
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .fetch_one(&mut *tx)
+    .await?
+        != 0;
+    if !still_pending {
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
+        .bind(archive_batch_id)
+        .execute(&mut *tx)
+        .await?;
+    delete_pool_upstream_node_health_archive_rows_for_file_tx(&mut *tx, file_path).await?;
+    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2")
+        .bind(dataset)
+        .bind(file_path)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2")
+        .bind(dataset)
+        .bind(file_path)
+        .execute(&mut *tx)
+        .await?;
+    let deleted = sqlx::query(
+        r#"
+        DELETE FROM archive_batches
+        WHERE id = ?1
+          AND dataset = ?2
+          AND file_path = ?3
+          AND sha256 = ?4
+          AND status = ?5
+          AND cleanup_state = ?6
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        != 0;
+    Ok(deleted)
+}
+
+async fn finalize_archive_batch_file_deletion(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    dataset: &str,
+    file_path: &str,
+    expected_sha256: &str,
+) -> Result<bool> {
+    // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
+    // manifest before replacing its file, so they either win before this check or wait until this
+    // identity has been fully finalized.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let still_pending = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM archive_batches
+            WHERE id = ?1
+              AND dataset = ?2
+              AND file_path = ?3
+              AND sha256 = ?4
+              AND status = ?5
+              AND cleanup_state = ?6
+        )
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0;
+    if !still_pending {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    if Path::new(file_path).exists() {
+        let file_sha256 = match sha256_hex_file(Path::new(file_path)) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    dataset,
+                    file_path,
+                    error = %error,
+                    "archive file identity could not be verified; retaining pending metadata"
+                );
+                tx.rollback().await?;
+                return Ok(false);
+            }
+        };
+        if file_sha256 != expected_sha256 {
+            warn!(
+                dataset,
+                file_path,
+                expected_sha256,
+                file_sha256,
+                "archive file identity changed after deletion was staged; retaining reactivated manifest"
+            );
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
+
+    match fs::remove_file(file_path) {
+        Ok(_) => {
+            if !delete_archive_batch_metadata_tx(
+                tx.as_mut(),
+                archive_batch_id,
+                dataset,
+                file_path,
+                expected_sha256,
+            )
+            .await?
+            {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            tx.commit().await?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if !delete_archive_batch_metadata_tx(
+                tx.as_mut(),
+                archive_batch_id,
+                dataset,
+                file_path,
+                expected_sha256,
+            )
+            .await?
+            {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            tx.commit().await?;
+            Ok(true)
+        }
+        Err(error) => {
+            warn!(
+                dataset,
+                file_path,
+                error = %error,
+                "archive file deletion is pending; retaining metadata for a later retry"
+            );
+            tx.rollback().await?;
+            Ok(false)
+        }
+    }
 }
 
 pub(crate) async fn cleanup_expired_archive_batches(
@@ -290,7 +522,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
-        SELECT id, dataset, file_path, sha256, historical_rollups_materialized_at, coverage_end_at
+        SELECT id, dataset, file_path, sha256, cleanup_state, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
           AND archive_expires_at IS NOT NULL
@@ -383,6 +615,10 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
+        if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
+            eligible_candidates.push(candidate);
+            continue;
+        }
         if HISTORICAL_ROLLUP_ARCHIVE_DATASETS.contains(&candidate.dataset.as_str())
             && candidate.historical_rollups_materialized_at.is_none()
         {
@@ -446,58 +682,66 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut deleted = 0usize;
     for candidate in eligible_candidates {
-        match fs::remove_file(&candidate.file_path) {
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => {
-                warn!(
-                    dataset = candidate.dataset,
-                    file_path = candidate.file_path,
-                    error = %err,
-                    "failed to remove expired archive batch file; keeping manifest"
-                );
-                continue;
+        if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
+            if finalize_archive_batch_file_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+            )
+            .await?
+            {
+                deleted += 1;
             }
+            continue;
         }
-
-        let mut tx = pool.begin().await?;
-        sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
-            .bind(candidate.id)
-            .execute(tx.as_mut())
-            .await?;
-        delete_pool_upstream_node_health_archive_rows_for_file_tx(
-            tx.as_mut(),
+        let integrity_source_safe_start = if matches!(
+            candidate.dataset.as_str(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS | "pool_upstream_request_attempts"
+        ) {
+            match crate::long_term_stats::long_term_integrity_source_safe_start_for_archive_cleanup(
+                pool,
+                &candidate.dataset,
+                &candidate.file_path,
+                candidate.coverage_end_at.as_deref(),
+            )
+            .await
+            {
+                Ok(source_safe_start) => source_safe_start,
+                Err(error) => {
+                    warn!(
+                        dataset = candidate.dataset,
+                        file_path = candidate.file_path,
+                        error = %error,
+                        "could not prove long-term source boundary; retaining expired archive batch"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        if stage_archive_batch_deletion(
+            pool,
+            candidate.id,
+            &candidate.dataset,
             &candidate.file_path,
+            &candidate.sha256,
+            integrity_source_safe_start,
         )
-        .await?;
-        sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
-            .bind(candidate.id)
-            .execute(tx.as_mut())
-            .await?;
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(&candidate.dataset)
-        .bind(&candidate.file_path)
-        .execute(tx.as_mut())
-        .await?;
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
-        )
-        .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
-        .bind(&candidate.dataset)
-        .bind(&candidate.file_path)
-        .execute(tx.as_mut())
-        .await?;
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(&candidate.dataset)
-        .bind(&candidate.file_path)
-        .execute(tx.as_mut())
-        .await?;
-        tx.commit().await?;
-        deleted += 1;
+        .await?
+            && finalize_archive_batch_file_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+            )
+            .await?
+        {
+            deleted += 1;
+        }
     }
 
     Ok(deleted)
@@ -518,6 +762,7 @@ pub(crate) struct LegacyArchivePruneCandidateRow {
     dataset: String,
     file_path: String,
     sha256: String,
+    cleanup_state: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -872,7 +1117,7 @@ pub(crate) async fn prune_legacy_archive_batches(
     dry_run: bool,
 ) -> Result<LegacyArchivePruneSummary> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, dataset, file_path, sha256, historical_rollups_materialized_at, coverage_end_at \
+        "SELECT id, dataset, file_path, sha256, cleanup_state, historical_rollups_materialized_at, coverage_end_at \
          FROM archive_batches WHERE status = ",
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
@@ -953,6 +1198,26 @@ pub(crate) async fn prune_legacy_archive_batches(
     };
 
     for candidate in candidates {
+        if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
+            let deleted = if dry_run {
+                true
+            } else {
+                finalize_archive_batch_file_deletion(
+                    pool,
+                    candidate.id,
+                    &candidate.dataset,
+                    &candidate.file_path,
+                    &candidate.sha256,
+                )
+                .await?
+            };
+            if deleted {
+                summary.deleted_archive_batches += 1;
+            } else {
+                summary.skipped_unmaterialized_batches += 1;
+            }
+            continue;
+        }
         let file_missing = !Path::new(&candidate.file_path).exists();
 
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0 {
@@ -1005,51 +1270,81 @@ pub(crate) async fn prune_legacy_archive_batches(
             continue;
         }
 
-        match fs::remove_file(&candidate.file_path) {
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => {
-                warn!(
-                    dataset = candidate.dataset,
-                    file_path = candidate.file_path,
-                    error = %err,
-                    "failed to remove legacy archive batch file; keeping metadata"
-                );
-                summary.skipped_unmaterialized_batches += 1;
-                continue;
+        if file_missing {
+            // These manifests predate the two-phase cleanup protocol. The existing retention
+            // gates above already prove that this legacy batch is eligible; retain the old
+            // NotFound-finalization behavior without inventing a source boundary from metadata.
+            if stage_archive_batch_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+                None,
+            )
+            .await?
+                && finalize_archive_batch_file_deletion(
+                    pool,
+                    candidate.id,
+                    &candidate.dataset,
+                    &candidate.file_path,
+                    &candidate.sha256,
+                )
+                .await?
+            {
+                summary.deleted_archive_batches += 1;
             }
+            continue;
         }
 
-        let mut tx = pool.begin().await?;
-        sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
-            .bind(candidate.id)
-            .execute(tx.as_mut())
-            .await?;
-        delete_pool_upstream_node_health_archive_rows_for_file_tx(
-            tx.as_mut(),
+        let integrity_source_safe_start = if matches!(
+            candidate.dataset.as_str(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS | "pool_upstream_request_attempts"
+        ) {
+            match crate::long_term_stats::long_term_integrity_source_safe_start_for_archive_cleanup(
+                pool,
+                &candidate.dataset,
+                &candidate.file_path,
+                candidate.coverage_end_at.as_deref(),
+            )
+            .await
+            {
+                Ok(source_safe_start) => source_safe_start,
+                Err(error) => {
+                    warn!(
+                        dataset = candidate.dataset,
+                        file_path = candidate.file_path,
+                        error = %error,
+                        "could not prove long-term source boundary; retaining legacy archive batch"
+                    );
+                    summary.skipped_unmaterialized_batches += 1;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
+        if stage_archive_batch_deletion(
+            pool,
+            candidate.id,
+            &candidate.dataset,
             &candidate.file_path,
+            &candidate.sha256,
+            integrity_source_safe_start,
         )
-        .await?;
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(&candidate.dataset)
-        .bind(&candidate.file_path)
-        .execute(tx.as_mut())
-        .await?;
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(&candidate.dataset)
-        .bind(&candidate.file_path)
-        .execute(tx.as_mut())
-        .await?;
-        sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
-            .bind(candidate.id)
-            .execute(tx.as_mut())
-            .await?;
-        tx.commit().await?;
-        summary.deleted_archive_batches += 1;
+        .await?
+            && finalize_archive_batch_file_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+            )
+            .await?
+        {
+            summary.deleted_archive_batches += 1;
+        }
     }
 
     Ok(summary)
@@ -1239,5 +1534,91 @@ mod tests {
             Instant::now(),
             Some(Duration::from_secs(1)),
         ));
+    }
+
+    #[tokio::test]
+    async fn finalization_keeps_a_reactivated_legacy_archive_file() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-reactivated-archive-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::write(&archive_path, b"old archive content").expect("write old archive file");
+        let old_sha256 = sha256_hex_file(&archive_path).expect("hash old archive file");
+        let archive_path_string = archive_path.to_string_lossy().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id,
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                created_at
+            )
+            VALUES (1, 'codex_quota_snapshots', '2025-01', ?1, ?2, 1, 'completed', datetime('now'))
+            "#,
+        )
+        .bind(&archive_path_string)
+        .bind(&old_sha256)
+        .execute(&pool)
+        .await
+        .expect("insert staged archive manifest");
+        assert!(
+            stage_archive_batch_deletion(
+                &pool,
+                1,
+                "codex_quota_snapshots",
+                &archive_path_string,
+                &old_sha256,
+                None,
+            )
+            .await
+            .expect("stage old archive deletion")
+        );
+
+        fs::write(&archive_path, b"replacement archive content")
+            .expect("replace archive file before manifest rewrite");
+        let replacement_sha256 = sha256_hex_file(&archive_path).expect("hash replacement archive");
+        sqlx::query("UPDATE archive_batches SET sha256 = ?1, cleanup_state = ?2 WHERE id = 1")
+            .bind(&replacement_sha256)
+            .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+            .execute(&pool)
+            .await
+            .expect("reactivate rewritten archive manifest");
+
+        let finalized = finalize_archive_batch_file_deletion(
+            &pool,
+            1,
+            "codex_quota_snapshots",
+            &archive_path_string,
+            &old_sha256,
+        )
+        .await
+        .expect("ignore stale archive deletion finalizer");
+        assert!(!finalized);
+        assert_eq!(
+            fs::read(&archive_path).expect("read replacement archive"),
+            b"replacement archive content"
+        );
+        let manifest: (String, String) =
+            sqlx::query_as("SELECT sha256, cleanup_state FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("load reactivated archive manifest");
+        assert_eq!(manifest.0, replacement_sha256);
+        assert_eq!(manifest.1, ARCHIVE_CLEANUP_STATE_ACTIVE);
+
+        let _ = fs::remove_file(&archive_path);
     }
 }

@@ -2328,6 +2328,28 @@ async fn forward_proxy_live_stats_returns_empty_nodes_when_no_endpoints_are_conf
     );
 }
 
+async fn seed_long_term_invocation_source_for_pool_attempt(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    occurred_at: DateTime<Utc>,
+) {
+    let occurred_at = format_naive(occurred_at.with_timezone(&Shanghai).naive_local());
+    insert_retention_invocation(
+        pool,
+        invoke_id,
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some(r#"{"upstreamAccountId":41}"#),
+        r#"{"ok":true}"#,
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention() {
     let state = test_state_with_openai_base(
@@ -2380,12 +2402,24 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
         0.70,
     )
     .await;
+    seed_long_term_invocation_source_for_pool_attempt(
+        &state.pool,
+        "forward-proxy-timeseries-historical-success",
+        historical_attempt_at + ChronoDuration::minutes(10),
+    )
+    .await;
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-timeseries-historical-success",
         historical_attempt_at + ChronoDuration::minutes(10),
         Some(&manual_binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+    seed_long_term_invocation_source_for_pool_attempt(
+        &state.pool,
+        "forward-proxy-timeseries-historical-failure",
+        historical_attempt_at + ChronoDuration::minutes(20),
     )
     .await;
     seed_pool_upstream_attempt_at(
@@ -2398,6 +2432,8 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
     .await;
 
     let mut retention_config = state.config.clone();
+    retention_config.invocation_success_full_days = 400;
+    retention_config.invocation_max_days = 400;
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 30;
     let summary = run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
         .await
@@ -2549,12 +2585,24 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
     let first_bucket_start = align_bucket_epoch(first_attempt_at.timestamp(), 3600, 0);
     let second_bucket_start = align_bucket_epoch(second_attempt_at.timestamp(), 3600, 0);
 
+    seed_long_term_invocation_source_for_pool_attempt(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-success",
+        first_attempt_at,
+    )
+    .await;
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-timeseries-recreated-month-success",
         first_attempt_at,
         Some(&manual_binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+    seed_long_term_invocation_source_for_pool_attempt(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-failure",
+        first_attempt_at + ChronoDuration::minutes(5),
     )
     .await;
     seed_pool_upstream_attempt_at(
@@ -2567,6 +2615,8 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
     .await;
 
     let mut retention_config = state.config.clone();
+    retention_config.invocation_success_full_days = 400;
+    retention_config.invocation_max_days = 400;
     retention_config.pool_upstream_request_attempts_archive_ttl_days = 30;
     let first_summary =
         run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
@@ -2591,6 +2641,12 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
     .expect("count remaining archived pool upstream request attempt batches after first pass");
     assert_eq!(remaining_after_first, 0);
 
+    seed_long_term_invocation_source_for_pool_attempt(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-late-success",
+        second_attempt_at,
+    )
+    .await;
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-timeseries-recreated-month-late-success",
