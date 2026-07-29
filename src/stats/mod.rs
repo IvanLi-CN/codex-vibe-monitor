@@ -1979,6 +1979,9 @@ pub(crate) fn merge_invocation_hourly_rollup_delta(
     target.total_count += delta.total_count;
     target.success_count += delta.success_count;
     target.failure_count += delta.failure_count;
+    target.terminal_count += delta.terminal_count;
+    target.terminal_tokens += delta.terminal_tokens;
+    target.terminal_cost += delta.terminal_cost;
     target.total_tokens += delta.total_tokens;
     target.total_cost += delta.total_cost;
     target.non_success_cost += delta.non_success_cost;

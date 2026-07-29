@@ -1963,6 +1963,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             total_count INTEGER NOT NULL,
             success_count INTEGER NOT NULL,
             failure_count INTEGER NOT NULL,
+            terminal_count INTEGER NOT NULL DEFAULT 0,
+            terminal_tokens INTEGER NOT NULL DEFAULT 0,
+            terminal_cost REAL NOT NULL DEFAULT 0,
+            terminal_proof_complete INTEGER NOT NULL DEFAULT 0,
             total_tokens INTEGER NOT NULL,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
@@ -1994,6 +1998,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         load_sqlite_table_columns(pool, "invocation_rollup_hourly").await?;
     let mut added_invocation_rollup_rebuild_columns = false;
     for (column, ty) in [
+        ("terminal_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("terminal_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("terminal_cost", "REAL NOT NULL DEFAULT 0"),
+        ("terminal_proof_complete", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -2045,9 +2053,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_invocation_rollup_hourly_source_bucket")?;
     if added_invocation_rollup_rebuild_columns {
-        let rebuilt_rows = backfill_invocation_rollup_hourly_from_sources(pool).await?;
+        let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
         info!(
-            rebuilt_rows,
+            rebuilt_rows = reconciliation.applied_rollups,
+            source_complete = reconciliation.source_complete,
             "backfilled invocation hourly rollups after adding aggregate columns"
         );
     }
