@@ -943,6 +943,18 @@ pub(crate) async fn run_data_retention_maintenance(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+    if !dry_run && (pruned.1 > 0 || invocation_archive.1 > 0) {
+        wake_source_unavailable_backfills(
+            pool,
+            StartupBackfillTask::UpstreamActivityArchives.name(),
+            if pruned.1 > 0 {
+                "invocation_detail_prune_archive_materialized"
+            } else {
+                "invocation_archive_materialized"
+            },
+        )
+        .await?;
+    }
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);

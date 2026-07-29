@@ -11383,6 +11383,7 @@ const DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_ENTRIES: usize = 64;
 const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_MAX_EXPIRY_BYTES: usize = 64 * 1024 * 1024;
 const DASHBOARD_ACTIVITY_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(15 * 60);
+const DASHBOARD_ACTIVITY_PRESSURE_RECONCILE_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshot {
@@ -13360,6 +13361,12 @@ fn dashboard_activity_snapshot_reuse_mode(
 fn mark_dashboard_activity_reconcile_failed(entry: &mut DashboardActivitySnapshotCacheEntry) {
     entry.last_reconcile_attempted_at = Instant::now();
     entry.last_reconcile_failed = true;
+}
+
+fn dashboard_activity_pressure_reconcile_deferred(
+    entry: &DashboardActivitySnapshotCacheEntry,
+) -> bool {
+    entry.cached_at.elapsed() <= DASHBOARD_ACTIVITY_PRESSURE_RECONCILE_MAX_AGE
 }
 
 fn insert_dashboard_activity_expiry_delta(
@@ -15551,6 +15558,68 @@ async fn load_dashboard_activity_snapshot_cached(
                         sequence_gap_count,
                         build_attempted: false,
                         snapshot_origin: if is_last_good { "last_good" } else { "memory" },
+                    },
+                ));
+            }
+
+            let writer_pressure = crate::db_pressure::global_db_pressure_gate()
+                .snapshot()
+                .pressure_cooldown_remaining_ms
+                > 0;
+            if !settled_dirty_state
+                && writer_pressure
+                && let Some(entry) = cache.entries.get_mut(&selection)
+                && dashboard_activity_pressure_reconcile_deferred(entry)
+            {
+                let mut expired_count = 0usize;
+                while entry.expiry_terminal_deltas.front().is_some_and(|delta| {
+                    parse_to_utc_datetime(&delta.occurred_at)
+                        .is_some_and(|occurred_at| occurred_at < range.start)
+                }) {
+                    if let Some(delta) = entry.expiry_terminal_deltas.pop_front() {
+                        entry.expiry_delta_estimated_bytes = entry
+                            .expiry_delta_estimated_bytes
+                            .saturating_sub(delta.estimated_bytes);
+                        subtract_dashboard_activity_compact_terminal_delta(
+                            &mut entry.response,
+                            &delta,
+                        );
+                        restore_dashboard_activity_last_invocation_after_expiry(
+                            &mut entry.response,
+                            &delta,
+                            &entry.expiry_terminal_deltas,
+                        );
+                        expired_count += 1;
+                    }
+                }
+                entry.last_reconcile_attempted_at = Instant::now();
+                entry.last_reconcile_failed = true;
+                let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
+                return Ok((
+                    entry.response.clone(),
+                    DashboardActivitySnapshotCacheOutcome {
+                        cache_hit_or_miss: "last_good_fallback",
+                        cache_bypass_reason: "writer_pressure",
+                        coalesced_waiter_count: max_waiter_count,
+                        db_build_elapsed_ms: 0,
+                        cache_ttl_ms,
+                        cache_entry_age_ms,
+                        cache_entry_count,
+                        in_flight_count,
+                        refresh_reason: "reconcile_deferred",
+                        selection_fingerprint,
+                        terminal_delta_count,
+                        duplicate_delta_count,
+                        pending_delta_count,
+                        pending_delta_estimated_bytes,
+                        persisted_ack_pending_count,
+                        delta_pruned_count,
+                        expiry_delta_count: expired_count,
+                        hard_limit_reason,
+                        baseline_cursor: entry.baseline_snapshot_cursor,
+                        sequence_gap_count,
+                        build_attempted: false,
+                        snapshot_origin: "memory",
                     },
                 ));
             }
@@ -18142,6 +18211,25 @@ mod dashboard_activity_read_model_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn pressure_deferral_stops_after_five_minutes() {
+        let mut entry = DashboardActivitySnapshotCacheEntry {
+            cached_at: Instant::now(),
+            last_reconcile_attempted_at: Instant::now(),
+            last_reconcile_failed: false,
+            baseline_snapshot_cursor: 42,
+            expiry_covered_until: None,
+            expiry_terminal_deltas: VecDeque::new(),
+            expiry_delta_estimated_bytes: 0,
+            response: DashboardActivitySnapshot::test_stub("7d"),
+        };
+        assert!(dashboard_activity_pressure_reconcile_deferred(&entry));
+
+        entry.cached_at =
+            Instant::now() - DASHBOARD_ACTIVITY_PRESSURE_RECONCILE_MAX_AGE - Duration::from_secs(1);
+        assert!(!dashboard_activity_pressure_reconcile_deferred(&entry));
     }
 
     #[test]

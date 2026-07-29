@@ -134,6 +134,7 @@ mod sqlite_batch_writer;
     reason = "Statistics row tuples mirror persisted query shapes."
 )]
 mod stats;
+mod terminal_journal;
 #[cfg(test)]
 mod tests;
 mod upstream_accounts;
@@ -186,6 +187,7 @@ const STARTUP_BACKFILL_STATUS_IDLE: &str = "idle";
 const STARTUP_BACKFILL_STATUS_RUNNING: &str = "running";
 const STARTUP_BACKFILL_STATUS_OK: &str = "ok";
 const STARTUP_BACKFILL_STATUS_FAILED: &str = "failed";
+const STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE: &str = "source_unavailable";
 const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE: &str = "upstream_activity_live_backfill_v1";
 const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES: &str =
     "upstream_activity_archive_backfill_v1";

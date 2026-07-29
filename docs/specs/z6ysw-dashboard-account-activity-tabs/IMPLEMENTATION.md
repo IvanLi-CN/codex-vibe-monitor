@@ -86,6 +86,12 @@
 
 - 当前无已知 contract gap；线上仍需用新增 telemetry 验证 RSS、coverage hole、reconcile cadence 与 SQLite pressure 的实际收敛情况。
 
+## Pressure Reconcile Guard
+
+- `today`、`1d` 和 `7d` 的 account activity 继续以共享内存 read model 服务 5 秒可见刷新。
+- 当 SQLite writer 进入 pressure cooldown 且已有完整 baseline 时，reconcile 明确标为 `writer_pressure` deferred，而不是再启动一个竞争写锁的 baseline build。
+- deferred snapshot 仍执行 rolling-window expiry delta；超过五分钟的 baseline 不会继续静默复用，必须尝试一次精确补偿构建。
+
 ## Related Changes
 
 - `src/api/slices/invocations_and_summary.rs`

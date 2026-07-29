@@ -915,17 +915,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         response_source = "memory",
         "registered raw terminal record in dashboard activity read model before sqlite enqueue"
     );
-    let terminal_enqueued =
+    let terminal_enqueue =
         state
             .sqlite_batch_writer
-            .enqueue(SqliteBatchWrite::TerminalInvocation(
-                BatchedTerminalInvocationWrite {
-                    record,
-                    capture_started: Some(capture_started),
-                    raw_capture: true,
-                    dashboard_terminal_sequence: delta.terminal_sequence,
-                },
-            ));
+            .enqueue_terminal(BatchedTerminalInvocationWrite {
+                record,
+                capture_started: Some(capture_started),
+                raw_capture: true,
+                dashboard_terminal_sequence: delta.terminal_sequence,
+            });
+    let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
         rollback_dashboard_activity_terminal_record(
             state,
@@ -941,6 +940,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             occurred_at = %inserted_record.occurred_at,
             enqueue_failed_by_class = "raw_terminal_invocation",
             terminal_tombstone_cleared,
+            durability_mode = terminal_enqueue.durability_mode.as_str(),
+            journal_sequence = ?terminal_enqueue.journal_sequence,
             business_unblocked_record_write = true,
             record_flush_deferred_or_failed = "raw_terminal_invocation_enqueue_failed",
             "raw proxy capture record dropped by sqlite write controller"
@@ -949,6 +950,10 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         debug!(
             invoke_id = %invoke_id,
             terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
+            durability_mode = terminal_enqueue.durability_mode.as_str(),
+            journal_sequence = ?terminal_enqueue.journal_sequence,
+            journal_pending_records = terminal_enqueue.journal_pending_records,
+            journal_pending_bytes = terminal_enqueue.journal_pending_bytes,
             business_unblocked_record_write = true,
             record_flush_deferred_or_failed = "raw_terminal_invocation_enqueued_async",
             "raw proxy capture record queued for sqlite write controller"

@@ -97,6 +97,12 @@
 - `web/src/hooks/useStats.ts`
 - `web/src/hooks/useTimeseries.ts`
 
+## Write-Side Pressure Behavior
+
+- Terminal records are admitted through a local segmented journal before the asynchronous SQLite writer. The journal batches durable sync at a bounded interval and replays unacknowledged records on restart.
+- Dashboard open-range topic publishing continues to render the shared in-memory snapshot during writer pressure. A last-good baseline may defer a reconcile for up to five minutes; closed-range responses retain their exact database behavior.
+- P1 terminal persistence is isolated from P2 derived rollups, account touches, and system-task completion writes. P2 work waits for the pressure gate instead of extending the terminal lock window.
+
 ## Remaining gaps
 
 - 无功能性缺口；提交前仅需完成最终验证与 review 收口。

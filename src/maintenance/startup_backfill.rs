@@ -97,6 +97,9 @@ pub(crate) struct StartupBackfillProgressRow {
     last_scanned: i64,
     last_updated: i64,
     last_status: String,
+    suspension_reason: Option<String>,
+    next_probe_at: Option<String>,
+    wake_generation: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +113,9 @@ pub(crate) struct StartupBackfillProgress {
     pub(crate) last_scanned: u64,
     pub(crate) last_updated: u64,
     pub(crate) last_status: String,
+    pub(crate) suspension_reason: Option<String>,
+    pub(crate) next_probe_at: Option<String>,
+    pub(crate) wake_generation: u64,
 }
 
 impl StartupBackfillProgress {
@@ -124,6 +130,9 @@ impl StartupBackfillProgress {
             last_scanned: 0,
             last_updated: 0,
             last_status: STARTUP_BACKFILL_STATUS_IDLE.to_string(),
+            suspension_reason: None,
+            next_probe_at: None,
+            wake_generation: 0,
         }
     }
 
@@ -147,6 +156,9 @@ impl From<StartupBackfillProgressRow> for StartupBackfillProgress {
             last_scanned: value.last_scanned.max(0) as u64,
             last_updated: value.last_updated.max(0) as u64,
             last_status: value.last_status,
+            suspension_reason: value.suspension_reason,
+            next_probe_at: value.next_probe_at,
+            wake_generation: value.wake_generation.max(0) as u64,
         }
     }
 }
@@ -158,6 +170,7 @@ pub(crate) struct StartupBackfillRunState {
     updated: u64,
     hit_scan_limit: bool,
     force_idle: bool,
+    source_unavailable: bool,
     samples: Vec<String>,
 }
 
@@ -165,7 +178,9 @@ pub(crate) fn startup_backfill_next_delay(
     run: &StartupBackfillRunState,
     zero_update_streak: u32,
 ) -> Duration {
-    if run.force_idle {
+    if run.source_unavailable {
+        Duration::from_secs(24 * 60 * 60)
+    } else if run.force_idle {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
     } else if run.updated > 0 {
         Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
@@ -238,6 +253,7 @@ pub(crate) fn historical_rollup_startup_backfill_run_state(
             .max(bucket_progress),
         hit_scan_limit: pending_after > 0 && !permanently_blocked,
         force_idle: pending_after == 0 || permanently_blocked,
+        source_unavailable: permanently_blocked,
         samples: Vec::new(),
     }
 }
@@ -308,7 +324,10 @@ pub(crate) async fn load_startup_backfill_progress(
             last_finished_at,
             last_scanned,
             last_updated,
-            last_status
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
         FROM startup_backfill_progress
         WHERE task_name = ?1
         LIMIT 1
@@ -338,13 +357,18 @@ pub(crate) async fn mark_startup_backfill_running(
             last_finished_at,
             last_scanned,
             last_updated,
-            last_status
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
         )
-        VALUES (?1, ?2, NULL, 0, ?3, NULL, 0, 0, ?4)
+        VALUES (?1, ?2, NULL, 0, ?3, NULL, 0, 0, ?4, NULL, NULL, 0)
         ON CONFLICT(task_name) DO UPDATE SET
             next_run_after = NULL,
             last_started_at = excluded.last_started_at,
-            last_status = excluded.last_status
+            last_status = excluded.last_status,
+            suspension_reason = NULL,
+            next_probe_at = NULL
         "#,
     )
     .bind(task_name)
@@ -363,6 +387,7 @@ pub(crate) struct StartupBackfillProgressUpdate<'a> {
     pub(crate) zero_update_streak: u32,
     pub(crate) next_run_after: &'a str,
     pub(crate) status: &'a str,
+    pub(crate) suspension_reason: Option<&'a str>,
 }
 
 pub(crate) async fn save_startup_backfill_progress(
@@ -382,9 +407,12 @@ pub(crate) async fn save_startup_backfill_progress(
             last_finished_at,
             last_scanned,
             last_updated,
-            last_status
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
         )
-        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, 0)
         ON CONFLICT(task_name) DO UPDATE SET
             cursor_id = excluded.cursor_id,
             next_run_after = excluded.next_run_after,
@@ -392,7 +420,9 @@ pub(crate) async fn save_startup_backfill_progress(
             last_finished_at = excluded.last_finished_at,
             last_scanned = excluded.last_scanned,
             last_updated = excluded.last_updated,
-            last_status = excluded.last_status
+            last_status = excluded.last_status,
+            suspension_reason = excluded.suspension_reason,
+            next_probe_at = excluded.next_probe_at
         "#,
     )
     .bind(task_name)
@@ -403,9 +433,48 @@ pub(crate) async fn save_startup_backfill_progress(
     .bind(update.scanned as i64)
     .bind(update.updated as i64)
     .bind(update.status)
+    .bind(update.suspension_reason)
+    .bind(if update.suspension_reason.is_some() {
+        Some(update.next_run_after)
+    } else {
+        None
+    })
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn wake_source_unavailable_backfills(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let outcome = sqlx::query(
+        r#"
+        UPDATE startup_backfill_progress
+        SET
+            next_run_after = NULL,
+            next_probe_at = NULL,
+            suspension_reason = NULL,
+            wake_generation = wake_generation + 1,
+            last_status = ?1
+        WHERE task_name = ?2
+          AND last_status = ?3
+        "#,
+    )
+    .bind(STARTUP_BACKFILL_STATUS_IDLE)
+    .bind(task_name)
+    .bind(STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE)
+    .execute(pool)
+    .await?;
+    let woken = outcome.rows_affected();
+    if woken > 0 {
+        info!(
+            task_name,
+            wake_reason, woken, "woke source-unavailable startup backfill"
+        );
+    }
+    Ok(woken)
 }
 
 pub(crate) async fn run_startup_backfill_maintenance_pass(
@@ -586,6 +655,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
         task,
         progress.cursor_id,
         progress.zero_update_streak,
+        progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
     )
     .await
     {
@@ -606,7 +676,12 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                     updated: run.updated,
                     zero_update_streak,
                     next_run_after: &next_run_after,
-                    status: STARTUP_BACKFILL_STATUS_OK,
+                    status: if run.source_unavailable {
+                        STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE
+                    } else {
+                        STARTUP_BACKFILL_STATUS_OK
+                    },
+                    suspension_reason: run.source_unavailable.then_some("source_unavailable"),
                 },
             )
             .await?;
@@ -621,7 +696,9 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                 elapsed_ms = started_at.elapsed().as_millis() as u64,
                 next_run_after = %next_run_after,
                 actionable_backlog_count = u64::from(run.hit_scan_limit),
-                blocked_backlog_count = u64::from(run.force_idle && run.scanned > 0),
+                blocked_backlog_count = u64::from(run.source_unavailable),
+                suspension_reason = if run.source_unavailable { "source_unavailable" } else { "none" },
+                probe_budget_exhausted = false,
                 backoff_stage = match startup_backfill_next_delay(&run, zero_update_streak).as_secs() {
                     0..=15 => "15s",
                     16..=60 => "1m",
@@ -629,7 +706,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                     301..=900 => "15m",
                     _ => "idle",
                 },
-                wake_reason = if run.updated > 0 { "progress" } else if run.hit_scan_limit { "actionable_backlog" } else { "scheduled" },
+                wake_reason = if run.updated > 0 { "progress" } else if run.source_unavailable { "daily_probe" } else if run.hit_scan_limit { "actionable_backlog" } else { "scheduled" },
                 detail = %detail,
                 samples = %startup_backfill_samples_text(&run.samples),
                 "startup backfill pass finished"
@@ -650,6 +727,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                     zero_update_streak: progress.zero_update_streak,
                     next_run_after: &retry_after,
                     status: STARTUP_BACKFILL_STATUS_FAILED,
+                    suspension_reason: None,
                 },
             )
             .await?;
@@ -678,8 +756,13 @@ pub(crate) async fn run_startup_backfill_task(
     task: StartupBackfillTask,
     cursor_id: i64,
     zero_update_streak: u32,
+    source_unavailable_probe: bool,
 ) -> Result<(StartupBackfillRunState, String)> {
-    let max_elapsed = Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS));
+    let max_elapsed = Some(if source_unavailable_probe {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
+    });
     let raw_path_fallback_root = state.config.database_path.parent();
     match task {
         StartupBackfillTask::ProxyUsage => {
@@ -706,6 +789,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -748,6 +832,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -775,6 +860,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -802,6 +888,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -827,6 +914,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -854,6 +942,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -875,6 +964,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
@@ -895,6 +985,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 "attempt_public_id live rows".to_string(),
@@ -916,6 +1007,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: outcome.summary.updated_rows,
                     hit_scan_limit: outcome.hit_budget,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: outcome.samples,
                 },
                 format!(
@@ -936,6 +1028,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: updated_accounts,
                     hit_scan_limit: false,
                     force_idle: false,
+                    source_unavailable: false,
                     samples: Vec::new(),
                 },
                 format!("pending_accounts={pending_accounts}"),
@@ -944,7 +1037,11 @@ pub(crate) async fn run_startup_backfill_task(
         StartupBackfillTask::UpstreamActivityArchives => {
             let summary = backfill_upstream_account_last_activity_from_archives(
                 &state.pool,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(if source_unavailable_probe {
+                    100
+                } else {
+                    STARTUP_BACKFILL_SCAN_LIMIT
+                }),
                 max_elapsed,
             )
             .await?;
@@ -959,6 +1056,7 @@ pub(crate) async fn run_startup_backfill_task(
                     updated: summary.updated_accounts,
                     hit_scan_limit: pending_accounts > 0 && summary.hit_budget,
                     force_idle,
+                    source_unavailable: pending_accounts > 0 && force_idle,
                     samples: Vec::new(),
                 },
                 format!(
@@ -989,6 +1087,7 @@ pub(crate) async fn run_startup_backfill_task(
                     hit_scan_limit: cache_summary.hit_budget || hourly_summary.hit_budget,
                     force_idle: cache_summary.pending_batches == 0
                         && hourly_summary.pending_batches == 0,
+                    source_unavailable: false,
                     samples: Vec::new(),
                 },
                 format!(
@@ -1059,6 +1158,7 @@ pub(crate) async fn run_startup_backfill_task(
                         updated: 0,
                         hit_scan_limit: false,
                         force_idle: true,
+                        source_unavailable: false,
                         samples: Vec::new(),
                     },
                     "pending_archive_batches=0".to_string(),

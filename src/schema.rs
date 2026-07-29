@@ -3715,6 +3715,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure startup_backfill_progress table existence")?;
 
+    for (column, definition) in [
+        ("suspension_reason", "TEXT"),
+        ("next_probe_at", "TEXT"),
+        ("wake_generation", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column_with_definition(pool, "startup_backfill_progress", column, definition)
+            .await
+            .with_context(|| format!("failed to ensure startup_backfill_progress.{column}"))?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS system_task_runs (
