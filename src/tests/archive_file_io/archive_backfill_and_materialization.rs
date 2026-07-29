@@ -619,23 +619,127 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
 }
 
 #[tokio::test]
-async fn cleanup_expired_invocation_archive_requires_parseable_source_timestamps() {
+async fn cleanup_expired_archive_keeps_a_missing_materialized_invocation_manifest_after_source_loss()
+ {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("cleanup-missing-invocation-manifest-finalize").await;
+    let missing_archive_path = temp_dir.join("missing-finalizable-manifest.sqlite.gz");
+    let coverage_end_at =
+        shanghai_local_days_ago((config.invocation_max_days + 30) as i64, 9, 0, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '2000-01-01 00:00:00', datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-cleanup-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing replayed invocation archive metadata");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = 'error', last_error = 'terminal integrity proof reconciliation is incomplete' WHERE id = 1",
+    )
+        .execute(&pool)
+        .await
+        .expect("mark long-term statistics unavailable after source loss");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-cleanup-sha")
+    .execute(&pool)
+    .await
+    .expect("insert long-term replay marker");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("retain missing source manifest during expiry cleanup");
+    assert_eq!(deleted, 0);
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained archive batches");
+    assert_eq!(remaining_batches, 1);
+    let remaining_markers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .fetch_one(&pool)
+    .await
+    .expect("count retained replay markers");
+    assert_eq!(remaining_markers, 1);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved long-term source boundary");
+    assert!(integrity_source_start.is_none());
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("load durable source-loss status");
+    assert_eq!(status, "error");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_invocation_archive_requires_every_source_timestamp_to_be_parseable() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("archive-ttl-cleanup-unparseable-source").await;
     let archive_path = seed_invocation_archive_batch(
         &pool,
         &config,
         "archive-ttl-cleanup-unparseable-source",
-        &[(
-            1_i64,
-            "archive-ttl-cleanup-unparseable-source",
-            "invalid-timestamp",
-            SOURCE_PROXY,
-            "success",
-            42_i64,
-            0.42_f64,
-            Some(120.0),
-        )],
+        &[
+            (
+                1_i64,
+                "archive-ttl-cleanup-parseable-source",
+                "2025-01-01 09:00:00",
+                SOURCE_PROXY,
+                "success",
+                42_i64,
+                0.42_f64,
+                Some(120.0),
+            ),
+            (
+                2_i64,
+                "archive-ttl-cleanup-unparseable-source",
+                "invalid-timestamp",
+                SOURCE_PROXY,
+                "success",
+                42_i64,
+                0.42_f64,
+                Some(120.0),
+            ),
+        ],
     )
     .await;
     let archive_sha256: String =
@@ -804,7 +908,8 @@ async fn cleanup_expired_invocation_archive_preserves_source_when_metadata_trans
 }
 
 #[tokio::test]
-async fn cleanup_expired_archive_retries_pending_file_deletion() {
+async fn cleanup_expired_archive_retries_pending_file_deletion_without_advancing_source_boundary_early()
+ {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("archive-ttl-cleanup-pending-delete").await;
     let pending_path = temp_dir.join("pending-delete-directory");
@@ -819,10 +924,11 @@ async fn cleanup_expired_archive_retries_pending_file_deletion() {
             row_count,
             status,
             cleanup_state,
+            cleanup_source_safe_start_date,
             archive_expires_at,
             created_at
         )
-        VALUES ('codex_quota_snapshots', '2025-01', ?1, 'pending-delete-sha', 1, ?2, 'delete_pending', '2000-01-01 00:00:00', datetime('now'))
+        VALUES ('codex_quota_snapshots', '2025-01', ?1, 'pending-delete-sha', 1, ?2, 'delete_pending', '2025-01-04', '2000-01-01 00:00:00', datetime('now'))
         "#,
     )
     .bind(pending_path.to_string_lossy().to_string())
@@ -843,6 +949,16 @@ async fn cleanup_expired_archive_retries_pending_file_deletion() {
             .expect("load retained pending deletion record");
     assert_eq!(pending_state.0, ARCHIVE_STATUS_COMPLETED);
     assert_eq!(pending_state.1, ARCHIVE_CLEANUP_STATE_DELETE_PENDING);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load source boundary after failed pending cleanup");
+    assert!(
+        integrity_source_start.is_none(),
+        "a failed pending file cleanup must not publish its staged source boundary"
+    );
 
     fs::remove_dir(&pending_path).expect("remove directory that blocks file deletion");
     fs::write(&pending_path, b"retryable archive file").expect("restore removable archive file");
@@ -863,6 +979,13 @@ async fn cleanup_expired_archive_retries_pending_file_deletion() {
         .await
         .expect("count retired pending deletion record");
     assert_eq!(remaining_batches, 0);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load source boundary after finalized pending cleanup");
+    assert_eq!(integrity_source_start.as_deref(), Some("2025-01-04"));
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -1378,7 +1501,7 @@ async fn prune_legacy_archive_batches_keeps_missing_invocation_manifest_while_ba
 }
 
 #[tokio::test]
-async fn prune_legacy_archive_batches_finalizes_an_already_missing_replayed_manifest() {
+async fn prune_legacy_archive_batches_keeps_a_materialized_missing_manifest_after_source_loss() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("prune-missing-invocation-manifest-finalize").await;
     let missing_archive_path = temp_dir.join("missing-finalizable-manifest.sqlite.gz");
@@ -1397,9 +1520,10 @@ async fn prune_legacy_archive_batches_finalizes_an_already_missing_replayed_mani
             status,
             coverage_start_at,
             coverage_end_at,
+            historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), datetime('now'))
         "#,
     )
     .bind(1_i64)
@@ -1414,10 +1538,12 @@ async fn prune_legacy_archive_batches_finalizes_an_already_missing_replayed_mani
     .execute(&pool)
     .await
     .expect("insert missing replayed invocation archive metadata");
-    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = 'error', last_error = 'terminal integrity proof reconciliation is incomplete' WHERE id = 1",
+    )
         .execute(&pool)
         .await
-        .expect("mark long-term statistics ready");
+        .expect("mark long-term statistics unavailable after source loss");
     sqlx::query(
         "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, ?2, ?3, ?4)",
     )
@@ -1431,13 +1557,14 @@ async fn prune_legacy_archive_batches_finalizes_an_already_missing_replayed_mani
 
     let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
         .await
-        .expect("finalize already-missing replayed archive metadata");
-    assert_eq!(prune_summary.deleted_archive_batches, 1);
+        .expect("retain missing source manifest");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_unmaterialized_batches, 1);
     let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
         .fetch_one(&pool)
         .await
-        .expect("count finalized archive batches");
-    assert_eq!(remaining_batches, 0);
+        .expect("count retained archive batches");
+    assert_eq!(remaining_batches, 1);
     let remaining_markers: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2",
     )
@@ -1445,8 +1572,15 @@ async fn prune_legacy_archive_batches_finalizes_an_already_missing_replayed_mani
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .fetch_one(&pool)
     .await
-    .expect("count finalized replay markers");
-    assert_eq!(remaining_markers, 0);
+    .expect("count retained replay markers");
+    assert_eq!(remaining_markers, 1);
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("load durable source-loss status");
+    assert_eq!(status, "error");
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -6271,6 +6405,85 @@ async fn terminal_proof_is_revoked_when_a_completed_invocation_archive_is_missin
 }
 
 #[tokio::test]
+async fn unreadable_archive_does_not_revoke_retired_terminal_proofs() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-retired-source-unavailable-archive").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-retired-source-unavailable-archive",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the historical bucket");
+
+    let source_start = shanghai_local_days_ago(2, 0, 0, 0)[..10].to_string();
+    sqlx::query("UPDATE long_term_stats_state SET integrity_source_start_date = ?1 WHERE id = 1")
+        .bind(&source_start)
+        .execute(&pool)
+        .await
+        .expect("record durable source boundary after archive retirement");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-retired-source-unavailable-archive")
+        .execute(&pool)
+        .await
+        .expect("simulate intentionally retired source rows");
+    let missing_archive_path = temp_dir.join("missing-active-terminal-proof-source.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES ('codex_invocations', '2026-01', ?1, 'missing-active-terminal-proof-sha', 1, ?2, '2026-01-01 00:00:00', '2026-01-01 00:00:00', datetime('now'))
+        "#,
+    )
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert missing active invocation archive manifest");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("unreadable active archive should retain retired proofs");
+    assert!(
+        !reconciliation.source_complete,
+        "the unavailable active archive must still keep the refresh in error"
+    );
+    let retired_proof: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load proof for intentionally retired bucket");
+    assert_eq!(retired_proof, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn terminal_proof_is_revoked_when_reconciliation_drops_a_trusted_bucket() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-reconciliation-drops-bucket").await;
@@ -6342,6 +6555,87 @@ async fn terminal_proof_is_revoked_when_reconciliation_drops_a_trusted_bucket() 
     .await
     .expect("load proof after empty reconciliation");
     assert_eq!(xy_proof_after_empty_reconciliation, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn terminal_proof_keeps_retired_buckets_but_revokes_missing_boundary_buckets() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-retired-source-boundary").await;
+    let retired_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    let boundary_occurred_at = shanghai_local_days_ago(2, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-retired-source-boundary",
+        &retired_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-missing-boundary-bucket",
+        &boundary_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the bucket");
+
+    let source_start = shanghai_local_days_ago(2, 0, 0, 0)[..10].to_string();
+    sqlx::query("UPDATE long_term_stats_state SET integrity_source_start_date = ?1 WHERE id = 1")
+        .bind(&source_start)
+        .execute(&pool)
+        .await
+        .expect("record durable source boundary after archive retirement");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-retired-source-boundary")
+        .execute(&pool)
+        .await
+        .expect("simulate intentionally retired source rows");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-missing-boundary-bucket")
+        .execute(&pool)
+        .await
+        .expect("simulate a missing source that remains inside the source window");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("reconciliation should distinguish retired and active source buckets");
+    assert!(
+        !reconciliation.source_complete,
+        "a missing bucket at the source boundary must remain an actionable reconciliation error"
+    );
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    let proofs_after_reconciliation = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT bucket_start_epoch, terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 ORDER BY bucket_start_epoch ASC",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_all(&pool)
+    .await
+    .expect("load terminal proofs after source reconciliation");
+    assert_eq!(proofs_after_reconciliation.len(), 2);
+    assert_eq!(proofs_after_reconciliation[0].1, 1);
+    assert_eq!(proofs_after_reconciliation[1].1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
