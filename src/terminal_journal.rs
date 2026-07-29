@@ -81,8 +81,15 @@ struct JournalSegment {
 
 impl JournalSegment {
     fn is_fully_acknowledged(&self) -> bool {
-        !self.sequences.is_empty() && self.sequences.len() == self.acknowledged.len()
+        self.sequences.is_empty() || self.sequences.len() == self.acknowledged.len()
     }
+}
+
+#[derive(Debug)]
+struct LoadedJournalSegment {
+    segment: JournalSegment,
+    entries: Vec<JournalTerminalRecord>,
+    acknowledgement_sequences: HashSet<u64>,
 }
 
 #[derive(Debug)]
@@ -98,12 +105,12 @@ pub(crate) struct TerminalJournal {
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
     overflowed: bool,
+    sync_failed: bool,
 }
 
 impl TerminalJournal {
     pub(crate) fn open(database_path: &Path) -> Result<Self> {
-        let parent = database_path.parent().unwrap_or_else(|| Path::new("."));
-        let directory = parent.join("terminal_journal");
+        let directory = terminal_journal_directory(database_path);
         fs::create_dir_all(&directory).with_context(|| {
             format!(
                 "failed to create terminal journal directory {}",
@@ -125,65 +132,58 @@ impl TerminalJournal {
         paths.sort();
 
         let mut segments = BTreeMap::new();
-        let mut pending_by_key = HashMap::new();
-        let mut replay = Vec::new();
+        let mut entries = Vec::new();
+        let mut acknowledged_sequences = HashSet::new();
         let mut next_sequence = 1_u64;
         let mut pending_bytes = 0_u64;
         for path in paths {
-            let (segment, entries) = load_segment(&path)?;
-            if let Some(segment) = segment {
-                next_sequence = next_sequence.max(segment.last_sequence.saturating_add(1));
-                pending_bytes = pending_bytes.saturating_add(segment.bytes);
-                for entry in &entries {
-                    pending_by_key
-                        .entry(entry_key(entry))
-                        .or_insert_with(Vec::new)
-                        .push(entry.sequence);
-                }
-                replay.extend(
-                    entries
-                        .into_iter()
-                        .filter(|entry| !segment.acknowledged.contains(&entry.sequence)),
-                );
-                segments.insert(segment.first_sequence, segment);
-            }
+            let loaded = load_segment(&path)?;
+            next_sequence = next_sequence.max(loaded.segment.last_sequence.saturating_add(1));
+            pending_bytes = pending_bytes.saturating_add(loaded.segment.bytes);
+            acknowledged_sequences.extend(loaded.acknowledgement_sequences);
+            entries.extend(loaded.entries);
+            segments.insert(loaded.segment.first_sequence, loaded.segment);
         }
 
         let current_start = segments
             .last_key_value()
             .map(|(_, segment)| segment.first_sequence)
             .unwrap_or(next_sequence);
-        if let Some(segment) = segments.get_mut(&current_start) {
-            segment.current = true;
-        } else {
+        segments.entry(current_start).or_insert_with(|| {
             let path = segment_path(&directory, current_start);
-            let file = open_append_file(&path)?;
-            segments.insert(
-                current_start,
-                JournalSegment {
-                    path,
-                    first_sequence: current_start,
-                    last_sequence: current_start.saturating_sub(1),
-                    bytes: 0,
-                    sequences: HashSet::new(),
-                    acknowledged: HashSet::new(),
-                    current: true,
-                },
+            JournalSegment {
+                path,
+                first_sequence: current_start,
+                last_sequence: current_start.saturating_sub(1),
+                bytes: 0,
+                sequences: HashSet::new(),
+                acknowledged: HashSet::new(),
+                current: true,
+            }
+        });
+        for segment in segments.values_mut() {
+            segment.acknowledged.extend(
+                acknowledged_sequences
+                    .intersection(&segment.sequences)
+                    .copied(),
             );
-            return Ok(Self {
-                directory,
-                current_file: file,
-                segments,
-                pending_by_key,
-                next_sequence,
-                pending_bytes,
-                replay,
-                deferred_writes: VecDeque::new(),
-                last_sync_at: Instant::now(),
-                last_checkpoint_at: Instant::now(),
-                overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
-            });
         }
+        let mut pending_by_key = HashMap::new();
+        let mut replay = Vec::new();
+        for entry in entries {
+            if acknowledged_sequences.contains(&entry.sequence) {
+                continue;
+            }
+            pending_by_key
+                .entry(entry_key(&entry))
+                .or_insert_with(Vec::new)
+                .push(entry.sequence);
+            replay.push(entry);
+        }
+        segments
+            .get_mut(&current_start)
+            .expect("current terminal journal segment exists")
+            .current = true;
 
         let current_path = segments
             .get(&current_start)
@@ -202,6 +202,7 @@ impl TerminalJournal {
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
             overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
+            sync_failed: false,
         })
     }
 
@@ -216,6 +217,9 @@ impl TerminalJournal {
             record.occurred_at.clone(),
             raw_capture,
         );
+        if self.sync_failed {
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
         if self.pending_by_key.contains_key(&key) {
             return self.append_outcome(TerminalJournalDurabilityMode::Journal, None);
         }
@@ -279,53 +283,88 @@ impl TerminalJournal {
         match self.current_file.sync_data() {
             Ok(()) => {
                 self.last_sync_at = Instant::now();
+                self.sync_failed = false;
                 Some(started.elapsed().as_millis() as u64)
             }
             Err(err) => {
                 warn!(error = %err, "terminal journal group commit failed");
                 self.overflowed = true;
+                self.sync_failed = true;
                 None
             }
         }
     }
 
     pub(crate) fn force_sync(&mut self) -> Result<()> {
-        self.current_file
-            .sync_data()
-            .context("failed to sync terminal journal")?;
-        self.last_sync_at = Instant::now();
-        Ok(())
+        match self.current_file.sync_data() {
+            Ok(()) => {
+                self.last_sync_at = Instant::now();
+                self.sync_failed = false;
+                Ok(())
+            }
+            Err(err) => {
+                self.overflowed = true;
+                self.sync_failed = true;
+                Err(err).context("failed to sync terminal journal")
+            }
+        }
     }
 
     pub(crate) fn acknowledge(&mut self, invoke_id: &str, occurred_at: &str, raw_capture: bool) {
         let key = (invoke_id.to_string(), occurred_at.to_string(), raw_capture);
-        let Some(sequences) = self.pending_by_key.remove(&key) else {
+        let Some(sequences) = self.pending_by_key.get(&key).cloned() else {
             return;
         };
+        let mut pending_sequences = Vec::new();
         for sequence in sequences {
             let Ok(encoded) = encode_acknowledgement_line(sequence) else {
                 warn!(
                     sequence,
                     "terminal journal acknowledgement serialization failed"
                 );
+                pending_sequences.push(sequence);
                 continue;
             };
             if let Err(err) = self.current_file.write_all(&encoded) {
                 warn!(error = %err, sequence, "terminal journal acknowledgement append failed");
+                pending_sequences.push(sequence);
                 continue;
             }
-            for segment in self.segments.values_mut() {
-                if segment.sequences.contains(&sequence) {
-                    segment.acknowledged.insert(sequence);
-                    segment.bytes = segment.bytes.saturating_add(encoded.len() as u64);
-                    self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
-                    break;
-                }
+            let acknowledgement_target = self.segments.iter().find_map(|(start, segment)| {
+                segment.sequences.contains(&sequence).then_some(*start)
+            });
+            if let Some(start) = acknowledgement_target {
+                self.segments
+                    .get_mut(&start)
+                    .expect("terminal journal acknowledgement target exists")
+                    .acknowledged
+                    .insert(sequence);
             }
+            let current_start = self
+                .segments
+                .iter()
+                .find_map(|(start, segment)| segment.current.then_some(*start))
+                .expect("current terminal journal segment exists");
+            let updated_current_bytes = self
+                .segments
+                .get(&current_start)
+                .expect("current terminal journal segment exists")
+                .bytes
+                .saturating_add(encoded.len() as u64);
+            self.segments
+                .get_mut(&current_start)
+                .expect("current terminal journal segment exists")
+                .bytes = updated_current_bytes;
+            self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
+        }
+        if pending_sequences.is_empty() {
+            self.pending_by_key.remove(&key);
+        } else {
+            self.pending_by_key.insert(key, pending_sequences);
         }
         self.last_checkpoint_at = Instant::now();
         self.remove_fully_acknowledged_segments();
-        if self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
+        if !self.sync_failed && self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
             self.overflowed = false;
         }
     }
@@ -453,6 +492,15 @@ fn segment_path(directory: &Path, first_sequence: u64) -> PathBuf {
     directory.join(format!("terminal-{first_sequence:020}.jsonl"))
 }
 
+fn terminal_journal_directory(database_path: &Path) -> PathBuf {
+    let parent = database_path.parent().unwrap_or_else(|| Path::new("."));
+    let database_id = format!(
+        "{:x}",
+        Sha256::digest(database_path.as_os_str().as_encoded_bytes())
+    );
+    parent.join(format!("terminal_journal-{database_id}"))
+}
+
 fn open_append_file(path: &Path) -> Result<File> {
     OpenOptions::new()
         .create(true)
@@ -462,7 +510,7 @@ fn open_append_file(path: &Path) -> Result<File> {
         .with_context(|| format!("failed to open terminal journal segment {}", path.display()))
 }
 
-fn load_segment(path: &Path) -> Result<(Option<JournalSegment>, Vec<JournalTerminalRecord>)> {
+fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
     let raw = fs::read(path)
         .with_context(|| format!("failed to read terminal journal segment {}", path.display()))?;
     let mut entries = Vec::new();
@@ -513,29 +561,42 @@ fn load_segment(path: &Path) -> Result<(Option<JournalSegment>, Vec<JournalTermi
     if corrupt_tail {
         repair_corrupt_segment_tail(path, &raw[..valid_bytes])?;
     }
-    let Some(first) = entries.first() else {
-        return Ok((None, Vec::new()));
-    };
+    let first_sequence = terminal_journal_segment_start(path)?;
     let last_sequence = entries
         .last()
         .map(|entry| entry.sequence)
-        .unwrap_or(first.sequence);
+        .unwrap_or(first_sequence.saturating_sub(1));
     let sequences = entries
         .iter()
         .map(|entry| entry.sequence)
         .collect::<HashSet<_>>();
-    Ok((
-        Some(JournalSegment {
+    Ok(LoadedJournalSegment {
+        segment: JournalSegment {
             path: path.to_path_buf(),
-            first_sequence: first.sequence,
+            first_sequence,
             last_sequence,
             bytes: valid_bytes as u64,
             sequences,
-            acknowledged,
+            acknowledged: HashSet::new(),
             current: false,
-        }),
+        },
         entries,
-    ))
+        acknowledgement_sequences: acknowledged,
+    })
+}
+
+fn terminal_journal_segment_start(path: &Path) -> Result<u64> {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("terminal-"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid terminal journal segment filename: {}",
+                path.display()
+            )
+        })
 }
 
 fn encode_entry_line(entry: &JournalTerminalRecord) -> Result<Vec<u8>> {
@@ -685,7 +746,7 @@ mod tests {
 
         let reopened = TerminalJournal::open(&database_path).expect("reopen repaired journal");
         assert_eq!(reopened.stats().replay_count, 2);
-        let evidence_count = fs::read_dir(root.join("terminal_journal"))
+        let evidence_count = fs::read_dir(terminal_journal_directory(&database_path))
             .expect("read journal directory")
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext != "jsonl"))
@@ -722,6 +783,158 @@ mod tests {
                 .is_some_and(|segment| segment.current)
         );
 
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn sync_failure_downgrades_following_appends_to_memory_mode() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-sync-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record =
+            crate::tests::test_proxy_capture_record("journal-sync-failed", "2026-07-29T00:00:00Z");
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.sync_failed = true;
+
+        let outcome = journal.append(&record, false, None);
+        assert_eq!(
+            outcome.durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        );
+        assert_eq!(outcome.sequence, None);
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn acknowledged_restart_key_does_not_block_a_new_terminal_entry() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-rekey-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record =
+            crate::tests::test_proxy_capture_record("journal-rekey", "2026-07-29T00:00:00Z");
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync entry");
+        journal.acknowledge(&record.invoke_id, &record.occurred_at, false);
+        journal.force_sync().expect("sync acknowledgement");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        assert_eq!(reopened.stats().pending_records, 0);
+        let outcome = reopened.append(&record, false, None);
+        assert_eq!(
+            outcome.durability_mode,
+            TerminalJournalDurabilityMode::Journal
+        );
+        assert!(outcome.sequence.is_some());
+        reopened.force_sync().expect("sync replacement entry");
+        drop(reopened);
+
+        let reopened = TerminalJournal::open(&database_path).expect("reopen replacement entry");
+        assert_eq!(reopened.stats().replay_count, 1);
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn restart_applies_acknowledgement_written_in_a_later_segment() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-cross-ack-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let first =
+            crate::tests::test_proxy_capture_record("journal-cross-ack-1", "2026-07-29T00:00:00Z");
+        let retained =
+            crate::tests::test_proxy_capture_record("journal-cross-ack-2", "2026-07-29T00:01:00Z");
+        let current =
+            crate::tests::test_proxy_capture_record("journal-cross-ack-3", "2026-07-29T00:02:00Z");
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&first, false, None);
+        journal.append(&retained, false, None);
+        let first_segment = journal
+            .segments
+            .iter()
+            .find_map(|(start, segment)| segment.current.then_some(*start))
+            .expect("first segment");
+        journal
+            .segments
+            .get_mut(&first_segment)
+            .expect("first segment")
+            .bytes = TERMINAL_JOURNAL_SEGMENT_BYTES;
+        journal.append(&current, false, None);
+        let current_segment = journal
+            .segments
+            .iter()
+            .find_map(|(start, segment)| segment.current.then_some(*start))
+            .expect("current segment");
+        let first_segment_bytes = journal
+            .segments
+            .get(&first_segment)
+            .expect("first segment")
+            .bytes;
+        let current_segment_bytes = journal
+            .segments
+            .get(&current_segment)
+            .expect("current segment")
+            .bytes;
+
+        journal.acknowledge(&first.invoke_id, &first.occurred_at, false);
+        assert_eq!(
+            journal
+                .segments
+                .get(&first_segment)
+                .expect("first segment")
+                .bytes,
+            first_segment_bytes
+        );
+        assert!(
+            journal
+                .segments
+                .get(&current_segment)
+                .expect("current segment")
+                .bytes
+                > current_segment_bytes
+        );
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        let replay = reopened.take_replay();
+        let replayed_ids = replay
+            .iter()
+            .map(|write| write.record.invoke_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(replayed_ids.len(), 2);
+        assert!(replayed_ids.contains(retained.invoke_id.as_str()));
+        assert!(replayed_ids.contains(current.invoke_id.as_str()));
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn journals_are_isolated_for_databases_in_the_same_directory() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-isolation-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let first_database = root.join("first.db");
+        let second_database = root.join("second.db");
+        let record =
+            crate::tests::test_proxy_capture_record("journal-isolated", "2026-07-29T00:00:00Z");
+
+        let mut first = TerminalJournal::open(&first_database).expect("open first journal");
+        first.append(&record, false, None);
+        first.force_sync().expect("sync first journal");
+        drop(first);
+
+        let second = TerminalJournal::open(&second_database).expect("open second journal");
+        assert_eq!(second.stats().replay_count, 0);
+        assert_ne!(
+            terminal_journal_directory(&first_database),
+            terminal_journal_directory(&second_database)
+        );
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 }

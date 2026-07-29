@@ -323,6 +323,8 @@ pub(crate) struct SqliteBatchWriter {
     #[cfg(test)]
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    journal_sync_shutdown: CancellationToken,
+    journal_sync_handle: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
     buffered_writes: Option<Arc<std::sync::Mutex<Vec<SqliteBatchWrite>>>>,
     #[cfg(test)]
@@ -332,7 +334,7 @@ pub(crate) struct SqliteBatchWriter {
 impl SqliteBatchWriter {
     pub(crate) fn spawn(
         pool: Pool<Sqlite>,
-        _shutdown: CancellationToken,
+        shutdown: CancellationToken,
         prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
         database_path: &Path,
     ) -> Arc<Self> {
@@ -355,6 +357,14 @@ impl SqliteBatchWriter {
             .unwrap_or_default();
         let terminal_journal = Arc::new(std::sync::Mutex::new(terminal_journal));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+        let journal_sync_shutdown = shutdown.child_token();
+        #[cfg(not(test))]
+        let journal_sync_handle = Some(tokio::spawn(run_terminal_journal_sync(
+            terminal_journal.clone(),
+            journal_sync_shutdown.clone(),
+        )));
+        #[cfg(test)]
+        let journal_sync_handle = None;
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -379,6 +389,8 @@ impl SqliteBatchWriter {
             #[cfg(test)]
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(Some(handle)),
+            journal_sync_shutdown,
+            journal_sync_handle: Mutex::new(journal_sync_handle),
             #[cfg(test)]
             buffered_writes: None,
             #[cfg(test)]
@@ -422,6 +434,8 @@ impl SqliteBatchWriter {
             dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(None),
+            journal_sync_shutdown: CancellationToken::new(),
+            journal_sync_handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
         })
@@ -667,6 +681,12 @@ impl SqliteBatchWriter {
         if let Err(err) = handle.await {
             warn!(error = %err, "sqlite batch writer task failed during shutdown");
         }
+        self.journal_sync_shutdown.cancel();
+        if let Some(handle) = self.journal_sync_handle.lock().await.take()
+            && let Err(err) = handle.await
+        {
+            warn!(error = %err, "terminal journal sync task failed during shutdown");
+        }
     }
 
     #[cfg(test)]
@@ -771,8 +791,8 @@ pub(crate) async fn run_sqlite_batch_writer(
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut journal_ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
-    journal_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut deferred_ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
+    deferred_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut pending = PendingBatch::default();
     let mut control_closed = false;
 
@@ -791,6 +811,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut pending,
                             &pending_depth,
                             queued_depth_snapshot,
+                        );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            usize::MAX,
                         );
                         let result = match flush_pending_batch(
                             &pool,
@@ -829,6 +854,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut pending,
                             &pending_depth,
                             queued_depth_snapshot,
+                        );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            usize::MAX,
                         );
                         let result = if pending.is_empty() {
                             Ok(())
@@ -870,29 +900,21 @@ pub(crate) async fn run_sqlite_batch_writer(
                     control_closed = true;
                 }
             }
-            _ = journal_ticker.tick() => {
-                if let Ok(mut guard) = terminal_journal.lock()
-                    && let Some(journal) = guard.as_mut()
-                {
-                    let deferred_capacity = SQLITE_BATCH_MAX_ROWS.saturating_sub(pending.logical_rows());
-                    let deferred = journal.take_deferred_writes(deferred_capacity);
-                    for terminal in deferred {
-                        pending.push(SqliteBatchWrite::TerminalInvocation(terminal));
-                    }
-                    if let Some(group_commit_elapsed_ms) = journal.sync_if_due() {
-                        let stats = journal.stats();
-                        debug!(
-                            group_commit_elapsed_ms,
-                            journal_pending_records = stats.pending_records,
-                            journal_pending_bytes = stats.pending_bytes,
-                            journal_segment_count = stats.segment_count,
-                            "terminal journal group commit completed"
-                        );
-                    }
-                }
+            _ = deferred_ticker.tick() => {
+                let deferred_capacity = SQLITE_BATCH_MAX_ROWS.saturating_sub(pending.logical_rows());
+                drain_terminal_journal_deferred_writes(
+                    &terminal_journal,
+                    &mut pending,
+                    deferred_capacity,
+                );
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
+                    drain_terminal_journal_deferred_writes(
+                        &terminal_journal,
+                        &mut pending,
+                        usize::MAX,
+                    );
                     if !pending.is_empty() {
                         let _ = flush_pending_batch(
                             &pool,
@@ -970,6 +992,60 @@ pub(crate) async fn run_sqlite_batch_writer(
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(not(test))]
+async fn run_terminal_journal_sync(
+    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    shutdown: CancellationToken,
+) {
+    let mut ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                if let Ok(mut guard) = terminal_journal.lock()
+                    && let Some(journal) = guard.as_mut()
+                    && let Err(err) = journal.force_sync()
+                {
+                    warn!(error = %err, "terminal journal final group commit failed during shutdown");
+                }
+                return;
+            }
+            _ = ticker.tick() => {
+                if let Ok(mut guard) = terminal_journal.lock()
+                    && let Some(journal) = guard.as_mut()
+                    && let Some(group_commit_elapsed_ms) = journal.sync_if_due()
+                {
+                    let stats = journal.stats();
+                    debug!(
+                        group_commit_elapsed_ms,
+                        journal_pending_records = stats.pending_records,
+                        journal_pending_bytes = stats.pending_bytes,
+                        journal_segment_count = stats.segment_count,
+                        "terminal journal group commit completed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn drain_terminal_journal_deferred_writes(
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    pending: &mut PendingBatch,
+    max_writes: usize,
+) {
+    if max_writes == 0 {
+        return;
+    }
+    if let Ok(mut guard) = terminal_journal.lock()
+        && let Some(journal) = guard.as_mut()
+    {
+        for terminal in journal.take_deferred_writes(max_writes) {
+            pending.push(SqliteBatchWrite::TerminalInvocation(terminal));
         }
     }
 }
@@ -2111,6 +2187,41 @@ mod tests {
         );
 
         writer.shutdown_and_drain().await;
+    }
+
+    #[test]
+    fn barrier_drain_includes_deferred_journal_terminals() {
+        let root =
+            std::env::temp_dir().join(format!("batch-writer-deferred-{}", nanoid::nanoid!()));
+        std::fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let mut journal = TerminalJournal::open(&database_path).expect("open terminal journal");
+        let record = crate::tests::test_proxy_capture_record(
+            "batch-writer-deferred-terminal",
+            "2026-07-29T00:00:00Z",
+        );
+        assert!(journal.defer_write(BatchedTerminalInvocationWrite {
+            record,
+            capture_started: None,
+            raw_capture: true,
+            dashboard_terminal_sequence: None,
+        }));
+        let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
+        let mut pending = PendingBatch::default();
+
+        drain_terminal_journal_deferred_writes(&journal, &mut pending, usize::MAX);
+
+        assert_eq!(pending.terminal_invocations.len(), 1);
+        assert!(
+            journal
+                .lock()
+                .expect("lock terminal journal")
+                .as_mut()
+                .expect("terminal journal available")
+                .take_deferred_writes(usize::MAX)
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).expect("remove journal test directory");
     }
 
     #[tokio::test]

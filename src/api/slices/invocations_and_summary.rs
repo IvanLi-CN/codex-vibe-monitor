@@ -15494,26 +15494,24 @@ async fn load_dashboard_activity_snapshot_cached(
                     dashboard_activity_snapshot_reuse_mode(entry, range, cache_ttl)
             {
                 let mut expired_count = 0usize;
-                if reuse_mode == DashboardActivitySnapshotReuseMode::Current {
-                    while entry.expiry_terminal_deltas.front().is_some_and(|delta| {
-                        parse_to_utc_datetime(&delta.occurred_at)
-                            .is_some_and(|occurred_at| occurred_at < range.start)
-                    }) {
-                        if let Some(delta) = entry.expiry_terminal_deltas.pop_front() {
-                            entry.expiry_delta_estimated_bytes = entry
-                                .expiry_delta_estimated_bytes
-                                .saturating_sub(delta.estimated_bytes);
-                            subtract_dashboard_activity_compact_terminal_delta(
-                                &mut entry.response,
-                                &delta,
-                            );
-                            restore_dashboard_activity_last_invocation_after_expiry(
-                                &mut entry.response,
-                                &delta,
-                                &entry.expiry_terminal_deltas,
-                            );
-                            expired_count += 1;
-                        }
+                while entry.expiry_terminal_deltas.front().is_some_and(|delta| {
+                    parse_to_utc_datetime(&delta.occurred_at)
+                        .is_some_and(|occurred_at| occurred_at < range.start)
+                }) {
+                    if let Some(delta) = entry.expiry_terminal_deltas.pop_front() {
+                        entry.expiry_delta_estimated_bytes = entry
+                            .expiry_delta_estimated_bytes
+                            .saturating_sub(delta.estimated_bytes);
+                        subtract_dashboard_activity_compact_terminal_delta(
+                            &mut entry.response,
+                            &delta,
+                        );
+                        restore_dashboard_activity_last_invocation_after_expiry(
+                            &mut entry.response,
+                            &delta,
+                            &entry.expiry_terminal_deltas,
+                        );
+                        expired_count += 1;
                     }
                 }
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
@@ -15569,6 +15567,7 @@ async fn load_dashboard_activity_snapshot_cached(
             if !settled_dirty_state
                 && writer_pressure
                 && let Some(entry) = cache.entries.get_mut(&selection)
+                && dashboard_activity_entry_expiry_covers(entry, range)
                 && dashboard_activity_pressure_reconcile_deferred(entry)
             {
                 let mut expired_count = 0usize;
