@@ -190,6 +190,7 @@ interface InvocationRowViewModel {
   collapsedErrorSummary: string;
   responseDurationValue: string;
   firstTokenValue: string;
+  requestCompressionAlgorithmValue: string;
   responseContentEncodingValue: string;
   detailNotice: string | null;
   detailPairs: Array<{ key: string; label: string; value: ReactNode }>;
@@ -756,8 +757,8 @@ export function InvocationTable({
                     title={row.responseDurationValue}
                   >{`${t("table.column.responseDurationShort")} ${row.responseDurationValue}`}</span>
                   <span
-                    title={row.responseContentEncodingValue}
-                  >{`${t("table.column.httpCompressionShort")} ${row.responseContentEncodingValue}`}</span>
+                    title={row.requestCompressionAlgorithmValue}
+                  >{`${t("table.column.requestCompressionShort")} ${row.requestCompressionAlgorithmValue}`}</span>
                 </div>
 
                 <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
@@ -1076,9 +1077,9 @@ export function InvocationTable({
                           </span>
                           <span
                             className="truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${row.responseDurationValue} · ${row.responseContentEncodingValue}`}
+                            title={`${row.responseDurationValue} · ${row.requestCompressionAlgorithmValue}`}
                           >
-                            {`${row.responseDurationValue} · ${row.responseContentEncodingValue}`}
+                            {`${row.responseDurationValue} · ${row.requestCompressionAlgorithmValue}`}
                           </span>
                         </div>
                       </td>

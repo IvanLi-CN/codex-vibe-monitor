@@ -57,6 +57,31 @@ pub(crate) fn payload_f64(payload: Option<&str>, key: &str) -> Option<f64> {
     value.get(key).and_then(Value::as_f64)
 }
 
+pub(crate) fn set_proxy_capture_record_request_compression_algorithm(
+    record: &mut ProxyCaptureRecord,
+    algorithm: Option<&str>,
+) {
+    let Some(algorithm) = algorithm.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let Some(payload) = record.payload.as_deref() else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "requestCompressionAlgorithm".to_string(),
+        Value::String(algorithm.to_string()),
+    );
+    if let Ok(payload) = serde_json::to_string(&value) {
+        record.payload = Some(payload);
+    }
+}
+
 pub(crate) fn blocked_binding_json_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -1968,8 +1993,9 @@ pub(crate) async fn broadcast_pool_attempt_started_runtime_snapshot(
     account: &PoolResolvedAccount,
     attempt_count: usize,
     distinct_account_count: usize,
+    request_compression_algorithm: Option<&str>,
 ) {
-    let running_record = build_running_proxy_capture_record(
+    let mut running_record = build_running_proxy_capture_record(
         &trace.invoke_id,
         &trace.occurred_at,
         runtime_snapshot.capture_target,
@@ -1991,6 +2017,10 @@ pub(crate) async fn broadcast_pool_attempt_started_runtime_snapshot(
         runtime_snapshot.t_req_parse_ms,
         0.0,
         0.0,
+    );
+    set_proxy_capture_record_request_compression_algorithm(
+        &mut running_record,
+        request_compression_algorithm,
     );
     if let Err(err) =
         persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record).await
@@ -2950,6 +2980,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         upstream_account_id: upstream_account_id_from_payload(payload),
         upstream_account_name: upstream_account_name_from_payload(payload),
         response_content_encoding: payload_text(payload, "responseContentEncoding"),
+        request_compression_algorithm: payload_text(payload, "requestCompressionAlgorithm"),
         transport: None,
         pool_attempt_count: payload_i64(payload, "poolAttemptCount"),
         pool_distinct_account_count: payload_i64(payload, "poolDistinctAccountCount"),

@@ -1442,7 +1442,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
         &occurred_at,
         SOURCE_XY,
         "success",
-        Some("{\"endpoint\":\"/v1/responses\"}"),
+        Some("{\"endpoint\":\"/v1/responses\",\"requestCompressionAlgorithm\":\"zstd\"}"),
         "{\"ok\":true}",
         Some(&request_missing),
         Some(&response_raw),
@@ -1494,7 +1494,17 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
             .as_deref(),
         Some(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
     );
-    assert!(row.get::<Option<String>, _>("payload").is_none());
+    let payload: Value = serde_json::from_str(
+        row.get::<Option<String>, _>("payload")
+            .as_deref()
+            .expect("request compression metadata should be retained"),
+    )
+    .expect("decode retained payload");
+    assert_eq!(
+        payload["requestCompressionAlgorithm"].as_str(),
+        Some("zstd")
+    );
+    assert!(payload.get("endpoint").is_none());
     assert_eq!(row.get::<String, _>("raw_response"), "");
     assert!(row.get::<Option<String>, _>("request_raw_path").is_none());
     assert!(row.get::<Option<String>, _>("response_raw_path").is_none());
@@ -1561,7 +1571,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .expect("load archived pre-prune invocation");
     assert_eq!(
         archived.get::<Option<String>, _>("payload").as_deref(),
-        Some("{\"endpoint\":\"/v1/responses\"}")
+        Some("{\"endpoint\":\"/v1/responses\",\"requestCompressionAlgorithm\":\"zstd\"}")
     );
     assert_eq!(archived.get::<String, _>("raw_response"), "{\"ok\":true}");
     assert_eq!(archived.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);

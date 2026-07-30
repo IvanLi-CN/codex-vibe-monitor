@@ -80,6 +80,7 @@ interface InvocationRecordsRowViewModel {
   responseDurationValue: string;
   firstTokenValue: string;
   firstByteLatencyValue: string;
+  requestCompressionAlgorithmValue: string;
   responseContentEncodingValue: string;
   localCostValue: string;
   costMismatch: boolean;
@@ -378,9 +379,9 @@ function renderDetailSummaryStrip(
               <dd className="min-w-0 text-right font-mono">{row.responseDurationValue}</dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
-              <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
+              <dt className="text-base-content/60">{t("table.details.requestHttpCompression")}</dt>
               <dd className="min-w-0 break-all text-right font-mono">
-                {row.responseContentEncodingValue}
+                {row.requestCompressionAlgorithmValue}
               </dd>
             </div>
           </dl>
@@ -477,8 +478,8 @@ function renderDetailSummaryStrip(
           <dd className="truncate text-right font-mono">{row.firstTokenValue}</dd>
           <dt className="text-base-content/60">{t("records.table.network.responseDuration")}</dt>
           <dd className="truncate text-right font-mono">{row.responseDurationValue}</dd>
-          <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
-          <dd className="truncate text-right font-mono">{row.responseContentEncodingValue}</dd>
+          <dt className="text-base-content/60">{t("table.details.requestHttpCompression")}</dt>
+          <dd className="truncate text-right font-mono">{row.requestCompressionAlgorithmValue}</dd>
         </dl>
       </div>
 
@@ -976,8 +977,8 @@ export function InvocationRecordsTable({
                     {`${t("table.column.responseDurationShort")} ${row.responseDurationValue}`}
                   </span>
                   <span
-                    title={row.responseContentEncodingValue}
-                  >{`${t("table.column.httpCompressionShort")} ${row.responseContentEncodingValue}`}</span>
+                    title={row.requestCompressionAlgorithmValue}
+                  >{`${t("table.column.requestCompressionShort")} ${row.requestCompressionAlgorithmValue}`}</span>
                 </div>
               </div>
 

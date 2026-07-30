@@ -562,6 +562,13 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     };
     let response_envelope =
         build_proxy_error_response_envelope(&downstream_error, &trace.invoke_id);
+    let terminal_request_compression_algorithm = resolve_terminal_request_compression_algorithm(
+        latest_pool_attempt_request_compression_algorithm(state, trace)
+            .await
+            .ok()
+            .flatten(),
+        pool_terminal_request_compression_algorithm(headers, error).map(str::to_string),
+    );
     let _ = persist_pre_attempt_proxy_capture_error(
         state,
         proxy_request_id,
@@ -590,9 +597,89 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
         error.account.as_ref(),
         Some(error.connect_latency_ms),
         Some(error),
+        terminal_request_compression_algorithm.as_deref(),
         Some(response_envelope),
     )
     .await;
+}
+
+fn forwarded_request_compression_observation(
+    headers: &HeaderMap,
+) -> Option<(&'static str, &'static str)> {
+    let encodings = parse_content_encodings(
+        headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+    );
+    if encodings.is_empty() || encodings.iter().all(|encoding| encoding == "identity") {
+        return Some(("identity", "identity"));
+    }
+
+    match encodings.as_slice() {
+        [encoding] => match encoding.as_str() {
+            "gzip" | "x-gzip" => Some(("gzip", "passthrough")),
+            "deflate" => Some(("deflate", "passthrough")),
+            "zstd" => Some(("zstd", "passthrough")),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+async fn latest_pool_attempt_request_compression_algorithm(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT NULLIF(TRIM(upstream_request_compression_algorithm), '')
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
+          AND occurred_at = ?2
+          AND LOWER(TRIM(COALESCE(status, ''))) <> 'budget_exhausted_final'
+        ORDER BY attempt_index DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&trace.invoke_id)
+    .bind(&trace.occurred_at)
+    .fetch_optional(&state.pool)
+    .await
+}
+
+fn resolve_terminal_request_compression_algorithm(
+    latest_attempt_algorithm: Option<Option<String>>,
+    fallback_algorithm: Option<String>,
+) -> Option<String> {
+    latest_attempt_algorithm.unwrap_or(fallback_algorithm)
+}
+
+fn pool_terminal_request_compression_algorithm(
+    headers: &HeaderMap,
+    error: &PoolUpstreamError,
+) -> Option<&'static str> {
+    if error.attempt_summary.pool_attempt_count == 0 {
+        return None;
+    }
+
+    let account = error.account.as_ref()?;
+    resolved_pool_request_compression_algorithm(
+        headers,
+        account.auth.is_oauth(),
+        account.request_compression_algorithm,
+    )
+}
+
+fn resolved_pool_request_compression_algorithm(
+    headers: &HeaderMap,
+    is_oauth: bool,
+    configured_algorithm: RequestCompressionAlgorithm,
+) -> Option<&'static str> {
+    if is_oauth || configured_algorithm == RequestCompressionAlgorithm::Follow {
+        forwarded_request_compression_observation(headers).map(|(algorithm, _)| algorithm)
+    } else {
+        Some(configured_algorithm.as_str())
+    }
 }
 
 fn spawn_pool_attempt_response_capture(
@@ -1918,6 +2005,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             &account,
                             attempt_count,
                             distinct_account_count,
+                            Some(outbound_request_body.content_encoding.algorithm().as_str()),
                         )
                         .await;
                     }
@@ -2669,6 +2757,27 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
+                    let forwarded_request_compression = (method != Method::GET)
+                        .then(|| forwarded_request_compression_observation(headers))
+                        .flatten();
+                    if let (Some(pending_attempt_record), Some((algorithm, mode))) = (
+                        pending_attempt_record.as_mut(),
+                        forwarded_request_compression,
+                    ) && let Err(err) =
+                        annotate_pool_upstream_request_attempt_request_compression(
+                            &state.pool,
+                            pending_attempt_record,
+                            algorithm,
+                            mode,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool OAuth request compression metadata"
+                        );
+                    }
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) =
                             annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
@@ -2708,6 +2817,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             &account,
                             attempt_count,
                             distinct_account_count,
+                            forwarded_request_compression.map(|(algorithm, _)| algorithm),
                         )
                         .await;
                     }
@@ -4016,5 +4126,76 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod request_compression_tests {
+    use super::*;
+
+    #[test]
+    fn forwarded_oauth_request_compression_is_recorded_as_passthrough() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+
+        assert_eq!(
+            forwarded_request_compression_observation(&headers),
+            Some(("zstd", "passthrough"))
+        );
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("x-gzip"));
+        assert_eq!(
+            forwarded_request_compression_observation(&headers),
+            Some(("gzip", "passthrough"))
+        );
+        assert_eq!(
+            resolved_pool_request_compression_algorithm(
+                &headers,
+                true,
+                RequestCompressionAlgorithm::Identity,
+            ),
+            Some("gzip")
+        );
+    }
+
+    #[test]
+    fn terminal_pool_request_compression_uses_actual_forwarding_mode() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+
+        assert_eq!(
+            resolved_pool_request_compression_algorithm(
+                &headers,
+                false,
+                RequestCompressionAlgorithm::Follow,
+            ),
+            Some("gzip")
+        );
+        assert_eq!(
+            resolved_pool_request_compression_algorithm(
+                &headers,
+                false,
+                RequestCompressionAlgorithm::Zstd,
+            ),
+            Some("zstd")
+        );
+    }
+
+    #[test]
+    fn terminal_pool_request_compression_keeps_unknown_attempt_metadata_unknown() {
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(Some(None), Some("zstd".to_string())),
+            None
+        );
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(
+                Some(Some("gzip".to_string())),
+                Some("zstd".to_string())
+            ),
+            Some("gzip".to_string())
+        );
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(None, Some("zstd".to_string())),
+            Some("zstd".to_string())
+        );
     }
 }

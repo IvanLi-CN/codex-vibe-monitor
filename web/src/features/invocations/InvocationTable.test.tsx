@@ -1014,6 +1014,7 @@ describe("InvocationTable", () => {
         proxyDisplayName: "codex-relay-01",
         requesterIp: "203.0.113.10",
         responseContentEncoding: "gzip, br",
+        requestCompressionAlgorithm: "zstd",
         endpoint: "/v1/responses",
         model: "gpt-5.4",
         status: "success",
@@ -1052,12 +1053,13 @@ describe("InvocationTable", () => {
     expect(html).toContain("代理");
     expect(html).toContain("响应耗时");
     expect(html).toContain("TTFT");
-    expect(html).toContain("响应耗时 / HTTP 压缩");
+    expect(html).toContain("响应耗时 / HTTP 请求压缩");
     expect(html).toContain("0.648 s");
     expect(html).toContain("0.26 s");
     expect(html).toContain("pool-account-a");
     expect(html).toContain("反向代理");
-    expect(html).toContain("gzip, br");
+    expect(html).toContain("zstd");
+    expect(html).not.toContain("gzip, br");
     expect(html).toContain('data-testid="invocation-account-name"');
   });
 
@@ -1401,6 +1403,7 @@ describe("InvocationTable", () => {
       upstreamAccountId: 7,
       upstreamAccountName: "pool-account-a",
       proxyDisplayName: "storybook-proxy",
+      requestCompressionAlgorithm: "zstd",
       responseContentEncoding: "gzip",
       endpoint: "/v1/responses",
       model: "gpt-5.4",
@@ -1420,7 +1423,9 @@ describe("InvocationTable", () => {
     );
 
     expect(html).toContain("请求详情");
-    expect(html).toContain("HTTP 压缩算法");
+    expect(html).toContain("HTTP 请求压缩");
+    expect(html).toContain("zstd");
+    expect(html).toContain("HTTP 响应压缩");
     expect(html).not.toContain(">用时<");
     expect(html).not.toContain(">首字耗时<");
     expect(html).toContain("阶段耗时");

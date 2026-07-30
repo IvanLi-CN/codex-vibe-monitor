@@ -78,6 +78,7 @@ export interface InvocationDetailViewModel {
   responseDurationValue: string;
   firstTokenValue: string;
   firstByteLatencyValue: string;
+  requestCompressionAlgorithmValue: string;
   responseContentEncodingValue: string;
   detailNotice: string | null;
   detailPairs: Array<{ key: string; label: string; value: ReactNode }>;
@@ -686,6 +687,9 @@ export function buildInvocationDetailViewModel({
     localeTag,
   );
   const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs);
+  const requestCompressionAlgorithmValue = formatResponseContentEncoding(
+    record.requestCompressionAlgorithm,
+  );
   const responseContentEncodingValue = formatResponseContentEncoding(
     record.responseContentEncoding,
   );
@@ -847,8 +851,13 @@ export function buildInvocationDetailViewModel({
       value: formatOptionalText(record.poolAttemptTerminalReason),
     },
     {
+      key: "requestCompressionAlgorithm",
+      label: t("table.details.requestHttpCompression"),
+      value: requestCompressionAlgorithmValue,
+    },
+    {
       key: "responseContentEncoding",
-      label: t("table.details.httpCompression"),
+      label: t("table.details.responseHttpCompression"),
       value: responseContentEncodingValue,
     },
     {
@@ -1020,6 +1029,7 @@ export function buildInvocationDetailViewModel({
     responseDurationValue,
     firstTokenValue,
     firstByteLatencyValue,
+    requestCompressionAlgorithmValue,
     responseContentEncodingValue,
     detailNotice,
     detailPairs,
@@ -1960,6 +1970,7 @@ export function InvocationExpandedDetails({
     "compactionRequest",
     "compactionResponse",
     "imageIntent",
+    "requestCompressionAlgorithm",
     "responseContentEncoding",
     "requestedServiceTier",
     "serviceTier",

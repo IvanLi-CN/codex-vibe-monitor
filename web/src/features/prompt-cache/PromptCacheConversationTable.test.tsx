@@ -886,7 +886,7 @@ describe("PromptCacheConversationTable", () => {
 
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("TTFT");
-    expect(document.body.textContent).toContain("响应耗时 / HTTP 压缩");
+    expect(document.body.textContent).toContain("响应耗时 / HTTP 请求压缩");
     expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
     expect(document.body.textContent).toContain("Proxy West");
@@ -968,7 +968,7 @@ describe("PromptCacheConversationTable", () => {
 
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("TTFT");
-    expect(document.body.textContent).toContain("响应耗时 / HTTP 压缩");
+    expect(document.body.textContent).toContain("响应耗时 / HTTP 请求压缩");
     expect(document.body.textContent).toContain("Proxy Central");
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
@@ -1150,7 +1150,7 @@ describe("PromptCacheConversationTable", () => {
     });
     expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
     expect(document.body.textContent).toContain("TTFT");
-    expect(document.body.textContent).toContain("响应耗时 / HTTP 压缩");
+    expect(document.body.textContent).toContain("响应耗时 / HTTP 请求压缩");
     expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("Proxy West");
     expect(document.body.textContent).toContain("HTTP 502");

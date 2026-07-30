@@ -441,6 +441,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_account: Option<&PoolResolvedAccount>,
     terminal_connect_latency_ms: Option<f64>,
     terminal_error: Option<&PoolUpstreamError>,
+    terminal_request_compression_algorithm: Option<&str>,
     response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 ) -> bool {
     let response_envelope = response_envelope_override
@@ -495,7 +496,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             response_model: None,
             usage_missing_reason: None,
             request_parse_error: request_info.parse_error.as_deref(),
-            request_compression_algorithm: None,
+            request_compression_algorithm: terminal_request_compression_algorithm,
             request_compression_mode: None,
             request_compression_logical_body_bytes: None,
             request_compression_transmitted_body_bytes: None,
@@ -1107,6 +1108,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1150,6 +1152,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
                     None,
                     None,
                     None,
@@ -2006,7 +2009,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
-    let response_running_record = build_running_proxy_capture_record(
+    let mut response_running_record = build_running_proxy_capture_record(
         &invoke_id,
         &occurred_at,
         capture_target,
@@ -2034,6 +2037,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         t_req_parse_ms,
         t_upstream_connect_ms,
         prefetched_ttfb_ms,
+    );
+    set_proxy_capture_record_request_compression_algorithm(
+        &mut response_running_record,
+        pending_pool_attempt_record
+            .as_ref()
+            .and_then(|pending| pending.upstream_request_compression_algorithm.as_deref()),
     );
     if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
         state.as_ref(),
@@ -2467,7 +2476,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_started_at = Some(Instant::now());
                         active_stream_timeout =
                             prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
-                        let running_record = build_running_proxy_capture_record(
+                        let mut running_record = build_running_proxy_capture_record(
                             &invoke_id_for_task,
                             &occurred_at_for_task,
                             capture_target,
@@ -2497,6 +2506,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             t_req_parse_ms,
                             t_upstream_connect_ms,
                             t_upstream_ttfb_ms,
+                        );
+                        set_proxy_capture_record_request_compression_algorithm(
+                            &mut running_record,
+                            pending_pool_attempt_record_for_task
+                                .as_ref()
+                                .and_then(|pending| {
+                                    pending.upstream_request_compression_algorithm.as_deref()
+                                }),
                         );
                         if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
                             state_for_task.as_ref(),
@@ -3203,14 +3220,22 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         response_model: response_info.model.as_deref(),
                         usage_missing_reason: response_info.usage_missing_reason.as_deref(),
                         request_parse_error: request_info_for_task.parse_error.as_deref(),
-                        request_compression_algorithm: if pool_account_for_task.is_none() {
-                            direct_http_approx_for_task
-                                .request_compression
-                                .as_ref()
-                                .map(|value| value.algorithm.as_str())
-                        } else {
-                            None
-                        },
+                        request_compression_algorithm: pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending.upstream_request_compression_algorithm.as_deref()
+                            })
+                            .or_else(|| {
+                                pool_account_for_task
+                                    .is_none()
+                                    .then(|| {
+                                        direct_http_approx_for_task
+                                            .request_compression
+                                            .as_ref()
+                                            .map(|value| value.algorithm.as_str())
+                                    })
+                                    .flatten()
+                            }),
                         request_compression_mode: if pool_account_for_task.is_none() {
                             direct_http_approx_for_task
                                 .request_compression

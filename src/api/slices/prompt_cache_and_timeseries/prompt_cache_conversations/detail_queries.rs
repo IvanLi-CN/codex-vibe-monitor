@@ -131,6 +131,13 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
                 " AS response_content_encoding, \
                  ",
             )
+            .push(invocation_request_compression_algorithm_with_attempt_fallback_sql(
+                "codex_invocations",
+            ))
+            .push(
+                " AS request_compression_algorithm, \
+                 ",
+            )
             .push(INVOCATION_TRANSPORT_SQL)
             .push(
                 " AS transport, \

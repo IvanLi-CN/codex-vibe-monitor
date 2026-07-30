@@ -47,6 +47,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "compactionResponseKind"
     | "imageIntent"
     | "responseContentEncoding"
+    | "requestCompressionAlgorithm"
     | "transport"
     | "requestedServiceTier"
     | "serviceTier"
@@ -257,6 +258,7 @@ export function buildInvocationFromPromptCachePreview(
     upstreamAccountPlanType: preview.upstreamAccountPlanType ?? undefined,
     proxyDisplayName: preview.proxyDisplayName ?? undefined,
     responseContentEncoding: extras.responseContentEncoding,
+    requestCompressionAlgorithm: extras.requestCompressionAlgorithm,
     transport: extras.transport,
     requestedServiceTier: extras.requestedServiceTier,
     serviceTier: extras.serviceTier,
@@ -317,6 +319,7 @@ export function buildPromptCachePreviewFromInvocation(
     failureKind: record.failureKind,
     isActionable: record.isActionable,
     responseContentEncoding: record.responseContentEncoding,
+    requestCompressionAlgorithm: record.requestCompressionAlgorithm,
     transport: record.transport,
     requestedServiceTier: record.requestedServiceTier,
     serviceTier: record.serviceTier,
@@ -435,6 +438,12 @@ function authoritativePreviewLacksLiveExtras(authoritative: ApiInvocation, live:
   if (
     !hasString(authoritative.responseContentEncoding) &&
     hasString(live.responseContentEncoding)
+  ) {
+    return true;
+  }
+  if (
+    !hasString(authoritative.requestCompressionAlgorithm) &&
+    hasString(live.requestCompressionAlgorithm)
   ) {
     return true;
   }

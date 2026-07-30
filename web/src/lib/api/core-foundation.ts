@@ -368,6 +368,7 @@ export interface ApiInvocation {
   upstreamAccountName?: string;
   upstreamAccountPlanType?: string | null;
   responseContentEncoding?: string;
+  requestCompressionAlgorithm?: string;
   poolAttemptCount?: number | null;
   poolDistinctAccountCount?: number | null;
   poolAttemptTerminalReason?: string | null;
@@ -1747,6 +1748,7 @@ export interface PromptCacheConversationInvocationPreview {
   failureKind?: ApiInvocation["failureKind"];
   isActionable?: ApiInvocation["isActionable"];
   responseContentEncoding?: ApiInvocation["responseContentEncoding"];
+  requestCompressionAlgorithm?: ApiInvocation["requestCompressionAlgorithm"];
   transport?: ApiInvocation["transport"];
   requestedServiceTier?: ApiInvocation["requestedServiceTier"];
   serviceTier?: ApiInvocation["serviceTier"];
@@ -2869,6 +2871,11 @@ function normalizePromptCacheConversationInvocationPreview(
     responseContentEncoding:
       typeof payload.responseContentEncoding === "string" && payload.responseContentEncoding.trim()
         ? payload.responseContentEncoding.trim()
+        : undefined,
+    requestCompressionAlgorithm:
+      typeof payload.requestCompressionAlgorithm === "string" &&
+      payload.requestCompressionAlgorithm.trim()
+        ? payload.requestCompressionAlgorithm.trim()
         : undefined,
     requestedServiceTier:
       typeof payload.requestedServiceTier === "string" && payload.requestedServiceTier.trim()

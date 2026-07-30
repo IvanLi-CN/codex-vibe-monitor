@@ -66,3 +66,8 @@
 - 2026-07-27: Dashboard 模型性能浮窗改为 `72rem` 视口自适应布局，桌面模型数据行统一为单行身份展示，GPT-5.6 专用图标方案不再重复显示模型名称，并消除横向滚动；窄屏抽屉同步采用相同模型身份语义。
 
 - 2026-07-28: Corrected the opaque `keep_original` request audit reason from `already_current` to `policy_keep_original`, preserving the no-decode replay contract without implying unverified schema equivalence.
+- 2026-07-30: 调用列表、Prompt Cache 会话、账号活动预览与展开详情的请求压缩统一显示最终请求实际使用的 `requestCompressionAlgorithm`；pool 与归档历史读取最终 attempt，响应 `Content-Encoding` 仅作为“HTTP 响应压缩”展示，历史缺失数据不再跨方向回退。
+- 2026-07-30: 修复请求压缩在运行态号池快照与合成终态边界的缺失：算法一经确定即进入 SSE/runtime 记录，OAuth 透传请求按实际 `Content-Encoding` 持久化，号池失败终态沿用最后一次真实尝试的算法；`budget_exhausted_final` 不再覆盖真实最终 attempt 的压缩值，归档聚合同步采用相同规则。
+- 2026-07-30: 同步 Prompt Cache 会话表的请求压缩列名回归测试，并记录 owner 对列表视觉证据的提交批准。
+- 2026-07-30: 修复泛化归档打开逻辑后长期统计误以调用表读取 pool attempt archive 的回归，恢复 attempt archive 的物化回放标记与过期清理资格。
+- 2026-07-30: 成功调用详情精简会继续保留 `requestCompressionAlgorithm`，避免 direct 调用在详情精简后、记录归档前丢失列表请求压缩值。

@@ -6224,3 +6224,88 @@ async fn list_tags_only_returns_system_tags_and_disables_writes() {
     );
     assert!(listed.items.iter().all(|item| item.id != custom_tag_id));
 }
+
+#[tokio::test]
+async fn sticky_key_preview_uses_the_final_attempt_request_compression() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Sticky compression preview").await;
+    let occurred_at = format_utc_iso(Utc::now());
+    let payload = json!({
+        "stickyKey": "sticky-compression",
+        "upstreamAccountId": account_id,
+        "requestCompressionAlgorithm": "gzip",
+    })
+    .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (invoke_id, occurred_at, source, payload, raw_response)
+        VALUES ('sticky-compression-invocation', ?1, 'proxy', ?2, '')
+        "#,
+    )
+    .bind(&occurred_at)
+    .bind(&payload)
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key,
+            upstream_account_id, attempt_index, distinct_account_index, same_account_retry_index,
+            started_at, finished_at, status, phase, http_status,
+            upstream_request_compression_algorithm, created_at
+        )
+        VALUES (
+            'STICKYCOMP1', 'sticky-compression-invocation', ?1, '/v1/responses', 'pool',
+            'sticky-compression', ?2, 1, 1, 0,
+            ?1, ?1, 'success', 'completed', 200,
+            'br', ?1
+        ), (
+            'STICKYCOMP2', 'sticky-compression-invocation', ?1, '/v1/responses', 'pool',
+            'sticky-compression', ?2, 2, 1, 1,
+            ?1, ?1, 'success', 'completed', 200,
+            'zstd', ?1
+        )
+        "#,
+    )
+    .bind(&occurred_at)
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky attempts");
+
+    let rows = query_account_sticky_key_recent_invocations(
+        &state.pool,
+        account_id,
+        &["sticky-compression".to_string()],
+        5,
+        None,
+    )
+    .await
+    .expect("query sticky preview");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].request_compression_algorithm.as_deref(),
+        Some("zstd")
+    );
+
+    upsert_sticky_route(&state.pool, "sticky-compression", account_id, &occurred_at)
+        .await
+        .expect("upsert sticky route");
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::Count(5),
+    )
+    .await
+    .expect("build sticky response");
+
+    assert_eq!(
+        response.conversations[0].recent_invocations[0]
+            .request_compression_algorithm
+            .as_deref(),
+        Some("zstd")
+    );
+}
