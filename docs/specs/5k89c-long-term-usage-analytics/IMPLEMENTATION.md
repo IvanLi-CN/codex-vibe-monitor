@@ -18,9 +18,10 @@
 ## 本次升级
 
 - `LongTermChart` 增加明确的 `line` / `stackedArea` 模式；模型用量和上游账号的 Token、成本、调用次数均使用绝对值堆叠面积。
-- 堆叠数据按日期并集补零，保留已有 `null` 指标；自定义 tooltip 同时展示各系列和当日总计，并按 overview 顺序稳定图层、图例和 tooltip。
+- 堆叠数据以 `overview.daily` 的完整日期窗口补齐；缺失 point 和已有 `null` 指标均写为零值，使数据岛之间保持连续零基线。自定义 tooltip 同时展示各系列和当日总计，并按 overview 顺序稳定图层、图例和 tooltip；折线图继续保留原始缺失值语义。
 - 模型表新增 sticky 全量总计行，身份列改用 `ModelPerformanceModelIdentity`，模型行收紧至约 `40px`，搜索不影响总计。
 - Storybook ready fixture 与 mock-only demo fixture 使用独立的模型思考程度字段，覆盖桌面/移动状态和关键交互。
+- Storybook `SparseSeries` 与 mock-only demo 的稀疏长期序列覆盖数据岛场景，作为连续零基线的可视化回归入口。
 
 ## 验证记录
 
