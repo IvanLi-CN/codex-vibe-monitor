@@ -387,7 +387,9 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
             " AS response_content_encoding, \
          ",
         )
-        .push(INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL)
+        .push(invocation_request_compression_algorithm_with_attempt_fallback_sql(
+            "codex_invocations",
+        ))
         .push(
             " AS request_compression_algorithm, \
          ",
@@ -7691,6 +7693,26 @@ pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
     )
 }
 
+pub(crate) fn invocation_request_compression_algorithm_with_attempt_fallback_sql(
+    invocation_ref: &str,
+) -> String {
+    format!(
+        "CASE WHEN EXISTS(\
+           SELECT 1 \
+             FROM pool_upstream_request_attempts attempt \
+            WHERE attempt.invoke_id = {invocation_ref}.invoke_id\
+         ) THEN (\
+           SELECT NULLIF(TRIM(attempt.upstream_request_compression_algorithm), '') \
+              FROM pool_upstream_request_attempts attempt \
+             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+             ORDER BY attempt.attempt_index DESC, attempt.id DESC \
+             LIMIT 1\
+         ) ELSE NULLIF(TRIM(CASE WHEN json_valid({invocation_ref}.payload) \
+             THEN CAST(json_extract({invocation_ref}.payload, '$.requestCompressionAlgorithm') AS TEXT) \
+           END), '') END"
+    )
+}
+
 pub(crate) fn invocation_prompt_cache_key_sql(invocation_ref: &str) -> String {
     format!(
         "CASE WHEN json_valid({invocation_ref}.payload) \
@@ -9883,7 +9905,9 @@ fn build_upstream_account_activity_preview_select(
         .push(" AS upstream_account_plan_type, ")
         .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(" AS response_content_encoding, ")
-        .push(INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL)
+        .push(invocation_request_compression_algorithm_with_attempt_fallback_sql(
+            "codex_invocations",
+        ))
         .push(" AS request_compression_algorithm, ")
         .push(INVOCATION_TRANSPORT_SQL)
         .push(" AS transport, ")
@@ -19460,5 +19484,62 @@ mod attempt_response_body_query_tests {
         assert!(response.available);
         assert_eq!(response.body_text.as_deref(), Some(response_body.as_str()));
         assert_eq!(response.body_size, Some(71));
+    }
+}
+
+#[cfg(test)]
+mod request_compression_query_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn request_compression_prefers_the_final_pool_attempt_without_using_earlier_attempts() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query("CREATE TABLE codex_invocations (invoke_id TEXT NOT NULL, payload TEXT)")
+            .execute(&pool)
+            .await
+            .expect("create invocations table");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream attempts table");
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, payload) VALUES ('pool-retry', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('direct', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('final-unknown', '{\"requestCompressionAlgorithm\":\"gzip\"}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert invocations");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'pool-retry', 1, 'br'), (2, 'pool-retry', 2, 'zstd'), (3, 'final-unknown', 1, 'deflate'), (4, 'final-unknown', 2, NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert upstream attempts");
+
+        let compression_sql =
+            invocation_request_compression_algorithm_with_attempt_fallback_sql("codex_invocations");
+        let query = format!(
+            "SELECT invoke_id, {compression_sql} AS request_compression_algorithm FROM codex_invocations ORDER BY invoke_id"
+        );
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(&query)
+            .fetch_all(&pool)
+            .await
+            .expect("query request compression");
+
+        assert_eq!(
+            rows,
+            vec![
+                ("direct".to_string(), Some("gzip".to_string())),
+                ("final-unknown".to_string(), None),
+                ("pool-retry".to_string(), Some("zstd".to_string())),
+            ]
+        );
     }
 }
