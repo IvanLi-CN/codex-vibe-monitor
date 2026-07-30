@@ -72,10 +72,9 @@
 
 - Storybook 覆盖=通过（新增 `SparseSeries` 状态与 play 覆盖）；视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=已回传；证据落盘=已落盘。
 - 证据绑定 SHA=`d43f3182`；来源为 mock-only `demo:preview`，覆盖桌面与 `390px` 移动端稀疏数据岛场景。
-- PR: include
+- PR: none
 - 桌面模型用量：连续日期域在数据岛之间绘制零基线。
   ![桌面长期统计连续堆叠面积](./assets/long-term-stats-gapless-desktop.png)
 
-PR: include
 `390px` 移动端模型用量与模型表：无页面级横向溢出。
 ![移动端长期统计连续堆叠面积](./assets/long-term-stats-gapless-mobile.png)
