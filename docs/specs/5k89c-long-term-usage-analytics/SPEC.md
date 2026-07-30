@@ -64,19 +64,12 @@
 
 ## Visual Evidence
 
-- Storybook 覆盖=通过（`bun run test-storybook`：11 files / 20 tests passed）。
-- 视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=待本次收口回传；证据落盘=已落盘。
-- 证据绑定 SHA=`b5648597`；来源为 mock-only `demo:dev`，覆盖桌面与 `390px` 移动端。
+- Storybook 覆盖=通过（新增 `SparseSeries` 状态与 play 覆盖）；视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=已回传；证据落盘=已落盘。
+- 证据绑定 SHA=`d43f3182`；来源为 mock-only `demo:preview`，覆盖桌面与 `390px` 移动端稀疏数据岛场景。
 - PR: include
-- 桌面长期统计图（全局折线、模型用量与上游账号堆叠面积）：
-  ![桌面长期统计堆叠面积](./assets/long-term-stats-desktop-stacked-area.png)
+- 桌面模型用量：连续日期域在数据岛之间绘制零基线。
+  ![桌面长期统计连续堆叠面积](./assets/long-term-stats-gapless-desktop.png)
 - PR: include
-- 桌面模型表（固定总计行、模型图标与思考程度胶囊）：
-  ![桌面模型身份表](./assets/long-term-stats-desktop-table.png)
-- PR: include
-- `390px` 移动端长期统计图：
-  ![移动端长期统计堆叠面积](./assets/long-term-stats-mobile-stacked-area.png)
-- PR: include
-- `390px` 移动端模型表与上游堆叠图：
-  ![移动端模型身份表](./assets/long-term-stats-mobile-table.png)
+- `390px` 移动端模型用量与模型表：无页面级横向溢出。
+  ![移动端长期统计连续堆叠面积](./assets/long-term-stats-gapless-mobile.png)
 - 截图来源为 mock-only `ui_demo`，不含敏感信息；推送包含截图文件前需取得主人明确授权。
