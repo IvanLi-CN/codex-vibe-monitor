@@ -309,7 +309,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   image:
   ![Invocation list request compression](./assets/request-compression-list.png)
 
