@@ -441,6 +441,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_account: Option<&PoolResolvedAccount>,
     terminal_connect_latency_ms: Option<f64>,
     terminal_error: Option<&PoolUpstreamError>,
+    terminal_request_compression_algorithm: Option<&str>,
     response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 ) -> bool {
     let response_envelope = response_envelope_override
@@ -495,7 +496,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             response_model: None,
             usage_missing_reason: None,
             request_parse_error: request_info.parse_error.as_deref(),
-            request_compression_algorithm: None,
+            request_compression_algorithm: terminal_request_compression_algorithm,
             request_compression_mode: None,
             request_compression_logical_body_bytes: None,
             request_compression_transmitted_body_bytes: None,
@@ -1107,6 +1108,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1150,6 +1152,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
                     None,
                     None,
                     None,
