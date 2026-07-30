@@ -1617,6 +1617,7 @@ where
         FROM pool_upstream_request_attempts
         WHERE occurred_at >= ?1
           AND occurred_at < ?2
+          AND LOWER(TRIM(COALESCE(status, ''))) <> 'budget_exhausted_final'
         ORDER BY invoke_id ASC, occurred_at ASC, attempt_index DESC, id DESC
         "#,
     )
@@ -1734,7 +1735,7 @@ mod ttft_archive_compatibility_tests {
             .await
             .expect("open sqlite");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, upstream_request_compression_algorithm TEXT)",
         )
         .execute(&pool)
         .await
@@ -1748,7 +1749,7 @@ mod ttft_archive_compatibility_tests {
         let prior_occurred_at =
             db_occurred_at_lower_bound(Utc::now() - ChronoDuration::seconds(30));
         sqlx::query(
-            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'retry', ?1, 1, 'br'), (2, 'retry', ?1, 2, 'zstd'), (3, 'retry', ?2, 1, 'gzip'), (4, 'final-unknown', ?1, 1, 'gzip'), (5, 'final-unknown', ?1, 2, NULL)",
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, status, upstream_request_compression_algorithm) VALUES (1, 'retry', ?1, 1, 'success', 'br'), (2, 'retry', ?1, 2, 'success', 'zstd'), (3, 'retry', ?2, 1, 'success', 'gzip'), (4, 'final-unknown', ?1, 1, 'success', 'gzip'), (5, 'final-unknown', ?1, 2, 'http_failure', NULL), (6, 'retry', ?1, 3, 'budget_exhausted_final', NULL)",
         )
         .bind(&occurred_at)
         .bind(&prior_occurred_at)

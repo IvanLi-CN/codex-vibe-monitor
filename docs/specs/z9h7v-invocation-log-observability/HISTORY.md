@@ -67,3 +67,4 @@
 
 - 2026-07-28: Corrected the opaque `keep_original` request audit reason from `already_current` to `policy_keep_original`, preserving the no-decode replay contract without implying unverified schema equivalence.
 - 2026-07-30: 调用列表、Prompt Cache 会话、账号活动预览与展开详情的请求压缩统一显示最终请求实际使用的 `requestCompressionAlgorithm`；pool 与归档历史读取最终 attempt，响应 `Content-Encoding` 仅作为“HTTP 响应压缩”展示，历史缺失数据不再跨方向回退。
+- 2026-07-30: 修复请求压缩在运行态号池快照与合成终态边界的缺失：算法一经确定即进入 SSE/runtime 记录，`budget_exhausted_final` 不再覆盖真实最终 attempt 的压缩值，归档聚合同步采用相同规则。

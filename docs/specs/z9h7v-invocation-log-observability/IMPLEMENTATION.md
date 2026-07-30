@@ -42,6 +42,7 @@
 - direct invocation payload 与 `pool_upstream_request_attempts` 现在都持久化上游请求压缩与 HTTP 近似真值所需字节事实：请求逻辑体、实际发送体、可见请求头近似字节、响应体字节和可见响应头近似字节；`savedBytes` / `ratioPct` 继续在 API 层派生，避免双写漂移。
 - 调用详情与账号上游尝试详情现在统一显示 `压缩比 + 前/后字节` 以及 `近似上传 / 近似下载`。调用详情桌面端固定为单行五列；账号尝试诊断区改为宽屏稳定网格，避免压缩证据横向溢出。
 - 调用列表、Prompt Cache 会话、账号活动预览与展开详情共享请求压缩语义：direct 调用读取持久化 payload 的 `requestCompressionAlgorithm`，pool 重试读取最终 attempt 的真实值，归档历史从独立 attempt archive 回填；响应 `Content-Encoding` 仅明确标为“HTTP 响应压缩”，历史缺字段稳定显示 `—`，不做跨方向回退。
+- 运行态号池快照在请求算法确定后同步携带当前 attempt 的 `requestCompressionAlgorithm`，因此 SSE、Live 与 Dashboard 不必等待终态写入才显示该值；`budget_exhausted_final` 是合成终态，不参与 live 或 archive 的最终请求压缩选择，真实最终 attempt 的空值仍保持空值而不回退到更早重试。
 
 ## Migrated Implementation Notes
 

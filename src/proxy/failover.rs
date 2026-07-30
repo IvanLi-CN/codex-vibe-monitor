@@ -1918,6 +1918,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             &account,
                             attempt_count,
                             distinct_account_count,
+                            Some(outbound_request_body.content_encoding.algorithm().as_str()),
                         )
                         .await;
                     }
@@ -2708,6 +2709,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             &account,
                             attempt_count,
                             distinct_account_count,
+                            None,
                         )
                         .await;
                     }

@@ -7701,12 +7701,14 @@ pub(crate) fn invocation_request_compression_algorithm_with_attempt_fallback_sql
            SELECT 1 \
              FROM pool_upstream_request_attempts attempt \
             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
-              AND attempt.occurred_at = {invocation_ref}.occurred_at\
+              AND attempt.occurred_at = {invocation_ref}.occurred_at \
+              AND LOWER(TRIM(COALESCE(attempt.status, ''))) <> 'budget_exhausted_final'\
          ) THEN (\
            SELECT NULLIF(TRIM(attempt.upstream_request_compression_algorithm), '') \
               FROM pool_upstream_request_attempts attempt \
              WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
                AND attempt.occurred_at = {invocation_ref}.occurred_at \
+               AND LOWER(TRIM(COALESCE(attempt.status, ''))) <> 'budget_exhausted_final' \
              ORDER BY attempt.attempt_index DESC, attempt.id DESC \
              LIMIT 1\
          ) ELSE NULLIF(TRIM(CASE WHEN json_valid({invocation_ref}.payload) \
@@ -19508,7 +19510,7 @@ mod request_compression_query_tests {
             .await
             .expect("create invocations table");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, status TEXT, upstream_request_compression_algorithm TEXT)",
         )
         .execute(&pool)
         .await
@@ -19521,7 +19523,7 @@ mod request_compression_query_tests {
         .await
         .expect("insert invocations");
         sqlx::query(
-            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'pool-retry', '2026-07-30 10:00:00', 1, 'br'), (2, 'pool-retry', '2026-07-30 10:00:00', 2, 'zstd'), (3, 'pool-retry', '2026-07-30 10:01:00', 1, 'identity'), (4, 'final-unknown', '2026-07-30 10:00:00', 1, 'deflate'), (5, 'final-unknown', '2026-07-30 10:00:00', 2, NULL)",
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, status, upstream_request_compression_algorithm) VALUES (1, 'pool-retry', '2026-07-30 10:00:00', 1, 'success', 'br'), (2, 'pool-retry', '2026-07-30 10:00:00', 2, 'success', 'zstd'), (3, 'pool-retry', '2026-07-30 10:01:00', 1, 'success', 'identity'), (4, 'final-unknown', '2026-07-30 10:00:00', 1, 'success', 'deflate'), (5, 'final-unknown', '2026-07-30 10:00:00', 2, 'http_failure', NULL), (6, 'pool-retry', '2026-07-30 10:00:00', 3, 'budget_exhausted_final', NULL)",
         )
         .execute(&pool)
         .await

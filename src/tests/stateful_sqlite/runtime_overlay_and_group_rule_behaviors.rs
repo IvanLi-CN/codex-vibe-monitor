@@ -270,6 +270,18 @@ pub(crate) fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> P
     }
 }
 
+#[test]
+fn runtime_pool_snapshot_serializes_request_compression_from_the_active_attempt() {
+    let mut record = test_proxy_capture_record("runtime-compression", "2026-07-30 10:00:00");
+    set_proxy_capture_record_request_compression_algorithm(&mut record, Some("zstd"));
+
+    let invocation = api_invocation_from_runtime_record(&record);
+    assert_eq!(
+        invocation.request_compression_algorithm.as_deref(),
+        Some("zstd")
+    );
+}
+
 async fn seed_success_invocation_for_records_page(
     state: &AppState,
     invoke_id: &str,
