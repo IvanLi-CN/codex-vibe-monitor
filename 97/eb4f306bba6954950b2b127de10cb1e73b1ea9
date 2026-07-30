@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.52.0",
+  "base_stable_version": "2.51.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-30T04:05:46Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.52.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c1115b4809ae18b6ef43423222f33c82332e4dad",
+  "pr_number": 715,
+  "pr_title": "fix(web): eliminate long-term stacked area gaps",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.52.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.52.0",
+  "target_sha": "97eb4f306bba6954950b2b127de10cb1e73b1ea9",
+  "type_label": "type:minor"
+}
