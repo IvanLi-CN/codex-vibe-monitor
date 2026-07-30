@@ -3,7 +3,11 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { LongTermMetrics, LongTermSeries, LongTermStatsOverviewResponse } from "../../lib/api";
-import { LongTermStatsSection, mergeSeriesPoints } from "./LongTermStatsSection";
+import {
+  globalTrendMetricLabelKey,
+  LongTermStatsSection,
+  mergeSeriesPoints,
+} from "./LongTermStatsSection";
 
 const areaChartData: Array<Array<Record<string, unknown>>> = [];
 
@@ -25,8 +29,8 @@ vi.mock("recharts", () => ({
   Area: ({ dataKey, stackId }: { dataKey?: string; stackId?: string }) => (
     <div data-testid="long-term-area" data-data-key={dataKey} data-stack-id={stackId} />
   ),
-  Line: ({ dataKey }: { dataKey?: string }) => (
-    <div data-testid="long-term-line" data-data-key={dataKey} />
+  Line: ({ dataKey, name }: { dataKey?: string; name?: string }) => (
+    <div data-testid="long-term-line" data-data-key={dataKey} data-name={name} />
   ),
   CartesianGrid: () => null,
   XAxis: () => null,
@@ -86,6 +90,9 @@ vi.mock("../../i18n", () => ({
         "stats.longTerm.modelAndReasoning": "Model / reasoning",
         "stats.longTerm.total": "Total",
         "stats.longTerm.unspecified": "Unspecified",
+        "stats.longTerm.global.tokens": "Total tokens",
+        "stats.longTerm.global.cost": "Total cost",
+        "stats.longTerm.global.calls": "Total calls",
       })[key] ?? key,
   }),
 }));
@@ -156,6 +163,27 @@ describe("mergeSeriesPoints", () => {
 });
 
 describe("LongTermStatsSection charts", () => {
+  it("labels the global line for the selected metric in the legend and tooltip", () => {
+    expect(globalTrendMetricLabelKey("tokens")).toBe("stats.longTerm.global.tokens");
+    expect(globalTrendMetricLabelKey("cost")).toBe("stats.longTerm.global.cost");
+    expect(globalTrendMetricLabelKey("calls")).toBe("stats.longTerm.global.calls");
+
+    const overview: LongTermStatsOverviewResponse = {
+      status: "ready",
+      statisticsStartDate: "2026-01-01",
+      processedRows: 1,
+      totalRows: 1,
+      timezone: "Asia/Shanghai",
+      range: "7d",
+      global: metrics(30, 3, 3),
+      daily: [{ date: "2026-07-01", ...metrics(30, 3, 3) }],
+      models: [],
+      upstreams: [],
+    };
+    const html = renderToStaticMarkup(<LongTermStatsSection overviewOverride={overview} />);
+    expect(html).toContain('data-name="Total tokens"');
+  });
+
   it("uses stacked areas only for model and upstream usage charts", () => {
     areaChartData.length = 0;
     const daily = Array.from({ length: 21 }, (_, index) => ({

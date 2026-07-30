@@ -503,7 +503,32 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     config.invocation_archive_ttl_days = 0;
 
     let archive_path = temp_dir.join("expired-archive.sqlite.gz");
-    write_gzip_test_file(&archive_path, b"expired");
+    let archive_db_path = temp_dir.join("expired-archive.sqlite");
+    fs::File::create(&archive_db_path).expect("create expired archive sqlite file");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open expired invocation archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create expired invocation archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, raw_response, t_total_ms, created_at
+        )
+        VALUES (1, 'expired-long-wall-time', '2025-01-01 23:00:00', '{}', ?1, '2025-01-01 23:00:00')
+        "#,
+    )
+    .bind(48.0_f64 * 60.0 * 60.0 * 1000.0)
+    .execute(&archive_pool)
+    .await
+    .expect("insert multi-day expired invocation archive row");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress expired invocation archive");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash expired invocation archive");
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -526,7 +551,7 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     .bind("codex_invocations")
     .bind("2025-01")
     .bind(archive_path.to_string_lossy().to_string())
-    .bind("expired-sha")
+    .bind(&archive_sha256)
     .bind(1_i64)
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind("2025-01-01 00:00:00")
@@ -556,7 +581,7 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     )
     .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
     .bind(archive_path.to_string_lossy().to_string())
-    .bind("expired-sha")
+    .bind(&archive_sha256)
     .execute(&pool)
     .await
     .expect("mark long-term archive replay complete");
@@ -578,6 +603,694 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
             .await
             .expect("count remaining archive manifest rows");
     assert_eq!(remaining_manifest_rows, 0);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load long-term integrity source boundary");
+    assert_eq!(
+        integrity_source_start.as_deref(),
+        Some("2025-01-04"),
+        "archive cleanup must exclude every Shanghai day touched by a multi-day wall-time interval"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_archive_keeps_a_missing_materialized_invocation_manifest_after_source_loss()
+ {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("cleanup-missing-invocation-manifest-finalize").await;
+    let missing_archive_path = temp_dir.join("missing-finalizable-manifest.sqlite.gz");
+    let coverage_end_at =
+        shanghai_local_days_ago((config.invocation_max_days + 30) as i64, 9, 0, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '2000-01-01 00:00:00', datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-cleanup-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing replayed invocation archive metadata");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = 'error', last_error = 'terminal integrity proof reconciliation is incomplete' WHERE id = 1",
+    )
+        .execute(&pool)
+        .await
+        .expect("mark long-term statistics unavailable after source loss");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-cleanup-sha")
+    .execute(&pool)
+    .await
+    .expect("insert long-term replay marker");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("retain missing source manifest during expiry cleanup");
+    assert_eq!(deleted, 0);
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained archive batches");
+    assert_eq!(remaining_batches, 1);
+    let remaining_markers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .fetch_one(&pool)
+    .await
+    .expect("count retained replay markers");
+    assert_eq!(remaining_markers, 1);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved long-term source boundary");
+    assert!(integrity_source_start.is_none());
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("load durable source-loss status");
+    assert_eq!(status, "error");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_invocation_archive_requires_every_source_timestamp_to_be_parseable() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-ttl-cleanup-unparseable-source").await;
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "archive-ttl-cleanup-unparseable-source",
+        &[
+            (
+                1_i64,
+                "archive-ttl-cleanup-parseable-source",
+                "2025-01-01 09:00:00",
+                SOURCE_PROXY,
+                "success",
+                42_i64,
+                0.42_f64,
+                Some(120.0),
+            ),
+            (
+                2_i64,
+                "archive-ttl-cleanup-unparseable-source",
+                "invalid-timestamp",
+                SOURCE_PROXY,
+                "success",
+                42_i64,
+                0.42_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+    let archive_sha256: String =
+        sqlx::query_scalar("SELECT sha256 FROM archive_batches WHERE file_path = ?1")
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load archive checksum");
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET coverage_start_at = '2025-01-01 00:00:00',
+            coverage_end_at = '2025-01-01 00:00:00',
+            archive_expires_at = '2000-01-01 00:00:00',
+            historical_rollups_materialized_at = datetime('now')
+        WHERE file_path = ?1
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("mark unparseable archive eligible for cleanup");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for cleanup fixture");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark long-term archive replay complete");
+
+    let boundary =
+        crate::long_term_stats::long_term_integrity_source_safe_start_for_archive_cleanup(
+            &pool,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_path.to_string_lossy(),
+            Some("2025-01-01 00:00:00"),
+        )
+        .await;
+    assert!(
+        boundary.is_err(),
+        "manifest coverage must not substitute for an unparseable source timestamp"
+    );
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("unparseable source should retain the archive instead of failing cleanup");
+    assert_eq!(deleted, 0);
+    assert!(archive_path.exists());
+    let cleanup_state: String =
+        sqlx::query_scalar("SELECT cleanup_state FROM archive_batches WHERE file_path = ?1")
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load retained archive cleanup state");
+    assert_eq!(cleanup_state, ARCHIVE_CLEANUP_STATE_ACTIVE);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved source boundary");
+    assert!(integrity_source_start.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_invocation_archive_preserves_source_when_metadata_transaction_fails() {
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-ttl-cleanup-transaction-failure").await;
+    config.invocation_archive_ttl_days = 0;
+    let occurred_at = "2025-01-01 09:00:00";
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "archive-ttl-cleanup-transaction-failure",
+        &[(
+            1_i64,
+            "archive-ttl-cleanup-transaction-failure",
+            occurred_at,
+            SOURCE_PROXY,
+            "success",
+            42_i64,
+            0.42_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    let archive_sha256: String =
+        sqlx::query_scalar("SELECT sha256 FROM archive_batches WHERE file_path = ?1")
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load archive checksum");
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET coverage_start_at = ?1,
+            coverage_end_at = ?1,
+            archive_expires_at = '2025-01-02 00:00:00',
+            historical_rollups_materialized_at = datetime('now')
+        WHERE file_path = ?2
+        "#,
+    )
+    .bind(occurred_at)
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("mark archive eligible for cleanup");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for cleanup fixture");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark long-term archive replay complete");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER reject_archive_cleanup
+        BEFORE UPDATE OF cleanup_state ON archive_batches
+        WHEN NEW.cleanup_state = 'delete_pending'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced archive metadata transaction failure');
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("install archive cleanup failure trigger");
+
+    cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect_err("metadata transaction failure should abort archive cleanup");
+    assert!(
+        archive_path.exists(),
+        "the readable archive source must remain when its metadata transaction rolls back"
+    );
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained archive batch");
+    assert_eq!(remaining_batches, 1);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load rolled-back long-term integrity source boundary");
+    assert!(
+        integrity_source_start.is_none(),
+        "a rolled-back metadata transaction must not publish a source boundary"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_archive_retries_pending_file_deletion_without_advancing_source_boundary_early()
+ {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-ttl-cleanup-pending-delete").await;
+    let pending_path = temp_dir.join("pending-delete-directory");
+    fs::create_dir_all(&pending_path).expect("create pending-delete directory");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            cleanup_state,
+            cleanup_source_safe_start_date,
+            archive_expires_at,
+            created_at
+        )
+        VALUES ('codex_quota_snapshots', '2025-01', ?1, 'pending-delete-sha', 1, ?2, 'delete_pending', '2025-01-04', '2000-01-01 00:00:00', datetime('now'))
+        "#,
+    )
+    .bind(pending_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert pending archive deletion record");
+
+    let first_attempt = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("failed file deletion should remain retryable");
+    assert_eq!(first_attempt, 0);
+    let pending_state: (String, String) =
+        sqlx::query_as("SELECT status, cleanup_state FROM archive_batches WHERE file_path = ?1")
+            .bind(pending_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load retained pending deletion record");
+    assert_eq!(pending_state.0, ARCHIVE_STATUS_COMPLETED);
+    assert_eq!(pending_state.1, ARCHIVE_CLEANUP_STATE_DELETE_PENDING);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load source boundary after failed pending cleanup");
+    assert!(
+        integrity_source_start.is_none(),
+        "a failed pending file cleanup must not publish its staged source boundary"
+    );
+
+    fs::remove_dir(&pending_path).expect("remove directory that blocks file deletion");
+    fs::write(&pending_path, b"retryable archive file").expect("restore removable archive file");
+    let retryable_sha256 = sha256_hex_file(&pending_path).expect("hash retryable archive file");
+    sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+        .bind(retryable_sha256)
+        .bind(pending_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("update retryable archive identity");
+    let second_attempt = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("pending archive deletion should retry successfully");
+    assert_eq!(second_attempt, 1);
+    assert!(!pending_path.exists());
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retired pending deletion record");
+    assert_eq!(remaining_batches, 0);
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load source boundary after finalized pending cleanup");
+    assert_eq!(integrity_source_start.as_deref(), Some("2025-01-04"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_attempt_archive_preserves_the_long_term_source_boundary_and_retains_unverifiable_mapping()
+ {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("attempt-archive-long-term-boundary").await;
+    let occurred_at = "2025-01-01 23:00:00";
+    insert_retention_invocation(
+        &pool,
+        "attempt-archive-long-term-boundary",
+        occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{}"),
+        "{}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sqlx::query("UPDATE codex_invocations SET t_total_ms = ?1 WHERE invoke_id = ?2")
+        .bind(48.0_f64 * 60.0 * 60.0 * 1000.0)
+        .bind("attempt-archive-long-term-boundary")
+        .execute(&pool)
+        .await
+        .expect("add multi-day timing to matching live invocation");
+
+    let archive_path = temp_dir.join("expired-attempt-archive.sqlite.gz");
+    let archive_db_path = temp_dir.join("expired-attempt-archive.sqlite");
+    fs::File::create(&archive_db_path).expect("create expired attempt archive sqlite file");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open expired attempt archive sqlite");
+    let create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create expired attempt archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            created_at
+        )
+        VALUES (1, ?1, ?2, '/v1/responses', 'pool', 7, 0, 0, 0, 'succeeded', ?2)
+        "#,
+    )
+    .bind("attempt-archive-long-term-boundary")
+    .bind(occurred_at)
+    .execute(&archive_pool)
+    .await
+    .expect("insert attempt account mapping");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress expired attempt archive");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash expired attempt archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (1, 'pool_upstream_request_attempts', '2025-01', ?1, ?4, 1, ?2, ?3, ?3, '2025-01-02 00:00:00', datetime('now'), ?3)
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(occurred_at)
+    .bind(&archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("insert expired attempt archive manifest");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for attempt cleanup");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+        LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+        )
+        .bind(target)
+        .bind(archive_path.to_string_lossy().to_string())
+        .bind(&archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("mark attempt archive replay complete");
+    }
+
+    let verified_safe_start =
+        crate::long_term_stats::long_term_integrity_source_safe_start_for_archive_cleanup(
+            &pool,
+            "pool_upstream_request_attempts",
+            &archive_path.to_string_lossy(),
+            Some(occurred_at),
+        )
+        .await
+        .expect("resolve the live invocation for the archived attempt mapping");
+    assert_eq!(
+        verified_safe_start,
+        Some(NaiveDate::from_ymd_opt(2025, 1, 4).expect("fixed safe date"))
+    );
+
+    let deleted = cleanup_expired_archive_batches(&pool, &_config, false)
+        .await
+        .expect("cleanup expired attempt archive");
+    assert_eq!(deleted, 1);
+    assert!(!archive_path.exists());
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load long-term integrity source boundary after attempt cleanup");
+    assert_eq!(integrity_source_start.as_deref(), Some("2025-01-04"));
+
+    let unverifiable_archive_path = temp_dir.join("unverifiable-attempt-archive.sqlite.gz");
+    let unverifiable_archive_db_path = temp_dir.join("unverifiable-attempt-archive.sqlite");
+    fs::File::create(&unverifiable_archive_db_path)
+        .expect("create unverifiable attempt archive sqlite file");
+    let archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&unverifiable_archive_db_path))
+            .await
+            .expect("open unverifiable attempt archive sqlite");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create unverifiable attempt archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            created_at
+        )
+        VALUES (1, 'missing-invocation-source', ?1, '/v1/responses', 'pool', 7, 0, 0, 0, 'succeeded', ?1)
+        "#,
+    )
+    .bind(occurred_at)
+    .execute(&archive_pool)
+    .await
+    .expect("insert unverifiable attempt account mapping");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&unverifiable_archive_db_path, &unverifiable_archive_path)
+        .expect("compress unverifiable attempt archive");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (2, 'pool_upstream_request_attempts', '2025-01', ?1, 'unverifiable-attempt-sha', 1, ?2, ?3, ?3, '2025-01-02 00:00:00', datetime('now'), ?3)
+        "#,
+    )
+    .bind(unverifiable_archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert unverifiable attempt archive manifest");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+        LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, 'unverifiable-attempt-sha')",
+        )
+        .bind(target)
+        .bind(unverifiable_archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark unverifiable attempt archive replay complete");
+    }
+
+    let deleted = cleanup_expired_archive_batches(&pool, &_config, false)
+        .await
+        .expect("attempt cleanup should retain unverifiable mapping");
+    assert_eq!(deleted, 0);
+    assert!(unverifiable_archive_path.exists());
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained unverifiable archive batch");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_attempt_archive_keeps_a_missing_manifest_as_long_term_source_evidence() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("cleanup-missing-attempt-manifest").await;
+    let missing_archive_path = temp_dir.join("missing-attempt-source.sqlite.gz");
+    let coverage_end_at = shanghai_local_days_ago(400, 9, 0, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (1, 'pool_upstream_request_attempts', ?1, ?2, 'missing-attempt-sha', 1, ?3, ?4, ?4, '2000-01-01 00:00:00', datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing expired attempt archive manifest");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term statistics ready for attempt cleanup");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+        LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, 'missing-attempt-sha')",
+        )
+        .bind(target)
+        .bind(missing_archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark missing attempt archive replay complete");
+    }
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("retain missing attempt source manifest during expiry cleanup");
+    assert_eq!(deleted, 0);
+    let remaining_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count retained missing attempt manifest");
+    assert_eq!(remaining_batches, 1);
+    let remaining_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'pool_upstream_request_attempts' AND file_path = ?1",
+    )
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count retained missing attempt markers");
+    assert_eq!(remaining_marker_count, 3);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -863,6 +1576,91 @@ async fn prune_legacy_archive_batches_keeps_missing_invocation_manifest_while_ba
 }
 
 #[tokio::test]
+async fn prune_legacy_archive_batches_keeps_a_materialized_missing_manifest_after_source_loss() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("prune-missing-invocation-manifest-finalize").await;
+    let missing_archive_path = temp_dir.join("missing-finalizable-manifest.sqlite.gz");
+    let coverage_end_at =
+        shanghai_local_days_ago((config.invocation_max_days + 30) as i64, 9, 0, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-finalizable-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing replayed invocation archive metadata");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = 'error', last_error = 'terminal integrity proof reconciliation is incomplete' WHERE id = 1",
+    )
+        .execute(&pool)
+        .await
+        .expect("mark long-term statistics unavailable after source loss");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("missing-finalizable-sha")
+    .execute(&pool)
+    .await
+    .expect("insert long-term replay marker");
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("retain missing source manifest");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_unmaterialized_batches, 1);
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained archive batches");
+    assert_eq!(remaining_batches, 1);
+    let remaining_markers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .fetch_one(&pool)
+    .await
+    .expect("count retained replay markers");
+    assert_eq!(remaining_markers, 1);
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("load durable source-loss status");
+    assert_eq!(status, "error");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_prune_preserves_upstream_account_id_for_archive_manifest() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("prune-preserve-upstream-account").await;
@@ -1035,6 +1833,24 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
     assert!(
         !archive_path.exists(),
         "pruned legacy archive file should be removed"
+    );
+    let integrity_source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load long-term integrity source boundary after legacy prune");
+    assert_eq!(
+        integrity_source_start.as_deref(),
+        Some(
+            archived_hour_local
+                .date()
+                .succ_opt()
+                .expect("archived date has successor")
+                .to_string()
+                .as_str()
+        ),
+        "legacy archive prune must persist the exact source boundary before deleting the source"
     );
 
     let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
@@ -3500,6 +4316,20 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
         Some(&recent_occurred_at),
     )
     .await;
+    insert_retention_invocation(
+        &pool,
+        "retention-pool-attempts-old",
+        &old_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":7}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
 
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
@@ -4847,33 +5677,53 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .expect("resolve segment path");
     fs::create_dir_all(segment_path.parent().expect("segment parent"))
         .expect("create segment parent");
-    fs::write(&segment_path, b"expired segment").expect("write segment archive");
+    let segment_source_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "prune-segment-source",
+        &[(
+            1_i64,
+            "prune-segment-source",
+            "2025-01-02 09:00:00",
+            SOURCE_PROXY,
+            "success",
+            42_i64,
+            0.42_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    fs::rename(&segment_source_path, &segment_path)
+        .expect("move segment archive into fixture path");
+    let segment_sha256 = sha256_hex_file(&segment_path).expect("load segment archive checksum");
     sqlx::query(
         r#"
-        INSERT INTO archive_batches (
-            dataset, month_key, day_key, part_key, file_path, sha256, row_count, status, layout, codec, writer_version, cleanup_state, coverage_start_at, coverage_end_at, archive_expires_at, historical_rollups_materialized_at, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
+        UPDATE archive_batches
+        SET day_key = '2025-01-02',
+            part_key = 'part-000001',
+            file_path = ?1,
+            sha256 = ?2,
+            layout = ?3,
+            codec = ?4,
+            writer_version = ?5,
+            cleanup_state = ?6,
+            coverage_start_at = '2025-01-02 09:00:00',
+            coverage_end_at = '2025-01-02 09:00:00',
+            archive_expires_at = '2000-01-01 00:00:00',
+            historical_rollups_materialized_at = datetime('now')
+        WHERE file_path = ?7
         "#,
     )
-    .bind("codex_invocations")
-    .bind("2025-01")
-    .bind("2025-01-02")
-    .bind("part-000001")
     .bind(segment_path.to_string_lossy().to_string())
-    .bind("deadbeef")
-    .bind(1_i64)
-    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(segment_sha256.clone())
     .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
     .bind(ARCHIVE_FILE_CODEC_GZIP)
     .bind(ARCHIVE_WRITER_VERSION_SEGMENT_V1)
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-    .bind("2025-01-02 00:00:00")
-    .bind("2025-01-02 00:00:00")
-    .bind("2000-01-01 00:00:00")
+    .bind(segment_source_path.to_string_lossy().to_string())
     .execute(&pool)
     .await
-    .expect("insert expired segment manifest");
+    .expect("adapt expired segment manifest to fixture path");
     sqlx::query("UPDATE long_term_stats_state SET status = 'empty' WHERE id = 1")
         .execute(&pool)
         .await
@@ -4882,33 +5732,52 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     let legacy_path = archive_batch_file_path(&config, "codex_invocations", "2024-12")
         .expect("resolve legacy batch path");
     fs::create_dir_all(legacy_path.parent().expect("legacy parent")).expect("create legacy parent");
-    fs::write(&legacy_path, b"legacy archive").expect("write legacy archive");
+    let legacy_source_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "prune-legacy-source",
+        &[(
+            2_i64,
+            "prune-legacy-source",
+            "2024-12-01 09:00:00",
+            SOURCE_PROXY,
+            "success",
+            42_i64,
+            0.42_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    fs::rename(&legacy_source_path, &legacy_path).expect("move legacy archive into fixture path");
+    let legacy_sha256 = sha256_hex_file(&legacy_path).expect("load legacy archive checksum");
     sqlx::query(
         r#"
-        INSERT INTO archive_batches (
-            dataset, month_key, file_path, sha256, row_count, status, layout, codec, writer_version, cleanup_state, coverage_start_at, coverage_end_at, historical_rollups_materialized_at, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
+        UPDATE archive_batches
+        SET file_path = ?1,
+            sha256 = ?2,
+            layout = ?3,
+            codec = ?4,
+            writer_version = ?5,
+            cleanup_state = ?6,
+            coverage_start_at = '2024-12-01 09:00:00',
+            coverage_end_at = '2024-12-01 09:00:00',
+            historical_rollups_materialized_at = datetime('now')
+        WHERE file_path = ?7
         "#,
     )
-    .bind("codex_invocations")
-    .bind("2024-12")
     .bind(legacy_path.to_string_lossy().to_string())
-    .bind("feedface")
-    .bind(1_i64)
-    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(legacy_sha256.clone())
     .bind(ARCHIVE_LAYOUT_LEGACY_MONTH)
     .bind(ARCHIVE_FILE_CODEC_GZIP)
     .bind(ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1)
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-    .bind("2024-12-01 00:00:00")
-    .bind("2024-12-01 00:00:00")
+    .bind(legacy_source_path.to_string_lossy().to_string())
     .execute(&pool)
     .await
-    .expect("insert legacy archive manifest");
+    .expect("adapt legacy archive manifest to fixture path");
     for (archive_path, archive_sha256) in [
-        (segment_path.to_string_lossy().to_string(), "deadbeef"),
-        (legacy_path.to_string_lossy().to_string(), "feedface"),
+        (segment_path.to_string_lossy().to_string(), segment_sha256),
+        (legacy_path.to_string_lossy().to_string(), legacy_sha256),
     ] {
         sqlx::query(
             "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
@@ -5193,7 +6062,7 @@ async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
 }
 
 #[tokio::test]
-async fn ensure_schema_backfills_first_response_byte_totals_for_legacy_invocation_rollups() {
+async fn ensure_schema_backfills_legacy_invocation_rollup_aggregate_columns() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("legacy-rollup-first-response-byte-total-backfill").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -5335,6 +6204,815 @@ async fn ensure_schema_backfills_first_response_byte_totals_for_legacy_invocatio
         row.3, "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
         "backfill should write a non-empty histogram"
     );
+
+    let terminal = sqlx::query_as::<_, (i64, i64, f64, i64)>(
+        r#"
+        SELECT terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load terminal proof backfill");
+    assert_eq!(terminal.0, 1);
+    assert_eq!(terminal.1, 42);
+    assert_eq!(terminal.2, 0.42);
+    assert_eq!(terminal.3, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_reconciles_legacy_rollups_when_sources_are_complete() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("legacy-rollup-terminal-proof-partial-source").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-rollup-terminal-proof-partial-source",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollup");
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = 2, total_tokens = 84, total_cost = 0.84 WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed canonical totals that cannot be reconstructed from the remaining source");
+
+    sqlx::query("ALTER TABLE invocation_rollup_hourly RENAME TO invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("rename current invocation rollup table");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation rollup table");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        SELECT
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        FROM invocation_rollup_hourly_current
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("copy legacy invocation rollup row");
+    sqlx::query("DROP TABLE invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("drop current invocation rollup table copy");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema should reconcile a legacy canonical row against complete sources");
+
+    let row = sqlx::query_as::<_, (i64, i64, f64, i64)>(
+        r#"
+        SELECT total_count, total_tokens, total_cost, terminal_proof_complete
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load reconciled legacy rollup");
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1, 42);
+    assert_eq!(row.2, 0.42);
+    assert_eq!(
+        row.3, 1,
+        "complete sources should restore the terminal integrity proof after replacing legacy totals"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn terminal_proof_reconciliation_repairs_a_contradictory_canonical_bucket() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-incremental-reconciliation").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-incremental-reconciliation",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    let proof_before_reconciliation: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load unproved incremental rollup");
+    assert_eq!(
+        proof_before_reconciliation, 0,
+        "bounded incremental writes cannot certify complete historical source coverage"
+    );
+
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("reconcile canonical rollup against all available sources");
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = 9, terminal_count = 9, terminal_tokens = 999, terminal_cost = 9.99, total_tokens = 999, total_cost = 9.99, terminal_proof_complete = 0 WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("corrupt canonical hourly rollup");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("complete reconciliation should repair canonical totals");
+    let repaired = sqlx::query_as::<_, (i64, i64, i64, f64, i64)>(
+        "SELECT total_count, terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired canonical rollup");
+    assert!(reconciliation.source_complete);
+    assert_eq!(repaired, (1, 1, 42, 0.42, 1));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn terminal_proof_is_revoked_when_a_completed_invocation_archive_is_missing() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-missing-archive").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-missing-archive",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the live-only fixture");
+    let proof_before_missing_archive: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load initially certified terminal proof");
+    assert_eq!(proof_before_missing_archive, 1);
+
+    let missing_archive_path = temp_dir.join("missing-terminal-proof-source.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES ('codex_invocations', '2026-01', ?1, 'missing-terminal-proof-sha', 1, ?2, '2026-01-01 00:00:00', '2026-01-01 00:00:00', datetime('now'))
+        "#,
+    )
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert missing completed invocation archive manifest");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("incomplete reconciliation should not certify a partial source set");
+    assert_eq!(reconciliation.applied_rollups, 0);
+    assert!(
+        !reconciliation.source_complete,
+        "a missing completed archive must make source reconciliation incomplete"
+    );
+    let proof_after_missing_archive: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load terminal proof after missing archive detection");
+    assert_eq!(
+        proof_after_missing_archive, 0,
+        "a completed but unreadable archive makes every canonical terminal proof unavailable"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn terminal_proof_is_revoked_when_a_readable_invocation_archive_hash_mismatches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-archive-hash-mismatch").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-archive-hash-mismatch-live",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the live bucket");
+
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "terminal-proof-archive-hash-mismatch",
+        &[(
+            1_i64,
+            "terminal-proof-archive-hash-mismatch-archive",
+            &shanghai_local_days_ago(20, 9, 0, 0),
+            SOURCE_PROXY,
+            "success",
+            42_i64,
+            0.42_f64,
+            None,
+        )],
+    )
+    .await;
+    sqlx::query("UPDATE archive_batches SET sha256 = 'tampered-archive-sha' WHERE file_path = ?1")
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("corrupt archive manifest identity");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("hash mismatch should make the source unavailable without failing refresh");
+    let proof_after_hash_mismatch: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load terminal proof after archive hash mismatch");
+    assert!(!reconciliation.source_complete);
+    assert_eq!(reconciliation.applied_rollups, 0);
+    assert_eq!(
+        reconciliation.unavailable_archive_file_paths,
+        vec![archive_path.to_string_lossy().to_string()]
+    );
+    assert_eq!(proof_after_hash_mismatch, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn unreadable_archive_does_not_revoke_retired_terminal_proofs() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-retired-source-unavailable-archive").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-retired-source-unavailable-archive",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the historical bucket");
+
+    let source_start = shanghai_local_days_ago(2, 0, 0, 0)[..10].to_string();
+    sqlx::query("UPDATE long_term_stats_state SET integrity_source_start_date = ?1 WHERE id = 1")
+        .bind(&source_start)
+        .execute(&pool)
+        .await
+        .expect("record durable source boundary after archive retirement");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-retired-source-unavailable-archive")
+        .execute(&pool)
+        .await
+        .expect("simulate intentionally retired source rows");
+    let missing_archive_path = temp_dir.join("missing-active-terminal-proof-source.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES ('codex_invocations', '2026-01', ?1, 'missing-active-terminal-proof-sha', 1, ?2, '2026-01-01 00:00:00', '2026-01-01 00:00:00', datetime('now'))
+        "#,
+    )
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert missing active invocation archive manifest");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("unreadable active archive should retain retired proofs");
+    assert!(
+        !reconciliation.source_complete,
+        "the unavailable active archive must still keep the refresh in error"
+    );
+    let retired_proof: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load proof for intentionally retired bucket");
+    assert_eq!(retired_proof, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn complete_reconciliation_removes_stale_missing_canonical_buckets() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-reconciliation-drops-bucket").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    for (invoke_id, source) in [
+        ("terminal-proof-reconciliation-proxy", SOURCE_PROXY),
+        ("terminal-proof-reconciliation-xy", SOURCE_XY),
+    ] {
+        insert_retention_invocation(
+            &pool,
+            invoke_id,
+            &occurred_at,
+            source,
+            "success",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":true}",
+            None,
+            None,
+            Some(42),
+            Some(0.42),
+        )
+        .await;
+    }
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify both buckets");
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-reconciliation-proxy")
+        .execute(&pool)
+        .await
+        .expect("remove one source row from the reconciled source set");
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("reconciliation should remove a missing canonical bucket");
+    let proxy_rollups: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_PROXY)
+            .fetch_one(&pool)
+            .await
+            .expect("count removed proxy rollup");
+    let xy_proof: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_XY)
+    .fetch_one(&pool)
+    .await
+    .expect("load still-reconstructed xy proof");
+    assert!(reconciliation.source_complete);
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    assert_eq!(proxy_rollups, 0);
+    assert_eq!(xy_proof, 1);
+
+    // A prior incomplete run may already have marked the missing bucket untrusted. A complete
+    // scan must remove that stale row too; otherwise audits skip the date forever.
+    let proxy_bucket_start =
+        invocation_bucket_start_epoch(&occurred_at).expect("valid Shanghai source timestamp");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete, total_tokens, total_cost) VALUES (?1, ?2, 1, 1, 0, 1, 42, 0.42, 0, 42, 0.42)",
+    )
+    .bind(proxy_bucket_start)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("insert stale untrusted proxy rollup");
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("complete reconciliation should remove stale untrusted bucket");
+    let proxy_rollups: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_PROXY)
+            .fetch_one(&pool)
+            .await
+            .expect("count stale untrusted proxy rollup");
+    assert!(reconciliation.source_complete);
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    assert_eq!(proxy_rollups, 0);
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-reconciliation-xy")
+        .execute(&pool)
+        .await
+        .expect("remove the final source row from the reconciled source set");
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("empty reconciliation should remove every remaining active canonical bucket");
+    let xy_rollups_after_empty_reconciliation: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_XY)
+            .fetch_one(&pool)
+            .await
+            .expect("count rollups after empty reconciliation");
+    assert!(reconciliation.source_complete);
+    assert_eq!(xy_rollups_after_empty_reconciliation, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn schema_upgrade_preserves_legacy_canonical_history_outside_the_new_source_window() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+    sqlx::query("DROP TABLE invocation_rollup_hourly")
+        .execute(&pool)
+        .await
+        .expect("replace current canonical table with origin/main shape");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy canonical table");
+    let legacy_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    let legacy_bucket =
+        invocation_bucket_start_epoch(&legacy_occurred_at).expect("resolve legacy bucket");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) VALUES (?1, ?2, 1, 1, 0, 42, 0.42)",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed canonical history whose source was retired before upgrade");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET integrity_source_start_date = NULL, integrity_source_pending_start_date = NULL WHERE id = 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("clear new boundary to simulate origin/main state");
+
+    let expected_source_start = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+    ensure_schema(&pool)
+        .await
+        .expect("upgrade legacy canonical rollup schema");
+
+    let preserved: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT total_tokens, terminal_proof_complete FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .fetch_optional(&pool)
+    .await
+    .expect("load preserved legacy canonical bucket");
+    assert_eq!(preserved, Some((42, 0)));
+    let source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load migration source boundary");
+    assert_eq!(
+        source_start.as_deref(),
+        Some(expected_source_start.as_str())
+    );
+}
+
+#[tokio::test]
+async fn schema_upgrade_resumes_boundary_bootstrap_after_rollup_columns_are_present() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+    let legacy_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    let legacy_bucket =
+        invocation_bucket_start_epoch(&legacy_occurred_at).expect("resolve legacy bucket");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) VALUES (?1, ?2, 1, 1, 0, 42, 0.42)",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed canonical history after every rollup ALTER TABLE completed");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET integrity_source_start_date = NULL, integrity_source_pending_start_date = NULL WHERE id = 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("simulate interruption before durable boundary bootstrap");
+
+    let expected_source_start = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+    ensure_schema(&pool)
+        .await
+        .expect("resume schema migration after completed rollup ALTER TABLE statements");
+
+    let preserved: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT total_tokens, terminal_proof_complete FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .fetch_optional(&pool)
+    .await
+    .expect("load preserved canonical bucket");
+    assert_eq!(preserved, Some((42, 0)));
+    let source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load resumed migration source boundary");
+    assert_eq!(
+        source_start.as_deref(),
+        Some(expected_source_start.as_str())
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_keeps_a_pre_retention_live_snapshot_from_deleting_canonical_history() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-consistent-source-snapshot").await;
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(&pool)
+        .await
+        .expect("enable concurrent reader and writer fixture");
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-consistent-source-snapshot",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed canonical rollup before reconciliation");
+
+    let snapshot_open = std::sync::Arc::new(tokio::sync::Notify::new());
+    let resume_live_scan = std::sync::Arc::new(tokio::sync::Notify::new());
+    let reconciliation_pool = pool.clone();
+    let snapshot_open_for_task = snapshot_open.clone();
+    let resume_live_scan_for_task = resume_live_scan.clone();
+    let reconciliation = tokio::spawn(async move {
+        backfill_invocation_rollup_hourly_from_sources_with_snapshot_hook(
+            &reconciliation_pool,
+            move || async move {
+                snapshot_open_for_task.notify_one();
+                resume_live_scan_for_task.notified().await;
+            },
+        )
+        .await
+    });
+    snapshot_open.notified().await;
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-consistent-source-snapshot")
+        .execute(&pool)
+        .await
+        .expect("simulate retention removing the live row after snapshot creation");
+    resume_live_scan.notify_one();
+    let reconciliation = reconciliation
+        .await
+        .expect("join source reconciliation task");
+
+    if let Err(error) = reconciliation {
+        let message = error.to_string().to_ascii_lowercase();
+        assert!(
+            message.contains("locked") || message.contains("busy"),
+            "only a retryable snapshot-write conflict is allowed, got {error}"
+        );
+    }
+    let canonical_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_PROXY)
+            .fetch_one(&pool)
+            .await
+            .expect("count canonical row after concurrent retention");
+    assert_eq!(
+        canonical_rows, 1,
+        "a source snapshot that predated retention must not delete its canonical rollup"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn terminal_proof_keeps_retired_buckets_but_removes_missing_boundary_buckets() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-retired-source-boundary").await;
+    let retired_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    let boundary_occurred_at = shanghai_local_days_ago(2, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-retired-source-boundary",
+        &retired_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-missing-boundary-bucket",
+        &boundary_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the bucket");
+
+    let source_start = shanghai_local_days_ago(2, 0, 0, 0)[..10].to_string();
+    sqlx::query("UPDATE long_term_stats_state SET integrity_source_start_date = ?1 WHERE id = 1")
+        .bind(&source_start)
+        .execute(&pool)
+        .await
+        .expect("record durable source boundary after archive retirement");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-retired-source-boundary")
+        .execute(&pool)
+        .await
+        .expect("simulate intentionally retired source rows");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("terminal-proof-missing-boundary-bucket")
+        .execute(&pool)
+        .await
+        .expect("simulate a missing source that remains inside the source window");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("reconciliation should distinguish retired and active source buckets");
+    assert!(
+        reconciliation.source_complete,
+        "a complete source scan should remove a missing active-window bucket"
+    );
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    let proofs_after_reconciliation = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT bucket_start_epoch, terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 ORDER BY bucket_start_epoch ASC",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_all(&pool)
+    .await
+    .expect("load terminal proofs after source reconciliation");
+    assert_eq!(proofs_after_reconciliation.len(), 1);
+    assert_eq!(proofs_after_reconciliation[0].1, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }

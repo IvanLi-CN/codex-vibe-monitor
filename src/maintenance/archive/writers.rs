@@ -555,20 +555,22 @@ pub(crate) async fn archive_rows_into_month_batch(
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
-    if let Err(err) = fs::rename(&temp_gzip_path, &final_path).with_context(|| {
-        format!(
-            "failed to move archive batch into place: {} -> {}",
-            temp_gzip_path.display(),
-            final_path.display()
-        )
-    }) {
+    let sha256 = sha256_hex_file(&temp_gzip_path)?;
+    if let Err(err) = replace_legacy_archive_file_with_cleanup_serialization(
+        pool,
+        spec.dataset,
+        month_key,
+        &temp_gzip_path,
+        &final_path,
+    )
+    .await
+    {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
     let _ = fs::remove_file(&work_path);
 
-    let sha256 = sha256_hex_file(&final_path)?;
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,
         month_key: month_key.to_string(),
@@ -587,6 +589,49 @@ pub(crate) async fn archive_rows_into_month_batch(
         cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
         superseded_by: None,
     })
+}
+
+async fn replace_legacy_archive_file_with_cleanup_serialization(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    month_key: &str,
+    temporary_file_path: &Path,
+    final_file_path: &Path,
+) -> Result<()> {
+    // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
+    // pending file. Keep reactivation and rename inside that lock so the two file operations
+    // cannot interleave across processes.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET cleanup_state = ?1,
+            cleanup_source_safe_start_date = NULL
+        WHERE dataset = ?2
+          AND month_key = ?3
+          AND file_path = ?4
+          AND cleanup_state = ?5
+        "#,
+    )
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(dataset)
+    .bind(month_key)
+    .bind(final_file_path.to_string_lossy().to_string())
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .execute(tx.as_mut())
+    .await?;
+    if let Err(error) = fs::rename(temporary_file_path, final_file_path).with_context(|| {
+        format!(
+            "failed to move archive batch into place: {} -> {}",
+            temporary_file_path.display(),
+            final_file_path.display()
+        )
+    }) {
+        tx.rollback().await?;
+        return Err(error);
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 pub(crate) async fn archive_rows_into_segment_batch(
@@ -798,6 +843,7 @@ pub(crate) async fn upsert_archive_batch_manifest(
             codec = excluded.codec,
             writer_version = excluded.writer_version,
             cleanup_state = excluded.cleanup_state,
+            cleanup_source_safe_start_date = NULL,
             superseded_by = excluded.superseded_by,
             coverage_start_at = excluded.coverage_start_at,
             coverage_end_at = excluded.coverage_end_at,
@@ -915,4 +961,77 @@ pub(crate) async fn write_archive_batch_upstream_activity(
     .execute(&mut *tx)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_archive_replacement_keeps_pending_cleanup_when_rename_fails() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let final_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-legacy-archive-replace-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        let missing_temp_path = final_path.with_extension("missing.tmp");
+        fs::write(&final_path, b"old archive content").expect("write old archive file");
+        let old_sha256 = sha256_hex_file(&final_path).expect("hash old archive file");
+        let final_path_string = final_path.to_string_lossy().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id,
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                cleanup_state,
+                cleanup_source_safe_start_date,
+                created_at
+            )
+            VALUES (1, 'codex_quota_snapshots', '2025-01', ?1, ?2, 1, 'completed', 'delete_pending', '2025-01-04', datetime('now'))
+            "#,
+        )
+        .bind(&final_path_string)
+        .bind(&old_sha256)
+        .execute(&pool)
+        .await
+        .expect("insert pending archive manifest");
+
+        replace_legacy_archive_file_with_cleanup_serialization(
+            &pool,
+            "codex_quota_snapshots",
+            "2025-01",
+            &missing_temp_path,
+            &final_path,
+        )
+        .await
+        .expect_err("missing replacement file must roll back pending reactivation");
+
+        assert_eq!(
+            fs::read(&final_path).expect("read original archive"),
+            b"old archive content"
+        );
+        let manifest: (String, Option<String>) = sqlx::query_as(
+            "SELECT cleanup_state, cleanup_source_safe_start_date FROM archive_batches WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load retained pending manifest");
+        assert_eq!(manifest.0, ARCHIVE_CLEANUP_STATE_DELETE_PENDING);
+        assert_eq!(manifest.1.as_deref(), Some("2025-01-04"));
+
+        let _ = fs::remove_file(&final_path);
+    }
 }
