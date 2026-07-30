@@ -5,8 +5,8 @@
 - 后端持久化、回填、soft-delete、overview/series API 与前端长期统计区均以 `5k89c/SPEC.md` 为契约。
 - 现有 Stats 查询、筛选、bucket、SSE 与图表路径保持不变；长期区使用独立 endpoint、hooks 和组件状态。
 - 新增 schema 必须兼容旧 SQLite：启动迁移可重复执行，回填状态可恢复，archive purge 只有在长期汇总 target materialized 后才可继续。
-- 完整性审计和修复只在长期统计链路运行：初始全量和增量候选日/小时都要先对照 `invocation_rollup_hourly` 的可信终态 overall 证明，再在单个事务内替换所有维度；有界 canonical 增量一律保持未证明，只有完整来源对账才能标记可信；修复队列持久化检测、重试时间和失败原因。
-- 对账会先校验 completed 调用 archive 的文件 SHA-256；manifest 不匹配即按不可用来源处理。归档清理把无法立即跨越的安全下界持久化为 pending 候选，只有全部仍保留的调用/请求尝试来源都位于候选之后，才提交连续来源边界。
+- 完整性审计和修复只在长期统计链路运行：初始全量和增量候选日/小时都要先对照 `invocation_rollup_hourly` 的可信终态 overall 证明，再在单个事务内替换所有维度；有界 canonical 增量一律保持未证明，只有完整来源对账才能标记可信；修复队列持久化检测、重试时间和失败原因。archive manifest 与 live 调用必须在同一 SQLite 读取快照枚举，避免 retention 交接被认证成完整空洞。
+- 对账会先校验 completed 调用 archive 的文件 SHA-256；manifest 不匹配即按不可用来源处理。归档清理把无法立即跨越的安全下界持久化为 pending 候选，只有全部仍保留的调用/请求尝试来源都位于候选之后，才提交连续来源边界。旧 schema 增加终态证明列时，既有 canonical 历史先被固定在升级当天之前的迁移下界；缺失的调用或请求尝试 archive 均保留 manifest，不能被误认作成功清理。
 
 ## 计划落点
 

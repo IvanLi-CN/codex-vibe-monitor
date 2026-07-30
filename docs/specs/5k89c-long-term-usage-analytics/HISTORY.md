@@ -10,6 +10,7 @@
 - 删除意图不能只按 manifest ID 延续：月度归档可在文件替换时复用同一行。收尾因此比较完整归档身份，并在立即 SQLite 事务中复核文件 SHA-256；writer 在同一 `BEGIN IMMEDIATE` 区间内撤销旧 `delete_pending` 并替换文件，防止清理线程删除新文件。
 - 来源证明也校验 completed archive 的 SHA-256，避免可读的就地篡改被认证。归档退役的安全边界以持久化候选累积，仅在没有仍保留来源跨越候选之前时才推进，防止长墙时调用或重叠 archive 把全局边界跳过可验证数据。
 - 已物化调用 archive 如在可用性审计中确认丢失，会先使长期统计进入 `error` 并保留未阶段化 manifest；对账会撤销该 archive 的长期 replay marker，使来源恢复后可被重新读取。不可读 archive 缺失 `coverage_start` 时必须把整个保留窗口视为受影响范围，不能用 `coverage_end` 缩小候选阻断范围。
+- 新增终态证明列的升级不能把旧 canonical 历史当作“完整空来源”：升级时把既有桶置于升级当天之前的迁移下界，保留其 operational aggregate 但不伪造新证明。调用 archive 清单与 live 调用也必须取自同一 SQLite 快照；retention 在两次扫描之间提交时宁可触发可重试的写冲突，也不能删除已有 canonical 桶。请求尝试 archive 若物理文件已经丢失且未进入 `delete_pending`，同样必须保留 manifest 作为 upstream 维度不可验证的证据。
 - API Key 删除保留稳定统计身份，凭据、会话和路由状态全部清除；其它上游继续使用原删除行为。
 
 ## 关联演进

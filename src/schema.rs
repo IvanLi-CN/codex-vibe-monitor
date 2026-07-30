@@ -1998,6 +1998,11 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let invocation_rollup_hourly_columns =
         load_sqlite_table_columns(pool, "invocation_rollup_hourly").await?;
+    let has_existing_invocation_rollup_hourly_rows =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM invocation_rollup_hourly)")
+            .fetch_one(pool)
+            .await?
+            != 0;
     let mut added_invocation_rollup_rebuild_columns = false;
     for (column, ty) in [
         ("terminal_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -2055,6 +2060,14 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_invocation_rollup_hourly_source_bucket")?;
     if added_invocation_rollup_rebuild_columns {
+        if has_existing_invocation_rollup_hourly_rows {
+            // The added terminal proof columns make an origin/main canonical rollup eligible
+            // for full-source reconciliation. Establish the migration lower bound first: old
+            // cleanup may already have removed every source archive for retained history.
+            ensure_long_term_stats_schema(pool).await?;
+            crate::long_term_stats::bootstrap_long_term_integrity_source_boundary_for_legacy_rollups(pool)
+                .await?;
+        }
         let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
         info!(
             rebuilt_rows = reconciliation.applied_rollups,

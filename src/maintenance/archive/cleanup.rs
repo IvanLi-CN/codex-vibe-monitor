@@ -669,10 +669,12 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         // Only an already-staged deletion has evidence that the source archive was readable
-        // when cleanup began. A missing active invocation archive is source loss, even if an
-        // older long-term replay marker exists, so retain its manifest for reconciliation.
-        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-            && archive_file_is_confirmed_missing(&candidate.file_path)
+        // when cleanup began. A missing invocation or attempt archive is source loss, even if
+        // older replay markers exist, so retain its manifest for long-term reconciliation.
+        if matches!(
+            candidate.dataset.as_str(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS | "pool_upstream_request_attempts"
+        ) && archive_file_is_confirmed_missing(&candidate.file_path)
         {
             continue;
         }
@@ -1302,10 +1304,14 @@ pub(crate) async fn prune_legacy_archive_batches(
             continue;
         }
 
-        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && file_missing {
-            // A legacy manifest without a staged delete may be a lost source, not a completed
-            // cleanup. Retain it so the long-term reconciliation remains unavailable instead
-            // of forgetting the missing archive and publishing stale rows as ready.
+        if matches!(
+            candidate.dataset.as_str(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS | "pool_upstream_request_attempts"
+        ) && file_missing
+        {
+            // A legacy manifest without a staged delete may be a lost invocation or attempt
+            // source, not a completed cleanup. Keep it as unavailable-source evidence so a
+            // later repair cannot replace upstream dimensions with degraded fallback values.
             summary.skipped_unmaterialized_batches += 1;
             continue;
         }

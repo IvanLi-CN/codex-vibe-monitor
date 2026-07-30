@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use sqlx::FromRow;
+use std::future::Future;
 use tracing::warn;
 
 #[path = "hourly_rollup_support.rs"]
@@ -4061,12 +4062,12 @@ struct InvocationArchiveIntegrityFileRow {
 }
 
 async fn load_long_term_integrity_source_start_date(
-    pool: &Pool<Sqlite>,
+    connection: &mut SqliteConnection,
 ) -> Result<Option<NaiveDate>> {
     let source_start = match sqlx::query_scalar::<_, Option<String>>(
         "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
     )
-    .fetch_optional(pool)
+    .fetch_optional(connection)
     .await
     {
         Ok(Some(Some(value))) => value,
@@ -4116,6 +4117,33 @@ fn long_term_integrity_source_boundary_start_epoch(source_start: &NaiveDate) -> 
 pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     pool: &Pool<Sqlite>,
 ) -> Result<InvocationHourlyRollupReconciliation> {
+    reconcile_invocation_rollup_hourly_from_sources(pool, || std::future::ready(())).await
+}
+
+#[cfg(test)]
+pub(crate) async fn backfill_invocation_rollup_hourly_from_sources_with_snapshot_hook<F, Fut>(
+    pool: &Pool<Sqlite>,
+    before_live_source_scan: F,
+) -> Result<InvocationHourlyRollupReconciliation>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    reconcile_invocation_rollup_hourly_from_sources(pool, before_live_source_scan).await
+}
+
+async fn reconcile_invocation_rollup_hourly_from_sources<F, Fut>(
+    pool: &Pool<Sqlite>,
+    before_live_source_scan: F,
+) -> Result<InvocationHourlyRollupReconciliation>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    // Keep the manifest and live rows in one SQLite snapshot. Retention may move a row from the
+    // live table into an archive between these scans; mixing snapshots would certify a gap as a
+    // complete source and delete its canonical rollup.
+    let mut tx = pool.begin().await?;
     let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
         r#"
         SELECT file_path, sha256
@@ -4126,14 +4154,14 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     {
         Ok(rows) => rows,
         Err(error) if error.to_string().contains("no such table") => Vec::new(),
         Err(error) => return Err(error.into()),
     };
-    let integrity_source_start_date = load_long_term_integrity_source_start_date(pool).await?;
+    let integrity_source_start_date = load_long_term_integrity_source_start_date(&mut tx).await?;
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut seen_ids = HashSet::new();
     let mut source_incomplete = false;
@@ -4252,14 +4280,14 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0 AND bucket_start_epoch >= ?1",
             )
             .bind(boundary_start_epoch)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected()
         } else {
             sqlx::query(
                 "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0",
             )
-            .execute(pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected()
         };
@@ -4267,6 +4295,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
             invalidated,
             "left reconstructable canonical terminal integrity proofs unavailable because at least one invocation archive is unreadable"
         );
+        tx.commit().await?;
         return Ok(InvocationHourlyRollupReconciliation {
             applied_rollups: 0,
             invalidated_bucket_start_epochs: Vec::new(),
@@ -4274,6 +4303,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
             source_complete: false,
         });
     }
+
+    before_live_source_scan().await;
 
     let mut cursor_id = 0_i64;
     loop {
@@ -4318,7 +4349,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         )
         .bind(cursor_id)
         .bind(BACKFILL_BATCH_SIZE)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?;
         if rows.is_empty() {
             break;
@@ -4331,7 +4362,6 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
     }
 
-    let mut tx = pool.begin().await?;
     let mut applied_rollups = 0usize;
     let mut invalidated_bucket_start_epochs = BTreeSet::new();
     let canonical_rollup_keys = sqlx::query_as::<_, (i64, String)>(

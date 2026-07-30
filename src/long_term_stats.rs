@@ -801,6 +801,30 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
     Ok(())
 }
 
+pub(crate) async fn bootstrap_long_term_integrity_source_boundary_for_legacy_rollups(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    // Earlier schemas had no terminal proof or retirement boundary. The existing canonical
+    // history may therefore predate every source that this version can verify. Keep it outside
+    // the reconstructable window instead of treating source absence as proof of an empty day.
+    let today = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+    sqlx::query(
+        r#"
+        UPDATE long_term_stats_state
+        SET integrity_source_start_date = COALESCE(integrity_source_start_date, ?1),
+            integrity_source_pending_start_date = NULL,
+            updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
+    )
+    .bind(today)
+    .bind(LONG_TERM_STATE_ID)
+    .execute(pool)
+    .await
+    .context("failed to bootstrap legacy long-term integrity source boundary")?;
+    Ok(())
+}
+
 fn long_term_day_epoch_bounds(date: NaiveDate) -> Option<(i64, i64)> {
     let start = date
         .and_hms_opt(0, 0, 0)
@@ -994,7 +1018,7 @@ async fn long_term_attempt_archive_safe_start(
     file_path: &str,
     _coverage_end_at: Option<&str>,
 ) -> Result<Option<NaiveDate>> {
-    let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
+    let Some((archive_pool, cleanup)) = open_pool_upstream_request_attempt_archive_batch_pool(
         &ArchiveBatchPathRow::from_file_path(file_path.to_string()),
         "long-term-stats-cleanup-attempt-boundary",
     )
