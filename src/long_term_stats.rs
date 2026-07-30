@@ -10,6 +10,8 @@ const LONG_TERM_STATUS_EMPTY: &str = "empty";
 const LONG_TERM_STATUS_ERROR: &str = "error";
 const LONG_TERM_TERMINAL_PROOF_UNAVAILABLE_ERROR: &str =
     "terminal integrity proof reconciliation is incomplete";
+const LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR: &str =
+    "attempt archive is unavailable for long-term account attribution";
 const LONG_TERM_OTHER_KEY: &str = "other";
 const LONG_TERM_OTHER_NAME: &str = "其他";
 const LONG_TERM_HOUR_MS: i64 = 60 * 60 * 1000;
@@ -287,13 +289,22 @@ async fn load_long_term_archive_attempt_accounts(
             path_end >= start && path_start <= end
         })
     }) {
-        let Some((archive_pool, cleanup)) = open_pool_upstream_request_attempt_archive_batch_pool(
+        let attempt_archive = open_pool_upstream_request_attempt_archive_batch_pool(
             &ArchiveBatchPathRow::from_file_path(archive_path.file_path.clone()),
             "long-term-stats-attempt-fallback",
         )
-        .await?
-        else {
-            continue;
+        .await
+        .with_context(|| {
+            format!(
+                "{LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR}: {}",
+                archive_path.file_path
+            )
+        })?;
+        let Some((archive_pool, cleanup)) = attempt_archive else {
+            bail!(
+                "{LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR}: {}",
+                archive_path.file_path,
+            );
         };
         let rows = sqlx::query_as::<_, LongTermArchiveAttemptRow>(
             r#"
@@ -319,7 +330,12 @@ async fn load_long_term_archive_attempt_accounts(
             Err(error) if error.to_string().contains("no such table") => {
                 consumed_archives.insert((archive_path.file_path, archive_path.sha256));
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                bail!(
+                    "{LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR}: {}: {error}",
+                    archive_path.file_path
+                );
+            }
         }
     }
     Ok((accounts, consumed_archives))
@@ -2169,6 +2185,9 @@ async fn refresh_long_term_stats_once(pool: &Pool<Sqlite>, retention_days: u64) 
     let result =
         refresh_long_term_stats_inner(pool, retention_days, was_ready, &refresh_started_at).await;
     if let Err(err) = &result {
+        let source_attribution_is_unavailable = err
+            .to_string()
+            .contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR);
         let persisted_integrity_damage =
             long_term_has_persisted_integrity_damage(pool, reconstructable_start)
                 .await
@@ -2180,6 +2199,7 @@ async fn refresh_long_term_stats_once(pool: &Pool<Sqlite>, retention_days: u64) 
             && !has_pending_integrity_repairs
             && !preserves_prior_error
             && !persisted_integrity_damage
+            && !source_attribution_is_unavailable
         {
             LONG_TERM_STATUS_READY
         } else {
@@ -2696,15 +2716,6 @@ async fn refresh_long_term_stats_inner(
         mark_long_term_integrity_audit(pool).await?;
     }
     let scheduled_repair_date = next_due_long_term_repair_date(pool, reconstructable_start).await?;
-    if ready_state && let Some(date) = scheduled_repair_date {
-        // The primary scan is driven by the live tail and newly replayed archive coverage. A
-        // historical repair can reopen an already replayed invocation archive outside that
-        // range, so load its attempt mapping explicitly before rebuilding its dimensions.
-        let (repair_attempt_accounts, repair_attempt_markers) =
-            load_long_term_archive_attempt_accounts(pool, Some((date, date))).await?;
-        archive_attempt_accounts.extend(repair_attempt_accounts);
-        attempt_archive_markers.extend(repair_attempt_markers);
-    }
 
     // A day may be split across live rows and archive parts. Rebuild every date touched by the
     // current live tail from all overlapping source parts before replacing durable buckets.
@@ -2831,6 +2842,20 @@ async fn refresh_long_term_stats_inner(
             .and_then(|date| date.pred_opt())
         {
             recomputed_dates.insert(previous_date);
+        }
+        // Replacing a date can alter the preceding date when an invocation crosses midnight.
+        // Load every overlapping attempt archive only after that final rebuild range is known;
+        // a missing archive is a source-integrity failure, not an empty account mapping.
+        if let Some((start, end)) = recomputed_dates
+            .iter()
+            .min()
+            .copied()
+            .zip(recomputed_dates.iter().max().copied())
+        {
+            let (rebuild_attempt_accounts, rebuild_attempt_markers) =
+                load_long_term_archive_attempt_accounts(pool, Some((start, end))).await?;
+            archive_attempt_accounts.extend(rebuild_attempt_accounts);
+            attempt_archive_markers.extend(rebuild_attempt_markers);
         }
         let mut rebuild_rows = rows
             .iter()
@@ -4466,6 +4491,7 @@ mod tests {
         .await
         .expect("record attempt archive manifest");
 
+        let previous_date = date.pred_opt().expect("previous date");
         let next_date = date.succ_opt().expect("next date");
         let (outside_range, _) =
             load_long_term_archive_attempt_accounts(&pool, Some((next_date, next_date)))
@@ -4475,15 +4501,193 @@ mod tests {
             load_long_term_archive_attempt_accounts(&pool, Some((date, date)))
                 .await
                 .expect("scan queued repair date");
+        let (cross_midnight_repair_accounts, _) =
+            load_long_term_archive_attempt_accounts(&pool, Some((previous_date, date)))
+                .await
+                .expect("scan final rebuild range including the preceding date");
 
         assert!(outside_range.is_empty());
         assert_eq!(
-            queued_repair_accounts.get(&("repair-invoke".to_string(), occurred_at)),
+            queued_repair_accounts.get(&("repair-invoke".to_string(), occurred_at.clone())),
+            Some(&42)
+        );
+        assert_eq!(
+            cross_midnight_repair_accounts.get(&("repair-invoke".to_string(), occurred_at)),
             Some(&42)
         );
 
         let _ = fs::remove_file(&archive_db_path);
         let _ = fs::remove_file(&archive_path);
+    }
+
+    #[tokio::test]
+    async fn attempt_account_scan_rejects_missing_completed_archive() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        let occurred_at = format!("{date} 10:00:00");
+        let missing_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-missing-attempt-source-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, sha256, row_count, status,
+                coverage_start_at, coverage_end_at, created_at
+            )
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'missing-attempt-sha', 1,
+                'completed', ?3, ?3, datetime('now'))
+            "#,
+        )
+        .bind(date.format("%Y-%m").to_string())
+        .bind(missing_path.to_string_lossy().to_string())
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("record missing attempt archive manifest");
+
+        let error = load_long_term_archive_attempt_accounts(&pool, Some((date, date)))
+            .await
+            .expect_err("a missing completed archive cannot be treated as an empty mapping");
+        assert!(error.to_string().contains("attempt archive is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn attempt_account_scan_rejects_damaged_completed_archive() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        let occurred_at = format!("{date} 10:00:00");
+        let damaged_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-damaged-attempt-source-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::write(&damaged_path, b"not a gzip archive").expect("write damaged archive");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, sha256, row_count, status,
+                coverage_start_at, coverage_end_at, created_at
+            )
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'damaged-attempt-sha', 1,
+                'completed', ?3, ?3, datetime('now'))
+            "#,
+        )
+        .bind(date.format("%Y-%m").to_string())
+        .bind(damaged_path.to_string_lossy().to_string())
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("record damaged attempt archive manifest");
+
+        let error = load_long_term_archive_attempt_accounts(&pool, Some((date, date)))
+            .await
+            .expect_err("a damaged completed archive cannot be treated as an empty mapping");
+        assert!(
+            error
+                .to_string()
+                .contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR)
+        );
+        let _ = fs::remove_file(damaged_path);
+    }
+
+    #[tokio::test]
+    async fn refresh_hides_ready_stats_when_attempt_attribution_source_is_unavailable() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive();
+        let occurred_at = format!("{date}T10:00:00+08:00");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, raw_response, total_tokens, output_tokens, cost, created_at) VALUES (1, 'missing-attribution-source', ?1, 'success', 'gpt-5', '{}', '{}', 100, 40, 0.1, datetime('now'))",
+        )
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert live invocation requiring account attribution");
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("seed visible durable long-term data");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_READY)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("seed ready state");
+        let missing_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-missing-ready-attempt-source-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, sha256, row_count, status,
+                coverage_start_at, coverage_end_at, created_at
+            )
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'missing-ready-attempt-sha',
+                1, 'completed', ?3, ?3, datetime('now'))
+            "#,
+        )
+        .bind(date.format("%Y-%m").to_string())
+        .bind(missing_path.to_string_lossy().to_string())
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("record missing attribution source");
+
+        let error = refresh_long_term_stats(&pool, 400)
+            .await
+            .expect_err("missing attribution source must block a ready refresh");
+        assert!(
+            error
+                .to_string()
+                .contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR)
+        );
+        let state: (String, Option<String>) =
+            sqlx::query_as("SELECT status, last_error FROM long_term_stats_state WHERE id = ?1")
+                .bind(LONG_TERM_STATE_ID)
+                .fetch_one(&pool)
+                .await
+                .expect("load blocked long-term state");
+        assert_eq!(state.0, LONG_TERM_STATUS_ERROR);
+        assert!(
+            state.1.as_deref().is_some_and(
+                |message| message.contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR)
+            )
+        );
+        let calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("load preserved durable data");
+        assert_eq!(calls, 1);
     }
 
     #[test]

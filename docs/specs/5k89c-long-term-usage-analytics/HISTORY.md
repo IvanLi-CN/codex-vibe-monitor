@@ -10,7 +10,7 @@
 - 删除意图不能只按 manifest ID 延续：月度归档可在文件替换时复用同一行。收尾因此比较完整归档身份，并在立即 SQLite 事务中复核文件 SHA-256；writer 在同一 `BEGIN IMMEDIATE` 区间内撤销旧 `delete_pending` 并替换文件，防止清理线程删除新文件。
 - 来源证明也校验 completed archive 的 SHA-256，避免可读的就地篡改被认证。归档退役的安全边界以持久化候选累积，仅在没有仍保留来源跨越候选之前时才推进，防止长墙时调用或重叠 archive 把全局边界跳过可验证数据。
 - 已物化调用 archive 如在可用性审计中确认丢失，会先使长期统计进入 `error` 并保留未阶段化 manifest；对账会撤销该 archive 的长期 replay marker，使来源恢复后可被重新读取。不可读 archive 缺失 `coverage_start` 时必须把整个保留窗口视为受影响范围，不能用 `coverage_end` 缩小候选阻断范围。
-- 新增终态证明列的升级不能把旧 canonical 历史当作“完整空来源”：升级时把既有桶置于升级当天之前的迁移下界，保留其 operational aggregate 但不伪造新证明。调用 archive 清单与 live 调用也必须取自同一 SQLite 快照；retention 在两次扫描之间提交时宁可触发可重试的写冲突，也不能删除已有 canonical 桶。请求尝试 archive 若物理文件已经丢失且未进入 `delete_pending`，同样必须保留 manifest 作为 upstream 维度不可验证的证据。
+- 新增终态证明列的升级不能把旧 canonical 历史当作“完整空来源”：升级时把既有桶置于升级当天之前的迁移下界，保留其 operational aggregate 但不伪造新证明。迁移下界是持久化完成标记，不能只取决于本次是否执行了 `ALTER TABLE`，否则在最后一个列变更后中断会在下一次启动遗漏保护。调用 archive 清单与 live 调用也必须取自同一 SQLite 快照；retention 在两次扫描之间提交时宁可触发可重试的写冲突，也不能删除已有 canonical 桶。请求尝试 archive 若物理文件已经丢失且未进入 `delete_pending`，同样必须保留 manifest 作为 upstream 维度不可验证的证据。
 - API Key 删除保留稳定统计身份，凭据、会话和路由状态全部清除；其它上游继续使用原删除行为。
 
 ## 关联演进
@@ -29,3 +29,4 @@
 - 堆叠层序冻结为 overview 业务顺序，并改为以 `overview.daily` 的完整窗口生成连续自然日；缺失点与 `null` 均为零值，避免稀疏上游序列在图表中形成视觉断层，tooltip 总计与面积高度保持一致。
 - 模型身份列统一复用性能表的模型图标/思考程度胶囊，并以固定总计行承载 `overview.global` 全量指标，避免搜索和虚拟滚动改变总计语义。
 - 全局趋势的单序列不再使用与指标无关的“全部调用”名称；序列名是图例和默认 tooltip 的共同语义源，因此随 Token、成本、调用次数选择切换为相应总计标签。
+- 修复队列在加入跨午夜前置日期后，必须以最终替换范围读取请求尝试 archive；任何覆盖该范围的 completed attempt archive 缺失都代表不可验证来源，不能以空映射继续替换 upstream 维度，并且即使开始时长期状态为 `ready` 也必须切换为 `error`。

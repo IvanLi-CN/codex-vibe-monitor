@@ -2059,15 +2059,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_invocation_rollup_hourly_source_bucket")?;
-    if added_invocation_rollup_rebuild_columns {
-        if has_existing_invocation_rollup_hourly_rows {
-            // The added terminal proof columns make an origin/main canonical rollup eligible
-            // for full-source reconciliation. Establish the migration lower bound first: old
-            // cleanup may already have removed every source archive for retained history.
-            ensure_long_term_stats_schema(pool).await?;
+    if has_existing_invocation_rollup_hourly_rows {
+        // The state boundary is the durable completion marker. It must not depend on whether
+        // this invocation added columns: a process can stop after the final ALTER TABLE and
+        // before this bootstrap runs.
+        ensure_long_term_stats_schema(pool).await?;
+        let integrity_source_start_date = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        if integrity_source_start_date.is_none() {
             crate::long_term_stats::bootstrap_long_term_integrity_source_boundary_for_legacy_rollups(pool)
                 .await?;
         }
+    }
+    if added_invocation_rollup_rebuild_columns {
         let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
         info!(
             rebuilt_rows = reconciliation.applied_rollups,

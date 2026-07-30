@@ -6813,6 +6813,56 @@ async fn schema_upgrade_preserves_legacy_canonical_history_outside_the_new_sourc
 }
 
 #[tokio::test]
+async fn schema_upgrade_resumes_boundary_bootstrap_after_rollup_columns_are_present() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+    let legacy_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    let legacy_bucket =
+        invocation_bucket_start_epoch(&legacy_occurred_at).expect("resolve legacy bucket");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) VALUES (?1, ?2, 1, 1, 0, 42, 0.42)",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed canonical history after every rollup ALTER TABLE completed");
+    sqlx::query(
+        "UPDATE long_term_stats_state SET integrity_source_start_date = NULL, integrity_source_pending_start_date = NULL WHERE id = 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("simulate interruption before durable boundary bootstrap");
+
+    let expected_source_start = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+    ensure_schema(&pool)
+        .await
+        .expect("resume schema migration after completed rollup ALTER TABLE statements");
+
+    let preserved: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT total_tokens, terminal_proof_complete FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(legacy_bucket)
+    .bind(SOURCE_PROXY)
+    .fetch_optional(&pool)
+    .await
+    .expect("load preserved canonical bucket");
+    assert_eq!(preserved, Some((42, 0)));
+    let source_start: Option<String> = sqlx::query_scalar(
+        "SELECT integrity_source_start_date FROM long_term_stats_state WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load resumed migration source boundary");
+    assert_eq!(
+        source_start.as_deref(),
+        Some(expected_source_start.as_str())
+    );
+}
+
+#[tokio::test]
 async fn reconciliation_keeps_a_pre_retention_live_snapshot_from_deleting_canonical_history() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-consistent-source-snapshot").await;
