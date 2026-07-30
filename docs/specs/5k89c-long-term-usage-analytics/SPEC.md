@@ -79,11 +79,3 @@
 PR: include
 `390px` 移动端模型用量与模型表：无页面级横向溢出。
 ![移动端长期统计连续堆叠面积](./assets/long-term-stats-gapless-mobile.png)
-
-- PR: include
-- 全局成本趋势的桌面验证（指标开关、图例与 tooltip 使用同一“总成本”语义）：
-  ![桌面全局成本趋势语义](./assets/long-term-stats-global-metric-desktop.png)
-- PR: include
-- `390px` 移动端全局成本趋势：
-  ![移动端全局成本趋势语义](./assets/long-term-stats-global-metric-mobile.png)
-- 截图来源为 mock-only `ui_demo`，不含敏感信息；推送包含截图文件前需取得主人明确授权。
