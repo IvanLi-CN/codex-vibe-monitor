@@ -299,7 +299,7 @@
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/InvocationTable/Default
   state: request-compression list summary
-  evidence_bound_sha: 3ed146e92a5e8b4b8cb109702155486a53d4e01e
+  evidence_bound_sha: 69e9a0979dd4896ed2034995aba07f43b0630394
   requested_viewport: desktop1280
   viewport_strategy: storybook-viewport
   margin_policy: require_margin
