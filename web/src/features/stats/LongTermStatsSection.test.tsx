@@ -5,11 +5,20 @@ import { describe, expect, it, vi } from "vitest";
 import type { LongTermMetrics, LongTermSeries, LongTermStatsOverviewResponse } from "../../lib/api";
 import { LongTermStatsSection, mergeSeriesPoints } from "./LongTermStatsSection";
 
+const areaChartData: Array<Array<Record<string, unknown>>> = [];
+
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  AreaChart: ({ children }: { children: ReactNode }) => (
-    <div data-testid="long-term-area-chart">{children}</div>
-  ),
+  AreaChart: ({
+    children,
+    data,
+  }: {
+    children: ReactNode;
+    data?: Array<Record<string, unknown>>;
+  }) => {
+    areaChartData.push(data ?? []);
+    return <div data-testid="long-term-area-chart">{children}</div>;
+  },
   LineChart: ({ children }: { children: ReactNode }) => (
     <div data-testid="long-term-line-chart">{children}</div>
   ),
@@ -108,27 +117,51 @@ function series(
 }
 
 describe("mergeSeriesPoints", () => {
-  it("fills missing dates with zero for stacked charts while preserving null metrics", () => {
+  it("fills every day between sparse stacked area points with zero, including explicit null metrics", () => {
     const points = mergeSeriesPoints(
       [
         series("a", "A", [
-          { date: "2026-07-01", ...metrics(10, 1, 1) },
-          { date: "2026-07-03", ...metrics(null, null, 1) },
+          { date: "2026-07-10", ...metrics(10, 1, 1) },
+          { date: "2026-07-13", ...metrics(null, null, 1) },
         ]),
-        series("b", "B", [{ date: "2026-07-02", ...metrics(20, 2, 2) }]),
+        series("b", "B", [{ date: "2026-07-30", ...metrics(20, 2, 2) }]),
       ],
       "tokens",
       true,
     );
 
-    expect(points.map((point) => point.date)).toEqual(["2026-07-01", "2026-07-02", "2026-07-03"]);
-    expect(points.map((point) => point.a)).toEqual([10, 0, null]);
-    expect(points.map((point) => point.b)).toEqual([0, 20, 0]);
+    expect(points.map((point) => point.date)).toEqual(
+      Array.from({ length: 21 }, (_, index) => `2026-07-${String(index + 10).padStart(2, "0")}`),
+    );
+    expect(points.find((point) => point.date === "2026-07-13")?.a).toBe(0);
+    expect(points.find((point) => point.date === "2026-07-24")?.a).toBe(0);
+    expect(points.find((point) => point.date === "2026-07-24")?.b).toBe(0);
+  });
+
+  it("keeps line charts on their original point union and null semantics", () => {
+    const points = mergeSeriesPoints(
+      [
+        series("a", "A", [
+          { date: "2026-07-10", ...metrics(10, 1, 1) },
+          { date: "2026-07-13", ...metrics(null, null, 1) },
+        ]),
+        series("b", "B", [{ date: "2026-07-30", ...metrics(20, 2, 2) }]),
+      ],
+      "tokens",
+    );
+
+    expect(points.map((point) => point.date)).toEqual(["2026-07-10", "2026-07-13", "2026-07-30"]);
+    expect(points.find((point) => point.date === "2026-07-13")?.a).toBeNull();
   });
 });
 
 describe("LongTermStatsSection charts", () => {
   it("uses stacked areas only for model and upstream usage charts", () => {
+    areaChartData.length = 0;
+    const daily = Array.from({ length: 21 }, (_, index) => ({
+      date: `2026-07-${String(index + 10).padStart(2, "0")}`,
+      ...metrics(30, 3, 3),
+    }));
     const overview: LongTermStatsOverviewResponse = {
       status: "ready",
       statisticsStartDate: "2026-01-01",
@@ -137,7 +170,7 @@ describe("LongTermStatsSection charts", () => {
       timezone: "Asia/Shanghai",
       range: "7d",
       global: metrics(30, 3, 3),
-      daily: [{ date: "2026-07-01", ...metrics(30, 3, 3) }],
+      daily,
       models: [
         {
           seriesKey: "a",
@@ -156,10 +189,13 @@ describe("LongTermStatsSection charts", () => {
       ],
     };
     const modelSeries = [
-      series("a", "gpt-5.6-sol", [{ date: "2026-07-01", ...metrics(10, 1, 1) }]),
+      series("a", "gpt-5.6-sol", [
+        { date: "2026-07-10", ...metrics(10, 1, 1) },
+        { date: "2026-07-30", ...metrics(null, null, 1) },
+      ]),
     ];
     const upstreamSeries = [
-      series("account:1", "Primary", [{ date: "2026-07-01", ...metrics(20, 2, 2) }]),
+      series("account:1", "Primary", [{ date: "2026-07-30", ...metrics(20, 2, 2) }]),
     ];
 
     const html = renderToStaticMarkup(
@@ -177,5 +213,14 @@ describe("LongTermStatsSection charts", () => {
     expect(html).toContain('data-testid="long-term-model-total-row"');
     expect(html).toContain('data-testid="long-term-chart-model-usage"');
     expect(html).toContain('data-testid="long-term-chart-upstream-usage"');
+    expect(areaChartData).toHaveLength(2);
+    for (const data of areaChartData) {
+      expect(data.map((point) => point.date)).toEqual(daily.map((point) => point.date));
+      expect(
+        data.every((point) => Object.values(point).every((value) => typeof value !== "object")),
+      ).toBe(true);
+    }
+    expect(areaChartData[0][14]?.a).toBe(0);
+    expect(areaChartData[1][0]?.["account:1"]).toBe(0);
   });
 });

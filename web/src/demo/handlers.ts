@@ -2133,6 +2133,16 @@ function demoLongTermSeries(url: URL) {
   const dimension = url.searchParams.get("dimension") ?? "model";
   const keys = url.searchParams.getAll("key").filter(Boolean);
   const source = dimension === "upstream" ? overview.upstreams : overview.models;
+  const sparseDates = new Set(
+    overview.daily
+      .filter(
+        (_, index) =>
+          index === 0 ||
+          index === Math.floor(overview.daily.length * 0.2) ||
+          index >= Math.floor(overview.daily.length * 0.72),
+      )
+      .map((point) => point.date),
+  );
   return {
     status: overview.status,
     statisticsStartDate: overview.statisticsStartDate,
@@ -2147,12 +2157,14 @@ function demoLongTermSeries(url: URL) {
         seriesKey: String(item.seriesKey),
         displayName: item.displayName,
         reasoningEffort: "reasoningEffort" in item ? item.reasoningEffort : null,
-        points: overview.daily.map((point) => ({
-          ...point,
-          tokens: item.tokens,
-          cost: item.cost,
-          calls: item.calls,
-        })),
+        points: overview.daily
+          .filter((point) => sparseDates.has(point.date))
+          .map((point) => ({
+            ...point,
+            tokens: item.tokens,
+            cost: item.cost,
+            calls: item.calls,
+          })),
       })),
   };
 }

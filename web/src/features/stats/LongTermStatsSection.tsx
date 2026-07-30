@@ -97,33 +97,45 @@ function metricSortValue(item: LongTermSeriesSummary, metric: MetricKey): number
 
 type ChartDatum = Record<string, string | number | null> & { date: string };
 
+function completeDailyDateRange(dates: readonly string[]): string[] {
+  const bounds = [...new Set(dates)].sort((left, right) => left.localeCompare(right));
+  if (bounds.length < 2) return bounds;
+
+  const start = new Date(`${bounds[0]}T00:00:00.000Z`);
+  const end = new Date(`${bounds.at(-1)}T00:00:00.000Z`);
+  const result: string[] = [];
+  for (const current = start; current <= end; current.setUTCDate(current.getUTCDate() + 1)) {
+    result.push(current.toISOString().slice(0, 10));
+  }
+  return result;
+}
+
 export function mergeSeriesPoints(
   series: LongTermSeries[],
   metric: MetricKey,
   stackedArea = false,
+  canonicalDates: readonly string[] = [],
 ): ChartDatum[] {
-  const byDate = new Map<string, ChartDatum>();
   const pointsBySeries = new Map(
     series.map((item) => [
       item.seriesKey,
       new Map(item.points.map((point) => [point.date, point])),
     ]),
   );
-  const dates = new Set<string>();
-  for (const item of series) {
-    for (const point of item.points) {
-      dates.add(point.date);
-    }
-  }
-  for (const date of dates) {
+  const pointDates = series.flatMap((item) => item.points.map((point) => point.date));
+  const dates = stackedArea
+    ? completeDailyDateRange(canonicalDates.length > 0 ? canonicalDates : pointDates)
+    : [...new Set(pointDates)].sort((left, right) => left.localeCompare(right));
+
+  return dates.map((date) => {
     const datum: ChartDatum = { date };
     for (const item of series) {
       const point = pointsBySeries.get(item.seriesKey)?.get(date);
-      datum[item.seriesKey] = point ? metricValue(point, metric) : stackedArea ? 0 : null;
+      const value = point ? metricValue(point, metric) : null;
+      datum[item.seriesKey] = stackedArea ? (value ?? 0) : value;
     }
-    byDate.set(date, datum);
-  }
-  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+    return datum;
+  });
 }
 
 function orderSeriesBySummary(
@@ -213,18 +225,20 @@ function LongTermChart({
   emptyLabel,
   modelSeries = false,
   stackedArea = false,
+  canonicalDates,
 }: {
   series: LongTermSeries[];
   metric: MetricKey;
   emptyLabel: string;
   modelSeries?: boolean;
   stackedArea?: boolean;
+  canonicalDates?: readonly string[];
 }) {
   const { t } = useTranslation();
   const { themeMode } = useTheme();
   const colors = chartBaseTokens(themeMode);
   const seriesColors = piePalette(themeMode);
-  const chartData = mergeSeriesPoints(series, metric, stackedArea);
+  const chartData = mergeSeriesPoints(series, metric, stackedArea, canonicalDates);
   if (series.length === 0 || chartData.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm opacity-70">
@@ -715,6 +729,10 @@ export function LongTermStatsSection({
     ],
     [overview?.daily, t],
   );
+  const stackedAreaDates = useMemo(
+    () => overview?.daily.map((point) => point.date) ?? [],
+    [overview?.daily],
+  );
   const status = (
     <StatusMessage overview={overview} isLoading={isLoading && !overviewOverride} error={error} />
   );
@@ -823,6 +841,7 @@ export function LongTermStatsSection({
                 emptyLabel={t("stats.longTerm.emptyChart")}
                 modelSeries
                 stackedArea
+                canonicalDates={stackedAreaDates}
               />
             </div>
             <SeriesTable
@@ -863,6 +882,7 @@ export function LongTermStatsSection({
                     : t("stats.longTerm.emptyChart")
                 }
                 stackedArea
+                canonicalDates={stackedAreaDates}
               />
             </div>
             {seriesError || upstreamSeriesError ? (

@@ -90,6 +90,44 @@ const upstreamSeries: LongTermSeries[] = [
   })),
 }));
 
+const sparseDates = Array.from({ length: 21 }, (_, index) => {
+  const date = new Date(Date.UTC(2026, 6, 10 + index));
+  return date.toISOString().slice(0, 10);
+});
+
+const sparseOverview: LongTermStatsOverviewResponse = {
+  ...buildOverview(),
+  range: "30d",
+  daily: sparseDates.map((date, index) => ({
+    date,
+    ...metrics(18_000 + index * 700, 1.1 + index / 12, 26 + index),
+  })),
+};
+
+const sparseIndices = new Set([0, 3, 15, 20]);
+const sparseModelSeries: LongTermSeries[] = modelEntries.map(
+  ([seriesKey, displayName], seriesIndex) => ({
+    seriesKey,
+    displayName,
+    points: sparseDates
+      .filter((_, index) => sparseIndices.has(index))
+      .map((date, index) => ({
+        date,
+        ...metrics(9_000 + seriesIndex * 3_200 + index * 800, 0.7 + index / 10, 12 + index),
+      })),
+  }),
+);
+
+const sparseUpstreamSeries: LongTermSeries[] = upstreamSeries.map((entry, seriesIndex) => ({
+  ...entry,
+  points: sparseDates
+    .filter((_, index) => sparseIndices.has(index))
+    .map((date, index) => ({
+      date,
+      ...metrics(11_000 + seriesIndex * 2_500 + index * 600, 0.8 + index / 10, 14 + index),
+    })),
+}));
+
 const meta = {
   title: "Stats/LongTermStatsSection",
   component: LongTermStatsSection,
@@ -133,6 +171,30 @@ export const Ready: Story = {
     await userEvent.type(canvas.getByPlaceholderText("Search names"), "gpt-5");
     expect(canvas.getAllByText("gpt-5").length).toBeGreaterThan(0);
     expect(canvas.getByTestId("long-term-model-total-row")).toBeInTheDocument();
+  },
+};
+
+export const SparseSeries: Story = {
+  args: {
+    initialRange: "30d",
+    overviewOverride: sparseOverview,
+    seriesOverride: sparseModelSeries,
+    upstreamSeriesOverride: sparseUpstreamSeries,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvas.getByTestId("long-term-chart-model-usage")).toBeInTheDocument();
+    expect(canvas.getByTestId("long-term-chart-upstream-usage")).toBeInTheDocument();
+    expect(
+      canvas
+        .getByTestId("long-term-chart-model-usage")
+        .querySelector('[data-chart-mode="stacked-area"]'),
+    ).toBeTruthy();
+    expect(
+      canvas
+        .getByTestId("long-term-chart-upstream-usage")
+        .querySelector('[data-chart-mode="stacked-area"]'),
+    ).toBeTruthy();
   },
 };
 

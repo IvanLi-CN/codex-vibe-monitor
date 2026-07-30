@@ -45,7 +45,7 @@
 
 - 长期区默认 `7d`，页面可见时每 60 秒轻量刷新，拥有独立的 range、selection、排序、搜索和错误状态。
 - 全局使用 KPI 与单指标折线图；模型分为时间、性能、用量三组图，账号使用 Token/成本/调用次数单图。模型用量和上游账号图在三个用量指标下均使用绝对值堆叠面积，面积层、图例和 tooltip 按 overview 业务顺序稳定排列。
-- 堆叠图按完整日期并集建模：缺失 point 补 `0`，已有 point 的 `null` 指标显示 `—` 且不计入当日总计。tooltip 显示日期、各选中系列和当日总计；仍限制最多八项选择。
+- 堆叠图以 `overview.daily` 的完整后端日期窗口为规范日历；每个选中系列在每一天都输出数值，缺失 point 与已有 point 的 `null` 指标均按 `0` 绘制并计入当日总计。孤立前端状态未提供规范日历时，以系列首末日期生成连续自然日；tooltip 显示日期、各选中系列和当日总计；仍限制最多八项选择。
 - 模型与账号表格支持名称搜索、所有指标排序、sticky 选择/名称列、横纵双向虚拟化；模型表表头下固定显示不受搜索和滚动影响的全量“总计”行。模型身份表头为“模型 / 思考程度”，复用 `ModelPerformanceModelIdentity`，保留左侧复选框控制图表系列，模型行约 `40px`；上游账号表身份样式与行高保持不变。
 - 必须覆盖 loading、preparing、ready、empty、error、长名称、大账号集、桌面和移动端 Storybook 状态；整页视觉证据来自 mock-only `ui_demo`。
 
@@ -59,24 +59,19 @@
 - 后端 SQLite 测试覆盖自然日窗口、模型回退、reasoning 分组、“其他”、null 样本、加权速度/平均耗时、墙时跨账号跨小时去重、回填幂等与起始日期截断。
 - 软删除测试证明凭据和路由状态清除、账号池隐藏、历史 ID/名称仍可统计，非 API Key 删除无回归。
 - API 测试覆盖 overview/series 对账、无数据补零、八项限制、非法参数 400、一年查询不读 archive。
-- 前端测试覆盖 60 秒刷新、范围选择保留、搜索/全列排序/虚拟化、堆叠图缺失日期/`null` 语义、tooltip 总计、固定总计行、模型身份状态及 loading/preparing/empty/error/窄屏不重叠。
+- 前端测试覆盖 60 秒刷新、范围选择保留、搜索/全列排序/虚拟化、堆叠图跨数据岛的连续日期域、缺失日期与 `null` 的零值语义、tooltip 总计、固定总计行、模型身份状态及 loading/preparing/empty/error/窄屏不重叠。
 - 通过 Rust、Vitest、Storybook、生产构建和 demo 构建质量门禁，并在本 Spec 的 `## Visual Evidence` 记录桌面/移动视觉证据。
 
 ## Visual Evidence
 
-- Storybook 覆盖=通过（`bun run test-storybook`：11 files / 20 tests passed）。
-- 视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=待本次收口回传；证据落盘=已落盘。
-- 证据绑定 SHA=`b5648597`；来源为 mock-only `demo:dev`，覆盖桌面与 `390px` 移动端。
-- PR: include
-- 桌面长期统计图（全局折线、模型用量与上游账号堆叠面积）：
-  ![桌面长期统计堆叠面积](./assets/long-term-stats-desktop-stacked-area.png)
-- PR: include
-- 桌面模型表（固定总计行、模型图标与思考程度胶囊）：
-  ![桌面模型身份表](./assets/long-term-stats-desktop-table.png)
-- PR: include
-- `390px` 移动端长期统计图：
-  ![移动端长期统计堆叠面积](./assets/long-term-stats-mobile-stacked-area.png)
-- PR: include
-- `390px` 移动端模型表与上游堆叠图：
-  ![移动端模型身份表](./assets/long-term-stats-mobile-table.png)
+- Storybook 覆盖=通过（新增 `SparseSeries` 状态与 play 覆盖）；视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=已回传；证据落盘=已落盘。
+- 证据绑定 SHA=`d43f3182`；来源为 mock-only `demo:preview`，覆盖桌面与 `390px` 移动端稀疏数据岛场景。
+  PR: include
+  桌面模型用量：连续日期域在数据岛之间绘制零基线。
+  ![桌面长期统计连续堆叠面积](./assets/long-term-stats-gapless-desktop.png)
+
+PR: include
+`390px` 移动端模型用量与模型表：无页面级横向溢出。
+![移动端长期统计连续堆叠面积](./assets/long-term-stats-gapless-mobile.png)
+
 - 截图来源为 mock-only `ui_demo`，不含敏感信息；推送包含截图文件前需取得主人明确授权。
