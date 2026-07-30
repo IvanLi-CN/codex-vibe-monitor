@@ -19,6 +19,9 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) total_count: i64,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
+    pub(crate) terminal_count: i64,
+    pub(crate) terminal_tokens: i64,
+    pub(crate) terminal_cost: f64,
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
@@ -248,6 +251,19 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         );
         let has_terminal_status =
             invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+        let total_tokens = row.total_tokens.unwrap_or_default();
+        let cost = row.cost.unwrap_or_default();
+        let terminal_cost = row
+            .cost
+            .filter(|value| value.is_finite())
+            .unwrap_or_default();
+        if has_terminal_status {
+            // Long-term usage intentionally excludes active invocations, so retain a matching
+            // terminal-only proof alongside the all-status operational rollup.
+            overall_entry.terminal_count += 1;
+            overall_entry.terminal_tokens += total_tokens.max(0);
+            overall_entry.terminal_cost += terminal_cost;
+        }
         let is_success_like = archive_invocation_status_is_success_like(
             row.status.as_deref(),
             row.error_message.as_deref(),
@@ -257,9 +273,8 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         } else if has_terminal_status && classification.failure_class != FailureClass::None {
             overall_entry.failure_count += 1;
         }
-        overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
+        overall_entry.total_tokens += total_tokens;
         overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
-        let cost = row.cost.unwrap_or_default();
         overall_entry.total_cost += cost;
         if invocation_counts_toward_non_success_usage(
             row.status.as_deref(),
@@ -615,5 +630,88 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     {
         entry.latest_total_latency_at = Some(row.occurred_at.clone());
         entry.latest_total_latency_ms = Some(total_ms);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SOURCE_XY;
+
+    fn source_row(
+        id: i64,
+        status: &str,
+        total_tokens: i64,
+        cost: f64,
+    ) -> InvocationHourlySourceRecord {
+        InvocationHourlySourceRecord {
+            id,
+            occurred_at: "2026-07-23T10:00:00+08:00".to_string(),
+            source: SOURCE_XY.to_string(),
+            status: Some(status.to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            total_tokens: Some(total_tokens),
+            cost: Some(cost),
+            upstream_account_id: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }
+    }
+
+    #[test]
+    fn overall_rollup_keeps_a_terminal_proof_separate_from_active_calls() {
+        let mut overall = BTreeMap::new();
+        accumulate_invocation_hourly_overall_rollups(
+            &mut overall,
+            &[
+                source_row(1, "success", 100, 0.1),
+                source_row(2, "running", 50, 0.05),
+            ],
+        )
+        .expect("accumulate hourly rollup");
+
+        let delta = overall.values().next().expect("hourly delta");
+        assert_eq!(delta.total_count, 2);
+        assert_eq!(delta.total_tokens, 150);
+        assert!((delta.total_cost - 0.15).abs() < 1e-9);
+        assert_eq!(delta.terminal_count, 1);
+        assert_eq!(delta.terminal_tokens, 100);
+        assert!((delta.terminal_cost - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn terminal_proof_ignores_non_finite_costs_like_long_term_usage() {
+        let mut overall = BTreeMap::new();
+        accumulate_invocation_hourly_overall_rollups(
+            &mut overall,
+            &[source_row(1, "success", 100, f64::NAN)],
+        )
+        .expect("accumulate hourly rollup");
+
+        let delta = overall.values().next().expect("hourly delta");
+        assert_eq!(delta.terminal_count, 1);
+        assert_eq!(delta.terminal_tokens, 100);
+        assert_eq!(delta.terminal_cost, 0.0);
     }
 }

@@ -662,54 +662,73 @@ pub(crate) fn legacy_compatible_archive_select_expr(
 pub(crate) fn build_legacy_compatible_invocation_archive_query(
     archive_columns: &HashSet<String>,
 ) -> String {
-    let model = legacy_compatible_archive_select_expr(archive_columns, "model");
-    let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
-    let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
-    let cache_input_tokens =
-        legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
-    let upstream_account_id =
-        legacy_compatible_archive_select_expr(archive_columns, "upstream_account_id");
-    let cost_input = legacy_compatible_archive_select_expr(archive_columns, "cost_input");
-    let cost_cache_write =
-        legacy_compatible_archive_select_expr(archive_columns, "cost_cache_write");
-    let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
-    let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
-    let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
-    let first_token_ms = legacy_compatible_archive_select_expr(archive_columns, "first_token_ms");
+    let select = |column_name| legacy_compatible_archive_select_expr(archive_columns, column_name);
+    let detail_level = if archive_columns.contains("detail_level") {
+        "detail_level".to_string()
+    } else {
+        "'full' AS detail_level".to_string()
+    };
+    let status = select("status");
+    let model = select("model");
+    let input_tokens = select("input_tokens");
+    let output_tokens = select("output_tokens");
+    let cache_input_tokens = select("cache_input_tokens");
+    let total_tokens = select("total_tokens");
+    let cost = select("cost");
+    let upstream_account_id = select("upstream_account_id");
+    let cost_input = select("cost_input");
+    let cost_cache_write = select("cost_cache_write");
+    let cost_cache_read = select("cost_cache_read");
+    let cost_output = select("cost_output");
+    let cost_reasoning = select("cost_reasoning");
+    let error_message = select("error_message");
+    let failure_kind = select("failure_kind");
+    let failure_class = select("failure_class");
+    let is_actionable = select("is_actionable");
+    let payload = select("payload");
+    let t_total_ms = select("t_total_ms");
+    let t_req_read_ms = select("t_req_read_ms");
+    let t_req_parse_ms = select("t_req_parse_ms");
+    let t_upstream_connect_ms = select("t_upstream_connect_ms");
+    let t_upstream_ttfb_ms = select("t_upstream_ttfb_ms");
+    let first_token_ms = select("first_token_ms");
+    let t_upstream_stream_ms = select("t_upstream_stream_ms");
+    let t_resp_parse_ms = select("t_resp_parse_ms");
+    let t_persist_ms = select("t_persist_ms");
     format!(
         r#"
         SELECT
             id,
             occurred_at,
             source,
-            status,
-            detail_level,
+            {status},
+            {detail_level},
             {model},
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
-            total_tokens,
-            cost,
+            {total_tokens},
+            {cost},
             {upstream_account_id},
             {cost_input},
             {cost_cache_write},
             {cost_cache_read},
             {cost_output},
             {cost_reasoning},
-            error_message,
-            failure_kind,
-            failure_class,
-            is_actionable,
-            payload,
-            t_total_ms,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
+            {error_message},
+            {failure_kind},
+            {failure_class},
+            {is_actionable},
+            {payload},
+            {t_total_ms},
+            {t_req_read_ms},
+            {t_req_parse_ms},
+            {t_upstream_connect_ms},
+            {t_upstream_ttfb_ms},
             {first_token_ms},
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms
+            {t_upstream_stream_ms},
+            {t_resp_parse_ms},
+            {t_persist_ms}
         FROM codex_invocations
         WHERE id > ?1
         ORDER BY id ASC
@@ -1489,6 +1508,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     total_count,
                     success_count,
                     failure_count,
+                    terminal_count,
+                    terminal_tokens,
+                    terminal_cost,
+                    terminal_proof_complete,
                     total_tokens,
                     cache_input_tokens,
                     total_cost,
@@ -1509,11 +1532,15 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
                     failure_count = invocation_rollup_hourly.failure_count + excluded.failure_count,
+                    terminal_count = invocation_rollup_hourly.terminal_count + excluded.terminal_count,
+                    terminal_tokens = invocation_rollup_hourly.terminal_tokens + excluded.terminal_tokens,
+                    terminal_cost = invocation_rollup_hourly.terminal_cost + excluded.terminal_cost,
+                    terminal_proof_complete = 0,
                     total_tokens = invocation_rollup_hourly.total_tokens + excluded.total_tokens,
                     cache_input_tokens = invocation_rollup_hourly.cache_input_tokens + excluded.cache_input_tokens,
                     total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
@@ -1540,6 +1567,9 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.total_count)
             .bind(delta.success_count)
             .bind(delta.failure_count)
+            .bind(delta.terminal_count)
+            .bind(delta.terminal_tokens)
+            .bind(delta.terminal_cost)
             .bind(delta.total_tokens)
             .bind(delta.cache_input_tokens)
             .bind(delta.total_cost)
@@ -4011,10 +4041,23 @@ pub(crate) async fn replay_live_upstream_host_network_minute_rollups_from_pool_a
     Ok(rows.len() as u64)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InvocationHourlyRollupReconciliation {
+    pub(crate) applied_rollups: usize,
+    /// A complete source scan contradicted or omitted a previously trusted canonical bucket.
+    /// The caller uses these buckets to keep dependent long-term materializations in repair
+    /// state until a later source scan can certify them again.
+    pub(crate) invalidated_bucket_start_epochs: Vec<i64>,
+    /// Completed invocation archives that could not participate in the source scan. Consumers
+    /// must invalidate their own replay markers so a restored file is read again.
+    pub(crate) unavailable_archive_file_paths: Vec<String>,
+    pub(crate) source_complete: bool,
+}
+
 pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     pool: &Pool<Sqlite>,
-) -> Result<usize> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+) -> Result<InvocationHourlyRollupReconciliation> {
+    let archive_files = match sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
@@ -4025,9 +4068,16 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(pool)
-    .await?;
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) if error.to_string().contains("no such table") => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut seen_ids = HashSet::new();
+    let mut source_incomplete = false;
+    let mut unavailable_archive_file_paths = Vec::new();
 
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
@@ -4037,6 +4087,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during invocation hourly rollup backfill"
             );
+            source_incomplete = true;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
 
@@ -4049,34 +4101,76 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
             let _ = fs::remove_file(&temp_path);
         }
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        let archive_columns =
-            load_archive_table_columns(&archive_pool, "codex_invocations").await?;
-        let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
-        let mut archive_cursor_id = 0_i64;
-        loop {
-            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
-                .bind(archive_cursor_id)
-                .bind(BACKFILL_BATCH_SIZE)
-                .fetch_all(&archive_pool)
-                .await?;
-            if rows.is_empty() {
-                break;
+        let archive_result = async {
+            inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+            let archive_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(&sqlite_url_for_path(&temp_path))
+                .await
+                .with_context(|| {
+                    format!("failed to open archive batch {}", archive_path.display())
+                })?;
+            let result: Result<()> = async {
+                let archive_columns =
+                    load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+                let archive_query_sql =
+                    build_legacy_compatible_invocation_archive_query(&archive_columns);
+                let mut archive_cursor_id = 0_i64;
+                loop {
+                    let mut rows =
+                        sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
+                            .bind(archive_cursor_id)
+                            .bind(BACKFILL_BATCH_SIZE)
+                            .fetch_all(&archive_pool)
+                            .await?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    archive_cursor_id = rows.last().map(|row| row.id).unwrap_or(archive_cursor_id);
+                    rows.retain(|row| seen_ids.insert(row.id));
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+                }
+                Ok(())
             }
-            archive_cursor_id = rows.last().map(|row| row.id).unwrap_or(archive_cursor_id);
-            rows.retain(|row| seen_ids.insert(row.id));
-            if rows.is_empty() {
-                continue;
-            }
-            accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+            .await;
+            archive_pool.close().await;
+            result
         }
-        archive_pool.close().await;
+        .await;
         drop(temp_cleanup);
+        if let Err(error) = archive_result {
+            source_incomplete = true;
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = %archive_path.display(),
+                error = %error,
+                "could not read archive batch during invocation hourly rollup proof reconciliation"
+            );
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            continue;
+        }
+    }
+
+    if source_incomplete {
+        let invalidated = sqlx::query(
+            "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0",
+        )
+        .execute(pool)
+        .await?
+        .rows_affected();
+        warn!(
+            invalidated,
+            "left canonical terminal integrity proofs unavailable because at least one invocation archive is unreadable"
+        );
+        return Ok(InvocationHourlyRollupReconciliation {
+            applied_rollups: 0,
+            invalidated_bucket_start_epochs: Vec::new(),
+            unavailable_archive_file_paths,
+            source_complete: false,
+        });
     }
 
     let mut cursor_id = 0_i64;
@@ -4135,12 +4229,70 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
     }
 
-    if overall.is_empty() {
-        return Ok(0);
-    }
-
     let mut tx = pool.begin().await?;
+    let mut applied_rollups = 0usize;
+    let mut incomplete_rollups = 0usize;
+    let mut invalidated_bucket_start_epochs = BTreeSet::new();
+    let trusted_rollup_keys = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT bucket_start_epoch, source
+        FROM invocation_rollup_hourly
+        WHERE terminal_proof_complete <> 0
+        "#,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for (bucket_start_epoch, source) in trusted_rollup_keys {
+        if overall.contains_key(&(bucket_start_epoch, source.clone())) {
+            continue;
+        }
+        sqlx::query(
+            r#"
+            UPDATE invocation_rollup_hourly
+            SET terminal_proof_complete = 0
+            WHERE bucket_start_epoch = ?1 AND source = ?2
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        incomplete_rollups += 1;
+        invalidated_bucket_start_epochs.insert(bucket_start_epoch);
+    }
     for ((bucket_start_epoch, source), delta) in &overall {
+        let existing = sqlx::query_as::<_, (i64, i64, f64)>(
+            r#"
+            SELECT total_count, total_tokens, total_cost
+            FROM invocation_rollup_hourly
+            WHERE bucket_start_epoch = ?1 AND source = ?2
+            "#,
+        )
+        .bind(*bucket_start_epoch)
+        .bind(source)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let matches_existing = existing.is_none_or(|(total_count, total_tokens, total_cost)| {
+            total_count == delta.total_count
+                && total_tokens == delta.total_tokens
+                && (total_cost - delta.total_cost).abs() <= 1e-6_f64.max(total_cost.abs() * 1e-9)
+        });
+        if !matches_existing {
+            sqlx::query(
+                r#"
+                UPDATE invocation_rollup_hourly
+                SET terminal_proof_complete = 0
+                WHERE bucket_start_epoch = ?1 AND source = ?2
+                "#,
+            )
+            .bind(*bucket_start_epoch)
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+            incomplete_rollups += 1;
+            invalidated_bucket_start_epochs.insert(*bucket_start_epoch);
+            continue;
+        }
         sqlx::query(
             r#"
             INSERT INTO invocation_rollup_hourly (
@@ -4149,6 +4301,10 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 total_count,
                 success_count,
                 failure_count,
+                terminal_count,
+                terminal_tokens,
+                terminal_cost,
+                terminal_proof_complete,
                 total_tokens,
                 cache_input_tokens,
                 total_cost,
@@ -4169,11 +4325,15 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 first_token_histogram,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, datetime('now'))
             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                 total_count = excluded.total_count,
                 success_count = excluded.success_count,
                 failure_count = excluded.failure_count,
+                terminal_count = excluded.terminal_count,
+                terminal_tokens = excluded.terminal_tokens,
+                terminal_cost = excluded.terminal_cost,
+                terminal_proof_complete = 1,
                 total_tokens = excluded.total_tokens,
                 cache_input_tokens = excluded.cache_input_tokens,
                 total_cost = excluded.total_cost,
@@ -4200,6 +4360,9 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         .bind(delta.total_count)
         .bind(delta.success_count)
         .bind(delta.failure_count)
+        .bind(delta.terminal_count)
+        .bind(delta.terminal_tokens)
+        .bind(delta.terminal_cost)
         .bind(delta.total_tokens)
         .bind(delta.cache_input_tokens)
         .bind(delta.total_cost)
@@ -4222,10 +4385,25 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         .bind(encode_approx_histogram(&delta.first_token_histogram)?)
         .execute(tx.as_mut())
         .await?;
+        applied_rollups += 1;
     }
     tx.commit().await?;
 
-    Ok(overall.len())
+    if incomplete_rollups > 0 {
+        warn!(
+            incomplete_rollups,
+            "left terminal integrity proofs unavailable where source backfill did not match canonical rollups"
+        );
+    }
+    Ok(InvocationHourlyRollupReconciliation {
+        applied_rollups,
+        invalidated_bucket_start_epochs: invalidated_bucket_start_epochs.into_iter().collect(),
+        unavailable_archive_file_paths: Vec::new(),
+        // The source inventory was readable, but it cannot certify a canonical proof after a
+        // contradiction. Treat that exactly like incomplete source availability so dependent
+        // materializations cannot publish stale rows as ready.
+        source_complete: incomplete_rollups == 0,
+    })
 }
 
 pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
@@ -4547,6 +4725,56 @@ mod upstream_host_network_minute_tests {
         .await
         .expect("create hourly_rollup_live_progress table");
         pool
+    }
+
+    #[tokio::test]
+    async fn legacy_compatible_archive_query_reads_archives_without_optional_columns() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory legacy archive pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create minimal legacy invocation archive schema");
+        sqlx::query("INSERT INTO codex_invocations (id, occurred_at, source) VALUES (1, ?1, ?2)")
+            .bind("2026-07-23 10:00:00")
+            .bind(SOURCE_PROXY)
+            .execute(&pool)
+            .await
+            .expect("insert minimal legacy invocation archive row");
+
+        let columns = load_archive_table_columns(&pool, "codex_invocations")
+            .await
+            .expect("inspect minimal legacy archive schema");
+        let query = build_legacy_compatible_invocation_archive_query(&columns);
+        let row = sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+            .bind(0_i64)
+            .bind(10_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("read minimal legacy invocation archive row");
+
+        assert_eq!(row.id, 1);
+        assert_eq!(row.detail_level, DETAIL_LEVEL_FULL);
+        assert!(row.t_total_ms.is_none());
+        assert!(row.t_req_read_ms.is_none());
+        assert!(row.t_req_parse_ms.is_none());
+        assert!(row.t_upstream_connect_ms.is_none());
+        assert!(row.t_upstream_ttfb_ms.is_none());
+        assert!(row.first_token_ms.is_none());
+        assert!(row.t_upstream_stream_ms.is_none());
+        assert!(row.t_resp_parse_ms.is_none());
+        assert!(row.t_persist_ms.is_none());
     }
 
     async fn save_progress(pool: &Pool<Sqlite>, dataset: &str, cursor_id: i64) {
