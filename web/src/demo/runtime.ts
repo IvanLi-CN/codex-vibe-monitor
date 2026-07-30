@@ -21,7 +21,7 @@ const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390"]);
 function hashSearchFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ) {
-  if (!location || !location.hash.includes("?")) return "";
+  if (!location?.hash.includes("?")) return "";
   return location.hash.slice(location.hash.indexOf("?") + 1);
 }
 

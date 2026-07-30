@@ -56,6 +56,19 @@ const MODEL_PERFORMANCE_METRICS: MetricKey[] = [
 ];
 const USAGE_METRICS: MetricKey[] = ["tokens", "cost", "calls"];
 
+export const globalTrendMetricLabelKeys = {
+  tokens: "stats.longTerm.global.tokens",
+  cost: "stats.longTerm.global.cost",
+  calls: "stats.longTerm.global.calls",
+} as const;
+
+export function globalTrendMetricLabelKey(metric: MetricKey): string {
+  return (
+    globalTrendMetricLabelKeys[metric as keyof typeof globalTrendMetricLabelKeys] ??
+    globalTrendMetricLabelKeys.tokens
+  );
+}
+
 const metricLabelKeys: Record<MetricKey, string> = {
   tokens: "stats.longTerm.metric.tokens",
   cost: "stats.longTerm.metric.cost",
@@ -723,11 +736,11 @@ export function LongTermStatsSection({
     () => [
       {
         seriesKey: "global",
-        displayName: t("stats.longTerm.global"),
+        displayName: t(globalTrendMetricLabelKey(globalMetric)),
         points: overview?.daily ?? [],
       },
     ],
-    [overview?.daily, t],
+    [globalMetric, overview?.daily, t],
   );
   const stackedAreaDates = useMemo(
     () => overview?.daily.map((point) => point.date) ?? [],

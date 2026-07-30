@@ -6151,7 +6151,7 @@ async fn ensure_schema_backfills_legacy_invocation_rollup_aggregate_columns() {
 }
 
 #[tokio::test]
-async fn ensure_schema_leaves_legacy_rollups_untrusted_when_sources_are_partial() {
+async fn ensure_schema_reconciles_legacy_rollups_when_sources_are_complete() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("legacy-rollup-terminal-proof-partial-source").await;
     let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
@@ -6248,7 +6248,7 @@ async fn ensure_schema_leaves_legacy_rollups_untrusted_when_sources_are_partial(
 
     ensure_schema(&pool)
         .await
-        .expect("ensure schema should preserve an unreconstructable canonical row");
+        .expect("ensure schema should reconcile a legacy canonical row against complete sources");
 
     let row = sqlx::query_as::<_, (i64, i64, f64, i64)>(
         r#"
@@ -6261,20 +6261,20 @@ async fn ensure_schema_leaves_legacy_rollups_untrusted_when_sources_are_partial(
     .bind(SOURCE_PROXY)
     .fetch_one(&pool)
     .await
-    .expect("load protected legacy rollup");
-    assert_eq!(row.0, 2);
-    assert_eq!(row.1, 84);
-    assert_eq!(row.2, 0.84);
+    .expect("load reconciled legacy rollup");
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1, 42);
+    assert_eq!(row.2, 0.42);
     assert_eq!(
-        row.3, 0,
-        "partial sources must not turn a legacy aggregate into terminal integrity proof"
+        row.3, 1,
+        "complete sources should restore the terminal integrity proof after replacing legacy totals"
     );
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn terminal_proof_waits_for_complete_source_reconciliation_after_incremental_write() {
+async fn terminal_proof_reconciliation_repairs_a_contradictory_canonical_bucket() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-incremental-reconciliation").await;
     let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
@@ -6311,14 +6311,26 @@ async fn terminal_proof_waits_for_complete_source_reconciliation_after_increment
     backfill_invocation_rollup_hourly_from_sources(&pool)
         .await
         .expect("reconcile canonical rollup against all available sources");
-    let proof_after_reconciliation: i64 = sqlx::query_scalar(
-        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = 9, terminal_count = 9, terminal_tokens = 999, terminal_cost = 9.99, total_tokens = 999, total_cost = 9.99, terminal_proof_complete = 0 WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("corrupt canonical hourly rollup");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("complete reconciliation should repair canonical totals");
+    let repaired = sqlx::query_as::<_, (i64, i64, i64, f64, i64)>(
+        "SELECT total_count, terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
     )
     .bind(SOURCE_PROXY)
     .fetch_one(&pool)
     .await
-    .expect("load reconciled terminal proof");
-    assert_eq!(proof_after_reconciliation, 1);
+    .expect("load repaired canonical rollup");
+    assert!(reconciliation.source_complete);
+    assert_eq!(repaired, (1, 1, 42, 0.42, 1));
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -6405,6 +6417,75 @@ async fn terminal_proof_is_revoked_when_a_completed_invocation_archive_is_missin
 }
 
 #[tokio::test]
+async fn terminal_proof_is_revoked_when_a_readable_invocation_archive_hash_mismatches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("terminal-proof-archive-hash-mismatch").await;
+    let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "terminal-proof-archive-hash-mismatch-live",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("write bounded live rollup increment");
+    backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("initial source reconciliation should certify the live bucket");
+
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "terminal-proof-archive-hash-mismatch",
+        &[(
+            1_i64,
+            "terminal-proof-archive-hash-mismatch-archive",
+            &shanghai_local_days_ago(20, 9, 0, 0),
+            SOURCE_PROXY,
+            "success",
+            42_i64,
+            0.42_f64,
+            None,
+        )],
+    )
+    .await;
+    sqlx::query("UPDATE archive_batches SET sha256 = 'tampered-archive-sha' WHERE file_path = ?1")
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("corrupt archive manifest identity");
+
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("hash mismatch should make the source unavailable without failing refresh");
+    let proof_after_hash_mismatch: i64 = sqlx::query_scalar(
+        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load terminal proof after archive hash mismatch");
+    assert!(!reconciliation.source_complete);
+    assert_eq!(reconciliation.applied_rollups, 0);
+    assert_eq!(
+        reconciliation.unavailable_archive_file_paths,
+        vec![archive_path.to_string_lossy().to_string()]
+    );
+    assert_eq!(proof_after_hash_mismatch, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn unreadable_archive_does_not_revoke_retired_terminal_proofs() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-retired-source-unavailable-archive").await;
@@ -6484,7 +6565,7 @@ async fn unreadable_archive_does_not_revoke_retired_terminal_proofs() {
 }
 
 #[tokio::test]
-async fn terminal_proof_is_revoked_when_reconciliation_drops_a_trusted_bucket() {
+async fn complete_reconciliation_removes_stale_missing_canonical_buckets() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-reconciliation-drops-bucket").await;
     let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
@@ -6519,16 +6600,15 @@ async fn terminal_proof_is_revoked_when_reconciliation_drops_a_trusted_bucket() 
         .execute(&pool)
         .await
         .expect("remove one source row from the reconciled source set");
-    backfill_invocation_rollup_hourly_from_sources(&pool)
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
         .await
-        .expect("reconciliation should revoke a missing trusted bucket");
-    let proxy_proof: i64 = sqlx::query_scalar(
-        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
-    )
-    .bind(SOURCE_PROXY)
-    .fetch_one(&pool)
-    .await
-    .expect("load revoked proxy proof");
+        .expect("reconciliation should remove a missing canonical bucket");
+    let proxy_rollups: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_PROXY)
+            .fetch_one(&pool)
+            .await
+            .expect("count removed proxy rollup");
     let xy_proof: i64 = sqlx::query_scalar(
         "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
     )
@@ -6536,31 +6616,58 @@ async fn terminal_proof_is_revoked_when_reconciliation_drops_a_trusted_bucket() 
     .fetch_one(&pool)
     .await
     .expect("load still-reconstructed xy proof");
-    assert_eq!(proxy_proof, 0);
+    assert!(reconciliation.source_complete);
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    assert_eq!(proxy_rollups, 0);
     assert_eq!(xy_proof, 1);
+
+    // A prior incomplete run may already have marked the missing bucket untrusted. A complete
+    // scan must remove that stale row too; otherwise audits skip the date forever.
+    let proxy_bucket_start =
+        invocation_bucket_start_epoch(&occurred_at).expect("valid Shanghai source timestamp");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete, total_tokens, total_cost) VALUES (?1, ?2, 1, 1, 0, 1, 42, 0.42, 0, 42, 0.42)",
+    )
+    .bind(proxy_bucket_start)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("insert stale untrusted proxy rollup");
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
+        .await
+        .expect("complete reconciliation should remove stale untrusted bucket");
+    let proxy_rollups: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_PROXY)
+            .fetch_one(&pool)
+            .await
+            .expect("count stale untrusted proxy rollup");
+    assert!(reconciliation.source_complete);
+    assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
+    assert_eq!(proxy_rollups, 0);
 
     sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
         .bind("terminal-proof-reconciliation-xy")
         .execute(&pool)
         .await
         .expect("remove the final source row from the reconciled source set");
-    backfill_invocation_rollup_hourly_from_sources(&pool)
+    let reconciliation = backfill_invocation_rollup_hourly_from_sources(&pool)
         .await
-        .expect("empty reconciliation should revoke every remaining trusted bucket");
-    let xy_proof_after_empty_reconciliation: i64 = sqlx::query_scalar(
-        "SELECT terminal_proof_complete FROM invocation_rollup_hourly WHERE source = ?1 LIMIT 1",
-    )
-    .bind(SOURCE_XY)
-    .fetch_one(&pool)
-    .await
-    .expect("load proof after empty reconciliation");
-    assert_eq!(xy_proof_after_empty_reconciliation, 0);
+        .expect("empty reconciliation should remove every remaining active canonical bucket");
+    let xy_rollups_after_empty_reconciliation: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_rollup_hourly WHERE source = ?1")
+            .bind(SOURCE_XY)
+            .fetch_one(&pool)
+            .await
+            .expect("count rollups after empty reconciliation");
+    assert!(reconciliation.source_complete);
+    assert_eq!(xy_rollups_after_empty_reconciliation, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn terminal_proof_keeps_retired_buckets_but_revokes_missing_boundary_buckets() {
+async fn terminal_proof_keeps_retired_buckets_but_removes_missing_boundary_buckets() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("terminal-proof-retired-source-boundary").await;
     let retired_occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
@@ -6622,8 +6729,8 @@ async fn terminal_proof_keeps_retired_buckets_but_revokes_missing_boundary_bucke
         .await
         .expect("reconciliation should distinguish retired and active source buckets");
     assert!(
-        !reconciliation.source_complete,
-        "a missing bucket at the source boundary must remain an actionable reconciliation error"
+        reconciliation.source_complete,
+        "a complete source scan should remove a missing active-window bucket"
     );
     assert_eq!(reconciliation.invalidated_bucket_start_epochs.len(), 1);
     let proofs_after_reconciliation = sqlx::query_as::<_, (i64, i64)>(
@@ -6633,9 +6740,8 @@ async fn terminal_proof_keeps_retired_buckets_but_revokes_missing_boundary_bucke
     .fetch_all(&pool)
     .await
     .expect("load terminal proofs after source reconciliation");
-    assert_eq!(proofs_after_reconciliation.len(), 2);
+    assert_eq!(proofs_after_reconciliation.len(), 1);
     assert_eq!(proofs_after_reconciliation[0].1, 1);
-    assert_eq!(proofs_after_reconciliation[1].1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

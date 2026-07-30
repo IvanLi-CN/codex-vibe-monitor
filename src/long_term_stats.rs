@@ -325,6 +325,19 @@ async fn load_long_term_archive_attempt_accounts(
     Ok((accounts, consumed_archives))
 }
 
+fn hydrate_long_term_archive_attempt_account(
+    row: &mut LongTermInvocationRow,
+    attempt_accounts: &HashMap<(String, String), i64>,
+) {
+    if row.upstream_account_id.is_none()
+        && let Some(invoke_id) = row.invoke_id.as_ref()
+        && let Some(account_id) =
+            attempt_accounts.get(&(invoke_id.clone(), row.occurred_at.clone()))
+    {
+        row.upstream_account_id = Some(*account_id);
+    }
+}
+
 async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<String> {
     let columns = load_archive_table_columns(pool, "codex_invocations").await?;
     let select = |column: &str| long_term_legacy_select_expr(&columns, column);
@@ -684,6 +697,7 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             status TEXT NOT NULL DEFAULT 'preparing',
             statistics_start_date TEXT,
             integrity_source_start_date TEXT,
+            integrity_source_pending_start_date TEXT,
             processed_rows INTEGER NOT NULL DEFAULT 0,
             total_rows INTEGER NOT NULL DEFAULT 0,
             last_error TEXT,
@@ -714,6 +728,14 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
         .execute(pool)
         .await
         .context("failed to add long term integrity source boundary")?;
+    }
+    if !state_columns.contains("integrity_source_pending_start_date") {
+        sqlx::query(
+            "ALTER TABLE long_term_stats_state ADD COLUMN integrity_source_pending_start_date TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pending long term integrity source boundary")?;
     }
     sqlx::query(
         r#"
@@ -855,9 +877,53 @@ async fn clear_long_term_invocation_replay_markers_for_unavailable_sources(
 
 pub(crate) async fn advance_long_term_integrity_source_start_tx(
     tx: &mut SqliteConnection,
+    retiring_archive_batch_id: i64,
     source_safe_start: NaiveDate,
 ) -> Result<()> {
-    let source_start = source_safe_start.to_string();
+    let pending_source_start = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT integrity_source_pending_start_date FROM long_term_stats_state WHERE id = ?1",
+    )
+    .bind(LONG_TERM_STATE_ID)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten()
+    .map(|value| {
+        NaiveDate::parse_from_str(&value, "%Y-%m-%d").map_err(|error| {
+            anyhow!("pending long-term integrity source boundary is invalid ({value}): {error}")
+        })
+    })
+    .transpose()?;
+    let candidate = pending_source_start
+        .map(|pending| pending.max(source_safe_start))
+        .unwrap_or(source_safe_start);
+    let candidate_start = candidate.to_string();
+    let retained_source_blocks_boundary = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM archive_batches
+            WHERE id <> ?1
+              AND dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+              AND status = 'completed'
+              AND (coverage_start_at IS NULL OR coverage_start_at < ?2)
+        )
+        "#,
+    )
+    .bind(retiring_archive_batch_id)
+    .bind(&candidate_start)
+    .fetch_one(&mut *tx)
+    .await?
+        != 0;
+    if retained_source_blocks_boundary {
+        sqlx::query(
+            "UPDATE long_term_stats_state SET integrity_source_pending_start_date = ?1, updated_at = datetime('now') WHERE id = ?2",
+        )
+        .bind(candidate_start)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&mut *tx)
+        .await?;
+        return Ok(());
+    }
     sqlx::query(
         r#"
         UPDATE long_term_stats_state
@@ -866,11 +932,12 @@ pub(crate) async fn advance_long_term_integrity_source_start_tx(
               OR integrity_source_start_date < ?1 THEN ?1
             ELSE integrity_source_start_date
         END,
+        integrity_source_pending_start_date = NULL,
         updated_at = datetime('now')
         WHERE id = ?2
         "#,
     )
-    .bind(source_start)
+    .bind(candidate_start)
     .bind(LONG_TERM_STATE_ID)
     .execute(&mut *tx)
     .await?;
@@ -2399,7 +2466,7 @@ async fn refresh_long_term_stats_inner(
     } else {
         None
     };
-    let (archive_attempt_accounts, attempt_archive_markers) =
+    let (mut archive_attempt_accounts, mut attempt_archive_markers) =
         if !ready_state || attempt_date_range.is_some() {
             load_long_term_archive_attempt_accounts(pool, attempt_date_range).await?
         } else {
@@ -2485,13 +2552,7 @@ async fn refresh_long_term_stats_inner(
         match archive_rows {
             Ok(archive_rows) => {
                 for mut row in archive_rows {
-                    if row.upstream_account_id.is_none()
-                        && let Some(invoke_id) = row.invoke_id.as_ref()
-                        && let Some(account_id) = archive_attempt_accounts
-                            .get(&(invoke_id.clone(), row.occurred_at.clone()))
-                    {
-                        row.upstream_account_id = Some(*account_id);
-                    }
+                    hydrate_long_term_archive_attempt_account(&mut row, &archive_attempt_accounts);
                     if let Some(date) =
                         parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
                             Shanghai
@@ -2611,6 +2672,15 @@ async fn refresh_long_term_stats_inner(
         mark_long_term_integrity_audit(pool).await?;
     }
     let scheduled_repair_date = next_due_long_term_repair_date(pool, reconstructable_start).await?;
+    if ready_state && let Some(date) = scheduled_repair_date {
+        // The primary scan is driven by the live tail and newly replayed archive coverage. A
+        // historical repair can reopen an already replayed invocation archive outside that
+        // range, so load its attempt mapping explicitly before rebuilding its dimensions.
+        let (repair_attempt_accounts, repair_attempt_markers) =
+            load_long_term_archive_attempt_accounts(pool, Some((date, date))).await?;
+        archive_attempt_accounts.extend(repair_attempt_accounts);
+        attempt_archive_markers.extend(repair_attempt_markers);
+    }
 
     // A day may be split across live rows and archive parts. Rebuild every date touched by the
     // current live tail from all overlapping source parts before replacing durable buckets.
@@ -2835,13 +2905,7 @@ async fn refresh_long_term_stats_inner(
             archive_pool.close().await;
             drop(cleanup);
             for mut row in archive_rows {
-                if row.upstream_account_id.is_none()
-                    && let Some(invoke_id) = row.invoke_id.as_ref()
-                    && let Some(account_id) =
-                        archive_attempt_accounts.get(&(invoke_id.clone(), row.occurred_at.clone()))
-                {
-                    row.upstream_account_id = Some(*account_id);
-                }
+                hydrate_long_term_archive_attempt_account(&mut row, &archive_attempt_accounts);
                 if rebuild_seen_ids.insert(row.id) {
                     rebuild_rows.push(row);
                 }
@@ -4310,6 +4374,94 @@ mod tests {
         assert_eq!(matched_rows[0].t_total_ms, None);
     }
 
+    #[tokio::test]
+    async fn queued_repair_attempt_scan_covers_the_replayed_archive_date() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        let month_key = date.format("%Y-%m").to_string();
+        let occurred_at = format!("{date} 10:00:00");
+        let archive_db_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-repair-attempt-source-{}-{}.sqlite",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        let archive_path = archive_db_path.with_extension("sqlite.gz");
+        fs::File::create(&archive_db_path).expect("create attempt archive database");
+        let archive_options = format!("sqlite://{}", archive_db_path.to_string_lossy())
+            .parse::<SqliteConnectOptions>()
+            .expect("parse attempt archive URL")
+            .create_if_missing(true);
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(archive_options)
+            .await
+            .expect("open attempt archive database");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, upstream_account_id INTEGER)",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create attempt archive schema");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, upstream_account_id) VALUES (1, 'repair-invoke', ?1, 42)",
+        )
+        .bind(&occurred_at)
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived attempt mapping");
+        archive_pool.close().await;
+        crate::maintenance::deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress attempt archive");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                created_at
+            )
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'repair-attempt-sha', 1, 'completed', ?3, ?3, datetime('now'))
+            "#,
+        )
+        .bind(month_key)
+        .bind(archive_path.to_string_lossy().to_string())
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("record attempt archive manifest");
+
+        let next_date = date.succ_opt().expect("next date");
+        let (outside_range, _) =
+            load_long_term_archive_attempt_accounts(&pool, Some((next_date, next_date)))
+                .await
+                .expect("scan outside queued repair date");
+        let (queued_repair_accounts, _) =
+            load_long_term_archive_attempt_accounts(&pool, Some((date, date)))
+                .await
+                .expect("scan queued repair date");
+
+        assert!(outside_range.is_empty());
+        assert_eq!(
+            queued_repair_accounts.get(&("repair-invoke".to_string(), occurred_at)),
+            Some(&42)
+        );
+
+        let _ = fs::remove_file(&archive_db_path);
+        let _ = fs::remove_file(&archive_path);
+    }
+
     #[test]
     fn matched_attempt_source_rows_require_parseable_effective_dates() {
         let pair = (
@@ -4464,6 +4616,77 @@ mod tests {
         .await
         .expect("long-term state");
         assert_eq!(status, LONG_TERM_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn integrity_source_boundary_waits_for_contiguous_archive_retirement() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id,
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                created_at
+            )
+            VALUES (2, 'codex_invocations', '2025-01', '/tmp/retained-overlap.sqlite.gz', 'retained-overlap-sha', 1, 'completed', '2025-01-02 00:00:00', datetime('now'))
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert later retained archive coverage");
+
+        let first_safe_start = NaiveDate::from_ymd_opt(2025, 1, 5).expect("fixed date");
+        let mut tx = pool.begin().await.expect("start first cleanup transaction");
+        advance_long_term_integrity_source_start_tx(tx.as_mut(), 1, first_safe_start)
+            .await
+            .expect("defer boundary behind retained overlapping source");
+        tx.commit().await.expect("commit deferred boundary");
+
+        let state: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT integrity_source_start_date, integrity_source_pending_start_date FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("load deferred boundary state");
+        assert_eq!(state.0, None);
+        assert_eq!(state.1.as_deref(), Some("2025-01-05"));
+
+        let mut tx = pool
+            .begin()
+            .await
+            .expect("start contiguous cleanup transaction");
+        advance_long_term_integrity_source_start_tx(
+            tx.as_mut(),
+            2,
+            NaiveDate::from_ymd_opt(2025, 1, 4).expect("fixed date"),
+        )
+        .await
+        .expect("commit accumulated safe boundary after final retained source retires");
+        tx.commit().await.expect("commit contiguous boundary");
+
+        let state: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT integrity_source_start_date, integrity_source_pending_start_date FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("load committed contiguous boundary");
+        assert_eq!(state.0.as_deref(), Some("2025-01-05"));
+        assert_eq!(state.1, None);
     }
 
     #[test]
@@ -4774,7 +4997,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hourly_audit_queues_and_hides_stats_when_complete_sources_disagree_with_canonical() {
+    async fn hourly_audit_repairs_stats_when_complete_sources_disagree_with_canonical() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -4829,7 +5052,7 @@ mod tests {
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("contradictory source reconciliation is contained");
+            .expect("contradictory source reconciliation is repaired");
 
         let (status, last_error) = sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT status, last_error FROM long_term_stats_state WHERE id = ?1",
@@ -4845,39 +5068,27 @@ mod tests {
         .bind(SOURCE_XY)
         .fetch_one(&pool)
         .await
-        .expect("revoked terminal proof");
-        let queue = sqlx::query_as::<_, (i64, i64, i64, i64, i64, String)>(
-            "SELECT expected_calls, expected_token_total, observed_calls, observed_token_total, attempts, last_error FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        .expect("repaired terminal proof");
+        let queue_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
         )
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("durable repair queue entry");
-        let durable_daily_calls = sqlx::query_scalar::<_, i64>(
+        .expect("repair queue count");
+        let repaired_daily_calls = sqlx::query_scalar::<_, i64>(
             "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
         )
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("preserved daily rollup");
+        .expect("repaired daily rollup");
 
-        assert_eq!(status, LONG_TERM_STATUS_ERROR);
-        assert_eq!(
-            last_error.as_deref(),
-            Some(LONG_TERM_TERMINAL_PROOF_UNAVAILABLE_ERROR)
-        );
-        assert_eq!(proof, 0);
-        assert_eq!(queue.0, 2);
-        assert_eq!(queue.1, 200);
-        assert_eq!(queue.2, 1);
-        assert_eq!(queue.3, 100);
-        assert_eq!(queue.4, 1);
-        assert!(
-            queue
-                .5
-                .contains("canonical hourly integrity evidence is unavailable")
-        );
-        assert_eq!(durable_daily_calls, 2);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
+        assert_eq!(last_error, None);
+        assert_eq!(proof, 1);
+        assert_eq!(queue_count, 0);
+        assert_eq!(repaired_daily_calls, 1);
     }
 
     #[tokio::test]
@@ -5516,7 +5727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_materializes_daily_rows_without_account_or_archive_tables() {
+    async fn refresh_replaces_stale_rows_when_the_complete_live_source_is_empty() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -5564,28 +5775,28 @@ mod tests {
             .expect("remove live source row");
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("refresh after source retention");
-        let retained_daily_rows = sqlx::query_scalar::<_, i64>(
+            .expect("refresh after source removal");
+        let remaining_daily_rows = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM long_term_usage_daily WHERE dimension = 'overall'",
         )
         .fetch_one(&pool)
         .await
-        .expect("retained daily count");
-        assert_eq!(retained_daily_rows, 1);
-        let retained_hourly_rows = sqlx::query_scalar::<_, i64>(
+        .expect("remaining daily count");
+        assert_eq!(remaining_daily_rows, 0);
+        let remaining_hourly_rows = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM long_term_usage_hourly WHERE dimension = 'overall'",
         )
         .fetch_one(&pool)
         .await
-        .expect("retained hourly count");
-        assert_eq!(retained_hourly_rows, 1);
+        .expect("remaining hourly count");
+        assert_eq!(remaining_hourly_rows, 0);
         let status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM long_term_stats_state WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .expect("state");
-        assert_eq!(status, LONG_TERM_STATUS_ERROR);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
     }
 
     #[tokio::test]
@@ -5681,7 +5892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_preserves_completed_rollups_without_terminal_proof() {
+    async fn refresh_rebuilds_completed_rollups_after_complete_source_reconciliation() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -5726,7 +5937,7 @@ mod tests {
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("refresh without terminal proof");
+            .expect("refresh after complete source reconciliation");
 
         let daily = sqlx::query_as::<_, (i64, i64, f64)>(
             "SELECT calls, token_total, cost_total FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
@@ -5734,21 +5945,21 @@ mod tests {
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("retained daily rollup");
+        .expect("rebuilt daily rollup");
         let hourly = sqlx::query_as::<_, (i64, i64, f64)>(
             "SELECT calls, token_total, cost_total FROM long_term_usage_hourly WHERE bucket_start_epoch = ?1 AND dimension = 'overall'",
         )
         .bind(hour_start)
         .fetch_one(&pool)
         .await
-        .expect("retained hourly rollup");
+        .expect("rebuilt hourly rollup");
         let queued_repairs =
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
                 .fetch_one(&pool)
                 .await
                 .expect("repair queue count");
-        assert_eq!(daily, (2, 200, 0.2));
-        assert_eq!(hourly, (2, 200, 0.2));
+        assert_eq!(daily, (1, 100, 0.1));
+        assert_eq!(hourly, (1, 100, 0.1));
         assert_eq!(queued_repairs, 0);
     }
 
@@ -5891,7 +6102,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_preserves_bad_rollups_until_a_complete_repair_is_available() {
+    async fn refresh_repairs_bad_rollups_after_complete_source_reconciliation() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -5907,58 +6118,7 @@ mod tests {
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("incomplete repair is safely deferred");
-
-        let calls_after_failed_repair = sqlx::query_scalar::<_, i64>(
-            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
-        )
-        .bind(date.to_string())
-        .fetch_one(&pool)
-        .await
-        .expect("preserved daily rollup");
-        let queue = sqlx::query_as::<_, (i64, i64, f64, i64, i64, f64, i64, String)>(
-            "SELECT expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, attempts, next_retry_at FROM long_term_stats_repair_queue WHERE stats_date = ?1",
-        )
-        .bind(date.to_string())
-        .fetch_one(&pool)
-        .await
-        .expect("deferred repair queue entry");
-        let status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM long_term_stats_state WHERE id = ?1",
-        )
-        .bind(LONG_TERM_STATE_ID)
-        .fetch_one(&pool)
-        .await
-        .expect("error state");
-        assert_eq!(calls_after_failed_repair, 1);
-        assert_eq!(queue.0, 2);
-        assert_eq!(queue.1, 200);
-        assert!((queue.2 - 0.2).abs() < 1e-9);
-        assert_eq!(queue.3, 1);
-        assert_eq!(queue.4, 100);
-        assert!((queue.5 - 0.1).abs() < 1e-9);
-        assert_eq!(queue.6, 1);
-        assert!(!queue.7.is_empty());
-        assert_eq!(status, LONG_TERM_STATUS_ERROR);
-
-        sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, model, payload, total_tokens, output_tokens, cost) VALUES (2, 'invoke-2', ?1, 'canonical-2', 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 100, 40, 0.1)",
-        )
-        .bind(format!("{date}T11:00:00+08:00"))
-        .execute(&pool)
-        .await
-        .expect("missing source invocation");
-        sqlx::query(
-            "UPDATE long_term_stats_repair_queue SET next_retry_at = datetime('now', '-1 second') WHERE stats_date = ?1",
-        )
-        .bind(date.to_string())
-        .execute(&pool)
-        .await
-        .expect("make repair eligible");
-
-        refresh_long_term_stats(&pool, 400)
-            .await
-            .expect("recovery repair");
+            .expect("complete source repair");
 
         let repaired_calls = sqlx::query_scalar::<_, i64>(
             "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
@@ -5967,21 +6127,23 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("repaired daily rollup");
-        let queue_count =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
-                .fetch_one(&pool)
-                .await
-                .expect("cleared repair queue");
-        let recovered_status = sqlx::query_scalar::<_, String>(
+        let queue_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repair queue count");
+        let status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM long_term_stats_state WHERE id = ?1",
         )
         .bind(LONG_TERM_STATE_ID)
         .fetch_one(&pool)
         .await
-        .expect("recovered status");
-        assert_eq!(repaired_calls, 2);
+        .expect("ready state");
+        assert_eq!(repaired_calls, 1);
         assert_eq!(queue_count, 0);
-        assert_eq!(recovered_status, LONG_TERM_STATUS_READY);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
     }
 
     #[tokio::test]
@@ -6152,7 +6314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_recovers_a_queued_repair_when_no_durable_rollups_exist() {
+    async fn refresh_replaces_a_queued_repair_with_an_empty_complete_source() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -6188,7 +6350,7 @@ mod tests {
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("unavailable repair is deferred");
+            .expect("empty complete source is reconciled");
 
         let first_status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM long_term_stats_state WHERE id = ?1",
@@ -6197,28 +6359,29 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("pending error state");
-        let attempts = sqlx::query_scalar::<_, i64>(
-            "SELECT attempts FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        let queue_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
         )
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("queued retry attempts");
-        assert_eq!(first_status, LONG_TERM_STATUS_ERROR);
-        assert_eq!(attempts, 1);
-
-        insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
-        sqlx::query(
-            "UPDATE long_term_stats_repair_queue SET next_retry_at = datetime('now', '-1 second') WHERE stats_date = ?1",
+        .expect("queued repair count");
+        let empty_daily_rows = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
         )
         .bind(date.to_string())
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
-        .expect("make repair eligible");
+        .expect("empty daily row count");
+        assert_eq!(first_status, LONG_TERM_STATUS_EMPTY);
+        assert_eq!(queue_count, 0);
+        assert_eq!(empty_daily_rows, 0);
+
+        insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("queued repair recovers after source arrives");
+            .expect("refresh materializes after source arrives");
 
         let repaired_calls = sqlx::query_scalar::<_, i64>(
             "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",

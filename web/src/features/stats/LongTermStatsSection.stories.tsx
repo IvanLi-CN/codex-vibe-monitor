@@ -153,7 +153,12 @@ export const Ready: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvas.getByTestId("long-term-stats-section")).toBeInTheDocument();
-    await userEvent.click(canvas.getAllByRole("button", { name: "Cost" })[0]);
+    const globalTrend = within(canvas.getByTestId("long-term-chart-global-trend"));
+    await userEvent.click(globalTrend.getByRole("button", { name: "Cost" }));
+    expect(globalTrend.getByRole("button", { name: "Cost" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     const modelUsageChart = within(canvas.getByTestId("long-term-chart-model-usage"));
     const upstreamUsageChart = within(canvas.getByTestId("long-term-chart-upstream-usage"));
     await userEvent.click(modelUsageChart.getByRole("button", { name: "Calls" }));

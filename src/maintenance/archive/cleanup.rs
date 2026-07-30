@@ -519,6 +519,7 @@ where
     if let Some(source_safe_start) = source_safe_start {
         crate::long_term_stats::advance_long_term_integrity_source_start_tx(
             tx.as_mut(),
+            archive_batch_id,
             source_safe_start,
         )
         .await?;

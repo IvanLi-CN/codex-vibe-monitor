@@ -4044,14 +4044,20 @@ pub(crate) async fn replay_live_upstream_host_network_minute_rollups_from_pool_a
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationHourlyRollupReconciliation {
     pub(crate) applied_rollups: usize,
-    /// A complete source scan contradicted or omitted a previously trusted canonical bucket.
-    /// The caller uses these buckets to keep dependent long-term materializations in repair
-    /// state until a later source scan can certify them again.
+    /// A complete source scan omitted a canonical bucket inside the reconstructable source
+    /// window. The stale bucket is removed and callers use these dates to repair dependent
+    /// long-term materializations, including an empty replacement when appropriate.
     pub(crate) invalidated_bucket_start_epochs: Vec<i64>,
     /// Completed invocation archives that could not participate in the source scan. Consumers
     /// must invalidate their own replay markers so a restored file is read again.
     pub(crate) unavailable_archive_file_paths: Vec<String>,
     pub(crate) source_complete: bool,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct InvocationArchiveIntegrityFileRow {
+    file_path: String,
+    sha256: String,
 }
 
 async fn load_long_term_integrity_source_start_date(
@@ -4110,9 +4116,9 @@ fn long_term_integrity_source_boundary_start_epoch(source_start: &NaiveDate) -> 
 pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     pool: &Pool<Sqlite>,
 ) -> Result<InvocationHourlyRollupReconciliation> {
-    let archive_files = match sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT file_path, sha256
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -4140,6 +4146,32 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during invocation hourly rollup backfill"
+            );
+            source_incomplete = true;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            continue;
+        }
+        let actual_sha256 = match sha256_hex_file(&archive_path) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    error = %error,
+                    "could not verify archive batch identity during invocation hourly rollup proof reconciliation"
+                );
+                source_incomplete = true;
+                unavailable_archive_file_paths.push(archive_file.file_path.clone());
+                continue;
+            }
+        };
+        if actual_sha256 != archive_file.sha256 {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = %archive_path.display(),
+                expected_sha256 = archive_file.sha256,
+                actual_sha256,
+                "archive batch identity does not match its manifest during invocation hourly rollup proof reconciliation"
             );
             source_incomplete = true;
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
@@ -4301,18 +4333,16 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
 
     let mut tx = pool.begin().await?;
     let mut applied_rollups = 0usize;
-    let mut incomplete_rollups = 0usize;
     let mut invalidated_bucket_start_epochs = BTreeSet::new();
-    let trusted_rollup_keys = sqlx::query_as::<_, (i64, String)>(
+    let canonical_rollup_keys = sqlx::query_as::<_, (i64, String)>(
         r#"
         SELECT bucket_start_epoch, source
         FROM invocation_rollup_hourly
-        WHERE terminal_proof_complete <> 0
         "#,
     )
     .fetch_all(&mut *tx)
     .await?;
-    for (bucket_start_epoch, source) in trusted_rollup_keys {
+    for (bucket_start_epoch, source) in canonical_rollup_keys {
         if overall.contains_key(&(bucket_start_epoch, source.clone())) {
             continue;
         }
@@ -4325,53 +4355,22 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         ) {
             continue;
         }
+        // A complete source reconciliation is authoritative within the active source window.
+        // Leaving a stale row untrusted would hide this date from the audit forever; remove it
+        // so the queued long-term repair can prove and publish an empty replacement if needed.
         sqlx::query(
-            r#"
-            UPDATE invocation_rollup_hourly
-            SET terminal_proof_complete = 0
-            WHERE bucket_start_epoch = ?1 AND source = ?2
-            "#,
+            "DELETE FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
         )
         .bind(bucket_start_epoch)
         .bind(source)
         .execute(&mut *tx)
         .await?;
-        incomplete_rollups += 1;
         invalidated_bucket_start_epochs.insert(bucket_start_epoch);
     }
     for ((bucket_start_epoch, source), delta) in &overall {
-        let existing = sqlx::query_as::<_, (i64, i64, f64)>(
-            r#"
-            SELECT total_count, total_tokens, total_cost
-            FROM invocation_rollup_hourly
-            WHERE bucket_start_epoch = ?1 AND source = ?2
-            "#,
-        )
-        .bind(*bucket_start_epoch)
-        .bind(source)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let matches_existing = existing.is_none_or(|(total_count, total_tokens, total_cost)| {
-            total_count == delta.total_count
-                && total_tokens == delta.total_tokens
-                && (total_cost - delta.total_cost).abs() <= 1e-6_f64.max(total_cost.abs() * 1e-9)
-        });
-        if !matches_existing {
-            sqlx::query(
-                r#"
-                UPDATE invocation_rollup_hourly
-                SET terminal_proof_complete = 0
-                WHERE bucket_start_epoch = ?1 AND source = ?2
-                "#,
-            )
-            .bind(*bucket_start_epoch)
-            .bind(source)
-            .execute(&mut *tx)
-            .await?;
-            incomplete_rollups += 1;
-            invalidated_bucket_start_epochs.insert(*bucket_start_epoch);
-            continue;
-        }
+        // This scan consumed every readable archive and every live source row. It can therefore
+        // replace a contradictory canonical value atomically instead of leaving the bucket
+        // permanently untrusted and blocking the long-term repair queue.
         sqlx::query(
             r#"
             INSERT INTO invocation_rollup_hourly (
@@ -4468,20 +4467,17 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     }
     tx.commit().await?;
 
-    if incomplete_rollups > 0 {
+    if !invalidated_bucket_start_epochs.is_empty() {
         warn!(
-            incomplete_rollups,
-            "left terminal integrity proofs unavailable where source backfill did not match canonical rollups"
+            stale_rollups = invalidated_bucket_start_epochs.len(),
+            "removed canonical hourly buckets omitted by complete source reconciliation"
         );
     }
     Ok(InvocationHourlyRollupReconciliation {
         applied_rollups,
         invalidated_bucket_start_epochs: invalidated_bucket_start_epochs.into_iter().collect(),
         unavailable_archive_file_paths: Vec::new(),
-        // The source inventory was readable, but it cannot certify a canonical proof after a
-        // contradiction. Treat that exactly like incomplete source availability so dependent
-        // materializations cannot publish stale rows as ready.
-        source_complete: incomplete_rollups == 0,
+        source_complete: true,
     })
 }
 
