@@ -563,7 +563,11 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     let response_envelope =
         build_proxy_error_response_envelope(&downstream_error, &trace.invoke_id);
     let terminal_request_compression_algorithm =
-        pool_terminal_request_compression_algorithm(headers, error);
+        latest_pool_attempt_request_compression_algorithm(state, trace)
+            .await
+            .or_else(|| {
+                pool_terminal_request_compression_algorithm(headers, error).map(str::to_string)
+            });
     let _ = persist_pre_attempt_proxy_capture_error(
         state,
         proxy_request_id,
@@ -592,7 +596,7 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
         error.account.as_ref(),
         Some(error.connect_latency_ms),
         Some(error),
-        terminal_request_compression_algorithm,
+        terminal_request_compression_algorithm.as_deref(),
         Some(response_envelope),
     )
     .await;
@@ -612,13 +616,37 @@ fn forwarded_request_compression_observation(
 
     match encodings.as_slice() {
         [encoding] => match encoding.as_str() {
-            "gzip" => Some(("gzip", "passthrough")),
+            "gzip" | "x-gzip" => Some(("gzip", "passthrough")),
             "deflate" => Some(("deflate", "passthrough")),
             "zstd" => Some(("zstd", "passthrough")),
             _ => None,
         },
         _ => None,
     }
+}
+
+async fn latest_pool_attempt_request_compression_algorithm(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT NULLIF(TRIM(upstream_request_compression_algorithm), '')
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
+          AND occurred_at = ?2
+          AND LOWER(TRIM(COALESCE(status, ''))) <> 'budget_exhausted_final'
+        ORDER BY attempt_index DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&trace.invoke_id)
+    .bind(&trace.occurred_at)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
 }
 
 fn pool_terminal_request_compression_algorithm(
@@ -2724,8 +2752,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
-                    let forwarded_request_compression =
-                        forwarded_request_compression_observation(headers);
+                    let forwarded_request_compression = (method != Method::GET)
+                        .then(|| forwarded_request_compression_observation(headers))
+                        .flatten();
                     if let (Some(pending_attempt_record), Some((algorithm, mode))) = (
                         pending_attempt_record.as_mut(),
                         forwarded_request_compression,
@@ -4108,13 +4137,18 @@ mod request_compression_tests {
             forwarded_request_compression_observation(&headers),
             Some(("zstd", "passthrough"))
         );
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("x-gzip"));
+        assert_eq!(
+            forwarded_request_compression_observation(&headers),
+            Some(("gzip", "passthrough"))
+        );
         assert_eq!(
             resolved_pool_request_compression_algorithm(
                 &headers,
                 true,
                 RequestCompressionAlgorithm::Identity,
             ),
-            Some("zstd")
+            Some("gzip")
         );
     }
 
