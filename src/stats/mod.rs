@@ -1565,13 +1565,44 @@ async fn open_archive_batch_pool(
 #[derive(Debug, FromRow)]
 struct ArchivedPoolRequestCompressionRow {
     invoke_id: String,
+    occurred_at: String,
+    attempt_index: i64,
+    id: i64,
     request_compression_algorithm: Option<String>,
+}
+
+#[derive(Debug)]
+struct ArchivedPoolRequestCompression {
+    attempt_index: i64,
+    id: i64,
+    algorithm: Option<String>,
+}
+
+type ArchivedPoolRequestCompressionMap = HashMap<(String, String), ArchivedPoolRequestCompression>;
+
+fn merge_archived_pool_request_compression(
+    compression_by_invocation: &mut ArchivedPoolRequestCompressionMap,
+    key: (String, String),
+    candidate: ArchivedPoolRequestCompression,
+) {
+    match compression_by_invocation.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry)
+            if (candidate.attempt_index, candidate.id)
+                > (entry.get().attempt_index, entry.get().id) =>
+        {
+            entry.insert(candidate);
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {}
+    }
 }
 
 async fn load_archived_pool_request_compressions_from_executor<'e, E>(
     executor: E,
     range: ExactUtcRange,
-) -> Result<HashMap<String, Option<String>>>
+) -> Result<ArchivedPoolRequestCompressionMap>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -1579,11 +1610,14 @@ where
         r#"
         SELECT
             invoke_id,
+            occurred_at,
+            attempt_index,
+            id,
             NULLIF(TRIM(upstream_request_compression_algorithm), '') AS request_compression_algorithm
         FROM pool_upstream_request_attempts
         WHERE occurred_at >= ?1
           AND occurred_at < ?2
-        ORDER BY invoke_id ASC, attempt_index DESC, id DESC
+        ORDER BY invoke_id ASC, occurred_at ASC, attempt_index DESC, id DESC
         "#,
     )
     .bind(db_occurred_at_lower_bound(range.start))
@@ -1591,26 +1625,30 @@ where
     .fetch_all(executor)
     .await?;
 
-    let mut compression_by_invoke_id = HashMap::new();
+    let mut compression_by_invocation = HashMap::new();
     for row in rows {
-        compression_by_invoke_id
-            .entry(row.invoke_id)
-            .or_insert(row.request_compression_algorithm);
+        let key = (row.invoke_id, row.occurred_at);
+        let candidate = ArchivedPoolRequestCompression {
+            attempt_index: row.attempt_index,
+            id: row.id,
+            algorithm: row.request_compression_algorithm,
+        };
+        merge_archived_pool_request_compression(&mut compression_by_invocation, key, candidate);
     }
-    Ok(compression_by_invoke_id)
+    Ok(compression_by_invocation)
 }
 
 async fn load_archived_pool_request_compressions(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
-) -> Result<HashMap<String, Option<String>>> {
+) -> Result<ArchivedPoolRequestCompressionMap> {
     let archive_rows = load_completed_archive_paths_for_dataset_in_range(
         pool,
         "pool_upstream_request_attempts",
         Some((range.start, range.end)),
     )
     .await?;
-    let mut compression_by_invoke_id = HashMap::new();
+    let mut compression_by_invocation = HashMap::new();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) = open_archive_batch_pool(
@@ -1629,19 +1667,21 @@ async fn load_archived_pool_request_compressions(
         )
         .await?
         {
-            for (invoke_id, compression) in
+            for (key, compression) in
                 load_archived_pool_request_compressions_from_executor(&archive_pool, range).await?
             {
-                compression_by_invoke_id
-                    .entry(invoke_id)
-                    .or_insert(compression);
+                merge_archived_pool_request_compression(
+                    &mut compression_by_invocation,
+                    key,
+                    compression,
+                );
             }
         }
         archive_pool.close().await;
         drop(temp_cleanup);
     }
 
-    Ok(compression_by_invoke_id)
+    Ok(compression_by_invocation)
 }
 
 async fn ensure_invocation_archive_first_token_compatibility(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1705,24 +1745,56 @@ mod ttft_archive_compatibility_tests {
             end: Utc::now() + ChronoDuration::minutes(1),
         };
         let occurred_at = db_occurred_at_lower_bound(Utc::now());
+        let prior_occurred_at =
+            db_occurred_at_lower_bound(Utc::now() - ChronoDuration::seconds(30));
         sqlx::query(
-            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'retry', ?1, 1, 'br'), (2, 'retry', ?1, 2, 'zstd'), (3, 'final-unknown', ?1, 1, 'gzip'), (4, 'final-unknown', ?1, 2, NULL)",
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'retry', ?1, 1, 'br'), (2, 'retry', ?1, 2, 'zstd'), (3, 'retry', ?2, 1, 'gzip'), (4, 'final-unknown', ?1, 1, 'gzip'), (5, 'final-unknown', ?1, 2, NULL)",
         )
-        .bind(occurred_at)
+        .bind(&occurred_at)
+        .bind(&prior_occurred_at)
         .execute(&pool)
         .await
         .expect("insert archived attempts");
 
-        let compression_by_invoke_id =
+        let mut compression_by_invocation =
             load_archived_pool_request_compressions_from_executor(&pool, range)
                 .await
                 .expect("read archived request compression");
 
         assert_eq!(
-            compression_by_invoke_id.get("retry"),
-            Some(&Some("zstd".to_string()))
+            compression_by_invocation
+                .get(&("retry".to_string(), occurred_at.clone()))
+                .map(|compression| compression.algorithm.as_deref()),
+            Some(Some("zstd"))
         );
-        assert_eq!(compression_by_invoke_id.get("final-unknown"), Some(&None));
+        assert_eq!(
+            compression_by_invocation
+                .get(&("retry".to_string(), prior_occurred_at))
+                .map(|compression| compression.algorithm.as_deref()),
+            Some(Some("gzip"))
+        );
+        assert_eq!(
+            compression_by_invocation
+                .get(&("final-unknown".to_string(), occurred_at.clone()))
+                .map(|compression| compression.algorithm.as_deref()),
+            Some(None)
+        );
+
+        merge_archived_pool_request_compression(
+            &mut compression_by_invocation,
+            ("retry".to_string(), occurred_at.clone()),
+            ArchivedPoolRequestCompression {
+                attempt_index: 3,
+                id: 6,
+                algorithm: Some("deflate".to_string()),
+            },
+        );
+        assert_eq!(
+            compression_by_invocation
+                .get(&("retry".to_string(), occurred_at))
+                .map(|compression| compression.algorithm.as_deref()),
+            Some(Some("deflate"))
+        );
     }
 }
 
@@ -1866,8 +1938,10 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
         )
         .await?;
         for row in &mut rows {
-            if let Some(compression) = archived_pool_request_compressions.get(&row.invoke_id) {
-                row.request_compression_algorithm = compression.clone();
+            if let Some(compression) = archived_pool_request_compressions
+                .get(&(row.invoke_id.clone(), row.occurred_at.clone()))
+            {
+                row.request_compression_algorithm = compression.algorithm.clone();
             }
         }
         let rows = rows

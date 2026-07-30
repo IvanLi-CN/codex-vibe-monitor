@@ -7700,11 +7700,13 @@ pub(crate) fn invocation_request_compression_algorithm_with_attempt_fallback_sql
         "CASE WHEN EXISTS(\
            SELECT 1 \
              FROM pool_upstream_request_attempts attempt \
-            WHERE attempt.invoke_id = {invocation_ref}.invoke_id\
+            WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+              AND attempt.occurred_at = {invocation_ref}.occurred_at\
          ) THEN (\
            SELECT NULLIF(TRIM(attempt.upstream_request_compression_algorithm), '') \
               FROM pool_upstream_request_attempts attempt \
              WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+               AND attempt.occurred_at = {invocation_ref}.occurred_at \
              ORDER BY attempt.attempt_index DESC, attempt.id DESC \
              LIMIT 1\
          ) ELSE NULLIF(TRIM(CASE WHEN json_valid({invocation_ref}.payload) \
@@ -19499,25 +19501,27 @@ mod request_compression_query_tests {
             .connect("sqlite::memory:")
             .await
             .expect("in-memory sqlite pool");
-        sqlx::query("CREATE TABLE codex_invocations (invoke_id TEXT NOT NULL, payload TEXT)")
+        sqlx::query(
+            "CREATE TABLE codex_invocations (invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, payload TEXT)",
+        )
             .execute(&pool)
             .await
             .expect("create invocations table");
         sqlx::query(
-            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
         )
         .execute(&pool)
         .await
         .expect("create upstream attempts table");
 
         sqlx::query(
-            "INSERT INTO codex_invocations (invoke_id, payload) VALUES ('pool-retry', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('direct', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('final-unknown', '{\"requestCompressionAlgorithm\":\"gzip\"}')",
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, payload) VALUES ('pool-retry', '2026-07-30 10:00:00', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('pool-retry', '2026-07-30 10:01:00', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('direct', '2026-07-30 10:00:00', '{\"requestCompressionAlgorithm\":\"gzip\"}'), ('final-unknown', '2026-07-30 10:00:00', '{\"requestCompressionAlgorithm\":\"gzip\"}')",
         )
         .execute(&pool)
         .await
         .expect("insert invocations");
         sqlx::query(
-            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'pool-retry', 1, 'br'), (2, 'pool-retry', 2, 'zstd'), (3, 'final-unknown', 1, 'deflate'), (4, 'final-unknown', 2, NULL)",
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'pool-retry', '2026-07-30 10:00:00', 1, 'br'), (2, 'pool-retry', '2026-07-30 10:00:00', 2, 'zstd'), (3, 'pool-retry', '2026-07-30 10:01:00', 1, 'identity'), (4, 'final-unknown', '2026-07-30 10:00:00', 1, 'deflate'), (5, 'final-unknown', '2026-07-30 10:00:00', 2, NULL)",
         )
         .execute(&pool)
         .await
@@ -19526,9 +19530,9 @@ mod request_compression_query_tests {
         let compression_sql =
             invocation_request_compression_algorithm_with_attempt_fallback_sql("codex_invocations");
         let query = format!(
-            "SELECT invoke_id, {compression_sql} AS request_compression_algorithm FROM codex_invocations ORDER BY invoke_id"
+            "SELECT invoke_id, occurred_at, {compression_sql} AS request_compression_algorithm FROM codex_invocations ORDER BY invoke_id, occurred_at"
         );
-        let rows = sqlx::query_as::<_, (String, Option<String>)>(&query)
+        let rows = sqlx::query_as::<_, (String, String, Option<String>)>(&query)
             .fetch_all(&pool)
             .await
             .expect("query request compression");
@@ -19536,9 +19540,26 @@ mod request_compression_query_tests {
         assert_eq!(
             rows,
             vec![
-                ("direct".to_string(), Some("gzip".to_string())),
-                ("final-unknown".to_string(), None),
-                ("pool-retry".to_string(), Some("zstd".to_string())),
+                (
+                    "direct".to_string(),
+                    "2026-07-30 10:00:00".to_string(),
+                    Some("gzip".to_string())
+                ),
+                (
+                    "final-unknown".to_string(),
+                    "2026-07-30 10:00:00".to_string(),
+                    None
+                ),
+                (
+                    "pool-retry".to_string(),
+                    "2026-07-30 10:00:00".to_string(),
+                    Some("zstd".to_string())
+                ),
+                (
+                    "pool-retry".to_string(),
+                    "2026-07-30 10:01:00".to_string(),
+                    Some("identity".to_string())
+                ),
             ]
         );
     }
