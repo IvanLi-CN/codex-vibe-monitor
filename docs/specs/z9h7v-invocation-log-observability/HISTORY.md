@@ -66,3 +66,4 @@
 - 2026-07-27: Dashboard 模型性能浮窗改为 `72rem` 视口自适应布局，桌面模型数据行统一为单行身份展示，GPT-5.6 专用图标方案不再重复显示模型名称，并消除横向滚动；窄屏抽屉同步采用相同模型身份语义。
 
 - 2026-07-28: Corrected the opaque `keep_original` request audit reason from `already_current` to `policy_keep_original`, preserving the no-decode replay contract without implying unverified schema equivalence.
+- 2026-07-30: 调用列表压缩列改为显示最终请求实际使用的 `requestCompressionAlgorithm`；响应 `Content-Encoding` 仅在详情中作为“HTTP 响应压缩”展示，历史缺失数据不再跨方向回退。

@@ -175,6 +175,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     blocked_binding: None,
                     is_actionable: row.is_actionable.map(|value| value != 0),
                     response_content_encoding: row.response_content_encoding,
+                    request_compression_algorithm: None,
                     transport: row.transport,
                     requested_service_tier: row.requested_service_tier,
                     service_tier: row.service_tier,

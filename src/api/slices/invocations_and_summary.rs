@@ -39,6 +39,7 @@ pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_va
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL: &str = "COALESCE((SELECT NULLIF(TRIM(sample.plan_type), '') FROM pool_upstream_account_limit_samples sample WHERE sample.account_id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AND sample.plan_type IS NOT NULL AND TRIM(sample.plan_type) <> '' ORDER BY sample.captured_at DESC, sample.id DESC LIMIT 1), (SELECT NULLIF(TRIM(account.plan_type), '') FROM pool_upstream_accounts account WHERE account.id = CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END))";
 pub(crate) const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
+pub(crate) const INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requestCompressionAlgorithm') AS TEXT) END";
 pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) END";
 pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_TRANSPORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.transport') = 'text' THEN json_extract(payload, '$.transport') END";
@@ -384,6 +385,11 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(
             " AS response_content_encoding, \
+         ",
+        )
+        .push(INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL)
+        .push(
+            " AS request_compression_algorithm, \
          ",
         )
         .push(INVOCATION_TRANSPORT_SQL)
@@ -9877,6 +9883,8 @@ fn build_upstream_account_activity_preview_select(
         .push(" AS upstream_account_plan_type, ")
         .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(" AS response_content_encoding, ")
+        .push(INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL)
+        .push(" AS request_compression_algorithm, ")
         .push(INVOCATION_TRANSPORT_SQL)
         .push(" AS transport, ")
         .push(INVOCATION_COMPACTION_REQUEST_KIND_SQL)
@@ -10441,6 +10449,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         upstream_account_name: record.upstream_account_name,
         upstream_account_plan_type: None,
         response_content_encoding: record.response_content_encoding,
+        request_compression_algorithm: record.request_compression_algorithm,
         transport: record.transport,
         requested_service_tier: record.requested_service_tier,
         service_tier: record.service_tier,
@@ -18906,6 +18915,7 @@ mod invocation_cost_audit_tests {
             upstream_account_id: Some(17),
             upstream_account_name: Some("Pool 17".to_string()),
             response_content_encoding: Some("identity".to_string()),
+            request_compression_algorithm: Some("zstd".to_string()),
             transport: Some("http".to_string()),
             pool_attempt_count: Some(3),
             pool_distinct_account_count: Some(2),

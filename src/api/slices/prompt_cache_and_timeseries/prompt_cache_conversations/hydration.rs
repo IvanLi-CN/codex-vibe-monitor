@@ -585,6 +585,9 @@ pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
         response_content_encoding: normalize_trimmed_optional_string(
             record.response_content_encoding.clone(),
         ),
+        request_compression_algorithm: normalize_trimmed_optional_string(
+            record.request_compression_algorithm.clone(),
+        ),
         transport: normalize_trimmed_optional_string(record.transport.clone()),
         requested_service_tier: normalize_trimmed_optional_string(
             record.requested_service_tier.clone(),
@@ -671,6 +674,9 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
         blocked_binding: None,
         is_actionable: row.is_actionable.map(|value| value != 0),
         response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
+        request_compression_algorithm: normalize_trimmed_optional_string(
+            row.request_compression_algorithm,
+        ),
         transport: normalize_trimmed_optional_string(row.transport),
         requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
         service_tier: normalize_trimmed_optional_string(row.service_tier),
@@ -727,6 +733,9 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         blocked_binding: None,
         is_actionable: row.is_actionable.map(|value| value != 0),
         response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
+        request_compression_algorithm: normalize_trimmed_optional_string(
+            row.request_compression_algorithm,
+        ),
         transport: normalize_trimmed_optional_string(row.transport),
         requested_service_tier: normalize_trimmed_optional_string(row.requested_service_tier),
         service_tier: normalize_trimmed_optional_string(row.service_tier),

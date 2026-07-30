@@ -1731,6 +1731,7 @@ mod tests {
             upstream_account_id: account_id,
             upstream_account_name: None,
             response_content_encoding: None,
+            request_compression_algorithm: None,
             transport: None,
             pool_attempt_count: Some(attempts),
             pool_distinct_account_count: None,
@@ -2427,6 +2428,8 @@ pub(crate) struct ApiInvocation {
     pub(crate) upstream_account_name: Option<String>,
     #[sqlx(default)]
     pub(crate) response_content_encoding: Option<String>,
+    #[sqlx(default)]
+    pub(crate) request_compression_algorithm: Option<String>,
     #[sqlx(default)]
     pub(crate) transport: Option<String>,
     #[sqlx(default)]

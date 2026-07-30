@@ -58,6 +58,7 @@ function recordCompletenessScore(record: ApiInvocation) {
     score += 1;
   }
   if (record.responseContentEncoding?.trim()) score += 1;
+  if (record.requestCompressionAlgorithm?.trim()) score += 1;
   if (record.requestedServiceTier?.trim()) score += 1;
   if (record.serviceTier?.trim()) score += 1;
   if (record.billingServiceTier?.trim()) score += 1;
@@ -205,6 +206,7 @@ export function mergeInvocationRecordDetails(
     "upstreamAccountName",
     "proxyDisplayName",
     "responseContentEncoding",
+    "requestCompressionAlgorithm",
     "requestedServiceTier",
     "serviceTier",
     "billingServiceTier",

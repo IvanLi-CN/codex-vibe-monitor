@@ -2950,6 +2950,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         upstream_account_id: upstream_account_id_from_payload(payload),
         upstream_account_name: upstream_account_name_from_payload(payload),
         response_content_encoding: payload_text(payload, "responseContentEncoding"),
+        request_compression_algorithm: payload_text(payload, "requestCompressionAlgorithm"),
         transport: None,
         pool_attempt_count: payload_i64(payload, "poolAttemptCount"),
         pool_distinct_account_count: payload_i64(payload, "poolDistinctAccountCount"),

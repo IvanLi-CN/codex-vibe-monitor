@@ -39,6 +39,7 @@ const records: ApiInvocation[] = [
     upstreamAccountName: "Codex Team Alpha",
     proxyDisplayName: "Tokyo-Edge-1",
     responseContentEncoding: "gzip, br",
+    requestCompressionAlgorithm: "zstd",
     endpoint: "/v1/responses",
     model: "gpt-5-mini",
     status: "success",
@@ -1625,7 +1626,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Shows recent invocation records with status, account attribution, proxy metadata, `TTFT / 响应耗时 / HTTP 压缩` summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, TTFT as the primary timing value, response duration as the secondary timing value, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.",
+          "Shows recent invocation records with status, account attribution, proxy metadata, `TTFT / 响应耗时 / HTTP 请求压缩` summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, TTFT as the primary timing value, response duration as the secondary timing value, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, request compression, and response compression diagnostics.",
       },
     },
   },
@@ -1789,7 +1790,7 @@ export const RunningLifecycleSimulation: Story = {
     docs: {
       description: {
         story:
-          "Mock story for the new live-running experience: the row appears immediately as `running`, later receives TTFB + HTTP compression context, and finally swaps in the terminal persisted record without duplicating the row. The terminal step intentionally switches from a negative temporary id to a positive persisted id while keeping the same `invokeId + occurredAt` stable key.",
+          "Mock story for the new live-running experience: the row appears immediately as `running`, later receives TTFB plus separate request/response HTTP compression diagnostics, and finally swaps in the terminal persisted record without duplicating the row. The terminal step intentionally switches from a negative temporary id to a positive persisted id while keeping the same `invokeId + occurredAt` stable key.",
       },
     },
   },
@@ -1803,7 +1804,9 @@ export const RunningLifecycleSimulation: Story = {
 
     await waitFor(
       async () => {
-        await expect(canvas.getByText(/HTTP 压缩算法|http compression/i)).toBeInTheDocument();
+        await expect(
+          canvas.getByText(/HTTP 响应压缩|HTTP response compression/i),
+        ).toBeInTheDocument();
         await expect(canvas.getByText(/gzip/i)).toBeInTheDocument();
       },
       { timeout: 4000 },
@@ -1910,7 +1913,7 @@ export const ExpandedDetails: Story = {
     const toggleButtons = await canvas.findAllByRole("button", { name: /展开详情|show details/i });
     await userEvent.click(toggleButtons[0]);
     await expect(canvas.getByText(/请求详情|request details/i)).toBeInTheDocument();
-    await expect(canvas.getByText(/HTTP 压缩算法|http compression/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/HTTP 响应压缩|HTTP response compression/i)).toBeInTheDocument();
   },
 };
 

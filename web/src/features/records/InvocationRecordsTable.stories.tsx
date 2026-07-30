@@ -154,6 +154,7 @@ const RESPONSE_BODY_WIDTH_GUARD_RECORDS: ApiInvocation[] = [
     failureClass: "service_failure",
     failureKind: "upstream_stream_error",
     responseContentEncoding: "zstd",
+    requestCompressionAlgorithm: "zstd",
     upstreamAccountId: 77,
     upstreamAccountName: "Pool Width Guard",
   },

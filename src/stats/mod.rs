@@ -1630,6 +1630,8 @@ where
         .push("NULL AS upstream_account_name, NULL AS upstream_account_plan_type, ")
         .push(crate::api::INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(" AS response_content_encoding, ")
+        .push(crate::api::INVOCATION_REQUEST_COMPRESSION_ALGORITHM_SQL)
+        .push(" AS request_compression_algorithm, ")
         .push(crate::api::INVOCATION_TRANSPORT_SQL)
         .push(" AS transport, ")
         .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)

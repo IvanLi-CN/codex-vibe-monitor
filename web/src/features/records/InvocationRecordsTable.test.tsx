@@ -106,6 +106,7 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     serviceTier: "priority",
     billingServiceTier: "priority",
     responseContentEncoding: "gzip, br",
+    requestCompressionAlgorithm: "zstd",
     tReqReadMs: 12,
     tReqParseMs: 30,
     tUpstreamConnectMs: 55,
@@ -299,6 +300,25 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
 }
 
 describe("InvocationRecordsTable", () => {
+  it("shows request compression instead of response content encoding in the record summary", () => {
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            requestCompressionAlgorithm: "zstd",
+            responseContentEncoding: "gzip, br",
+          }),
+        ]}
+      />,
+    );
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("zstd");
+    expect(text).not.toContain("gzip, br");
+  });
+
   it("uses TTFT and response duration instead of total duration in record summaries", () => {
     render(
       <InvocationRecordsTable
