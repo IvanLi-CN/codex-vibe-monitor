@@ -1481,6 +1481,13 @@ pub(crate) async fn open_invocation_archive_batch_pool(
     open_archive_batch_pool(archive_row, "codex_invocations", read_surface).await
 }
 
+pub(crate) async fn open_pool_upstream_request_attempt_archive_batch_pool(
+    archive_row: &ArchiveBatchPathRow,
+    read_surface: &'static str,
+) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
+    open_archive_batch_pool(archive_row, "pool_upstream_request_attempts", read_surface).await
+}
+
 async fn open_archive_batch_pool(
     archive_row: &ArchiveBatchPathRow,
     expected_table: &str,

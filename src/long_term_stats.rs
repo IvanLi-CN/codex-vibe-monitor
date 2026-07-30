@@ -240,7 +240,7 @@ async fn load_long_term_archive_attempt_accounts(
             path_end >= start && path_start <= end
         })
     }) {
-        let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
+        let Some((archive_pool, cleanup)) = open_pool_upstream_request_attempt_archive_batch_pool(
             &ArchiveBatchPathRow::from_file_path(archive_path.file_path.clone()),
             "long-term-stats-attempt-fallback",
         )
