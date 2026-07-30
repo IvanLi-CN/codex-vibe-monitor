@@ -851,6 +851,11 @@ export function buildInvocationDetailViewModel({
       value: formatOptionalText(record.poolAttemptTerminalReason),
     },
     {
+      key: "requestCompressionAlgorithm",
+      label: t("table.details.requestHttpCompression"),
+      value: requestCompressionAlgorithmValue,
+    },
+    {
       key: "responseContentEncoding",
       label: t("table.details.responseHttpCompression"),
       value: responseContentEncodingValue,
@@ -1965,6 +1970,7 @@ export function InvocationExpandedDetails({
     "compactionRequest",
     "compactionResponse",
     "imageIntent",
+    "requestCompressionAlgorithm",
     "responseContentEncoding",
     "requestedServiceTier",
     "serviceTier",

@@ -41,7 +41,7 @@
 - `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。带关联的健康事件明确显示并点击“上游尝试 ID”，不将为空的最终 `invokeId` 渲染为入口。
 - direct invocation payload 与 `pool_upstream_request_attempts` 现在都持久化上游请求压缩与 HTTP 近似真值所需字节事实：请求逻辑体、实际发送体、可见请求头近似字节、响应体字节和可见响应头近似字节；`savedBytes` / `ratioPct` 继续在 API 层派生，避免双写漂移。
 - 调用详情与账号上游尝试详情现在统一显示 `压缩比 + 前/后字节` 以及 `近似上传 / 近似下载`。调用详情桌面端固定为单行五列；账号尝试诊断区改为宽屏稳定网格，避免压缩证据横向溢出。
-- 调用列表的“响应耗时 / HTTP 请求压缩”现读取持久化 payload 的 `requestCompressionAlgorithm`，重试场景使用最终 attempt 的真实值；响应 `Content-Encoding` 仅在详情中明确标为“HTTP 响应压缩”，历史缺字段稳定显示 `—`，不做跨方向回退。
+- 调用列表、Prompt Cache 会话、账号活动预览与展开详情共享请求压缩语义：direct 调用读取持久化 payload 的 `requestCompressionAlgorithm`，pool 重试读取最终 attempt 的真实值，归档历史从独立 attempt archive 回填；响应 `Content-Encoding` 仅明确标为“HTTP 响应压缩”，历史缺字段稳定显示 `—`，不做跨方向回退。
 
 ## Migrated Implementation Notes
 

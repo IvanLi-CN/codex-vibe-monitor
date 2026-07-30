@@ -1310,6 +1310,19 @@ pub(crate) async fn load_completed_invocation_archive_paths_in_range(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_completed_archive_paths_for_dataset_in_range(
+        executor,
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        range,
+    )
+    .await
+}
+
+pub(crate) async fn load_completed_archive_paths_for_dataset_in_range(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    dataset: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -1321,7 +1334,11 @@ pub(crate) async fn load_completed_invocation_archive_paths_in_range(
             NULL AS needs_overall,
             NULL AS needs_failures
         FROM archive_batches
-        WHERE dataset = 'codex_invocations'
+        WHERE dataset =
+        "#,
+    );
+    query.push_bind(dataset).push(
+        r#"
           AND status =
         "#,
     );
@@ -1461,6 +1478,14 @@ pub(crate) async fn open_invocation_archive_batch_pool(
     archive_row: &ArchiveBatchPathRow,
     read_surface: &'static str,
 ) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
+    open_archive_batch_pool(archive_row, "codex_invocations", read_surface).await
+}
+
+async fn open_archive_batch_pool(
+    archive_row: &ArchiveBatchPathRow,
+    expected_table: &str,
+    read_surface: &'static str,
+) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
     let archive_path = PathBuf::from(&archive_row.file_path);
     let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
     if !archive_path.exists() {
@@ -1468,7 +1493,7 @@ pub(crate) async fn open_invocation_archive_batch_pool(
             file_path = archive_row.file_path,
             read_surface,
             historical_rollups_materialized = is_materialized_archive,
-            "skipping missing invocation archive while serving read-only historical fallback"
+            "skipping missing archive while serving read-only historical fallback"
         );
         return Ok(None);
     }
@@ -1490,7 +1515,7 @@ pub(crate) async fn open_invocation_archive_batch_pool(
                 read_surface,
                 error = %err,
                 historical_rollups_materialized = is_materialized_archive,
-                "skipping unreadable invocation archive while serving read-only historical fallback"
+                "skipping unreadable archive while serving read-only historical fallback"
             );
             return Ok(None);
         }
@@ -1511,24 +1536,112 @@ pub(crate) async fn open_invocation_archive_batch_pool(
                     read_surface,
                     error = %err,
                     historical_rollups_materialized = is_materialized_archive,
-                    "skipping unreadable invocation archive while serving read-only historical fallback"
+                    "skipping unreadable archive while serving read-only historical fallback"
                 );
                 return Ok(None);
             }
             return Err(err);
         }
     };
-    let has_invocation_table = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_invocations')",
+    let has_expected_table = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
     )
+    .bind(expected_table)
     .fetch_one(&archive_pool)
     .await?
         != 0;
-    if has_invocation_table {
+    if !has_expected_table {
+        archive_pool.close().await;
+        drop(temp_cleanup);
+        return Ok(None);
+    }
+    if expected_table == "codex_invocations" {
         ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
     }
 
     Ok(Some((archive_pool, temp_cleanup)))
+}
+
+#[derive(Debug, FromRow)]
+struct ArchivedPoolRequestCompressionRow {
+    invoke_id: String,
+    request_compression_algorithm: Option<String>,
+}
+
+async fn load_archived_pool_request_compressions_from_executor<'e, E>(
+    executor: E,
+    range: ExactUtcRange,
+) -> Result<HashMap<String, Option<String>>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let rows = sqlx::query_as::<_, ArchivedPoolRequestCompressionRow>(
+        r#"
+        SELECT
+            invoke_id,
+            NULLIF(TRIM(upstream_request_compression_algorithm), '') AS request_compression_algorithm
+        FROM pool_upstream_request_attempts
+        WHERE occurred_at >= ?1
+          AND occurred_at < ?2
+        ORDER BY invoke_id ASC, attempt_index DESC, id DESC
+        "#,
+    )
+    .bind(db_occurred_at_lower_bound(range.start))
+    .bind(db_occurred_at_upper_bound(range.end))
+    .fetch_all(executor)
+    .await?;
+
+    let mut compression_by_invoke_id = HashMap::new();
+    for row in rows {
+        compression_by_invoke_id
+            .entry(row.invoke_id)
+            .or_insert(row.request_compression_algorithm);
+    }
+    Ok(compression_by_invoke_id)
+}
+
+async fn load_archived_pool_request_compressions(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+) -> Result<HashMap<String, Option<String>>> {
+    let archive_rows = load_completed_archive_paths_for_dataset_in_range(
+        pool,
+        "pool_upstream_request_attempts",
+        Some((range.start, range.end)),
+    )
+    .await?;
+    let mut compression_by_invoke_id = HashMap::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) = open_archive_batch_pool(
+            &archive_row,
+            "pool_upstream_request_attempts",
+            "upstream-account-activity-pool-attempts",
+        )
+        .await?
+        else {
+            continue;
+        };
+        if sqlite_table_has_column(
+            &archive_pool,
+            "pool_upstream_request_attempts",
+            "upstream_request_compression_algorithm",
+        )
+        .await?
+        {
+            for (invoke_id, compression) in
+                load_archived_pool_request_compressions_from_executor(&archive_pool, range).await?
+            {
+                compression_by_invoke_id
+                    .entry(invoke_id)
+                    .or_insert(compression);
+            }
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(compression_by_invoke_id)
 }
 
 async fn ensure_invocation_archive_first_token_compatibility(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1571,6 +1684,45 @@ mod ttft_archive_compatibility_tests {
                 .await
                 .expect("read nullable TTFT");
         assert_eq!(first_token_ms, None);
+    }
+
+    #[tokio::test]
+    async fn archived_pool_request_compression_uses_the_final_attempt() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open sqlite");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, upstream_request_compression_algorithm TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archived attempts table");
+
+        let range = ExactUtcRange {
+            start: Utc::now() - ChronoDuration::minutes(1),
+            end: Utc::now() + ChronoDuration::minutes(1),
+        };
+        let occurred_at = db_occurred_at_lower_bound(Utc::now());
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, attempt_index, upstream_request_compression_algorithm) VALUES (1, 'retry', ?1, 1, 'br'), (2, 'retry', ?1, 2, 'zstd'), (3, 'final-unknown', ?1, 1, 'gzip'), (4, 'final-unknown', ?1, 2, NULL)",
+        )
+        .bind(occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert archived attempts");
+
+        let compression_by_invoke_id =
+            load_archived_pool_request_compressions_from_executor(&pool, range)
+                .await
+                .expect("read archived request compression");
+
+        assert_eq!(
+            compression_by_invoke_id.get("retry"),
+            Some(&Some("zstd".to_string()))
+        );
+        assert_eq!(compression_by_invoke_id.get("final-unknown"), Some(&None));
     }
 }
 
@@ -1691,6 +1843,8 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
     let archive_rows =
         load_completed_invocation_archive_paths_in_range(pool, Some((range.start, range.end)))
             .await?;
+    let archived_pool_request_compressions =
+        load_archived_pool_request_compressions(pool, range).await?;
     let mut previews = Vec::new();
 
     for archive_row in archive_rows {
@@ -1703,19 +1857,25 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
             sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input").await?;
         let has_first_token_column =
             sqlite_table_has_column(&archive_pool, "codex_invocations", "first_token_ms").await?;
-        let rows = query_upstream_account_invocation_preview_rows_from_executor(
+        let mut rows = query_upstream_account_invocation_preview_rows_from_executor(
             &archive_pool,
             range,
             source_scope,
             has_cost_breakdown_columns,
             has_first_token_column,
         )
-        .await?
-        .into_iter()
-        .filter(|row| {
-            !exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
-        })
-        .collect::<Vec<_>>();
+        .await?;
+        for row in &mut rows {
+            if let Some(compression) = archived_pool_request_compressions.get(&row.invoke_id) {
+                row.request_compression_algorithm = compression.clone();
+            }
+        }
+        let rows = rows
+            .into_iter()
+            .filter(|row| {
+                !exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+            })
+            .collect::<Vec<_>>();
         previews.extend(rows);
         archive_pool.close().await;
         drop(temp_cleanup);

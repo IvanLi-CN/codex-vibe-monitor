@@ -1403,6 +1403,7 @@ describe("InvocationTable", () => {
       upstreamAccountId: 7,
       upstreamAccountName: "pool-account-a",
       proxyDisplayName: "storybook-proxy",
+      requestCompressionAlgorithm: "zstd",
       responseContentEncoding: "gzip",
       endpoint: "/v1/responses",
       model: "gpt-5.4",
@@ -1422,6 +1423,8 @@ describe("InvocationTable", () => {
     );
 
     expect(html).toContain("请求详情");
+    expect(html).toContain("HTTP 请求压缩");
+    expect(html).toContain("zstd");
     expect(html).toContain("HTTP 响应压缩");
     expect(html).not.toContain(">用时<");
     expect(html).not.toContain(">首字耗时<");

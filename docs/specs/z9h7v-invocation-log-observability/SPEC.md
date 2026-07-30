@@ -286,9 +286,9 @@
 - Given 同一模型两次成功已计费调用分别持续 `10s`、`10s` 且重叠 `5s`，When 请求模型性能明细，Then 该模型返回 `wallClockUsageDurationMs=15s`、`cumulativeUsageDurationMs=20s`、`parallelism≈1.33`。
 - Given 两个不同模型在所选范围内各自活跃 `4s` 且跨模型重叠 `1s`，When owner 查看模型性能明细，Then 总计墙钟时长为 `7s`、两个模型行墙钟时长之和为 `8s`，并且说明文案明确“跨模型重叠时模型行墙钟和可能大于总计”。
 - Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，GPT-5.6 专用图标方案不得与模型名称重复显示，未知模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
-- Given 一条调用的请求体使用 `zstd` 压缩而上游响应 `Content-Encoding` 为 `identity`，When owner 查看调用列表，Then “响应耗时 / HTTP 请求压缩”显示 `zstd`；展开详情将响应值明确标为“HTTP 响应压缩”。
+- Given 一条调用的请求体使用 `zstd` 压缩而上游响应 `Content-Encoding` 为 `identity`，When owner 查看调用列表或展开详情，Then “响应耗时 / HTTP 请求压缩”和“HTTP 请求压缩”均显示 `zstd`；响应值明确标为“HTTP 响应压缩”。
 - Given 历史记录没有持久化 `requestCompressionAlgorithm`，When owner 查看调用列表或详情，Then 请求压缩显示 `—`，不得用响应 `Content-Encoding` 回退填充。
-- Given 调用发生重试，When owner 查看调用列表，Then 请求压缩显示最终 attempt 的真实请求压缩算法。
+- Given 调用发生重试，When owner 查看调用列表、Prompt Cache 会话展开、账号活动预览或对应的归档历史，Then 请求压缩显示最终 attempt 的真实请求压缩算法。
 
 ### Manual verification
 
