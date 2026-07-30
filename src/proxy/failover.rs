@@ -562,12 +562,13 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     };
     let response_envelope =
         build_proxy_error_response_envelope(&downstream_error, &trace.invoke_id);
-    let terminal_request_compression_algorithm =
+    let terminal_request_compression_algorithm = resolve_terminal_request_compression_algorithm(
         latest_pool_attempt_request_compression_algorithm(state, trace)
             .await
-            .or_else(|| {
-                pool_terminal_request_compression_algorithm(headers, error).map(str::to_string)
-            });
+            .ok()
+            .flatten(),
+        pool_terminal_request_compression_algorithm(headers, error).map(str::to_string),
+    );
     let _ = persist_pre_attempt_proxy_capture_error(
         state,
         proxy_request_id,
@@ -628,7 +629,7 @@ fn forwarded_request_compression_observation(
 async fn latest_pool_attempt_request_compression_algorithm(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
-) -> Option<String> {
+) -> Result<Option<Option<String>>, sqlx::Error> {
     sqlx::query_scalar::<_, Option<String>>(
         r#"
         SELECT NULLIF(TRIM(upstream_request_compression_algorithm), '')
@@ -644,9 +645,13 @@ async fn latest_pool_attempt_request_compression_algorithm(
     .bind(&trace.occurred_at)
     .fetch_optional(&state.pool)
     .await
-    .ok()
-    .flatten()
-    .flatten()
+}
+
+fn resolve_terminal_request_compression_algorithm(
+    latest_attempt_algorithm: Option<Option<String>>,
+    fallback_algorithm: Option<String>,
+) -> Option<String> {
+    latest_attempt_algorithm.unwrap_or(fallback_algorithm)
 }
 
 fn pool_terminal_request_compression_algorithm(
@@ -4172,6 +4177,25 @@ mod request_compression_tests {
                 RequestCompressionAlgorithm::Zstd,
             ),
             Some("zstd")
+        );
+    }
+
+    #[test]
+    fn terminal_pool_request_compression_keeps_unknown_attempt_metadata_unknown() {
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(Some(None), Some("zstd".to_string())),
+            None
+        );
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(
+                Some(Some("gzip".to_string())),
+                Some("zstd".to_string())
+            ),
+            Some("gzip".to_string())
+        );
+        assert_eq!(
+            resolve_terminal_request_compression_algorithm(None, Some("zstd".to_string())),
+            Some("zstd".to_string())
         );
     }
 }
