@@ -297,18 +297,18 @@
 ## Visual Evidence
 
 - source_type: storybook_canvas
-  story_id_or_title: Monitoring / InvocationTable / Default
+  story_id_or_title: Monitoring/InvocationTable/Default
   state: request-compression list summary
-  requested_viewport: 1280x720
-  viewport_strategy: chrome_storybook_canvas
-  margin_policy: viewport
+  requested_viewport: desktop1280
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
   evidence_surface: component
   evidence_note: verifies the list header is “响应耗时 / HTTP 请求压缩”, the compressed fixture renders `0.642 s · zstd`, and legacy records remain `—`.
   PR: include
   target_program: mock-only
-  capture_scope: storybook canvas
+  capture_scope: element
   sensitive_exclusion: fixture-only invocation data
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   image:
   ![Invocation list request compression](./assets/request-compression-list.png)
 
