@@ -546,13 +546,13 @@ async fn long_term_archive_invocation_query_with_range(
     let range_filter = bounded_to_target_date.then(|| {
         format!(
             r#"
-        AND occurred_at < ?1
+        AND CAST(strftime('%s', occurred_at) AS INTEGER) < ?1
         AND (
-            occurred_at >= ?2
+            CAST(strftime('%s', occurred_at) AS INTEGER) >= ?2
             OR (
                 {t_total_ms_column} IS NOT NULL
                 AND {t_total_ms_column} > 0
-                AND julianday(occurred_at) + {t_total_ms_column} / 86400000.0 >= julianday(?2)
+                AND CAST(strftime('%s', occurred_at) AS INTEGER) + {t_total_ms_column} / 1000.0 >= ?2
             )
         )
             "#,
@@ -1014,9 +1014,12 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
 
     // Corrections originate in several write-side workers. Queue every local day touched by the
     // old or new interval so a later projection pass can replace only the affected buckets.
+    sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_invocation_correction")
+        .execute(pool)
+        .await?;
     sqlx::query(
         r#"
-        CREATE TRIGGER IF NOT EXISTS long_term_projection_invocation_correction
+        CREATE TRIGGER long_term_projection_invocation_correction
         AFTER UPDATE OF
           source, status, occurred_at, model, payload,
           input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens,
@@ -1027,13 +1030,21 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
             SELECT
-              date(OLD.occurred_at),
-              date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0)
+              CASE WHEN instr(OLD.occurred_at, 'T') > 0
+                THEN date(strftime('%s', OLD.occurred_at), 'unixepoch', '+8 hours')
+                ELSE date(OLD.occurred_at) END,
+              CASE WHEN instr(OLD.occurred_at, 'T') > 0
+                THEN date(CAST(strftime('%s', OLD.occurred_at) AS INTEGER) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                ELSE date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0) END
             WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
             UNION ALL
             SELECT
-              date(NEW.occurred_at),
-              date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0)
+              CASE WHEN instr(NEW.occurred_at, 'T') > 0
+                THEN date(strftime('%s', NEW.occurred_at), 'unixepoch', '+8 hours')
+                ELSE date(NEW.occurred_at) END,
+              CASE WHEN instr(NEW.occurred_at, 'T') > 0
+                THEN date(CAST(strftime('%s', NEW.occurred_at) AS INTEGER) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                ELSE date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0) END
             WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
             UNION ALL
             SELECT date(bucket_date, '+1 day'), end_date
@@ -1045,6 +1056,7 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           WHERE bucket_date IS NOT NULL
           ON CONFLICT(bucket_date) DO UPDATE SET
             repair_reason = excluded.repair_reason,
+            generation = long_term_projection_dirty_buckets.generation + 1,
             updated_at = datetime('now');
         END
         "#,
@@ -1082,12 +1094,12 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
         AFTER INSERT ON archive_batches
         WHEN NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
           AND NEW.status = 'completed'
-          AND NEW.coverage_start_at IS NOT NULL
-          AND NEW.coverage_end_at IS NOT NULL
         BEGIN
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE covered_dates(bucket_date, end_date) AS (
-            SELECT date(NEW.coverage_start_at), date(NEW.coverage_end_at)
+            SELECT
+              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
+              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
             UNION ALL
             SELECT date(bucket_date, '+1 day'), end_date
             FROM covered_dates
@@ -1098,6 +1110,7 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
           WHERE bucket_date IS NOT NULL
           ON CONFLICT(bucket_date) DO UPDATE SET
             repair_reason = excluded.repair_reason,
+            generation = long_term_projection_dirty_buckets.generation + 1,
             next_attempt_at = NULL,
             updated_at = datetime('now');
         END
@@ -1114,29 +1127,25 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
         WHEN (
               NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND NEW.status = 'completed'
-              AND NEW.coverage_start_at IS NOT NULL
-              AND NEW.coverage_end_at IS NOT NULL
             )
             OR (
               OLD.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND OLD.status = 'completed'
-              AND OLD.coverage_start_at IS NOT NULL
-              AND OLD.coverage_end_at IS NOT NULL
             )
         BEGIN
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE coverage_ranges(start_date, end_date) AS (
-            SELECT date(NEW.coverage_start_at), date(NEW.coverage_end_at)
+            SELECT
+              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
+              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
             WHERE NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND NEW.status = 'completed'
-              AND NEW.coverage_start_at IS NOT NULL
-              AND NEW.coverage_end_at IS NOT NULL
             UNION ALL
-            SELECT date(OLD.coverage_start_at), date(OLD.coverage_end_at)
+            SELECT
+              COALESCE(CASE WHEN instr(OLD.coverage_start_at, 'T') > 0 THEN date(strftime('%s', OLD.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(OLD.coverage_start_at) END, date(OLD.month_key || '-01')),
+              COALESCE(CASE WHEN instr(OLD.coverage_end_at, 'T') > 0 THEN date(strftime('%s', OLD.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(OLD.coverage_end_at) END, date(OLD.month_key || '-01', '+1 month', '-1 day'))
             WHERE OLD.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND OLD.status = 'completed'
-              AND OLD.coverage_start_at IS NOT NULL
-              AND OLD.coverage_end_at IS NOT NULL
           ), covered_dates(bucket_date, end_date) AS (
             SELECT start_date, end_date FROM coverage_ranges
             UNION ALL
@@ -1149,6 +1158,7 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
           WHERE bucket_date IS NOT NULL
           ON CONFLICT(bucket_date) DO UPDATE SET
             repair_reason = excluded.repair_reason,
+            generation = long_term_projection_dirty_buckets.generation + 1,
             next_attempt_at = NULL,
             updated_at = datetime('now');
         END
@@ -1240,7 +1250,7 @@ async fn queue_long_term_projection_repairs(
     let mut tx = pool.begin().await?;
     for date in dates {
         sqlx::query(
-            "INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, ?2) ON CONFLICT(bucket_date) DO UPDATE SET repair_reason = excluded.repair_reason, next_attempt_at = NULL, updated_at = datetime('now')",
+            "INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, ?2) ON CONFLICT(bucket_date) DO UPDATE SET repair_reason = excluded.repair_reason, generation = long_term_projection_dirty_buckets.generation + 1, next_attempt_at = NULL, updated_at = datetime('now')",
         )
         .bind(date)
         .bind(repair_reason)
@@ -1249,6 +1259,27 @@ async fn queue_long_term_projection_repairs(
     }
     tx.commit().await?;
     Ok(())
+}
+
+async fn load_long_term_projection_dirty_buckets(
+    pool: &Pool<Sqlite>,
+    dates: &[String],
+) -> Result<Vec<LongTermProjectionDirtyBucket>> {
+    if dates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT bucket_date, generation FROM long_term_projection_dirty_buckets WHERE bucket_date IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for date in dates {
+        separated.push_bind(date);
+    }
+    separated.push_unseparated(")");
+    Ok(builder
+        .build_query_as::<LongTermProjectionDirtyBucket>()
+        .fetch_all(pool)
+        .await?)
 }
 
 async fn defer_long_term_projection_repair(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
@@ -1391,6 +1422,8 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         let baseline_dates = long_term_projection_open_baseline_dates();
         queue_long_term_projection_repairs(&state.pool, &baseline_dates, "interval_baseline")
             .await?;
+        let baseline_dirty =
+            load_long_term_projection_dirty_buckets(&state.pool, &baseline_dates).await?;
         let mut rebuilds = Vec::with_capacity(baseline_dates.len());
         for date in &baseline_dates {
             rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
@@ -1399,7 +1432,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             &state.pool,
             &rebuilds,
             Some(baseline_cursor),
-            &baseline_dates,
+            &baseline_dirty,
         )
         .await?;
         repaired.extend(baseline_dates);
@@ -1452,6 +1485,8 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             let repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
             queue_long_term_projection_repairs(&state.pool, &repair_dates, "interval_baseline")
                 .await?;
+            let repair_dirty =
+                load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
             let mut rebuilds = Vec::with_capacity(repair_dates.len());
             for date in &repair_dates {
                 rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
@@ -1460,7 +1495,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
                 &state.pool,
                 &rebuilds,
                 Some(event.row_id),
-                &repair_dates,
+                &repair_dirty,
             )
             .await?;
             repaired.extend(repair_dates);
@@ -1472,14 +1507,15 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         invalidate_long_term_projection_interval_cache(state).await;
     }
 
-    let dirty_dates = sqlx::query_scalar::<_, String>(
-        "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now') ORDER BY queued_at ASC, bucket_date ASC LIMIT ?1",
+    let dirty_dates = sqlx::query_as::<_, LongTermProjectionDirtyBucket>(
+        "SELECT bucket_date, generation FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now') ORDER BY queued_at ASC, bucket_date ASC LIMIT ?1",
     )
     .bind(LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH)
     .fetch_all(&state.pool)
     .await?;
     let mut deferred_repair_count = 0usize;
-    for date in dirty_dates {
+    for dirty in dirty_dates {
+        let date = dirty.bucket_date.clone();
         if repaired.contains(&date) {
             continue;
         }
@@ -1502,7 +1538,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             &state.pool,
             &[rebuild],
             None,
-            std::slice::from_ref(&date),
+            std::slice::from_ref(&dirty),
         )
         .await?;
         repaired.push(date);
@@ -1647,6 +1683,12 @@ struct LongTermProjectionDateRebuild {
     interval_segments: Vec<LongTermProjectionIntervalSegment>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct LongTermProjectionDirtyBucket {
+    bucket_date: String,
+    generation: i64,
+}
+
 fn long_term_projection_row_affects_date(row: &LongTermInvocationRow, bucket_date: &str) -> bool {
     let mut hourly = HashMap::new();
     let mut daily = HashMap::new();
@@ -1685,21 +1727,21 @@ async fn load_long_term_projection_rows_for_date(
           inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
         FROM codex_invocations inv
         WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
-          AND inv.occurred_at < ?2
+          AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) < ?2
           AND (
-            inv.occurred_at >= ?1
+            CAST(strftime('%s', inv.occurred_at) AS INTEGER) >= ?1
             OR (
               inv.t_total_ms IS NOT NULL
               AND inv.t_total_ms > 0
-              AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)
+              AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) + inv.t_total_ms / 1000.0 >= ?1
             )
           )
         ORDER BY inv.occurred_at ASC, inv.id ASC
         "#,
     );
     let mut rows = sqlx::query_as::<_, LongTermInvocationRow>(&query)
-        .bind(format_naive(start.naive_local()))
-        .bind(format_naive(end.naive_local()))
+        .bind(start.timestamp())
+        .bind(end.timestamp())
         .fetch_all(pool)
         .await?;
     let mut row_positions = rows
@@ -1744,8 +1786,8 @@ async fn load_long_term_projection_rows_for_date(
         };
         let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
         let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(&archive_query)
-            .bind(format_naive(end.naive_local()))
-            .bind(format_naive(start.naive_local()))
+            .bind(end.timestamp())
+            .bind(start.timestamp())
             .fetch_all(&archive_pool)
             .await;
         archive_pool.close().await;
@@ -1834,7 +1876,7 @@ async fn commit_long_term_projection_date_rebuilds(
     pool: &Pool<Sqlite>,
     rebuilds: &[LongTermProjectionDateRebuild],
     next_cursor: Option<i64>,
-    clear_dirty_dates: &[String],
+    clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
 ) -> Result<()> {
     let mut transaction = pool.begin().await?;
     for rebuild in rebuilds {
@@ -1884,9 +1926,10 @@ async fn commit_long_term_projection_date_rebuilds(
         .execute(&mut *transaction)
         .await?;
     }
-    for date in clear_dirty_dates {
-        sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1")
-            .bind(date)
+    for dirty in clear_dirty_buckets {
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2")
+            .bind(&dirty.bucket_date)
+            .bind(dirty.generation)
             .execute(&mut *transaction)
             .await?;
     }
@@ -5179,6 +5222,7 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE TABLE IF NOT EXISTS long_term_projection_dirty_buckets (
             bucket_date TEXT PRIMARY KEY,
             repair_reason TEXT NOT NULL,
+            generation INTEGER NOT NULL DEFAULT 1,
             queued_at TEXT NOT NULL DEFAULT (datetime('now')),
             next_attempt_at TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -5194,6 +5238,16 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await;
     if let Err(error) = next_attempt_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let generation_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_dirty_buckets ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = generation_migration
         && !error.to_string().contains("duplicate column name")
     {
         return Err(error.into());
@@ -8392,5 +8446,116 @@ mod tests {
         .expect_err("persistent locks must exhaust the bounded retry budget");
         assert!(crate::is_sqlite_lock_error(&error));
         assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn projection_date_rebuild_filters_rfc3339_rows_by_shanghai_epoch_bounds() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_test_invocations(&pool).await;
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (1, 'utc-boundary', '2026-07-25T16:30:00Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("boundary invocation");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("fixed date");
+        let start = Shanghai
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
+            .single()
+            .expect("Shanghai day start");
+        let end = Shanghai
+            .from_local_datetime(
+                &date
+                    .succ_opt()
+                    .expect("next date")
+                    .and_hms_opt(0, 0, 0)
+                    .expect("day end"),
+            )
+            .single()
+            .expect("Shanghai day end");
+
+        let rows = load_long_term_projection_rows_for_date(&pool, date, start, end)
+            .await
+            .expect("projection rows");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].invoke_id.as_deref(), Some("utc-boundary"));
+    }
+
+    #[tokio::test]
+    async fn projection_rebuild_preserves_a_newer_dirty_generation() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        let dates = vec!["2026-07-26".to_string()];
+        queue_long_term_projection_repairs(&pool, &dates, "first")
+            .await
+            .expect("first repair");
+        let stale_marker = load_long_term_projection_dirty_buckets(&pool, &dates)
+            .await
+            .expect("stale marker");
+        queue_long_term_projection_repairs(&pool, &dates, "raced_correction")
+            .await
+            .expect("raced repair");
+
+        commit_long_term_projection_date_rebuilds(&pool, &[], None, &stale_marker)
+            .await
+            .expect("commit stale rebuild");
+
+        let generation = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1",
+        )
+        .bind(&dates[0])
+        .fetch_one(&pool)
+        .await
+        .expect("newer marker remains");
+        assert_eq!(generation, 2);
+    }
+
+    #[tokio::test]
+    async fn archive_trigger_invalidates_month_when_coverage_is_unknown() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, month_key TEXT NOT NULL, file_path TEXT NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT, historical_rollups_materialized_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_archive_trigger(&pool)
+            .await
+            .expect("archive trigger");
+
+        sqlx::query(
+            "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, status) VALUES (1, 'codex_invocations', '2026-07', 'legacy.db', 'sha', 'completed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("unknown coverage archive");
+
+        let dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("dirty dates");
+        assert_eq!(dates.len(), 31);
+        assert_eq!(dates.first().map(String::as_str), Some("2026-07-01"));
+        assert_eq!(dates.last().map(String::as_str), Some("2026-07-31"));
     }
 }
