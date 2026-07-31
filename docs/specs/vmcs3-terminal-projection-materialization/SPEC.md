@@ -35,3 +35,9 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 - terminal burst 下，每个长期 projection 最多一次固定 60 秒 P2 flush；P1 ACK 和 Dashboard terminal overlay 不依赖该 flush。
 - 重启、journal replay、重复 terminal、hard limit、跨自然日 interval、unassigned/model/reasoning 分组和 archive rewrite 与 exact builder 对账一致。
 - System Status 展示只读取内存 health，不增加 status route 的 SQLite 查询数；健康、deferred、dirty-last-good 均可读且详情可展开。
+
+## Visual Evidence
+
+![System Status projection health on desktop](./assets/projection-health-desktop.png)
+
+![System Status projection health on mobile](./assets/projection-health-mobile.png)
