@@ -400,6 +400,224 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
 }
 
 #[tokio::test]
+async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load seeded default pricing catalog");
+
+    assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
+
+    let terra = catalog
+        .models
+        .get("gpt-5.6-terra")
+        .expect("gpt-5.6-terra default pricing should exist");
+    assert_eq!(terra.input_per_1m, 2.0);
+    assert_eq!(terra.cache_input_per_1m, Some(0.20));
+    assert_eq!(terra.cache_read_per_1m, Some(0.20));
+    assert_eq!(terra.cache_write_per_1m, Some(2.5));
+    assert_eq!(terra.output_per_1m, 12.0);
+
+    let luna = catalog
+        .models
+        .get("gpt-5.6-luna")
+        .expect("gpt-5.6-luna default pricing should exist");
+    assert_eq!(luna.input_per_1m, 0.20);
+    assert_eq!(luna.cache_input_per_1m, Some(0.02));
+    assert_eq!(luna.cache_read_per_1m, Some(0.02));
+    assert_eq!(luna.cache_write_per_1m, Some(0.25));
+    assert_eq!(luna.output_per_1m, 1.20);
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra_and_luna_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("set previous pricing catalog version for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 2.5,
+            output_per_1m = 15.0,
+            cache_input_per_1m = 0.25,
+            cache_read_per_1m = NULL,
+            cache_write_per_1m = 3.125,
+            source = 'official'
+        WHERE model = 'gpt-5.6-terra'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("restore old terra official pricing for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 1.0,
+            output_per_1m = 6.0,
+            cache_input_per_1m = 0.10,
+            cache_read_per_1m = 0.10,
+            cache_write_per_1m = 1.25,
+            source = 'official'
+        WHERE model = 'gpt-5.6-luna'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("restore old luna official pricing for test");
+
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load pricing catalog should refresh unchanged defaults");
+    assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
+    let terra = catalog
+        .models
+        .get("gpt-5.6-terra")
+        .expect("gpt-5.6-terra pricing should exist");
+    assert_eq!(terra.input_per_1m, 2.0);
+    assert_eq!(terra.cache_read_per_1m, Some(0.20));
+    assert_eq!(terra.cache_write_per_1m, Some(2.5));
+    assert_eq!(terra.output_per_1m, 12.0);
+    let luna = catalog
+        .models
+        .get("gpt-5.6-luna")
+        .expect("gpt-5.6-luna pricing should exist");
+    assert_eq!(luna.input_per_1m, 0.20);
+    assert_eq!(luna.cache_read_per_1m, Some(0.02));
+    assert_eq!(luna.cache_write_per_1m, Some(0.25));
+    assert_eq!(luna.output_per_1m, 1.20);
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("set previous pricing catalog version for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 2.6,
+            output_per_1m = 15.0,
+            cache_input_per_1m = 0.25,
+            cache_read_per_1m = 0.25,
+            cache_write_per_1m = 3.125,
+            source = 'official'
+        WHERE model = 'gpt-5.6-terra'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("customize terra pricing for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 1.0,
+            output_per_1m = 6.0,
+            cache_input_per_1m = 0.10,
+            cache_read_per_1m = 0.10,
+            cache_write_per_1m = 1.25,
+            source = 'custom'
+        WHERE model = 'gpt-5.6-luna'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("mark luna pricing custom for test");
+
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load pricing catalog should preserve custom rows");
+    assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
+    let terra = catalog
+        .models
+        .get("gpt-5.6-terra")
+        .expect("gpt-5.6-terra pricing should exist");
+    assert_eq!(terra.input_per_1m, 2.6);
+    assert_eq!(terra.cache_read_per_1m, Some(0.25));
+    assert_eq!(terra.cache_write_per_1m, Some(3.125));
+    assert_eq!(terra.output_per_1m, 15.0);
+    let luna = catalog
+        .models
+        .get("gpt-5.6-luna")
+        .expect("gpt-5.6-luna pricing should exist");
+    assert_eq!(luna.input_per_1m, 1.0);
+    assert_eq!(luna.cache_read_per_1m, Some(0.10));
+    assert_eq!(luna.cache_write_per_1m, Some(1.25));
+    assert_eq!(luna.output_per_1m, 6.0);
+    assert_eq!(luna.source, "custom");
+
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = 'custom-ci'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("set custom pricing catalog version for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 1.0,
+            output_per_1m = 6.0,
+            cache_input_per_1m = 0.10,
+            cache_read_per_1m = 0.10,
+            cache_write_per_1m = 1.25,
+            source = 'official'
+        WHERE model = 'gpt-5.6-luna'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("restore old luna pricing in custom catalog for test");
+
+    let custom_catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load custom pricing catalog should not refresh rows");
+    assert_eq!(custom_catalog.version, "custom-ci");
+    let custom_luna = custom_catalog
+        .models
+        .get("gpt-5.6-luna")
+        .expect("gpt-5.6-luna pricing should exist");
+    assert_eq!(custom_luna.input_per_1m, 1.0);
+    assert_eq!(custom_luna.cache_read_per_1m, Some(0.10));
+    assert_eq!(custom_luna.cache_write_per_1m, Some(1.25));
+    assert_eq!(custom_luna.output_per_1m, 6.0);
+}
+
+#[tokio::test]
 async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

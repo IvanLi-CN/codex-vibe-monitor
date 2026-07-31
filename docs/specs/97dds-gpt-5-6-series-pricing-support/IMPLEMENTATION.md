@@ -10,6 +10,7 @@
 - [x] Create the active topic spec and index entry.
 - [x] Extend backend pricing models, API payloads, and SQLite persistence with explicit cache read/write pricing.
 - [x] Refresh the repo-managed default pricing catalog and GPT-5.6 model fallback resolution.
+- [x] Refresh unchanged official GPT-5.6 Terra/Luna rows from the prior repo-managed catalog while preserving modified and custom catalog entries.
 - [x] Update cost estimation to use explicit cache read/write pricing when available without changing legacy-model semantics.
 - [x] Add GPT-5.6 models to proxy presets, settings model lists, and `/v1/models` hijack payloads.
 - [x] Split the Settings pricing UI into cache read and cache write columns and keep legacy payload ingestion coverage.
@@ -29,12 +30,15 @@
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` (1520 passed, 45 ignored)
+- `cargo test` (1856 passed, 45 ignored)
 - `cargo test estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_prices`
+- `cargo test seed_default_pricing_catalog_`
+- `cargo test estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing`
+- `cargo test estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing`
 - `cargo test ranged_summary_`
 - `cargo test ranged_summary_groups_model_usage_by_reasoning_effort`
-- `cd web && bun run test`
-- `cd web && bun run test-storybook`
+- `cd web && bun run test` (1313 passed, 6 skipped)
+- `cd web && bun run test-storybook` (20 passed)
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 - `cd web && bun run test -- ModelIdentity.test.tsx UsageBreakdownTooltip.test.tsx ModelPerformanceTrigger.test.tsx InvocationTable.test.tsx`

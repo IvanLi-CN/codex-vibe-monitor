@@ -1379,11 +1379,11 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing() {
         models: HashMap::from([(
             "gpt-5.6-terra".to_string(),
             ModelPricing {
-                input_per_1m: 2.5,
-                output_per_1m: 15.0,
-                cache_input_per_1m: Some(0.25),
-                cache_read_per_1m: Some(0.25),
-                cache_write_per_1m: Some(3.125),
+                input_per_1m: 2.0,
+                output_per_1m: 12.0,
+                cache_input_per_1m: Some(0.20),
+                cache_read_per_1m: Some(0.20),
+                cache_write_per_1m: Some(2.5),
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1405,7 +1405,7 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing() {
         ProxyPricingMode::ResponseTier,
     );
 
-    let expected = ((600.0 * 3.125) + (400.0 * 0.25) + (200.0 * 15.0)) / 1_000_000.0;
+    let expected = ((600.0 * 2.5) + (400.0 * 0.20) + (200.0 * 12.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
     assert!((computed - expected).abs() < 1e-12);
     assert!(estimated);
@@ -1418,11 +1418,11 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing() {
         models: HashMap::from([(
             "gpt-5.6-luna".to_string(),
             ModelPricing {
-                input_per_1m: 1.0,
-                output_per_1m: 6.0,
-                cache_input_per_1m: Some(0.1),
-                cache_read_per_1m: Some(0.1),
-                cache_write_per_1m: Some(1.25),
+                input_per_1m: 0.20,
+                output_per_1m: 1.20,
+                cache_input_per_1m: Some(0.02),
+                cache_read_per_1m: Some(0.02),
+                cache_write_per_1m: Some(0.25),
                 reasoning_per_1m: None,
                 source: "custom".to_string(),
             },
@@ -1444,7 +1444,7 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing() {
         ProxyPricingMode::ResponseTier,
     );
 
-    let expected = ((600.0 * 1.25) + (400.0 * 0.1) + (200.0 * 6.0)) / 1_000_000.0;
+    let expected = ((600.0 * 0.25) + (400.0 * 0.02) + (200.0 * 1.20)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
     assert!((computed - expected).abs() < 1e-12);
     assert!(estimated);
