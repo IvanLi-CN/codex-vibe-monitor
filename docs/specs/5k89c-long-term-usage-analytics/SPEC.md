@@ -75,14 +75,17 @@
 
 - Storybook 覆盖=通过（`SeriesIdentity` 高密度模型/账号状态与 play 覆盖）；视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=已回传；证据落盘=已落盘。
 - 来源为 mock-only `demo:dev`，覆盖亮色/深色桌面与 `390px` 移动端的八项模型/账号多序列状态。
-  PR: none
 - 浅色桌面模型用量：已识别模型在图例和表格中仅显示色标、图标与思考程度；完整模型名通过悬浮提示提供，三者垂直居中。同模型的思考程度以固定线型区分；异模型家族使用不同主色。
+  PR: include
   ![桌面长期统计模型系列可辨识性](./assets/long-term-series-identity-desktop-models.png)
 - 桌面上游账号用量：八个账号的主色唯一，长账号名称换行保留身份。
   ![桌面长期统计上游系列可辨识性](./assets/long-term-series-identity-desktop-upstreams.png)
 - 浅色 `390px` 移动端模型用量：已识别模型在窄屏图例和表格中以色标、图标和思考程度持续可辨，完整模型名通过悬浮提示提供。
+  PR: include
   ![移动端长期统计模型系列可辨识性](./assets/long-term-series-identity-mobile-models.png)
 - 深色桌面模型用量：图、图例与已选表格行处于同一截图范围；图例和表格中的已识别模型均以图标取代重复名称，完整模型名通过悬浮提示提供，色标、图标与等级文字垂直居中。
+  PR: include
   ![深色桌面长期统计模型系列可辨识性](./assets/long-term-series-identity-dark-desktop-models.png)
 - 深色 `390px` 移动端模型图例：已识别模型以色标、图标和思考程度纵向排列，表格延续图标优先身份显示；无图标模型与上游账号仍以长名称换行保留身份。
+  PR: include
   ![深色移动端长期统计模型系列可辨识性](./assets/long-term-series-identity-dark-mobile-models.png)
