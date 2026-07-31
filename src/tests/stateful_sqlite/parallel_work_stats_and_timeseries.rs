@@ -957,6 +957,39 @@ async fn parallel_work_payload_retention_waits_for_complete_minute_coverage() {
 }
 
 #[tokio::test]
+async fn parallel_work_payload_retention_ignores_unrecoverable_pre_coverage_hours() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let keep_start = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start");
+    let full_detail_start = keep_start + 2 * 3_600;
+    let payload_loss_cutoff = full_detail_start + 3_600;
+
+    maintain_parallel_work_rollups(&state.pool, Some(full_detail_start))
+        .await
+        .expect("maintain recoverable full-detail interval");
+
+    assert!(
+        parallel_work_minute_coverage_ready_for_payload_retention(
+            &state.pool,
+            payload_loss_cutoff,
+        )
+        .await
+        .expect("check recoverable minute coverage")
+    );
+    let pre_coverage_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_hourly_coverage WHERE hour_start_epoch < ?1",
+    )
+    .bind(full_detail_start)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count pre-coverage markers");
+    assert_eq!(pre_coverage_rows, 0);
+}
+
+#[tokio::test]
 async fn parallel_work_maintenance_never_marks_pre_retention_raw_hours_as_covered() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

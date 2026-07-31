@@ -58,11 +58,17 @@ pub(crate) async fn parallel_work_minute_coverage_ready_for_payload_retention(
     payload_loss_cutoff_epoch: i64,
 ) -> Result<bool> {
     let keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
+    let coverage_start_epoch = load_parallel_work_full_detail_start_epoch(pool)
+        .await?
+        .unwrap_or(keep_start_epoch)
+        .max(keep_start_epoch)
+        .div_euclid(3_600)
+        * 3_600;
     let coverage_end_epoch = payload_loss_cutoff_epoch.div_euclid(3_600) * 3_600;
-    if coverage_end_epoch <= keep_start_epoch {
+    if coverage_end_epoch <= coverage_start_epoch {
         return Ok(true);
     }
-    let expected_rows = ((coverage_end_epoch - keep_start_epoch) / 3_600) * 2;
+    let expected_rows = ((coverage_end_epoch - coverage_start_epoch) / 3_600) * 2;
     let covered_rows: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
@@ -73,7 +79,7 @@ pub(crate) async fn parallel_work_minute_coverage_ready_for_payload_retention(
             AND minute_keys_complete = 1
         "#,
     )
-    .bind(keep_start_epoch)
+    .bind(coverage_start_epoch)
     .bind(coverage_end_epoch)
     .bind(PARALLEL_WORK_SCOPE_ALL)
     .bind(PARALLEL_WORK_SCOPE_PROXY_ONLY)
