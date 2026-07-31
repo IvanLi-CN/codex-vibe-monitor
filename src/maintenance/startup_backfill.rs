@@ -537,10 +537,9 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
 
     if !cancel.is_cancelled() {
         let _guard = state.hourly_rollup_sync_lock.lock().await;
-        let full_detail_start_epoch =
-            shanghai_retention_cutoff(state.config.invocation_success_full_days).timestamp();
-        if let Err(err) =
-            maintain_parallel_work_rollups(&state.pool, Some(full_detail_start_epoch)).await
+        let live_start_epoch =
+            shanghai_retention_cutoff(state.config.invocation_max_days).timestamp();
+        if let Err(err) = maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)).await
         {
             had_failure = true;
             crate::db_pressure::global_db_pressure_gate()

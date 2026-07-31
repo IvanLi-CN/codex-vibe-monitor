@@ -887,7 +887,7 @@ pub(crate) async fn run_data_retention_maintenance(
     if !dry_run {
         sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
             pool,
-            Some(config.invocation_success_full_days),
+            Some(config.invocation_max_days),
         )
         .await
         .context("failed to sync hourly rollups from live tables before retention")?;

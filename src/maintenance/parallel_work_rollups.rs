@@ -119,7 +119,7 @@ async fn advance_parallel_work_full_detail_start_epoch(
     pool: &Pool<Sqlite>,
     current_full_detail_start_epoch: Option<i64>,
 ) -> Result<Option<i64>> {
-    let Some(_) = current_full_detail_start_epoch else {
+    let Some(live_start_epoch) = current_full_detail_start_epoch else {
         return load_parallel_work_full_detail_start_epoch(pool).await;
     };
     let keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
@@ -146,7 +146,8 @@ async fn advance_parallel_work_full_detail_start_epoch(
     let verified_start_epoch = latest_unrecoverable_epoch
         .map(|epoch| (epoch.div_euclid(3_600) + 1) * 3_600)
         .unwrap_or(keep_start_epoch)
-        .max(keep_start_epoch);
+        .max(keep_start_epoch)
+        .max(live_start_epoch.div_euclid(3_600) * 3_600);
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"

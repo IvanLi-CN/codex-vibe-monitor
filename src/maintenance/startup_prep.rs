@@ -66,7 +66,7 @@ pub(crate) async fn run_startup_persistent_prep_inner(
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups_with_parallel_work_coverage(
             pool,
-            Some(config.invocation_success_full_days),
+            Some(config.invocation_max_days),
         )
         .await?;
         ensure_invocation_summary_rollups_ready_best_effort(pool).await?;

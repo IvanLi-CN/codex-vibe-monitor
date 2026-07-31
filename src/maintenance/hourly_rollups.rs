@@ -17,11 +17,11 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) ->
 
 pub(crate) async fn sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
     pool: &Pool<Sqlite>,
-    invocation_full_detail_days: Option<u64>,
+    invocation_live_days: Option<u64>,
 ) -> Result<()> {
     let mut attempt = 1_u32;
     loop {
-        match sync_hourly_rollups_from_live_tables_once(pool, invocation_full_detail_days).await {
+        match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days).await {
             Ok(()) => return Ok(()),
             Err(err)
                 if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
@@ -51,7 +51,7 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables_with_parallel_work_cove
 
 async fn sync_hourly_rollups_from_live_tables_once(
     pool: &Pool<Sqlite>,
-    invocation_full_detail_days: Option<u64>,
+    invocation_live_days: Option<u64>,
 ) -> Result<()> {
     repair_active_account_activity_v2_coverage(pool).await?;
     loop {
@@ -81,7 +81,7 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     repair_live_invocation_account_activity_v2_once(pool).await?;
-    if let Some(days) = invocation_full_detail_days {
+    if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
     }
@@ -2037,7 +2037,7 @@ pub(crate) async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<
     let _guard = state.hourly_rollup_sync_lock.lock().await;
     sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
         &state.pool,
-        Some(state.config.invocation_success_full_days),
+        Some(state.config.invocation_max_days),
     )
     .await
 }
