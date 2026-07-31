@@ -1019,7 +1019,7 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
         .await?;
     sqlx::query(
         r#"
-        CREATE TRIGGER long_term_projection_invocation_correction
+        CREATE TRIGGER IF NOT EXISTS long_term_projection_invocation_correction
         AFTER UPDATE OF
           source, status, occurred_at, model, payload,
           input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens,
@@ -1090,7 +1090,7 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
 
     sqlx::query(
         r#"
-        CREATE TRIGGER long_term_projection_archive_insert
+        CREATE TRIGGER IF NOT EXISTS long_term_projection_archive_insert
         AFTER INSERT ON archive_batches
         WHEN NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
           AND NEW.status = 'completed'
@@ -1122,7 +1122,7 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
 
     sqlx::query(
         r#"
-        CREATE TRIGGER long_term_projection_archive_update
+        CREATE TRIGGER IF NOT EXISTS long_term_projection_archive_update
         AFTER UPDATE OF dataset, status, file_path, sha256, coverage_start_at, coverage_end_at, historical_rollups_materialized_at ON archive_batches
         WHEN (
               NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
@@ -1193,7 +1193,7 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
     ] {
         let statement = format!(
             r#"
-            CREATE TRIGGER {trigger}
+            CREATE TRIGGER IF NOT EXISTS {trigger}
             {event}
             BEGIN
               INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
