@@ -173,20 +173,6 @@
 
 ## Visual Evidence
 
-- SHA `worktree`
-- source_type: `storybook_canvas`
-  story_id_or_title: `dashboard-dashboardactivityoverview--active-minute-average`
-  state: `offline cached today, complete active minutes 1 and 3`
-  target_program: `mock-only`
-  capture_scope: `browser-viewport`
-  requested_viewport: `1560x980`
-  viewport_strategy: `browser-resize-fallback`
-  margin_policy: `trim_only`
-  evidence_surface: `page`
-  sensitive_exclusion: `N/A`
-  submission_gate: `pending-owner-approval`
-  evidence_note: `验证 Dashboard 活动总览中的进行中卡日均读取活动分钟口径；fixture 的两个完整活动分钟并行数为 1 与 3，卡片显示 2。Canvas 无独立 viewport 参数，故使用一次性 headless canvas 1560x980 视口；不会变更或保留用户浏览器窗口。`
-  ![Dashboard active-minute average](./assets/parallel-work-active-minute-average.png)
 - SHA `753a5bdf`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-dashboardactivityoverview--account-today-cost-cumulative`
