@@ -546,13 +546,13 @@ async fn long_term_archive_invocation_query_with_range(
     let range_filter = bounded_to_target_date.then(|| {
         format!(
             r#"
-        AND CAST(strftime('%s', occurred_at) AS INTEGER) < ?1
+        AND CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) < ?1
         AND (
-            CAST(strftime('%s', occurred_at) AS INTEGER) >= ?2
+            CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) >= ?2
             OR (
                 {t_total_ms_column} IS NOT NULL
                 AND {t_total_ms_column} > 0
-                AND CAST(strftime('%s', occurred_at) AS INTEGER) + {t_total_ms_column} / 1000.0 >= ?2
+                AND CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) + {t_total_ms_column} / 1000.0 >= ?2
             )
         )
             "#,
@@ -1433,6 +1433,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             &rebuilds,
             Some(baseline_cursor),
             &baseline_dirty,
+            true,
         )
         .await?;
         repaired.extend(baseline_dates);
@@ -1496,6 +1497,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
                 &rebuilds,
                 Some(event.row_id),
                 &repair_dirty,
+                false,
             )
             .await?;
             repaired.extend(repair_dates);
@@ -1539,6 +1541,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             &[rebuild],
             None,
             std::slice::from_ref(&dirty),
+            false,
         )
         .await?;
         repaired.push(date);
@@ -1727,13 +1730,13 @@ async fn load_long_term_projection_rows_for_date(
           inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
         FROM codex_invocations inv
         WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
-          AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) < ?2
+          AND CAST(strftime('%s', CASE WHEN instr(inv.occurred_at, 'T') > 0 THEN inv.occurred_at ELSE inv.occurred_at || '+08:00' END) AS INTEGER) < ?2
           AND (
-            CAST(strftime('%s', inv.occurred_at) AS INTEGER) >= ?1
+            CAST(strftime('%s', CASE WHEN instr(inv.occurred_at, 'T') > 0 THEN inv.occurred_at ELSE inv.occurred_at || '+08:00' END) AS INTEGER) >= ?1
             OR (
               inv.t_total_ms IS NOT NULL
               AND inv.t_total_ms > 0
-              AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) + inv.t_total_ms / 1000.0 >= ?1
+              AND CAST(strftime('%s', CASE WHEN instr(inv.occurred_at, 'T') > 0 THEN inv.occurred_at ELSE inv.occurred_at || '+08:00' END) AS INTEGER) + inv.t_total_ms / 1000.0 >= ?1
             )
           )
         ORDER BY inv.occurred_at ASC, inv.id ASC
@@ -1877,6 +1880,7 @@ async fn commit_long_term_projection_date_rebuilds(
     rebuilds: &[LongTermProjectionDateRebuild],
     next_cursor: Option<i64>,
     clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
+    mark_ready: bool,
 ) -> Result<()> {
     let mut transaction = pool.begin().await?;
     for rebuild in rebuilds {
@@ -1926,6 +1930,15 @@ async fn commit_long_term_projection_date_rebuilds(
         .execute(&mut *transaction)
         .await?;
     }
+    if mark_ready {
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
+        )
+        .bind(LONG_TERM_STATUS_READY)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&mut *transaction)
+        .await?;
+    }
     for dirty in clear_dirty_buckets {
         sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2")
             .bind(&dirty.bucket_date)
@@ -1939,7 +1952,7 @@ async fn commit_long_term_projection_date_rebuilds(
 
 async fn rebuild_long_term_projection_date(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
     let rebuild = build_long_term_projection_date_rebuild(pool, bucket_date).await?;
-    commit_long_term_projection_date_rebuilds(pool, &[rebuild], None, &[]).await
+    commit_long_term_projection_date_rebuilds(pool, &[rebuild], None, &[], false).await
 }
 
 pub(crate) async fn bootstrap_long_term_integrity_source_boundary_for_legacy_rollups(
@@ -8462,6 +8475,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("boundary invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (2, 'local-boundary', '2026-07-26 00:30:00', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("local boundary invocation");
         let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("fixed date");
         let start = Shanghai
             .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
@@ -8482,8 +8501,12 @@ mod tests {
             .await
             .expect("projection rows");
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].invoke_id.as_deref(), Some("utc-boundary"));
+        assert_eq!(rows.len(), 2);
+        let ids = rows
+            .iter()
+            .filter_map(|row| row.invoke_id.as_deref())
+            .collect::<HashSet<_>>();
+        assert_eq!(ids, HashSet::from(["utc-boundary", "local-boundary"]));
     }
 
     #[tokio::test]
@@ -8507,7 +8530,7 @@ mod tests {
             .await
             .expect("raced repair");
 
-        commit_long_term_projection_date_rebuilds(&pool, &[], None, &stale_marker)
+        commit_long_term_projection_date_rebuilds(&pool, &[], None, &stale_marker, false)
             .await
             .expect("commit stale rebuild");
 
@@ -8557,5 +8580,36 @@ mod tests {
         assert_eq!(dates.len(), 31);
         assert_eq!(dates.first().map(String::as_str), Some("2026-07-01"));
         assert_eq!(dates.last().map(String::as_str), Some("2026-07-31"));
+    }
+
+    #[tokio::test]
+    async fn accepted_projection_baseline_recovers_the_public_stats_state() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_RUNNING)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("interrupted state");
+
+        commit_long_term_projection_date_rebuilds(&pool, &[], Some(7), &[], true)
+            .await
+            .expect("accepted baseline");
+
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("recovered state");
+        assert_eq!(status, LONG_TERM_STATUS_READY);
     }
 }
