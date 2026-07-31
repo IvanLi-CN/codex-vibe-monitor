@@ -268,9 +268,11 @@ function ProjectionHealthSection({ status, t }: OverviewPanelProps) {
       ? t("system.status.projection.healthy")
       : state === "deferred"
         ? t("system.status.projection.deferred")
-        : state === "dirty_last_good"
-          ? t("system.status.projection.lastGood")
-          : t("system.status.projection.preparing");
+        : state === "repairing"
+          ? t("system.status.projection.repairing")
+          : state === "dirty_last_good"
+            ? t("system.status.projection.lastGood")
+            : t("system.status.projection.preparing");
   const age = (value?: number) => (value == null ? "-" : `${Math.round(value / 1000)} s`);
 
   return (

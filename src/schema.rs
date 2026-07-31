@@ -3941,6 +3941,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     seed_default_pricing_catalog(pool).await?;
     ensure_long_term_stats_schema(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
+    ensure_long_term_projection_account_trigger(pool).await?;
 
     Ok(())
 }

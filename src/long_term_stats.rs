@@ -1170,6 +1170,70 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
     Ok(())
 }
 
+pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqlite>) -> Result<()> {
+    for trigger in [
+        "long_term_projection_account_kind_update",
+        "long_term_projection_account_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+            .execute(pool)
+            .await?;
+    }
+    for (trigger, event, account_id) in [
+        (
+            "long_term_projection_account_kind_update",
+            "AFTER UPDATE OF kind ON pool_upstream_accounts WHEN OLD.kind IS NOT NEW.kind",
+            "NEW.id",
+        ),
+        (
+            "long_term_projection_account_delete",
+            "AFTER DELETE ON pool_upstream_accounts",
+            "OLD.id",
+        ),
+    ] {
+        let statement = format!(
+            r#"
+            CREATE TRIGGER {trigger}
+            {event}
+            BEGIN
+              INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
+              WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
+                SELECT
+                  CASE WHEN instr(inv.occurred_at, 'T') > 0
+                    THEN date(strftime('%s', inv.occurred_at), 'unixepoch', '+8 hours')
+                    ELSE date(inv.occurred_at) END,
+                  CASE WHEN instr(inv.occurred_at, 'T') > 0
+                    THEN date(CAST(strftime('%s', inv.occurred_at) AS INTEGER) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                    ELSE date(julianday(inv.occurred_at) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 86400000.0) END
+                FROM codex_invocations inv
+                WHERE (CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END) = {account_id}
+                   OR EXISTS (
+                        SELECT 1 FROM pool_upstream_request_attempts attempt
+                        WHERE attempt.invoke_id = inv.invoke_id
+                          AND attempt.occurred_at = inv.occurred_at
+                          AND attempt.upstream_account_id = {account_id}
+                      )
+                UNION ALL
+                SELECT date(bucket_date, '+1 day'), end_date
+                FROM affected_dates
+                WHERE bucket_date < end_date
+              )
+              SELECT DISTINCT bucket_date, 'account_classification_changed'
+              FROM affected_dates
+              WHERE bucket_date IS NOT NULL
+              ON CONFLICT(bucket_date) DO UPDATE SET
+                repair_reason = excluded.repair_reason,
+                generation = long_term_projection_dirty_buckets.generation + 1,
+                next_attempt_at = NULL,
+                updated_at = datetime('now');
+            END
+            "#,
+        );
+        sqlx::query(&statement).execute(pool).await?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct LongTermProjectionCursorRow {
     cursor_row_id: i64,
@@ -1410,7 +1474,13 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         )
         .await?;
         baseline_cursor = Some(load_long_term_terminal_watermark(&state.pool).await?);
-    } else if cursor == 0 && long_term_rollups_exist(&state.pool).await? {
+    } else if long_term_rollups_exist(&state.pool).await?
+        && (cursor == 0
+            || matches!(
+                state_row.status.as_str(),
+                LONG_TERM_STATUS_RUNNING | LONG_TERM_STATUS_PREPARING | LONG_TERM_STATUS_DISABLED
+            ))
+    {
         // Existing rollups are a durable baseline after upgrade. Only the two open calendar
         // buckets need interval baselines before new terminal deltas can be merged exactly.
         baseline_cursor = Some(load_long_term_terminal_watermark(&state.pool).await?);
@@ -1433,7 +1503,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             &rebuilds,
             Some(baseline_cursor),
             &baseline_dirty,
-            true,
+            state_row.status != LONG_TERM_STATUS_ERROR,
         )
         .await?;
         repaired.extend(baseline_dates);
@@ -8611,5 +8681,68 @@ mod tests {
         .await
         .expect("recovered state");
         assert_eq!(status, LONG_TERM_STATUS_READY);
+
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_ERROR)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("integrity error state");
+        commit_long_term_projection_date_rebuilds(&pool, &[], Some(8), &[], false)
+            .await
+            .expect("baseline while error is retained");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("retained error state");
+        assert_eq!(status, LONG_TERM_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn account_kind_change_invalidates_affected_projection_dates() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_test_invocations(&pool).await;
+        sqlx::query("CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY, kind TEXT)")
+            .execute(&pool)
+            .await
+            .expect("account schema");
+        sqlx::query("CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT, occurred_at TEXT, upstream_account_id INTEGER)")
+            .execute(&pool)
+            .await
+            .expect("attempt schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_account_trigger(&pool)
+            .await
+            .expect("account trigger");
+        sqlx::query("INSERT INTO pool_upstream_accounts (id, kind) VALUES (42, 'oauth_codex')")
+            .execute(&pool)
+            .await
+            .expect("account");
+        sqlx::query("INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, payload) VALUES (1, 'classified', '2026-07-26 10:00:00', 'success', 100, '{\"upstreamAccountId\":42}')")
+            .execute(&pool)
+            .await
+            .expect("classified invocation");
+
+        sqlx::query("UPDATE pool_upstream_accounts SET kind = 'api_key' WHERE id = 42")
+            .execute(&pool)
+            .await
+            .expect("classification update");
+
+        let reason = sqlx::query_scalar::<_, String>(
+            "SELECT repair_reason FROM long_term_projection_dirty_buckets WHERE bucket_date = '2026-07-26'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("affected date");
+        assert_eq!(reason, "account_classification_changed");
     }
 }

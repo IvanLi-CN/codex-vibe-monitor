@@ -88,7 +88,7 @@ describe("SystemStatusPage", () => {
           pendingEventCount: 0,
         },
         longTerm: {
-          state: "healthy",
+          state: "repairing",
           cursorLag: 0,
           dirtyBucketCount: 0,
           pendingEventCount: 0,
@@ -124,6 +124,7 @@ describe("SystemStatusPage", () => {
     expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-projection-health"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("修复中");
     expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull();
     expect(host?.textContent ?? "").toContain("实际磁盘占用总览");
