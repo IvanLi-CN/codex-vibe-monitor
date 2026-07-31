@@ -1864,6 +1864,10 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),
         )),
+        terminal_projection_hub: Arc::new(crate::TerminalProjectionHub::default()),
+        long_term_projection_runtime: Arc::new(Mutex::new(
+            crate::LongTermProjectionRuntime::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -2530,6 +2534,10 @@ async fn quota_latest_returns_degraded_when_empty() {
         )),
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),
+        )),
+        terminal_projection_hub: Arc::new(crate::TerminalProjectionHub::default()),
+        long_term_projection_runtime: Arc::new(Mutex::new(
+            crate::LongTermProjectionRuntime::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),

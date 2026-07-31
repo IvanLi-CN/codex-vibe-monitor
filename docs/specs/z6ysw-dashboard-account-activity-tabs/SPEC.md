@@ -589,3 +589,8 @@
 - `docs/specs/t6d9r-account-detail-stats-read-model/SPEC.md`
 - `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
 - `docs/solutions/performance/realtime-dashboard-reconcile-budget.md`
+
+## 共享投影边界
+
+- Dashboard terminal 紧凑 delta 与长期统计共享 terminal admission/ACK 事件，但 Dashboard 的范围累计态不能等待长期统计 rollup。
+- Hub 或长期统计 consumer 进入 dirty-last-good 时，Dashboard 仍按既有 live overlay/last-good contract 服务；诊断通过 System Status 的 projection health 暴露。

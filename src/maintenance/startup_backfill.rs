@@ -481,7 +481,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     state: Arc<AppState>,
     cancel: &CancellationToken,
 ) {
-    let pass_started_at = format_utc_iso(Utc::now());
     let task_run = begin_system_task_run(
         &state.pool,
         SystemTaskKind::StartupBackfill,
@@ -547,37 +546,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             warn!(error = %err, "parallel-work rollup maintenance pass failed");
         }
     }
-
-    let backfill_updated_rows = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM startup_backfill_progress
-              WHERE task_name IN (?1, ?2, ?3, ?4, ?5)
-              AND last_updated > 0
-              AND last_finished_at IS NOT NULL
-              AND datetime(last_finished_at) >= datetime(?6)
-        )
-        "#,
-    )
-    .bind(StartupBackfillTask::ProxyUsage.name())
-    .bind(StartupBackfillTask::ProxyCost.name())
-    .bind(StartupBackfillTask::ReasoningEffort.name())
-    .bind(StartupBackfillTask::UpstreamActivityLive.name())
-    .bind(StartupBackfillTask::UpstreamActivityArchives.name())
-    .bind(&pass_started_at)
-    .fetch_one(&state.pool)
-    .await;
-    if matches!(backfill_updated_rows, Ok(1))
-        && let Err(error) = sqlx::query(
-            "UPDATE long_term_stats_state SET status = 'preparing', last_error = NULL, updated_at = datetime('now') WHERE id = 1",
-        )
-        .execute(&state.pool)
-        .await
-    {
-        warn!(error = %error, "failed to invalidate long-term stats after startup backfill updates");
-    }
-
     if let Some(run) = task_run.as_ref() {
         finish_system_task_run_batched(
             state.as_ref(),
@@ -1282,11 +1250,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending =
             !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
         run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
-        spawn_long_term_stats_backfill(
-            state.pool.clone(),
-            state.config.long_term_stats_hourly_retention_days,
-            cancel.clone(),
-        );
+        spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);

@@ -12,6 +12,7 @@ tags:
 status: active
 related_specs:
   - docs/specs/5k89c-long-term-usage-analytics/SPEC.md
+  - docs/specs/vmcs3-terminal-projection-materialization/SPEC.md
   - docs/specs/9aucy-db-retention-archive/SPEC.md
   - docs/specs/z9h7v-invocation-log-observability/SPEC.md
 ---
@@ -51,3 +52,11 @@ Long-lived usage views must remain complete after invocation rows move from the 
 - `src/long_term_stats.rs`
 - `src/maintenance/archive/cleanup.rs`
 - `docs/specs/5k89c-long-term-usage-analytics/SPEC.md`
+- `docs/specs/vmcs3-terminal-projection-materialization/SPEC.md`
+
+## Incremental Materialization
+
+- 日汇总 API 继续读取 durable rollup；terminal 通过 durable cursor 在固定窗口内 hydrate 新 row，并对受影响的 hourly/daily key 做 additive upsert，不再以近两天 raw invocation 扫描作为常驻刷新。
+- interval union 不能通过对已有 `wall_time_ms` 做加法维护。增量路径持久化 segment，并在内存维护规范化并集后回写精确 wall-time；只有 archive rewrite、价格/归属修正或 source coverage 无法证明时才重建完整目标桶并保留 last-good。
+- 对 live invocation 的用量、成本、归属或推理维度修正，应由同事务 trigger 写入对应上海自然日的 durable dirty bucket。不能仅把全局状态改回 `preparing`，否则持久 cursor 已越过该行时既不会增量读取，也不会触发目标桶修复。
+- archive manifest 的 completed/rewrite 变化也必须在源事务中入队其覆盖自然日。targeted repair 读取可验证的 live 与 archive source；任何 archive 不可读时保留 last-good，且桶替换、cursor 推进与 dirty marker 消费必须是同一个事务，避免重启后重复 additive merge。

@@ -18,6 +18,27 @@ pub(crate) struct SystemStatusMetric {
     pub(crate) bytes: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemProjectionConsumerHealth {
+    pub(crate) state: String,
+    pub(crate) cursor_lag: i64,
+    pub(crate) dirty_bucket_count: u64,
+    pub(crate) pending_event_count: u64,
+    pub(crate) last_flush_elapsed_ms: Option<u64>,
+    pub(crate) last_flush_age_ms: Option<u64>,
+    pub(crate) last_repair_scope: Option<String>,
+    pub(crate) last_defer_reason: Option<String>,
+    pub(crate) last_error_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemProjectionHealth {
+    pub(crate) terminal: SystemProjectionConsumerHealth,
+    pub(crate) long_term: SystemProjectionConsumerHealth,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusResponse {
@@ -31,6 +52,7 @@ pub(crate) struct SystemStatusResponse {
     pub(crate) response_raw_bodies: SystemStatusMetric,
     pub(crate) database_bytes: u64,
     pub(crate) other_files_bytes: u64,
+    pub(crate) projection_health: SystemProjectionHealth,
     pub(crate) refreshed_at: String,
 }
 
@@ -344,6 +366,8 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
         .sum();
     let database_bytes = count_database_bytes(&state.config.database_path);
     let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
+    let terminal_health = state.terminal_projection_hub.health();
+    let long_term_health = state.long_term_projection_runtime.lock().await.health();
 
     Ok(SystemStatusResponse {
         live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0) as u64,
@@ -362,6 +386,38 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
         response_raw_bodies,
         database_bytes,
         other_files_bytes,
+        projection_health: SystemProjectionHealth {
+            terminal: SystemProjectionConsumerHealth {
+                state: if terminal_health.dirty_last_good {
+                    "dirty_last_good".to_string()
+                } else {
+                    "healthy".to_string()
+                },
+                cursor_lag: terminal_health
+                    .last_persisted_row_id
+                    .saturating_sub(terminal_health.long_term_cursor_row_id),
+                dirty_bucket_count: 0,
+                pending_event_count: terminal_health.pending_event_count as u64,
+                last_flush_elapsed_ms: None,
+                last_flush_age_ms: terminal_health.last_ack_age_ms,
+                last_repair_scope: None,
+                last_defer_reason: terminal_health.hard_limit_reason.map(str::to_string),
+                last_error_kind: None,
+            },
+            long_term: SystemProjectionConsumerHealth {
+                state: long_term_health.state,
+                cursor_lag: terminal_health
+                    .last_persisted_row_id
+                    .saturating_sub(long_term_health.cursor_row_id),
+                dirty_bucket_count: long_term_health.dirty_bucket_count as u64,
+                pending_event_count: long_term_health.pending_event_count as u64,
+                last_flush_elapsed_ms: long_term_health.last_flush_elapsed_ms,
+                last_flush_age_ms: long_term_health.last_flush_age_ms,
+                last_repair_scope: long_term_health.last_repair_scope,
+                last_defer_reason: long_term_health.last_defer_reason,
+                last_error_kind: long_term_health.last_error_kind,
+            },
+        },
         refreshed_at: format_utc_iso(Utc::now()),
     })
 }

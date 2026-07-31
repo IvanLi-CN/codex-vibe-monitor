@@ -306,16 +306,24 @@ async fn load_long_term_archive_attempt_accounts(
                 archive_path.file_path,
             );
         };
-        let rows = sqlx::query_as::<_, LongTermArchiveAttemptRow>(
+        let mut query = String::from(
             r#"
             SELECT invoke_id, occurred_at, upstream_account_id
             FROM pool_upstream_request_attempts
             WHERE upstream_account_id IS NOT NULL
-            ORDER BY id ASC
             "#,
-        )
-        .fetch_all(&archive_pool)
-        .await;
+        );
+        if date_range.is_some() {
+            query.push_str(" AND occurred_at >= ?1 AND occurred_at < ?2");
+        }
+        query.push_str(" ORDER BY id ASC");
+        let mut statement = sqlx::query_as::<_, LongTermArchiveAttemptRow>(&query);
+        if let Some((start, end)) = date_range {
+            statement = statement
+                .bind(format!("{start} 00:00:00"))
+                .bind(format!("{} 00:00:00", end.succ_opt().unwrap_or(end)));
+        }
+        let rows = statement.fetch_all(&archive_pool).await;
         archive_pool.close().await;
         drop(cleanup);
         match rows {
@@ -355,6 +363,17 @@ fn hydrate_long_term_archive_attempt_account(
 }
 
 async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<String> {
+    long_term_archive_invocation_query_with_range(pool, false).await
+}
+
+async fn long_term_archive_invocation_query_for_range(pool: &Pool<Sqlite>) -> Result<String> {
+    long_term_archive_invocation_query_with_range(pool, true).await
+}
+
+async fn long_term_archive_invocation_query_with_range(
+    pool: &Pool<Sqlite>,
+    bounded_to_target_date: bool,
+) -> Result<String> {
     let columns = load_archive_table_columns(pool, "codex_invocations").await?;
     let select = |column: &str| long_term_legacy_select_expr(&columns, column);
     let status_column = if columns.contains("status") {
@@ -384,6 +403,26 @@ async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<Strin
     } else {
         payload_upstream_account_id
     };
+    let t_total_ms_column = if columns.contains("t_total_ms") {
+        "t_total_ms"
+    } else {
+        "NULL"
+    };
+    let range_filter = bounded_to_target_date.then(|| {
+        format!(
+            r#"
+        AND occurred_at < ?1
+        AND (
+            occurred_at >= ?2
+            OR (
+                {t_total_ms_column} IS NOT NULL
+                AND {t_total_ms_column} > 0
+                AND julianday(occurred_at) + {t_total_ms_column} / 86400000.0 >= julianday(?2)
+            )
+        )
+            "#,
+        )
+    });
     Ok(format!(
         r#"
         SELECT
@@ -410,6 +449,7 @@ async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<Strin
             {error_message}
         FROM codex_invocations
         WHERE LOWER(TRIM(COALESCE({status_column}, ''))) NOT IN ('running', 'pending')
+        {range_filter}
         ORDER BY occurred_at ASC, id ASC
         "#,
         invoke_id = select("invoke_id"),
@@ -430,6 +470,7 @@ async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<Strin
         t_upstream_ttfb_ms = select("t_upstream_ttfb_ms"),
         t_upstream_stream_ms = select("t_upstream_stream_ms"),
         error_message = select("error_message"),
+        range_filter = range_filter.as_deref().unwrap_or_default(),
     ))
 }
 
@@ -814,6 +855,9 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             .await
             .context("failed to add archive hash to replay markers")?;
     }
+    ensure_long_term_projection_schema(pool).await?;
+    ensure_long_term_projection_correction_trigger(pool).await?;
+    ensure_long_term_projection_archive_trigger(pool).await?;
     Ok(())
 }
 
@@ -3677,6 +3721,98 @@ fn add_long_term_daily_row(
     }
 }
 
+fn projection_interval_key(
+    bucket_kind: &'static str,
+    bucket_key: String,
+    dimension: String,
+    series_key: String,
+) -> LongTermProjectionIntervalKey {
+    LongTermProjectionIntervalKey {
+        bucket_kind,
+        bucket_key,
+        dimension,
+        series_key,
+    }
+}
+
+fn projection_bucket_date_for_hour(bucket_start_epoch: i64) -> Option<String> {
+    Shanghai
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .map(|timestamp| timestamp.date_naive().to_string())
+}
+
+fn collect_long_term_projection_interval_segments(
+    hourly: &HashMap<(i64, String, String), LongTermBucket>,
+    daily: &HashMap<(String, String, String), LongTermBucket>,
+    invocation_row_id: i64,
+) -> Vec<LongTermProjectionIntervalSegment> {
+    let mut segments = Vec::new();
+    for bucket in hourly.values() {
+        let Some(bucket_date) = projection_bucket_date_for_hour(bucket.bucket_start_epoch) else {
+            continue;
+        };
+        let key = projection_interval_key(
+            "hourly",
+            bucket.bucket_start_epoch.to_string(),
+            bucket.dimension.clone(),
+            bucket.series_key.clone(),
+        );
+        for &(interval_start_ms, interval_end_ms) in &bucket.accumulator.intervals {
+            segments.push(LongTermProjectionIntervalSegment {
+                key: key.clone(),
+                bucket_date: bucket_date.clone(),
+                invocation_row_id,
+                interval_start_ms,
+                interval_end_ms,
+            });
+        }
+    }
+    for bucket in daily.values() {
+        let Some(bucket_date) = bucket.stats_date.clone() else {
+            continue;
+        };
+        let key = projection_interval_key(
+            "daily",
+            bucket_date.clone(),
+            bucket.dimension.clone(),
+            bucket.series_key.clone(),
+        );
+        for &(interval_start_ms, interval_end_ms) in &bucket.accumulator.intervals {
+            segments.push(LongTermProjectionIntervalSegment {
+                key: key.clone(),
+                bucket_date: bucket_date.clone(),
+                invocation_row_id,
+                interval_start_ms,
+                interval_end_ms,
+            });
+        }
+    }
+    segments
+}
+
+fn merge_long_term_projection_bucket(target: &mut LongTermBucket, source: &LongTermBucket) {
+    target.accumulator.merge(&source.accumulator);
+}
+
+fn merge_long_term_projection_buckets<K>(
+    target: &mut HashMap<K, LongTermBucket>,
+    source: HashMap<K, LongTermBucket>,
+) where
+    K: Eq + Hash,
+{
+    for (key, bucket) in source {
+        match target.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                merge_long_term_projection_bucket(entry.get_mut(), &bucket);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(bucket);
+            }
+        }
+    }
+}
+
 async fn insert_long_term_hourly(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     bucket: &LongTermBucket,
@@ -3748,6 +3884,326 @@ async fn insert_long_term_rollup(
         .bind(acc.response_samples)
         .execute(&mut **tx)
         .await?;
+    Ok(())
+}
+
+async fn load_long_term_projection_interval_index(
+    pool: &Pool<Sqlite>,
+    dates: &HashSet<String>,
+) -> Result<HashMap<LongTermProjectionIntervalKey, LongTermProjectionIntervalUnion>> {
+    if dates.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT bucket_kind, bucket_key, dimension, series_key, interval_start_ms, interval_end_ms FROM long_term_projection_intervals WHERE bucket_date IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for date in dates {
+        separated.push_bind(date);
+    }
+    separated.push_unseparated(")");
+    let rows = builder
+        .build_query_as::<LongTermProjectionIntervalRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut index = HashMap::new();
+    for row in rows {
+        let bucket_kind = match row.bucket_kind.as_str() {
+            "hourly" => "hourly",
+            "daily" => "daily",
+            _ => continue,
+        };
+        index
+            .entry(projection_interval_key(
+                bucket_kind,
+                row.bucket_key,
+                row.dimension,
+                row.series_key,
+            ))
+            .or_insert_with(LongTermProjectionIntervalUnion::default)
+            .add(row.interval_start_ms, row.interval_end_ms);
+    }
+    Ok(index)
+}
+
+async fn insert_long_term_projection_interval_segments(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    segments: &[LongTermProjectionIntervalSegment],
+    interval_index: &mut HashMap<LongTermProjectionIntervalKey, LongTermProjectionIntervalUnion>,
+) -> Result<()> {
+    for segment in segments {
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO long_term_projection_intervals (bucket_kind, bucket_date, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(segment.key.bucket_kind)
+        .bind(&segment.bucket_date)
+        .bind(&segment.key.bucket_key)
+        .bind(&segment.key.dimension)
+        .bind(&segment.key.series_key)
+        .bind(segment.invocation_row_id)
+        .bind(segment.interval_start_ms)
+        .bind(segment.interval_end_ms)
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() > 0 {
+            interval_index
+                .entry(segment.key.clone())
+                .or_default()
+                .add(segment.interval_start_ms, segment.interval_end_ms);
+        }
+    }
+    Ok(())
+}
+
+async fn merge_long_term_projection_rollup(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    table: &str,
+    bucket_column: &str,
+    bucket_value: String,
+    bucket: &LongTermBucket,
+    interval_union: Option<&LongTermProjectionIntervalUnion>,
+) -> Result<()> {
+    let conflict_target = if table == "long_term_usage_daily" {
+        "stats_date, dimension, series_key"
+    } else {
+        "bucket_start_epoch, dimension, series_key"
+    };
+    let sql = format!(
+        "INSERT INTO {table} ({bucket_column}, dimension, series_key, display_name, reasoning_effort, calls, token_total, token_samples, cost_total, cost_samples, usage_time_ms, usage_time_samples, wall_time_ms, wall_time_samples, output_tokens_total, stream_duration_ms, output_speed_samples, first_byte_sum_ms, first_byte_samples, response_sum_ms, response_samples) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21) ON CONFLICT ({conflict_target}) DO UPDATE SET display_name = excluded.display_name, reasoning_effort = excluded.reasoning_effort, calls = calls + excluded.calls, token_total = token_total + excluded.token_total, token_samples = token_samples + excluded.token_samples, cost_total = cost_total + excluded.cost_total, cost_samples = cost_samples + excluded.cost_samples, usage_time_ms = usage_time_ms + excluded.usage_time_ms, usage_time_samples = usage_time_samples + excluded.usage_time_samples, wall_time_ms = excluded.wall_time_ms, wall_time_samples = excluded.wall_time_samples, output_tokens_total = output_tokens_total + excluded.output_tokens_total, stream_duration_ms = stream_duration_ms + excluded.stream_duration_ms, output_speed_samples = output_speed_samples + excluded.output_speed_samples, first_byte_sum_ms = first_byte_sum_ms + excluded.first_byte_sum_ms, first_byte_samples = first_byte_samples + excluded.first_byte_samples, response_sum_ms = response_sum_ms + excluded.response_sum_ms, response_samples = response_samples + excluded.response_samples, updated_at = datetime('now')"
+    );
+    let acc = &bucket.accumulator;
+    sqlx::query(&sql)
+        .bind(bucket_value)
+        .bind(&bucket.dimension)
+        .bind(&bucket.series_key)
+        .bind(&bucket.display_name)
+        .bind(&bucket.reasoning_effort)
+        .bind(acc.calls)
+        .bind(acc.token_total)
+        .bind(acc.token_samples)
+        .bind(acc.cost_total)
+        .bind(acc.cost_samples)
+        .bind(acc.usage_time_ms)
+        .bind(acc.usage_time_samples)
+        .bind(interval_union.map_or(0, |value| value.duration_ms) as f64)
+        .bind(interval_union.map_or(0, |value| value.sample_count))
+        .bind(acc.output_tokens_total)
+        .bind(acc.stream_duration_ms)
+        .bind(acc.output_speed_samples)
+        .bind(acc.first_byte_sum_ms)
+        .bind(acc.first_byte_samples)
+        .bind(acc.response_sum_ms)
+        .bind(acc.response_samples)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn apply_long_term_projection_incremental(
+    state: &AppState,
+    hourly: &HashMap<(i64, String, String), LongTermBucket>,
+    daily: &HashMap<(String, String, String), LongTermBucket>,
+    segments: &[LongTermProjectionIntervalSegment],
+    next_cursor: i64,
+    event_count: usize,
+) -> Result<()> {
+    apply_long_term_projection_incremental_with_runtime(
+        &state.pool,
+        &state.long_term_projection_runtime,
+        hourly,
+        daily,
+        segments,
+        next_cursor,
+        event_count,
+    )
+    .await
+}
+
+async fn apply_long_term_projection_incremental_with_runtime(
+    pool: &Pool<Sqlite>,
+    runtime: &Arc<Mutex<LongTermProjectionRuntime>>,
+    hourly: &HashMap<(i64, String, String), LongTermBucket>,
+    daily: &HashMap<(String, String, String), LongTermBucket>,
+    segments: &[LongTermProjectionIntervalSegment],
+    next_cursor: i64,
+    event_count: usize,
+) -> Result<()> {
+    let mut dates = HashSet::new();
+    for segment in segments {
+        dates.insert(segment.bucket_date.clone());
+    }
+    for bucket in daily.values() {
+        if let Some(date) = bucket.stats_date.as_ref() {
+            dates.insert(date.clone());
+        }
+    }
+    let (mut interval_index, mut loaded_dates) = {
+        let runtime = runtime.lock().await;
+        (
+            runtime.interval_index.clone(),
+            runtime.loaded_interval_dates.clone(),
+        )
+    };
+    let missing_dates = dates
+        .difference(&loaded_dates)
+        .cloned()
+        .collect::<HashSet<_>>();
+    if !missing_dates.is_empty() {
+        interval_index
+            .extend(load_long_term_projection_interval_index(pool, &missing_dates).await?);
+        loaded_dates.extend(missing_dates);
+    }
+
+    let mut tx = pool.begin().await?;
+    insert_long_term_projection_interval_segments(&mut tx, segments, &mut interval_index).await?;
+    for bucket in hourly.values() {
+        let key = projection_interval_key(
+            "hourly",
+            bucket.bucket_start_epoch.to_string(),
+            bucket.dimension.clone(),
+            bucket.series_key.clone(),
+        );
+        merge_long_term_projection_rollup(
+            &mut tx,
+            "long_term_usage_hourly",
+            "bucket_start_epoch",
+            bucket.bucket_start_epoch.to_string(),
+            bucket,
+            interval_index.get(&key),
+        )
+        .await?;
+    }
+    for bucket in daily.values() {
+        let Some(date) = bucket.stats_date.clone() else {
+            continue;
+        };
+        let key = projection_interval_key(
+            "daily",
+            date.clone(),
+            bucket.dimension.clone(),
+            bucket.series_key.clone(),
+        );
+        merge_long_term_projection_rollup(
+            &mut tx,
+            "long_term_usage_daily",
+            "stats_date",
+            date,
+            bucket,
+            interval_index.get(&key),
+        )
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO long_term_projection_state (consumer, cursor_row_id, last_flush_at, last_error) VALUES (?1, ?2, datetime('now'), NULL) ON CONFLICT(consumer) DO UPDATE SET cursor_row_id = excluded.cursor_row_id, last_flush_at = excluded.last_flush_at, last_error = NULL, updated_at = datetime('now')",
+    )
+    .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .bind(next_cursor)
+    .execute(&mut *tx)
+    .await?;
+    let statistics_start_date = daily
+        .values()
+        .filter_map(|bucket| bucket.stats_date.as_deref())
+        .min()
+        .map(str::to_string);
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 > 0 THEN ?2 ELSE status END, statistics_start_date = CASE WHEN ?3 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?3 < statistics_start_date THEN ?3 ELSE statistics_start_date END, processed_rows = processed_rows + ?1, total_rows = total_rows + ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?4",
+    )
+    .bind(event_count as i64)
+    .bind(LONG_TERM_STATUS_READY)
+    .bind(statistics_start_date)
+    .bind(LONG_TERM_STATE_ID)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut runtime = runtime.lock().await;
+    runtime.interval_index = interval_index;
+    runtime.loaded_interval_dates = loaded_dates;
+    Ok(())
+}
+
+async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_state (
+            consumer TEXT PRIMARY KEY,
+            cursor_row_id INTEGER NOT NULL DEFAULT 0,
+            last_flush_at TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection state table")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_dirty_buckets (
+            bucket_date TEXT PRIMARY KEY,
+            repair_reason TEXT NOT NULL,
+            queued_at TEXT NOT NULL DEFAULT (datetime('now')),
+            next_attempt_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection dirty bucket table")?;
+    let next_attempt_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_dirty_buckets ADD COLUMN next_attempt_at TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = next_attempt_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_bucket_state (
+            bucket_date TEXT PRIMARY KEY,
+            interval_baseline_ready INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection bucket state table")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_intervals (
+            bucket_kind TEXT NOT NULL,
+            bucket_date TEXT NOT NULL,
+            bucket_key TEXT NOT NULL,
+            dimension TEXT NOT NULL,
+            series_key TEXT NOT NULL,
+            invocation_row_id INTEGER NOT NULL,
+            interval_start_ms INTEGER NOT NULL,
+            interval_end_ms INTEGER NOT NULL,
+            PRIMARY KEY (
+                bucket_kind,
+                bucket_key,
+                dimension,
+                series_key,
+                invocation_row_id,
+                interval_start_ms,
+                interval_end_ms
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection interval table")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_intervals_date ON long_term_projection_intervals (bucket_date, bucket_kind)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection interval date index")?;
     Ok(())
 }
 
@@ -5854,6 +6310,126 @@ mod tests {
         assert_eq!(queued_repairs, 1);
         assert_eq!(attempts, 0);
         assert_eq!(status, LONG_TERM_STATUS_READY);
+    }
+
+    #[test]
+    fn targeted_repair_merges_archive_details_into_retained_live_row() {
+        let retained_live = LongTermInvocationRow {
+            id: 1,
+            invoke_id: Some("same-invocation".to_string()),
+            occurred_at: "2026-07-26 10:00:00".to_string(),
+            status: Some("success".to_string()),
+            model: None,
+            request_model: None,
+            response_model: None,
+            reasoning_effort: None,
+            upstream_account_id: None,
+            upstream_account_kind: None,
+            upstream_account_name: None,
+            total_tokens: Some(100),
+            output_tokens: Some(50),
+            cost: Some(1.5),
+            t_total_ms: Some(900.0),
+            t_req_read_ms: Some(100.0),
+            t_req_parse_ms: Some(50.0),
+            t_upstream_connect_ms: Some(100.0),
+            t_upstream_ttfb_ms: Some(300.0),
+            t_upstream_stream_ms: Some(600.0),
+            error_message: None,
+        };
+        let mut archived = LongTermInvocationRow {
+            model: Some("archive-model".to_string()),
+            request_model: Some("request-model".to_string()),
+            response_model: Some("response-model".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            upstream_account_id: Some(42),
+            ..retained_live.clone()
+        };
+
+        merge_long_term_invocation_row(&mut archived, &retained_live);
+
+        assert_eq!(archived.status.as_deref(), Some("success"));
+        assert_eq!(archived.model.as_deref(), Some("archive-model"));
+        assert_eq!(archived.response_model.as_deref(), Some("response-model"));
+        assert_eq!(archived.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(archived.upstream_account_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn incremental_projection_prunes_expired_hourly_rollups_and_intervals() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let retention_start = long_term_projection_hourly_retention_start_date(366);
+        let expired_date = retention_start.pred_opt().expect("expired date");
+        let retained_date = retention_start;
+        let epoch = |date: NaiveDate| {
+            date.and_hms_opt(0, 0, 0)
+                .and_then(|value| Shanghai.from_local_datetime(&value).single())
+                .expect("shanghai hour")
+                .timestamp()
+        };
+        let expired_epoch = epoch(expired_date);
+        let retained_epoch = epoch(retained_date);
+        for (bucket_start_epoch, key) in [(expired_epoch, "expired"), (retained_epoch, "retained")]
+        {
+            let bucket_date = Shanghai
+                .timestamp_opt(bucket_start_epoch, 0)
+                .single()
+                .expect("shanghai bucket")
+                .date_naive();
+            sqlx::query(
+                "INSERT INTO long_term_usage_hourly (bucket_start_epoch, dimension, series_key, display_name) VALUES (?1, 'overall', ?2, 'All')",
+            )
+            .bind(bucket_start_epoch)
+            .bind(key)
+            .execute(&pool)
+            .await
+            .expect("hourly rollup");
+            sqlx::query(
+                "INSERT INTO long_term_projection_intervals (bucket_kind, bucket_date, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms) VALUES ('hourly', ?1, ?2, 'overall', ?3, 1, 0, 1)",
+            )
+            .bind(bucket_date.to_string())
+            .bind(bucket_start_epoch.to_string())
+            .bind(key)
+            .execute(&pool)
+            .await
+            .expect("hourly interval");
+        }
+        sqlx::query(
+            "INSERT INTO long_term_projection_intervals (bucket_kind, bucket_date, bucket_key, dimension, series_key, invocation_row_id, interval_start_ms, interval_end_ms) VALUES ('daily', ?1, ?1, 'overall', 'daily-retained', 1, 0, 1)",
+        )
+        .bind(expired_date.to_string())
+        .execute(&pool)
+        .await
+        .expect("daily interval");
+
+        let (pruned_hourly_rows, pruned_interval_rows) =
+            prune_long_term_projection_hourly_retention(&pool, 366)
+                .await
+                .expect("prune hourly retention");
+
+        assert_eq!(pruned_hourly_rows, 1);
+        assert_eq!(pruned_interval_rows, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_usage_hourly")
+                .fetch_one(&pool)
+                .await
+                .expect("retained hourly count"),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_intervals")
+                .fetch_one(&pool)
+                .await
+                .expect("retained interval count"),
+            2
+        );
     }
 
     #[test]

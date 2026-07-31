@@ -229,3 +229,8 @@ PR: none
 - `src/api/slices/subscriptions.rs`
 - `web/src/lib/sse.ts`
 - `web/src/hooks/useSubscriptionTopic.ts`
+
+## Terminal Projection 边界
+
+- terminal journal 的 P1 ACK 需要向共享 projection hub 发布持久 row cursor；Dashboard 和长期统计各自推进 consumer cursor，不能把长期 rollup 成功作为 P1 或 Dashboard live publish 的前置条件。
+- Dashboard 5 秒 topic cadence 始终只读其内存累计态。长期统计的 60 秒物化是独立 P2 consumer，并始终受 SQLite pressure gate 约束。

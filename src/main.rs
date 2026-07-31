@@ -135,6 +135,7 @@ mod sqlite_batch_writer;
 )]
 mod stats;
 mod terminal_journal;
+mod terminal_projection;
 #[cfg(test)]
 mod tests;
 mod upstream_accounts;
@@ -154,6 +155,7 @@ pub(crate) use schema::*;
 pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
+pub(crate) use terminal_projection::*;
 use upstream_accounts::*;
 #[cfg_attr(not(test), allow(dead_code))]
 const SOURCE_XY: &str = "xy";

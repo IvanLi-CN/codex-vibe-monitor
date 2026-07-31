@@ -318,6 +318,7 @@ pub(crate) struct SqliteBatchWriter {
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache:
         Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
+    terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     #[cfg(test)]
@@ -344,6 +345,7 @@ impl SqliteBatchWriter {
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_journal = match TerminalJournal::open(database_path) {
             Ok(journal) => Some(journal),
             Err(err) => {
@@ -374,6 +376,7 @@ impl SqliteBatchWriter {
             Some(cache_for_task),
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
+            terminal_projection_hub.clone(),
             dashboard_reconcile_gate.clone(),
             terminal_journal.clone(),
         ));
@@ -384,6 +387,7 @@ impl SqliteBatchWriter {
             dropped_writes,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            terminal_projection_hub,
             terminal_journal,
             dashboard_reconcile_gate,
             #[cfg(test)]
@@ -430,6 +434,7 @@ impl SqliteBatchWriter {
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+            terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
             terminal_journal: Arc::new(std::sync::Mutex::new(None)),
             dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
@@ -467,6 +472,12 @@ impl SqliteBatchWriter {
     ) {
         if let Ok(mut guard) = self.dashboard_activity_snapshot_cache.lock() {
             *guard = Some(cache);
+        }
+    }
+
+    pub(crate) fn set_terminal_projection_hub(&self, hub: Arc<TerminalProjectionHub>) {
+        if let Ok(mut guard) = self.terminal_projection_hub.lock() {
+            *guard = Some(hub);
         }
     }
 
@@ -705,6 +716,7 @@ impl SqliteBatchWriter {
         }
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let deferred = flush_pending_batch_inner(
             pool,
@@ -712,6 +724,7 @@ impl SqliteBatchWriter {
             None,
             &terminal_runtime_store,
             &dashboard_activity_snapshot_cache,
+            &terminal_projection_hub,
             &dashboard_reconcile_gate,
         )
         .await
@@ -723,6 +736,7 @@ impl SqliteBatchWriter {
                 None,
                 &terminal_runtime_store,
                 &dashboard_activity_snapshot_cache,
+                &terminal_projection_hub,
                 &dashboard_reconcile_gate,
             )
             .await
@@ -756,6 +770,7 @@ impl SqliteBatchWriter {
                 self.prompt_cache_conversation_cache.as_ref(),
                 &self.terminal_runtime_store,
                 &self.dashboard_activity_snapshot_cache,
+                &self.terminal_projection_hub,
                 &self.dashboard_reconcile_gate,
             )
             .await
@@ -786,6 +801,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     dashboard_activity_snapshot_cache: Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) {
@@ -824,6 +840,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
+                            &terminal_projection_hub,
                             &dashboard_reconcile_gate,
                             &terminal_journal,
                         )
@@ -870,6 +887,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 prompt_cache_conversation_cache.as_ref(),
                                 &terminal_runtime_store,
                                 &dashboard_activity_snapshot_cache,
+                                &terminal_projection_hub,
                                 &dashboard_reconcile_gate,
                                 &terminal_journal,
                             )
@@ -923,6 +941,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
+                            &terminal_projection_hub,
                             &dashboard_reconcile_gate,
                             &terminal_journal,
                         )
@@ -941,6 +960,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
+                            &terminal_projection_hub,
                             &dashboard_reconcile_gate,
                             &terminal_journal,
                         )
@@ -983,6 +1003,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
+                            &terminal_projection_hub,
                             &dashboard_reconcile_gate,
                             &terminal_journal,
                         )
@@ -1082,6 +1103,7 @@ pub(crate) async fn flush_pending_batch(
     dashboard_activity_snapshot_cache: &Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
@@ -1108,6 +1130,7 @@ pub(crate) async fn flush_pending_batch(
             prompt_cache_conversation_cache,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            terminal_projection_hub,
             dashboard_reconcile_gate,
         )
         .await
@@ -1178,6 +1201,7 @@ pub(crate) async fn flush_pending_batch(
         prompt_cache_conversation_cache,
         terminal_runtime_store,
         dashboard_activity_snapshot_cache,
+        terminal_projection_hub,
         dashboard_reconcile_gate,
     )
     .await
@@ -1276,6 +1300,7 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_activity_snapshot_cache: &Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
@@ -1330,6 +1355,18 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.dashboard_terminal_sequence,
             )
             .await;
+        }
+        if let Some(hub) = terminal_projection_hub
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+        {
+            hub.acknowledge_persisted(
+                None,
+                &terminal.record.invoke_id,
+                &terminal.record.occurred_at,
+                invocation_id,
+            );
         }
         if prompt_cache_key_from_payload(terminal.record.payload.as_deref())
             .as_deref()

@@ -95,3 +95,8 @@ related_specs:
 - `docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md`
 - `src/api/slices/subscriptions.rs`
 - `web/src/lib/sse.ts`
+
+## Shared Projection Consumers
+
+- Dashboard 和长期统计可以共享 terminal admission/ACK Hub，但 5 秒 Dashboard publish 与 60 秒长期物化必须是独立 deadline；后者永远不能反向触发 Dashboard DB build。
+- `response_source=memory` 之外还应记录 projection trigger、cursor lag、dirty bucket、flush outcome 与 pressure defer，避免把后台物化成本误标为纯内存命中。

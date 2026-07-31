@@ -221,3 +221,8 @@
 - `src/maintenance/retention.rs`
 - `src/maintenance/startup_backfill.rs`
 - `src/runtime.rs`
+
+## Projection Health
+
+- System Status 通过 additive `projectionHealth` 展示 terminal 与长期统计投影的内存健康、cursor lag、脏桶和 pressure defer；该接口不得为诊断额外查询 SQLite。
+- 页面必须提供紧凑摘要和可展开详情，不暴露 terminal payload、调用 ID 或原始 SQL。
