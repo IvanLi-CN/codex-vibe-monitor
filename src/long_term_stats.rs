@@ -1725,6 +1725,14 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             .fetch_one(&state.pool)
             .await?
             .max(0) as usize;
+    deferred_repair_backoff_count = deferred_repair_backoff_count.max(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE datetime(next_attempt_at) > datetime('now')",
+        )
+        .fetch_one(&state.pool)
+        .await?
+        .max(0) as usize,
+    );
     state
         .terminal_projection_hub
         .advance_long_term_cursor(cursor);
