@@ -1013,11 +1013,17 @@ async fn parallel_work_maintenance_never_marks_pre_retention_raw_hours_as_covere
         r#"
         INSERT INTO codex_invocations (
             invoke_id, occurred_at, source, status, detail_level, raw_response
-        ) VALUES (?1, datetime(?2, 'unixepoch'), ?3, 'completed', ?4, '')
+        ) VALUES (?1, ?2, ?3, 'completed', ?4, '')
         "#,
     )
     .bind("inv-pre-retention-structured")
-    .bind(earlier_hour)
+    .bind(format_naive(
+        Utc.timestamp_opt(earlier_hour, 0)
+            .single()
+            .expect("valid earlier hour")
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
     .bind(SOURCE_PROXY)
     .bind(DETAIL_LEVEL_STRUCTURED_ONLY)
     .execute(&state.pool)
@@ -1090,6 +1096,88 @@ async fn parallel_work_maintenance_preserves_minute_keys_outside_full_detail_cov
     .await
     .expect("count unverified coverage rows");
     assert_eq!(coverage_count, 0);
+}
+
+#[tokio::test]
+async fn parallel_work_recompute_preserves_covered_keys_after_payload_pruning() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let hour_start = (Utc::now() - ChronoDuration::days(2))
+        .timestamp()
+        .div_euclid(3_600)
+        * 3_600;
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_minute_key_rollup (
+            minute_start_epoch, source, prompt_cache_key
+        ) VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(hour_start + 5 * 60)
+    .bind(SOURCE_PROXY)
+    .bind("pck-preserved-after-prune")
+    .execute(&state.pool)
+    .await
+    .expect("seed covered minute key");
+    for source_scope in ["all", "proxy_only"] {
+        sqlx::query(
+            r#"
+            INSERT INTO parallel_work_hourly_coverage (
+                hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+            ) VALUES (?1, ?2, 1, 0)
+            "#,
+        )
+        .bind(hour_start)
+        .bind(source_scope)
+        .execute(&state.pool)
+        .await
+        .expect("seed minute coverage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level, raw_response
+        ) VALUES (?1, ?2, ?3, 'completed', ?4, '')
+        "#,
+    )
+    .bind("inv-pruned-covered-hour")
+    .bind(format_naive(
+        Utc.timestamp_opt(hour_start + 10 * 60, 0)
+            .single()
+            .expect("valid pruned invocation time")
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+    .execute(&state.pool)
+    .await
+    .expect("seed pruned invocation");
+    sqlx::query(
+        "INSERT INTO parallel_work_rollup_coverage_state (id, full_detail_start_epoch) VALUES (1, ?1)",
+    )
+    .bind(hour_start - 3_600)
+    .execute(&state.pool)
+    .await
+    .expect("seed historical coverage start");
+
+    let mut tx = state.pool.begin().await.expect("begin recompute");
+    rebuild_parallel_work_rollups_for_hours_tx(tx.as_mut(), &[hour_start])
+        .await
+        .expect("skip destructive rebuild");
+    tx.commit().await.expect("commit recompute");
+
+    let key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_minute_key_rollup WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2",
+    )
+    .bind(hour_start)
+    .bind(hour_start + 3_600)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count preserved covered keys");
+    assert_eq!(key_count, 1);
 }
 
 #[tokio::test]

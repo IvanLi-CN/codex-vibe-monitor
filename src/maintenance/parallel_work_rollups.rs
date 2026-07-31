@@ -24,6 +24,33 @@ async fn replace_parallel_work_minute_keys_for_hour_tx(
         return Ok(false);
     }
     let hour_end_epoch = hour_start_epoch + 3_600;
+    let hour_start = Utc
+        .timestamp_opt(hour_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid parallel-work hour start"))?;
+    let hour_end = Utc
+        .timestamp_opt(hour_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid parallel-work hour end"))?;
+    let has_pruned_payloads: i64 = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM codex_invocations
+            WHERE occurred_at >= ?1
+                AND occurred_at < ?2
+                AND detail_level != ?3
+        )
+        "#,
+    )
+    .bind(db_occurred_at_lower_bound(hour_start))
+    .bind(db_occurred_at_lower_bound(hour_end))
+    .bind(DETAIL_LEVEL_FULL)
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_pruned_payloads != 0 {
+        return Ok(false);
+    }
     for table in [
         "parallel_work_minute_key_rollup",
         "parallel_work_upstream_account_minute_key_rollup",
