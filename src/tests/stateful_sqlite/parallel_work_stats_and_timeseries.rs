@@ -532,8 +532,14 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     assert_eq!(response.minute7d.active_bucket_count, 2);
     assert_eq!(response.minute7d.max_count, Some(3));
     assert_eq!(response.minute7d.min_count, Some(0));
-    assert_eq!(response.minute7d.active_minute_count, None);
-    assert_eq!(response.minute7d.avg_count, None);
+    assert_eq!(response.minute7d.active_minute_count, Some(2));
+    assert_f64_close(
+        response
+            .minute7d
+            .avg_count
+            .expect("active-minute average should be present"),
+        2.0,
+    );
 
     for bucket in ["1h", "1d"] {
         let Json(window_response) = fetch_parallel_work_stats(
@@ -547,8 +553,14 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
         )
         .await
         .expect("fetch parallel-work stats for display bucket");
-        assert_eq!(window_response.current.active_minute_count, None);
-        assert_eq!(window_response.current.avg_count, None);
+        assert_eq!(window_response.current.active_minute_count, Some(2));
+        assert_f64_close(
+            window_response
+                .current
+                .avg_count
+                .expect("active-minute average should not depend on display bucket"),
+            2.0,
+        );
     }
 
     let Json(account_response) = fetch_parallel_work_stats(
@@ -562,8 +574,14 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     )
     .await
     .expect("fetch account parallel-work stats");
-    assert_eq!(account_response.current.active_minute_count, None);
-    assert_eq!(account_response.current.avg_count, None);
+    assert_eq!(account_response.current.active_minute_count, Some(2));
+    assert_f64_close(
+        account_response
+            .current
+            .avg_count
+            .expect("account active-minute average should be present"),
+        2.0,
+    );
 }
 
 #[tokio::test]
@@ -1741,7 +1759,7 @@ async fn parallel_work_stats_account_scoped_day_bucket_aggregates_distinct_keys(
     assert_eq!(current_day_point.parallel_count, 1);
     assert_eq!(response.current.active_bucket_count, 2);
     assert_eq!(response.current.max_count, Some(2));
-    assert_eq!(response.current.active_minute_count, None);
+    assert_eq!(response.current.active_minute_count, Some(0));
     assert_eq!(response.current.avg_count, None);
 }
 

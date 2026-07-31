@@ -387,7 +387,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
     range_end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    _raw_detail_start_epoch: Option<i64>,
+    raw_detail_start_epoch: Option<i64>,
 ) -> Result<ParallelWorkActiveMinuteStats> {
     let complete_start_epoch = first_complete_minute_epoch(range_start);
     let complete_end_epoch = end_of_complete_minutes_epoch(range_end);
@@ -433,27 +433,52 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
     if minute_start_epoch < minute_end_epoch {
         let coverage_start_epoch = minute_start_epoch.div_euclid(3_600) * 3_600;
         let coverage_end_epoch = (minute_end_epoch.saturating_add(3_599)).div_euclid(3_600) * 3_600;
-        if !parallel_work_hourly_coverage_is_complete(
+        let minute_coverage_complete = parallel_work_hourly_coverage_is_complete(
             pool,
             coverage_start_epoch,
             coverage_end_epoch,
             source_scope,
             "minute_keys_complete",
         )
-        .await?
-        {
-            return Ok(ParallelWorkActiveMinuteStats::unavailable());
-        }
-        result = result.combine(ParallelWorkActiveMinuteStats::from_key_sets(
-            query_parallel_work_minute_rollup_key_sets(
-                pool,
-                minute_start_epoch,
-                minute_end_epoch,
-                source_scope,
-                upstream_account_id,
+        .await?;
+        let minute_stats = if minute_coverage_complete {
+            ParallelWorkActiveMinuteStats::from_key_sets(
+                query_parallel_work_minute_rollup_key_sets(
+                    pool,
+                    minute_start_epoch,
+                    minute_end_epoch,
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?,
             )
-            .await?,
-        ));
+        } else if raw_detail_start_epoch.is_some_and(|start| minute_start_epoch >= start) {
+            let minute_start = Utc
+                .timestamp_opt(minute_start_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid parallel-work minute start"))?;
+            let minute_end = Utc
+                .timestamp_opt(minute_end_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid parallel-work minute end"))?;
+            ParallelWorkActiveMinuteStats::from_key_sets(
+                query_parallel_work_exact_key_sets(
+                    pool,
+                    minute_start,
+                    minute_end,
+                    60,
+                    chrono_tz::UTC,
+                    source_scope,
+                    upstream_account_id,
+                    None,
+                    None,
+                )
+                .await?,
+            )
+        } else {
+            return Ok(ParallelWorkActiveMinuteStats::unavailable());
+        };
+        result = result.combine(minute_stats);
     }
 
     let raw_tail_start_epoch = complete_start_epoch.max(current_hour_start_epoch);
