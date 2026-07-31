@@ -1952,6 +1952,13 @@ async fn commit_long_term_projection_date_rebuilds(
     clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
     mark_ready: bool,
 ) -> Result<()> {
+    let repaired_start_date = rebuilds
+        .iter()
+        .filter(|rebuild| !rebuild.daily.is_empty())
+        .map(|rebuild| rebuild.bucket_date.as_str())
+        .min()
+        .map(str::to_string);
+    let repaired_nonempty = repaired_start_date.is_some();
     let mut transaction = pool.begin().await?;
     for rebuild in rebuilds {
         sqlx::query("DELETE FROM long_term_usage_daily WHERE stats_date = ?1")
@@ -2000,15 +2007,17 @@ async fn commit_long_term_projection_date_rebuilds(
         .execute(&mut *transaction)
         .await?;
     }
-    if mark_ready {
-        sqlx::query(
-            "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
-        )
-        .bind(LONG_TERM_STATUS_READY)
-        .bind(LONG_TERM_STATE_ID)
-        .execute(&mut *transaction)
-        .await?;
-    }
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 OR (?2 AND status = ?3) THEN ?4 ELSE status END, statistics_start_date = CASE WHEN ?5 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?5 < statistics_start_date THEN ?5 ELSE statistics_start_date END, last_error = CASE WHEN ?1 OR (?2 AND status = ?3) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?6",
+    )
+    .bind(mark_ready)
+    .bind(repaired_nonempty)
+    .bind(LONG_TERM_STATUS_EMPTY)
+    .bind(LONG_TERM_STATUS_READY)
+    .bind(repaired_start_date)
+    .bind(LONG_TERM_STATE_ID)
+    .execute(&mut *transaction)
+    .await?;
     for dirty in clear_dirty_buckets {
         sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2")
             .bind(&dirty.bucket_date)
@@ -8699,6 +8708,50 @@ mod tests {
         .await
         .expect("retained error state");
         assert_eq!(status, LONG_TERM_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn nonempty_projection_repair_recovers_empty_state_and_advances_start_date() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_test_invocations(&pool).await;
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = '2026-07-27' WHERE id = ?2",
+        )
+        .bind(LONG_TERM_STATUS_EMPTY)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&pool)
+        .await
+        .expect("empty state");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (1, 'first-repaired', '2026-07-26 10:00:00', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("first repaired invocation");
+
+        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26")
+            .await
+            .expect("date rebuild");
+        commit_long_term_projection_date_rebuilds(&pool, &[rebuild], Some(1), &[], false)
+            .await
+            .expect("repair commit");
+
+        let (status, start_date) = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, statistics_start_date FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("repaired state");
+        assert_eq!(status, LONG_TERM_STATUS_READY);
+        assert_eq!(start_date.as_deref(), Some("2026-07-26"));
     }
 
     #[tokio::test]
