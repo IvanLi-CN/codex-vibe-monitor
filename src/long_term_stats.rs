@@ -176,6 +176,141 @@ struct LongTermStateRow {
     last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LongTermProjectionHealth {
+    pub(crate) state: String,
+    pub(crate) cursor_row_id: i64,
+    pub(crate) dirty_bucket_count: usize,
+    pub(crate) pending_event_count: usize,
+    pub(crate) last_flush_elapsed_ms: Option<u64>,
+    pub(crate) last_flush_age_ms: Option<u64>,
+    pub(crate) last_repair_scope: Option<String>,
+    pub(crate) last_defer_reason: Option<String>,
+    pub(crate) last_error_kind: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct LongTermProjectionRuntime {
+    pub(crate) state: String,
+    pub(crate) cursor_row_id: i64,
+    pub(crate) dirty_bucket_count: usize,
+    pub(crate) pending_event_count: usize,
+    pub(crate) last_flush_elapsed_ms: Option<u64>,
+    pub(crate) last_flush_at: Option<Instant>,
+    pub(crate) last_repair_scope: Option<String>,
+    pub(crate) last_defer_reason: Option<String>,
+    pub(crate) last_error_kind: Option<String>,
+    interval_index: HashMap<LongTermProjectionIntervalKey, LongTermProjectionIntervalUnion>,
+    loaded_interval_dates: HashSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LongTermProjectionIntervalKey {
+    bucket_kind: &'static str,
+    bucket_key: String,
+    dimension: String,
+    series_key: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LongTermProjectionIntervalUnion {
+    intervals: BTreeMap<i64, i64>,
+    duration_ms: i64,
+    sample_count: i64,
+}
+
+impl LongTermProjectionIntervalUnion {
+    fn add(&mut self, mut start_ms: i64, mut end_ms: i64) {
+        if end_ms <= start_ms {
+            return;
+        }
+        if let Some((&previous_start, &previous_end)) =
+            self.intervals.range(..=start_ms).next_back()
+            && previous_end >= start_ms
+        {
+            start_ms = previous_start;
+            end_ms = end_ms.max(previous_end);
+            self.duration_ms = self
+                .duration_ms
+                .saturating_sub(previous_end.saturating_sub(previous_start));
+            self.intervals.remove(&previous_start);
+        }
+        loop {
+            let next = self
+                .intervals
+                .range(start_ms..)
+                .next()
+                .map(|(&next_start, &next_end)| (next_start, next_end));
+            let Some((next_start, next_end)) = next else {
+                break;
+            };
+            if next_start > end_ms {
+                break;
+            }
+            end_ms = end_ms.max(next_end);
+            self.duration_ms = self
+                .duration_ms
+                .saturating_sub(next_end.saturating_sub(next_start));
+            self.intervals.remove(&next_start);
+        }
+        self.duration_ms = self
+            .duration_ms
+            .saturating_add(end_ms.saturating_sub(start_ms));
+        self.intervals.insert(start_ms, end_ms);
+        self.sample_count = self.sample_count.saturating_add(1);
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LongTermProjectionIntervalRow {
+    bucket_kind: String,
+    bucket_key: String,
+    dimension: String,
+    series_key: String,
+    interval_start_ms: i64,
+    interval_end_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct LongTermProjectionIntervalSegment {
+    key: LongTermProjectionIntervalKey,
+    bucket_date: String,
+    invocation_row_id: i64,
+    interval_start_ms: i64,
+    interval_end_ms: i64,
+}
+
+#[derive(Debug)]
+struct LongTermProjectionEvent {
+    row_id: i64,
+    hourly: HashMap<(i64, String, String), LongTermBucket>,
+    daily: HashMap<(String, String, String), LongTermBucket>,
+    segments: Vec<LongTermProjectionIntervalSegment>,
+    bucket_dates: HashSet<String>,
+}
+
+impl LongTermProjectionRuntime {
+    pub(crate) fn health(&self) -> LongTermProjectionHealth {
+        LongTermProjectionHealth {
+            state: if self.state.is_empty() {
+                "preparing".to_string()
+            } else {
+                self.state.clone()
+            },
+            cursor_row_id: self.cursor_row_id,
+            dirty_bucket_count: self.dirty_bucket_count,
+            pending_event_count: self.pending_event_count,
+            last_flush_elapsed_ms: self.last_flush_elapsed_ms,
+            last_flush_age_ms: self
+                .last_flush_at
+                .map(|last_flush_at| last_flush_at.elapsed().as_millis() as u64),
+            last_repair_scope: self.last_repair_scope.clone(),
+            last_defer_reason: self.last_defer_reason.clone(),
+            last_error_kind: self.last_error_kind.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct LongTermIntegrityTotals {
     calls: i64,
@@ -859,6 +994,909 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
     ensure_long_term_projection_correction_trigger(pool).await?;
     ensure_long_term_projection_archive_trigger(pool).await?;
     Ok(())
+}
+
+const LONG_TERM_PROJECTION_CONSUMER: &str = "long_term_v1";
+const LONG_TERM_PROJECTION_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
+const LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH: i64 = 1;
+const LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH: i64 = 2_000;
+
+async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> Result<()> {
+    let invocation_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_invocations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if invocation_table_exists == 0 {
+        return Ok(());
+    }
+
+    // Corrections originate in several write-side workers. Queue every local day touched by the
+    // old or new interval so a later projection pass can replace only the affected buckets.
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS long_term_projection_invocation_correction
+        AFTER UPDATE OF
+          source, status, occurred_at, model, payload,
+          input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens,
+          cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms,
+          t_upstream_ttfb_ms, t_upstream_stream_ms, error_message
+        ON codex_invocations
+        BEGIN
+          INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
+          WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
+            SELECT
+              date(OLD.occurred_at),
+              date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0)
+            WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
+            UNION ALL
+            SELECT
+              date(NEW.occurred_at),
+              date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0)
+            WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
+            UNION ALL
+            SELECT date(bucket_date, '+1 day'), end_date
+            FROM affected_dates
+            WHERE bucket_date < end_date
+          )
+          SELECT DISTINCT bucket_date, 'invocation_correction'
+          FROM affected_dates
+          WHERE bucket_date IS NOT NULL
+          ON CONFLICT(bucket_date) DO UPDATE SET
+            repair_reason = excluded.repair_reason,
+            updated_at = datetime('now');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection correction trigger")?;
+    Ok(())
+}
+
+async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Result<()> {
+    let archive_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_batches')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if archive_table_exists == 0 {
+        return Ok(());
+    }
+
+    // Archive writes and rewrites are source changes for durable long-term rollups. Invocation
+    // archives provide the terminal facts; attempt archives provide a later account-attribution
+    // fallback. Both must invalidate the same target dates. Recreate these triggers so upgrades
+    // do not retain a prior definition that only observed invocation archives.
+    sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_archive_insert")
+        .execute(pool)
+        .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_archive_update")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER long_term_projection_archive_insert
+        AFTER INSERT ON archive_batches
+        WHEN NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+          AND NEW.status = 'completed'
+          AND NEW.coverage_start_at IS NOT NULL
+          AND NEW.coverage_end_at IS NOT NULL
+        BEGIN
+          INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
+          WITH RECURSIVE covered_dates(bucket_date, end_date) AS (
+            SELECT date(NEW.coverage_start_at), date(NEW.coverage_end_at)
+            UNION ALL
+            SELECT date(bucket_date, '+1 day'), end_date
+            FROM covered_dates
+            WHERE bucket_date < end_date
+          )
+          SELECT DISTINCT bucket_date, 'archive_source_changed'
+          FROM covered_dates
+          WHERE bucket_date IS NOT NULL
+          ON CONFLICT(bucket_date) DO UPDATE SET
+            repair_reason = excluded.repair_reason,
+            next_attempt_at = NULL,
+            updated_at = datetime('now');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection archive insert trigger")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER long_term_projection_archive_update
+        AFTER UPDATE OF dataset, status, file_path, sha256, coverage_start_at, coverage_end_at, historical_rollups_materialized_at ON archive_batches
+        WHEN (
+              NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+              AND NEW.status = 'completed'
+              AND NEW.coverage_start_at IS NOT NULL
+              AND NEW.coverage_end_at IS NOT NULL
+            )
+            OR (
+              OLD.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+              AND OLD.status = 'completed'
+              AND OLD.coverage_start_at IS NOT NULL
+              AND OLD.coverage_end_at IS NOT NULL
+            )
+        BEGIN
+          INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
+          WITH RECURSIVE coverage_ranges(start_date, end_date) AS (
+            SELECT date(NEW.coverage_start_at), date(NEW.coverage_end_at)
+            WHERE NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+              AND NEW.status = 'completed'
+              AND NEW.coverage_start_at IS NOT NULL
+              AND NEW.coverage_end_at IS NOT NULL
+            UNION ALL
+            SELECT date(OLD.coverage_start_at), date(OLD.coverage_end_at)
+            WHERE OLD.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+              AND OLD.status = 'completed'
+              AND OLD.coverage_start_at IS NOT NULL
+              AND OLD.coverage_end_at IS NOT NULL
+          ), covered_dates(bucket_date, end_date) AS (
+            SELECT start_date, end_date FROM coverage_ranges
+            UNION ALL
+            SELECT date(bucket_date, '+1 day'), end_date
+            FROM covered_dates
+            WHERE bucket_date < end_date
+          )
+          SELECT DISTINCT bucket_date, 'archive_source_changed'
+          FROM covered_dates
+          WHERE bucket_date IS NOT NULL
+          ON CONFLICT(bucket_date) DO UPDATE SET
+            repair_reason = excluded.repair_reason,
+            next_attempt_at = NULL,
+            updated_at = datetime('now');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection archive update trigger")?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LongTermProjectionCursorRow {
+    cursor_row_id: i64,
+}
+
+pub(crate) fn spawn_long_term_projection_supervisor(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
+        flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        flush_ticker.tick().await;
+        let mut daily_verify_ticker = interval(LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL);
+        daily_verify_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        daily_verify_ticker.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = state.terminal_projection_hub.wait_for_persisted_work() => {
+                    debug!(projection = "long_term", trigger = "terminal_p1_ack", "long-term projection marked dirty by terminal persistence");
+                }
+                _ = flush_ticker.tick() => {
+                    if let Err(error) = flush_long_term_projection(&state, "terminal_deadline").await {
+                        mark_long_term_projection_failure(&state, &error).await;
+                        warn!(error = %error, projection = "long_term", trigger = "terminal_deadline", "long-term projection flush failed");
+                    }
+                }
+                _ = daily_verify_ticker.tick() => {
+                    if let Err(error) = queue_long_term_projection_daily_verify(&state.pool).await {
+                        warn!(error = %error, projection = "long_term", trigger = "daily_verify", "failed to queue long-term projection daily verification");
+                    } else if let Err(error) = flush_long_term_projection(&state, "daily_verify").await {
+                        mark_long_term_projection_failure(&state, &error).await;
+                        warn!(error = %error, projection = "long_term", trigger = "daily_verify", "long-term projection daily verification failed");
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Error) {
+    let message = error.to_string().to_ascii_lowercase();
+    let error_kind =
+        if message.contains("database is locked") || message.contains("database is busy") {
+            "sqlite_lock"
+        } else if message.contains("source coverage incomplete") {
+            "source_coverage"
+        } else {
+            "builder_error"
+        };
+    let mut runtime = state.long_term_projection_runtime.lock().await;
+    runtime.state = "dirty_last_good".to_string();
+    runtime.last_error_kind = Some(error_kind.to_string());
+}
+
+async fn queue_long_term_projection_daily_verify(pool: &Pool<Sqlite>) -> Result<()> {
+    let today = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+    queue_long_term_projection_repairs(pool, &[today], "daily_verify").await?;
+    Ok(())
+}
+
+fn long_term_projection_open_baseline_dates() -> Vec<String> {
+    let today = Utc::now().with_timezone(&Shanghai).date_naive();
+    let yesterday = today.pred_opt().unwrap_or(today);
+    vec![yesterday.to_string(), today.to_string()]
+}
+
+async fn queue_long_term_projection_repairs(
+    pool: &Pool<Sqlite>,
+    dates: &[String],
+    repair_reason: &str,
+) -> Result<()> {
+    if dates.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for date in dates {
+        sqlx::query(
+            "INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, ?2) ON CONFLICT(bucket_date) DO UPDATE SET repair_reason = excluded.repair_reason, next_attempt_at = NULL, updated_at = datetime('now')",
+        )
+        .bind(date)
+        .bind(repair_reason)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn defer_long_term_projection_repair(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE long_term_projection_dirty_buckets SET next_attempt_at = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE bucket_date = ?1",
+    )
+    .bind(bucket_date)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_long_term_projection_ready_dates(
+    pool: &Pool<Sqlite>,
+    dates: &HashSet<String>,
+) -> Result<HashSet<String>> {
+    if dates.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT state.bucket_date FROM long_term_projection_bucket_state state WHERE state.interval_baseline_ready = 1 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets dirty WHERE dirty.bucket_date = state.bucket_date) AND state.bucket_date IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for date in dates {
+        separated.push_bind(date);
+    }
+    separated.push_unseparated(")");
+    Ok(builder
+        .build_query_scalar::<String>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+async fn load_long_term_projection_terminal_rows(
+    pool: &Pool<Sqlite>,
+    cursor: i64,
+) -> Result<Vec<LongTermInvocationRow>> {
+    let has_attempt_table = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let upstream_account_sql = if has_attempt_table {
+        "COALESCE(CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = inv.invoke_id AND attempt.occurred_at = inv.occurred_at AND attempt.upstream_account_id IS NOT NULL ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+    } else {
+        "CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END"
+    };
+    let query = format!(
+        r#"
+        SELECT inv.id, inv.invoke_id, inv.occurred_at, inv.status, inv.model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
+          {upstream_account_sql} AS upstream_account_id,
+          NULL AS upstream_account_kind, NULL AS upstream_account_name,
+          inv.total_tokens, inv.output_tokens, inv.cost, inv.t_total_ms,
+          inv.t_req_read_ms, inv.t_req_parse_ms, inv.t_upstream_connect_ms,
+          inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
+        FROM codex_invocations inv
+        WHERE inv.id > ?1
+          AND LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+        ORDER BY inv.id ASC
+        LIMIT ?2
+        "#,
+    );
+    Ok(sqlx::query_as::<_, LongTermInvocationRow>(&query)
+        .bind(cursor)
+        .bind(LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH)
+        .fetch_all(pool)
+        .await?)
+}
+
+fn build_long_term_projection_event(row: &LongTermInvocationRow) -> LongTermProjectionEvent {
+    let mut hourly = HashMap::new();
+    let mut daily = HashMap::new();
+    let mut statistics_start = None;
+    accumulate_long_term_invocation(row, &mut hourly, &mut daily, &mut statistics_start);
+    let bucket_dates = daily
+        .keys()
+        .map(|(bucket_date, _, _)| bucket_date.clone())
+        .collect::<HashSet<_>>();
+    let segments = collect_long_term_projection_interval_segments(&hourly, &daily, row.id);
+    LongTermProjectionEvent {
+        row_id: row.id,
+        hourly,
+        daily,
+        segments,
+        bucket_dates,
+    }
+}
+
+async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
+    let mut runtime = state.long_term_projection_runtime.lock().await;
+    runtime.interval_index.clear();
+    runtime.loaded_interval_dates.clear();
+}
+
+async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> Result<()> {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("long_term_projection_flush") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            let mut runtime = state.long_term_projection_runtime.lock().await;
+            runtime.state = "deferred".to_string();
+            runtime.last_defer_reason = Some("writer_pressure".to_string());
+            debug!(projection = "long_term", trigger, gate_outcome = "deferred", defer_reason = "writer_pressure", reason = %reason, "long-term projection flush deferred by database pressure gate");
+            return Ok(());
+        }
+    };
+
+    let started = Instant::now();
+    let mut cursor = load_long_term_projection_cursor(&state.pool).await?;
+    let state_row = load_long_term_state(&state.pool).await?;
+    let mut baseline_cursor = None;
+    if !matches!(
+        state_row.status.as_str(),
+        LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY
+    ) && !long_term_rollups_exist(&state.pool).await?
+    {
+        // First installation retains the existing preparing/full materialization contract.
+        // This is not a periodic read path: later terminal work is handled by dirty buckets.
+        refresh_long_term_stats(
+            &state.pool,
+            state.config.long_term_stats_hourly_retention_days,
+        )
+        .await?;
+        baseline_cursor = Some(load_long_term_terminal_watermark(&state.pool).await?);
+    } else if cursor == 0 && long_term_rollups_exist(&state.pool).await? {
+        // Existing rollups are a durable baseline after upgrade. Only the two open calendar
+        // buckets need interval baselines before new terminal deltas can be merged exactly.
+        baseline_cursor = Some(load_long_term_terminal_watermark(&state.pool).await?);
+    }
+
+    let mut repaired = Vec::new();
+    let mut event_count = 0usize;
+    if let Some(baseline_cursor) = baseline_cursor {
+        let baseline_dates = long_term_projection_open_baseline_dates();
+        queue_long_term_projection_repairs(&state.pool, &baseline_dates, "interval_baseline")
+            .await?;
+        let mut rebuilds = Vec::with_capacity(baseline_dates.len());
+        for date in &baseline_dates {
+            rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
+        }
+        commit_long_term_projection_date_rebuilds(
+            &state.pool,
+            &rebuilds,
+            Some(baseline_cursor),
+            &baseline_dates,
+        )
+        .await?;
+        repaired.extend(baseline_dates);
+        cursor = baseline_cursor;
+    } else {
+        let identities = load_long_term_account_identities(&state.pool).await?;
+        let mut events = load_long_term_projection_terminal_rows(&state.pool, cursor).await?;
+        for row in &mut events {
+            hydrate_long_term_account_identity(row, &identities);
+        }
+        let events = events
+            .iter()
+            .map(build_long_term_projection_event)
+            .collect::<Vec<_>>();
+        let candidate_dates = events
+            .iter()
+            .flat_map(|event| event.bucket_dates.iter().cloned())
+            .collect::<HashSet<_>>();
+        let ready_dates =
+            load_long_term_projection_ready_dates(&state.pool, &candidate_dates).await?;
+        let mut hourly = HashMap::new();
+        let mut daily = HashMap::new();
+        let mut segments = Vec::new();
+        let mut direct_cursor = cursor;
+        let mut repair_event = None;
+        for event in events {
+            if !event.bucket_dates.is_subset(&ready_dates) {
+                repair_event = Some(event);
+                break;
+            }
+            direct_cursor = event.row_id;
+            event_count = event_count.saturating_add(1);
+            merge_long_term_projection_buckets(&mut hourly, event.hourly);
+            merge_long_term_projection_buckets(&mut daily, event.daily);
+            segments.extend(event.segments);
+        }
+        if direct_cursor > cursor {
+            apply_long_term_projection_incremental(
+                state,
+                &hourly,
+                &daily,
+                &segments,
+                direct_cursor,
+                event_count,
+            )
+            .await?;
+            cursor = direct_cursor;
+        }
+        if let Some(event) = repair_event {
+            let repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
+            queue_long_term_projection_repairs(&state.pool, &repair_dates, "interval_baseline")
+                .await?;
+            let mut rebuilds = Vec::with_capacity(repair_dates.len());
+            for date in &repair_dates {
+                rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
+            }
+            commit_long_term_projection_date_rebuilds(
+                &state.pool,
+                &rebuilds,
+                Some(event.row_id),
+                &repair_dates,
+            )
+            .await?;
+            repaired.extend(repair_dates);
+            cursor = event.row_id;
+        }
+    }
+
+    if !repaired.is_empty() {
+        invalidate_long_term_projection_interval_cache(state).await;
+    }
+
+    let dirty_dates = sqlx::query_scalar::<_, String>(
+        "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now') ORDER BY queued_at ASC, bucket_date ASC LIMIT ?1",
+    )
+    .bind(LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut deferred_repair_count = 0usize;
+    for date in dirty_dates {
+        if repaired.contains(&date) {
+            continue;
+        }
+        let rebuild = match build_long_term_projection_date_rebuild(&state.pool, &date).await {
+            Ok(rebuild) => rebuild,
+            Err(error) => {
+                defer_long_term_projection_repair(&state.pool, &date).await?;
+                deferred_repair_count = deferred_repair_count.saturating_add(1);
+                warn!(
+                    error = %error,
+                    projection = "long_term",
+                    repair_scope = %date,
+                    retry_after_ms = 300_000_u64,
+                    "long-term projection repair deferred after an unavailable source"
+                );
+                continue;
+            }
+        };
+        commit_long_term_projection_date_rebuilds(
+            &state.pool,
+            &[rebuild],
+            None,
+            std::slice::from_ref(&date),
+        )
+        .await?;
+        repaired.push(date);
+        invalidate_long_term_projection_interval_cache(state).await;
+    }
+
+    let (retention_pruned_hourly_rows, retention_pruned_interval_rows) =
+        prune_long_term_projection_hourly_retention(
+            &state.pool,
+            state.config.long_term_stats_hourly_retention_days,
+        )
+        .await?;
+
+    let dirty_bucket_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+            .fetch_one(&state.pool)
+            .await?
+            .max(0) as usize;
+    state
+        .terminal_projection_hub
+        .advance_long_term_cursor(cursor);
+    let projection_health = state.terminal_projection_hub.health();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let mut runtime = state.long_term_projection_runtime.lock().await;
+    runtime.state = if dirty_bucket_count == 0 {
+        "healthy"
+    } else {
+        "repairing"
+    }
+    .to_string();
+    runtime.cursor_row_id = cursor;
+    runtime.dirty_bucket_count = dirty_bucket_count;
+    runtime.pending_event_count = projection_health.pending_event_count;
+    runtime.last_flush_elapsed_ms = Some(elapsed_ms);
+    runtime.last_flush_at = Some(Instant::now());
+    runtime.last_repair_scope = (!repaired.is_empty()).then(|| repaired.join(","));
+    runtime.last_defer_reason =
+        (deferred_repair_count > 0).then(|| "repair_source_unavailable".to_string());
+    runtime.last_error_kind = (deferred_repair_count > 0).then(|| "targeted_repair".to_string());
+    let interval_bytes = runtime
+        .interval_index
+        .iter()
+        .map(|(key, union)| {
+            key.bucket_key.len()
+                + key.dimension.len()
+                + key.series_key.len()
+                + union.intervals.len() * std::mem::size_of::<(i64, i64)>()
+        })
+        .sum::<usize>();
+    debug!(
+        projection = "long_term",
+        trigger,
+        event_count,
+        cursor_lag = projection_health.last_persisted_row_id.saturating_sub(cursor),
+        dirty_bucket_count,
+        repair_scope = ?runtime.last_repair_scope,
+        interval_bytes,
+        interval_key_count = runtime.interval_index.len(),
+        deferred_repair_count,
+        retention_pruned_hourly_rows,
+        retention_pruned_interval_rows,
+        flush_outcome = "accepted",
+        elapsed_ms,
+        "long-term projection flush completed"
+    );
+    Ok(())
+}
+
+async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
+            .fetch_one(pool)
+            .await?
+            != 0,
+    )
+}
+
+fn long_term_projection_hourly_retention_start_date(retention_days: u64) -> NaiveDate {
+    Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(retention_days.max(366) as i64 - 1)
+}
+
+async fn prune_long_term_projection_hourly_retention(
+    pool: &Pool<Sqlite>,
+    retention_days: u64,
+) -> Result<(u64, u64)> {
+    let retention_start_date = long_term_projection_hourly_retention_start_date(retention_days);
+    let retention_start_epoch = retention_start_date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())
+        .map(|value| value.timestamp())
+        .context("invalid long-term projection hourly retention start")?;
+    let mut tx = pool.begin().await?;
+    let pruned_hourly_rows =
+        sqlx::query("DELETE FROM long_term_usage_hourly WHERE bucket_start_epoch < ?1")
+            .bind(retention_start_epoch)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+    let pruned_interval_rows = sqlx::query(
+        "DELETE FROM long_term_projection_intervals WHERE bucket_kind = 'hourly' AND bucket_date < ?1",
+    )
+    .bind(retention_start_date.to_string())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok((pruned_hourly_rows, pruned_interval_rows))
+}
+
+async fn load_long_term_terminal_watermark(pool: &Pool<Sqlite>) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(id), 0) FROM codex_invocations WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')",
+    )
+    .fetch_one(pool)
+    .await?)
+}
+
+async fn load_long_term_projection_cursor(pool: &Pool<Sqlite>) -> Result<i64> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 0)",
+    )
+    .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .execute(pool)
+    .await?;
+    Ok(sqlx::query_as::<_, LongTermProjectionCursorRow>(
+        "SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1",
+    )
+    .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .fetch_one(pool)
+    .await?
+    .cursor_row_id)
+}
+
+#[derive(Debug)]
+struct LongTermProjectionDateRebuild {
+    bucket_date: String,
+    start_epoch: i64,
+    end_epoch: i64,
+    hourly: HashMap<(i64, String, String), LongTermBucket>,
+    daily: HashMap<(String, String, String), LongTermBucket>,
+    interval_segments: Vec<LongTermProjectionIntervalSegment>,
+}
+
+fn long_term_projection_row_affects_date(row: &LongTermInvocationRow, bucket_date: &str) -> bool {
+    let mut hourly = HashMap::new();
+    let mut daily = HashMap::new();
+    let mut statistics_start = None;
+    accumulate_long_term_invocation(row, &mut hourly, &mut daily, &mut statistics_start);
+    daily.keys().any(|(date, _, _)| date == bucket_date)
+}
+
+async fn load_long_term_projection_rows_for_date(
+    pool: &Pool<Sqlite>,
+    date: NaiveDate,
+    start: chrono::DateTime<chrono_tz::Tz>,
+    end: chrono::DateTime<chrono_tz::Tz>,
+) -> Result<Vec<LongTermInvocationRow>> {
+    let has_attempt_table = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let upstream_account_sql = if has_attempt_table {
+        "COALESCE(CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = inv.invoke_id AND attempt.occurred_at = inv.occurred_at AND attempt.upstream_account_id IS NOT NULL ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+    } else {
+        "CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END"
+    };
+    let query = format!(
+        r#"
+        SELECT inv.id, inv.invoke_id, inv.occurred_at, inv.status, inv.model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
+          CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
+          {upstream_account_sql} AS upstream_account_id,
+          NULL AS upstream_account_kind, NULL AS upstream_account_name,
+          inv.total_tokens, inv.output_tokens, inv.cost, inv.t_total_ms,
+          inv.t_req_read_ms, inv.t_req_parse_ms, inv.t_upstream_connect_ms,
+          inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
+        FROM codex_invocations inv
+        WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+          AND inv.occurred_at < ?2
+          AND (
+            inv.occurred_at >= ?1
+            OR (
+              inv.t_total_ms IS NOT NULL
+              AND inv.t_total_ms > 0
+              AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)
+            )
+          )
+        ORDER BY inv.occurred_at ASC, inv.id ASC
+        "#,
+    );
+    let mut rows = sqlx::query_as::<_, LongTermInvocationRow>(&query)
+        .bind(format_naive(start.naive_local()))
+        .bind(format_naive(end.naive_local()))
+        .fetch_all(pool)
+        .await?;
+    let mut row_positions = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.id, index))
+        .collect::<HashMap<_, _>>();
+    let attempt_start = date.pred_opt().unwrap_or(date);
+    let (attempt_accounts, _) =
+        load_long_term_archive_attempt_accounts(pool, Some((attempt_start, date))).await?;
+    let archive_paths = match load_completed_invocation_archive_paths(pool).await {
+        Ok(paths) => paths,
+        Err(error) if error.to_string().contains("no such table") => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    for archive_path in archive_paths {
+        let overlaps = match (
+            archive_path
+                .coverage_start_at()
+                .and_then(long_term_archive_end_date),
+            archive_path
+                .coverage_end_at()
+                .and_then(long_term_archive_end_date),
+        ) {
+            (Some(path_start), Some(path_end)) => path_start <= date && path_end >= attempt_start,
+            // Older manifests without coverage must be inspected rather than treated as absent.
+            _ => true,
+        };
+        if !overlaps {
+            continue;
+        }
+        let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
+            &archive_path,
+            "long-term-projection-targeted-repair",
+        )
+        .await?
+        else {
+            anyhow::bail!(
+                "long-term projection source coverage incomplete for {date}: archive {} is unavailable",
+                archive_path.file_path()
+            );
+        };
+        let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
+        let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(&archive_query)
+            .bind(format_naive(end.naive_local()))
+            .bind(format_naive(start.naive_local()))
+            .fetch_all(&archive_pool)
+            .await;
+        archive_pool.close().await;
+        drop(cleanup);
+        for mut row in archive_rows? {
+            if row.upstream_account_id.is_none()
+                && let Some(invoke_id) = row.invoke_id.as_ref()
+                && let Some(account_id) =
+                    attempt_accounts.get(&(invoke_id.clone(), row.occurred_at.clone()))
+            {
+                row.upstream_account_id = Some(*account_id);
+            }
+            if long_term_projection_row_affects_date(&row, &date.to_string()) {
+                if let Some(index) = row_positions.get(&row.id).copied() {
+                    // Retention can leave a pruned live row with the same id as the archive row.
+                    // Preserve the archive's richer fields while using retained columns as fallback.
+                    merge_long_term_invocation_row(&mut row, &rows[index]);
+                    rows[index] = row;
+                } else {
+                    row_positions.insert(row.id, rows.len());
+                    rows.push(row);
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+async fn build_long_term_projection_date_rebuild(
+    pool: &Pool<Sqlite>,
+    bucket_date: &str,
+) -> Result<LongTermProjectionDateRebuild> {
+    let date = NaiveDate::parse_from_str(bucket_date, "%Y-%m-%d")?;
+    let start = date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())
+        .context("invalid long-term projection day start")?;
+    let end = date
+        .succ_opt()
+        .and_then(|next| next.and_hms_opt(0, 0, 0))
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())
+        .context("invalid long-term projection day end")?;
+    let mut rows = load_long_term_projection_rows_for_date(pool, date, start, end).await?;
+    let identities = load_long_term_account_identities(pool).await?;
+    let mut hourly = HashMap::new();
+    let mut daily = HashMap::new();
+    let mut statistics_start = None;
+    let mut interval_segments = Vec::new();
+    for row in &mut rows {
+        hydrate_long_term_account_identity(row, &identities);
+        let mut row_hourly = HashMap::new();
+        let mut row_daily = HashMap::new();
+        accumulate_long_term_invocation(
+            row,
+            &mut row_hourly,
+            &mut row_daily,
+            &mut statistics_start,
+        );
+        interval_segments.extend(collect_long_term_projection_interval_segments(
+            &row_hourly,
+            &row_daily,
+            row.id,
+        ));
+        merge_long_term_projection_buckets(&mut hourly, row_hourly);
+        merge_long_term_projection_buckets(&mut daily, row_daily);
+    }
+    hourly.retain(|(hour_epoch, _, _), _| {
+        Shanghai
+            .timestamp_opt(*hour_epoch, 0)
+            .single()
+            .is_some_and(|timestamp| timestamp.date_naive() == date)
+    });
+    daily.retain(|(date_key, _, _), _| date_key == bucket_date);
+    interval_segments.retain(|segment| segment.bucket_date == bucket_date);
+    Ok(LongTermProjectionDateRebuild {
+        bucket_date: bucket_date.to_string(),
+        start_epoch: start.timestamp(),
+        end_epoch: end.timestamp(),
+        hourly,
+        daily,
+        interval_segments,
+    })
+}
+
+async fn commit_long_term_projection_date_rebuilds(
+    pool: &Pool<Sqlite>,
+    rebuilds: &[LongTermProjectionDateRebuild],
+    next_cursor: Option<i64>,
+    clear_dirty_dates: &[String],
+) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    for rebuild in rebuilds {
+        sqlx::query("DELETE FROM long_term_usage_daily WHERE stats_date = ?1")
+            .bind(&rebuild.bucket_date)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM long_term_usage_hourly WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2")
+            .bind(rebuild.start_epoch)
+            .bind(rebuild.end_epoch)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "DELETE FROM long_term_projection_intervals WHERE (bucket_kind = 'daily' AND bucket_key = ?1) OR (bucket_kind = 'hourly' AND CAST(bucket_key AS INTEGER) >= ?2 AND CAST(bucket_key AS INTEGER) < ?3)",
+        )
+        .bind(&rebuild.bucket_date)
+        .bind(rebuild.start_epoch)
+        .bind(rebuild.end_epoch)
+        .execute(&mut *transaction)
+        .await?;
+        for bucket in rebuild.hourly.values() {
+            insert_long_term_hourly(&mut transaction, bucket).await?;
+        }
+        for bucket in rebuild.daily.values() {
+            insert_long_term_daily(&mut transaction, bucket).await?;
+        }
+        let mut interval_index = HashMap::new();
+        insert_long_term_projection_interval_segments(
+            &mut transaction,
+            &rebuild.interval_segments,
+            &mut interval_index,
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO long_term_projection_bucket_state (bucket_date, interval_baseline_ready) VALUES (?1, 1) ON CONFLICT(bucket_date) DO UPDATE SET interval_baseline_ready = 1, updated_at = datetime('now')",
+        )
+        .bind(&rebuild.bucket_date)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    if let Some(cursor) = next_cursor {
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id, last_flush_at, last_error) VALUES (?1, ?2, datetime('now'), NULL) ON CONFLICT(consumer) DO UPDATE SET cursor_row_id = MAX(long_term_projection_state.cursor_row_id, excluded.cursor_row_id), last_flush_at = excluded.last_flush_at, last_error = NULL, updated_at = datetime('now')",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .bind(cursor)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    for date in clear_dirty_dates {
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1")
+            .bind(date)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn rebuild_long_term_projection_date(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
+    let rebuild = build_long_term_projection_date_rebuild(pool, bucket_date).await?;
+    commit_long_term_projection_date_rebuilds(pool, &[rebuild], None, &[]).await
 }
 
 pub(crate) async fn bootstrap_long_term_integrity_source_boundary_for_legacy_rollups(
