@@ -1380,6 +1380,24 @@ async fn load_long_term_projection_dirty_buckets(
         .await?)
 }
 
+async fn long_term_projection_repairs_are_deferred(
+    pool: &Pool<Sqlite>,
+    dates: &[String],
+) -> Result<bool> {
+    if dates.is_empty() {
+        return Ok(false);
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE datetime(next_attempt_at) > datetime('now') AND bucket_date IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for date in dates {
+        separated.push_bind(date);
+    }
+    separated.push_unseparated("))");
+    Ok(builder.build_query_scalar::<i64>().fetch_one(pool).await? != 0)
+}
+
 async fn defer_long_term_projection_repair(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
     sqlx::query(
         "UPDATE long_term_projection_dirty_buckets SET next_attempt_at = datetime('now', '+5 minutes'), updated_at = datetime('now') WHERE bucket_date = ?1",
@@ -1603,38 +1621,49 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
                 .await?;
             let repair_dirty =
                 load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
-            let mut rebuilds = Vec::with_capacity(repair_dates.len());
-            let mut rebuild_error = None;
-            for date in &repair_dates {
-                match build_long_term_projection_date_rebuild(&state.pool, date).await {
-                    Ok(rebuild) => rebuilds.push(rebuild),
-                    Err(error) => {
-                        rebuild_error = Some(error);
-                        break;
-                    }
-                }
-            }
-            if let Some(error) = rebuild_error {
-                defer_long_term_projection_repairs(&state.pool, &repair_dates).await?;
+            if long_term_projection_repairs_are_deferred(&state.pool, &repair_dates).await? {
                 deferred_repair_count = deferred_repair_count.saturating_add(repair_dates.len());
-                warn!(
-                    error = %error,
+                debug!(
                     projection = "long_term",
                     repair_scope = ?repair_dates,
-                    retry_after_ms = 300_000_u64,
-                    "long-term cursor repair deferred after an unavailable source"
+                    defer_reason = "repair_backoff",
+                    "long-term cursor repair retained until its retry deadline"
                 );
             } else {
-                commit_long_term_projection_date_rebuilds(
-                    &state.pool,
-                    &rebuilds,
-                    Some(event.row_id),
-                    &repair_dirty,
-                    false,
-                )
-                .await?;
-                repaired.extend(repair_dates);
-                cursor = event.row_id;
+                let mut rebuilds = Vec::with_capacity(repair_dates.len());
+                let mut rebuild_error = None;
+                for date in &repair_dates {
+                    match build_long_term_projection_date_rebuild(&state.pool, date).await {
+                        Ok(rebuild) => rebuilds.push(rebuild),
+                        Err(error) => {
+                            rebuild_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = rebuild_error {
+                    defer_long_term_projection_repairs(&state.pool, &repair_dates).await?;
+                    deferred_repair_count =
+                        deferred_repair_count.saturating_add(repair_dates.len());
+                    warn!(
+                        error = %error,
+                        projection = "long_term",
+                        repair_scope = ?repair_dates,
+                        retry_after_ms = 300_000_u64,
+                        "long-term cursor repair deferred after an unavailable source"
+                    );
+                } else {
+                    commit_long_term_projection_date_rebuilds(
+                        &state.pool,
+                        &rebuilds,
+                        Some(event.row_id),
+                        &repair_dirty,
+                        false,
+                    )
+                    .await?;
+                    repaired.extend(repair_dates);
+                    cursor = event.row_id;
+                }
             }
         }
     }
@@ -8756,6 +8785,11 @@ mod tests {
         ensure_long_term_projection_repairs(&pool, &dates, "interval_baseline")
             .await
             .expect("ensure existing repairs");
+        assert!(
+            long_term_projection_repairs_are_deferred(&pool, &dates)
+                .await
+                .expect("load repair deadline")
+        );
 
         let deferred = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NOT NULL AND datetime(next_attempt_at) > datetime('now')",
