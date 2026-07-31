@@ -444,13 +444,25 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
         "pck-alpha",
     )
     .await;
-    insert_parallel_work_invocation(
-        &state.pool,
-        "parallel-minute-a-3",
-        minute_a + ChronoDuration::seconds(30),
-        "pck-beta",
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, 'success', 10, 0.01, ?4, '{}')
+        "#,
     )
-    .await;
+    .bind("parallel-minute-a-cross-source")
+    .bind(format_naive(
+        (minute_a + ChronoDuration::seconds(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind("direct")
+    .bind(json!({ "promptCacheKey": "pck-alpha", "upstreamAccountId": 42 }).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert cross-source parallel-work key");
     insert_parallel_work_invocation(
         &state.pool,
         "parallel-minute-b-1",
@@ -458,6 +470,37 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
         "pck-alpha",
     )
     .await;
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-b-2",
+        minute_b + ChronoDuration::seconds(20),
+        "pck-beta",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-b-3",
+        minute_b + ChronoDuration::seconds(30),
+        "pck-gamma",
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET payload = json_set(payload, '$.upstreamAccountId', 42)
+        WHERE invoke_id IN (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("parallel-minute-a-1")
+    .bind("parallel-minute-a-2")
+    .bind("parallel-minute-b-1")
+    .bind("parallel-minute-b-2")
+    .bind("parallel-minute-b-3")
+    .execute(&state.pool)
+    .await
+    .expect("assign upstream account to parallel-work keys");
 
     let Json(response) = fetch_parallel_work_stats(
         State(state.clone()),
@@ -484,11 +527,478 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
         .find(|point| point.bucket_start == format_utc_iso(minute_b))
         .expect("minute b point");
 
-    assert_eq!(minute_a_point.parallel_count, 2);
-    assert_eq!(minute_b_point.parallel_count, 1);
+    assert_eq!(minute_a_point.parallel_count, 1);
+    assert_eq!(minute_b_point.parallel_count, 3);
     assert_eq!(response.minute7d.active_bucket_count, 2);
-    assert_eq!(response.minute7d.max_count, Some(2));
+    assert_eq!(response.minute7d.max_count, Some(3));
     assert_eq!(response.minute7d.min_count, Some(0));
+    assert_eq!(response.minute7d.active_minute_count, Some(2));
+    assert_f64_close(
+        response
+            .minute7d
+            .avg_count
+            .expect("active-minute average should be present"),
+        2.0,
+    );
+
+    for bucket in ["1h", "1d"] {
+        let Json(window_response) = fetch_parallel_work_stats(
+            State(state.clone()),
+            Query(ParallelWorkStatsQuery {
+                range: "7d".to_string(),
+                bucket: Some(bucket.to_string()),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("fetch parallel-work stats for display bucket");
+        assert_eq!(window_response.current.active_minute_count, Some(2));
+        assert_f64_close(
+            window_response
+                .current
+                .avg_count
+                .expect("active-minute average should not depend on display bucket"),
+            2.0,
+        );
+    }
+
+    let Json(account_response) = fetch_parallel_work_stats(
+        State(state.clone()),
+        Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1h".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch account parallel-work stats");
+    assert_eq!(account_response.current.active_minute_count, Some(2));
+    assert_f64_close(
+        account_response
+            .current
+            .avg_count
+            .expect("account active-minute average should be present"),
+        2.0,
+    );
+}
+
+#[tokio::test]
+async fn parallel_work_active_minute_stats_uses_verified_hourly_scalars_for_history() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let historic_hour = Utc
+        .timestamp_opt(
+            parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+                .expect("minute-rollup retention start")
+                - 3_600,
+            0,
+        )
+        .single()
+        .expect("historic hour");
+    for source_scope in ["all", "proxy_only"] {
+        sqlx::query(
+            r#"
+            INSERT INTO parallel_work_hourly_coverage (
+                hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+            )
+            VALUES (?1, ?2, 1, 1)
+            "#,
+        )
+        .bind(historic_hour.timestamp())
+        .bind(source_scope)
+        .execute(&state.pool)
+        .await
+        .expect("insert verified parallel-work coverage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_hourly_rollup (
+            hour_start_epoch, source_scope, active_minute_count, parallel_count_sum
+        )
+        VALUES (?1, 'all', 2, 4)
+        "#,
+    )
+    .bind(historic_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("insert global hourly scalar");
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_upstream_account_hourly_rollup (
+            hour_start_epoch, source_scope, upstream_account_id,
+            active_minute_count, parallel_count_sum
+        )
+        VALUES (?1, 'all', 42, 1, 3)
+        "#,
+    )
+    .bind(historic_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("insert account hourly scalar");
+
+    let global = query_parallel_work_active_minute_stats(
+        &state.pool,
+        historic_hour,
+        historic_hour + ChronoDuration::hours(1),
+        InvocationSourceScope::All,
+        None,
+        None,
+    )
+    .await
+    .expect("query global historical active-minute scalar");
+    assert_eq!(global.active_minute_count, Some(2));
+    assert_f64_close(global.average().expect("global average"), 2.0);
+
+    let account = query_parallel_work_active_minute_stats(
+        &state.pool,
+        historic_hour,
+        historic_hour + ChronoDuration::hours(1),
+        InvocationSourceScope::All,
+        Some(42),
+        None,
+    )
+    .await
+    .expect("query account historical active-minute scalar");
+    assert_eq!(account.active_minute_count, Some(1));
+    assert_f64_close(account.average().expect("account average"), 3.0);
+
+    let uncovered = query_parallel_work_active_minute_stats(
+        &state.pool,
+        historic_hour - ChronoDuration::hours(1),
+        historic_hour,
+        InvocationSourceScope::All,
+        None,
+        None,
+    )
+    .await
+    .expect("query uncovered historical active-minute range");
+    assert_eq!(uncovered.active_minute_count, None);
+    assert_eq!(uncovered.average(), None);
+}
+
+#[tokio::test]
+async fn parallel_work_active_minute_stats_rejects_a_raw_retention_gap_without_rollup_coverage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let minute_rollup_start = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start");
+    let raw_retention_start = shanghai_retention_cutoff(7).timestamp();
+    assert!(
+        minute_rollup_start < raw_retention_start,
+        "test requires raw detail retention to begin inside the minute-rollup window"
+    );
+
+    let result = query_parallel_work_active_minute_stats(
+        &state.pool,
+        Utc.timestamp_opt(minute_rollup_start, 0)
+            .single()
+            .expect("valid minute-rollup start"),
+        Utc.timestamp_opt(minute_rollup_start + 3_600, 0)
+            .single()
+            .expect("valid minute-rollup end"),
+        InvocationSourceScope::All,
+        None,
+        Some(raw_retention_start),
+    )
+    .await
+    .expect("query active-minute stats across raw retention gap");
+
+    assert_eq!(result.active_minute_count, None);
+    assert_eq!(result.average(), None);
+}
+
+#[tokio::test]
+async fn parallel_work_active_minute_stats_uses_pool_attempt_account_fallback_for_raw_tail() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let minute_start_epoch = align_reporting_bucket_epoch(Utc::now().timestamp(), 60, Shanghai)
+        .expect("align complete minute")
+        - 3 * 60;
+    let minute_start = Utc
+        .timestamp_opt(minute_start_epoch, 0)
+        .single()
+        .expect("valid complete minute");
+    let occurred_at = minute_start + ChronoDuration::seconds(10);
+    let invoke_id = "parallel-work-attempt-account-fallback";
+    insert_parallel_work_invocation(&state.pool, invoke_id, occurred_at, "pck-account-fallback")
+        .await;
+    let occurred_at_text = format_naive(occurred_at.with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, sticky_key,
+            upstream_account_id, upstream_route_key, attempt_index,
+            distinct_account_index, same_account_retry_index, requester_ip,
+            started_at, status, phase
+        )
+        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route-fallback', 1, 1, 0,
+                '127.0.0.1', ?2, 'success', 'completed')
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(&occurred_at_text)
+    .bind("pck-account-fallback")
+    .bind(42_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert pool attempt account fallback");
+
+    let result = query_parallel_work_active_minute_stats(
+        &state.pool,
+        minute_start,
+        minute_start + ChronoDuration::minutes(1),
+        InvocationSourceScope::All,
+        Some(42),
+        Some(shanghai_retention_cutoff(state.config.invocation_max_days).timestamp()),
+    )
+    .await
+    .expect("query account-scoped raw active-minute stats");
+
+    assert_eq!(result.active_minute_count, Some(1));
+    assert_f64_close(result.average().expect("account average"), 1.0);
+}
+
+#[tokio::test]
+async fn parallel_work_maintenance_materializes_before_expiring_minute_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let expired_hour = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start")
+        - 3_600;
+    let expired_hour = Utc
+        .timestamp_opt(expired_hour, 0)
+        .single()
+        .expect("valid expired hour");
+    let expired_minute_epoch = (expired_hour + ChronoDuration::minutes(5)).timestamp();
+    for source_scope in ["all", "proxy_only"] {
+        sqlx::query(
+            r#"
+            INSERT INTO parallel_work_hourly_coverage (
+                hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+            )
+            VALUES (?1, ?2, 1, 0)
+            "#,
+        )
+        .bind(expired_hour.timestamp())
+        .bind(source_scope)
+        .execute(&state.pool)
+        .await
+        .expect("seed complete minute coverage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_minute_key_rollup (
+            minute_start_epoch, source, prompt_cache_key
+        )
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(expired_minute_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("pck-expired-minute-key")
+    .execute(&state.pool)
+    .await
+    .expect("seed expired minute key");
+
+    maintain_parallel_work_rollups(&state.pool, None)
+        .await
+        .expect("materialize expired parallel-work hour");
+
+    let scalar: (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT active_minute_count, parallel_count_sum
+        FROM parallel_work_hourly_rollup
+        WHERE hour_start_epoch = ?1 AND source_scope = 'all'
+        "#,
+    )
+    .bind(expired_hour.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("materialized global scalar");
+    assert_eq!(scalar, (1, 1));
+    let coverage: i64 = sqlx::query_scalar(
+        r#"
+        SELECT hourly_scalar_complete
+        FROM parallel_work_hourly_coverage
+        WHERE hour_start_epoch = ?1 AND source_scope = 'all'
+        "#,
+    )
+    .bind(expired_hour.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("materialized coverage marker");
+    assert_eq!(coverage, 1);
+    let minute_key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_minute_key_rollup \
+         WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2",
+    )
+    .bind(expired_hour.timestamp())
+    .bind((expired_hour + ChronoDuration::hours(1)).timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("count expired minute keys");
+    assert_eq!(minute_key_count, 0);
+}
+
+#[tokio::test]
+async fn parallel_work_maintenance_never_marks_pre_retention_raw_hours_as_covered() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let full_detail_start = shanghai_retention_cutoff(state.config.invocation_success_full_days)
+        .timestamp()
+        .div_euclid(3_600)
+        * 3_600;
+    let earlier_hour = full_detail_start - 3_600;
+
+    maintain_parallel_work_rollups(&state.pool, Some(full_detail_start))
+        .await
+        .expect("maintain only known full-detail coverage");
+
+    let coverage_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM parallel_work_hourly_coverage
+        WHERE hour_start_epoch = ?1
+        "#,
+    )
+    .bind(earlier_hour)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count pre-retention coverage");
+    assert_eq!(coverage_count, 0);
+}
+
+#[tokio::test]
+async fn parallel_work_maintenance_preserves_minute_keys_outside_full_detail_coverage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let full_detail_start = (Utc::now() - ChronoDuration::days(7))
+        .timestamp()
+        .div_euclid(3_600)
+        * 3_600;
+    let retained_hour = full_detail_start - 3_600;
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_minute_key_rollup (
+            minute_start_epoch, source, prompt_cache_key
+        )
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(retained_hour + 5 * 60)
+    .bind(SOURCE_PROXY)
+    .bind("pck-preserve-without-payload")
+    .execute(&state.pool)
+    .await
+    .expect("seed retained minute key");
+
+    maintain_parallel_work_rollups(&state.pool, Some(full_detail_start))
+        .await
+        .expect("maintain parallel-work keys after payload pruning");
+
+    let key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_minute_key_rollup \
+         WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2",
+    )
+    .bind(retained_hour)
+    .bind(retained_hour + 3_600)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count preserved minute keys");
+    assert_eq!(key_count, 1);
+    let coverage_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_hourly_coverage WHERE hour_start_epoch = ?1",
+    )
+    .bind(retained_hour)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count unverified coverage rows");
+    assert_eq!(coverage_count, 0);
+}
+
+#[tokio::test]
+async fn parallel_work_maintenance_rolls_back_minute_deletion_when_scalar_write_fails() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let expired_hour = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start")
+        - 3_600;
+    for source_scope in ["all", "proxy_only"] {
+        sqlx::query(
+            r#"
+            INSERT INTO parallel_work_hourly_coverage (
+                hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+            )
+            VALUES (?1, ?2, 1, 0)
+            "#,
+        )
+        .bind(expired_hour)
+        .bind(source_scope)
+        .execute(&state.pool)
+        .await
+        .expect("seed complete minute coverage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_minute_key_rollup (
+            minute_start_epoch, source, prompt_cache_key
+        )
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(expired_hour + 5 * 60)
+    .bind(SOURCE_PROXY)
+    .bind("pck-transaction-rollback")
+    .execute(&state.pool)
+    .await
+    .expect("seed expired minute key");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_parallel_work_hourly_scalar
+        BEFORE INSERT ON parallel_work_hourly_rollup
+        BEGIN
+            SELECT RAISE(ABORT, 'injected hourly scalar failure');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("install scalar failure trigger");
+
+    let error = maintain_parallel_work_rollups(
+        &state.pool,
+        Some(shanghai_retention_cutoff(state.config.invocation_max_days).timestamp()),
+    )
+    .await
+    .expect_err("scalar failure should abort materialization");
+    assert!(error.to_string().contains("injected hourly scalar failure"));
+
+    let minute_key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM parallel_work_minute_key_rollup \
+         WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2",
+    )
+    .bind(expired_hour)
+    .bind(expired_hour + 3_600)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count rolled-back minute keys");
+    assert_eq!(minute_key_count, 1);
 }
 
 #[tokio::test]
@@ -959,13 +1469,8 @@ async fn parallel_work_stats_account_scoped_day_bucket_aggregates_distinct_keys(
     assert_eq!(current_day_point.parallel_count, 1);
     assert_eq!(response.current.active_bucket_count, 2);
     assert_eq!(response.current.max_count, Some(2));
-    assert_f64_close(
-        response
-            .current
-            .avg_count
-            .expect("avg count should be present"),
-        3.0 / response.current.complete_bucket_count as f64,
-    );
+    assert_eq!(response.current.active_minute_count, Some(0));
+    assert_eq!(response.current.avg_count, None);
 }
 
 #[tokio::test]

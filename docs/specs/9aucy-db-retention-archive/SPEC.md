@@ -51,6 +51,13 @@
 - 离线归档前必须先将待删调用折叠进 `invocation_rollup_daily`，确保长期 totals 不缩水。
 - 运行时不再维护 `raw_expires_at`；历史 archive `sqlite.gz` 中若仍带该列，不作为新版本的在线契约，也不执行离线回写重做。
 
+### Parallel-work 分层 rollup
+
+- `parallel_work_minute_key_rollup` 与 `parallel_work_upstream_account_minute_key_rollup` 只保存 `(minute, source[, upstream_account_id], prompt_cache_key)`。它们必须保留最近 **30 个完整上海自然日和当前自然日**，不得提供降低该下限的运行配置。
+- 过期分钟前必须在同一 SQLite 事务内 materialize 为 `parallel_work_hourly_rollup` 与 `parallel_work_upstream_account_hourly_rollup` 的无 key 标量：`active_minute_count`、`parallel_count_sum`。小时标量永久保留，仅用于精确历史 `avgCount`，不保存请求、Prompt 或 key。
+- `parallel_work_hourly_coverage` 只在分钟 key 或小时标量完整、可验证后标记区间可用。查询混入未覆盖区间时，`avgCount` 与 `activeMinuteCount` 返回 `null`；不得回读旧 archive，也不得通过小时 key 的首末时间近似活动分钟。
+- 分钟维护独立于原始明细 retention 开关。后台每轮最多处理 24 个已关闭小时，每小时一个短事务；顺序固定为重建分钟 key、写小时标量和覆盖、删除分钟 key。事务失败时不得删除分钟 key。
+
 ### `forward_proxy_attempts`
 
 - 主库只保留最近 30 个上海自然日的在线排障明细。
@@ -109,6 +116,7 @@
 - 维护任务按 `XY_RETENTION_BATCH_ROWS` 分批执行，避免一次长事务锁住整个 SQLite。
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
+- 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。
 - 常驻任务只执行 `PRAGMA wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；`VACUUM` 不放进周期任务，由 101 首次 backlog cleanup 完成后的维护窗口人工执行一次。
 
 ## 验收标准（Acceptance Criteria）
@@ -118,6 +126,7 @@
 - `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 invocation rollups，而不是 archived 明细在线回查。
 - 给定 `previous7d`、`昨天前 7 天`、账号 usage 等跨自然日 summary 窗口，若其中一部分自然日已在更早的 retention 配置下 materialize 到 hourly rollup / archive，而另一部分仍保留在 live DB，读取结果仍必须与对应日粒度 timeseries totals 一致，不能因为当前 retention cutoff 已覆盖 `window.start` 就漏掉较早那几天。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
+- parallel-work 分钟 key 在达到 30 个完整上海自然日边界后，只有对应小时无 key 标量和覆盖标记都已提交时才能删除；历史小时均值仍可精确计算，缺覆盖历史必须显式不可用。
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
 
 ## 参考

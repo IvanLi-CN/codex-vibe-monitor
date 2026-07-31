@@ -195,15 +195,19 @@ function buildParallelWorkResponse(options: {
     };
   });
   const counts = points.map((point) => point.parallelCount);
+  const activeCounts = counts.filter((count) => count > 0);
   const current = {
     rangeStart: options.rangeStart,
     rangeEnd: options.rangeEnd,
     bucketSeconds: options.bucketSeconds,
     completeBucketCount: points.length,
     activeBucketCount: points.filter((point) => point.parallelCount > 0).length,
+    activeMinuteCount: activeCounts.length,
     minCount: counts.length ? Math.min(...counts) : null,
     maxCount: counts.length ? Math.max(...counts) : null,
-    avgCount: counts.length ? counts.reduce((sum, value) => sum + value, 0) / counts.length : null,
+    avgCount: activeCounts.length
+      ? activeCounts.reduce((sum, value) => sum + value, 0) / activeCounts.length
+      : null,
     effectiveTimeZone: options.effectiveTimeZone ?? "Asia/Shanghai",
     timeZoneFallback: false,
     points,

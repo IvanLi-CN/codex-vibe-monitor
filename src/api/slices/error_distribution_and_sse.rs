@@ -92,6 +92,7 @@ pub(crate) fn build_parallel_work_window_response(
     bucket_seconds: i64,
     reporting_tz: Tz,
     counts_by_bucket: &BTreeMap<i64, i64>,
+    active_minute_stats: ParallelWorkActiveMinuteStats,
     effective_time_zone: Tz,
     time_zone_fallback: bool,
     conversations: Vec<ParallelWorkConversation>,
@@ -111,7 +112,6 @@ pub(crate) fn build_parallel_work_window_response(
     let mut min_count: Option<i64> = None;
     let mut max_count: Option<i64> = None;
     let mut active_bucket_count = 0_i64;
-    let mut total = 0_f64;
 
     while cursor < end_epoch {
         let next = next_reporting_bucket_epoch(cursor, bucket_seconds, reporting_tz)?;
@@ -130,7 +130,6 @@ pub(crate) fn build_parallel_work_window_response(
             Some(current) => current.max(parallel_count),
             None => parallel_count,
         });
-        total += parallel_count as f64;
         points.push(ParallelWorkPoint {
             bucket_start: format_utc_iso(
                 Utc.timestamp_opt(cursor, 0)
@@ -154,13 +153,10 @@ pub(crate) fn build_parallel_work_window_response(
         bucket_seconds,
         complete_bucket_count,
         active_bucket_count,
+        active_minute_count: active_minute_stats.active_minute_count,
         min_count,
         max_count,
-        avg_count: if complete_bucket_count > 0 {
-            Some(total / complete_bucket_count as f64)
-        } else {
-            None
-        },
+        avg_count: active_minute_stats.average(),
         effective_time_zone: effective_time_zone.to_string(),
         time_zone_fallback,
         points,
@@ -180,6 +176,7 @@ pub(crate) fn empty_parallel_work_window_response(
         bucket_seconds,
         complete_bucket_count: 0,
         active_bucket_count: 0,
+        active_minute_count: None,
         min_count: None,
         max_count: None,
         avg_count: None,
@@ -187,6 +184,53 @@ pub(crate) fn empty_parallel_work_window_response(
         time_zone_fallback,
         points: Vec::new(),
         conversations: Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ParallelWorkActiveMinuteStats {
+    pub(crate) active_minute_count: Option<i64>,
+    pub(crate) parallel_count_sum: i64,
+}
+
+impl ParallelWorkActiveMinuteStats {
+    pub(crate) fn unavailable() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn empty_available() -> Self {
+        Self {
+            active_minute_count: Some(0),
+            parallel_count_sum: 0,
+        }
+    }
+
+    pub(crate) fn from_key_sets(bucket_keys: BTreeMap<i64, HashSet<String>>) -> Self {
+        let active_minute_count = bucket_keys.len() as i64;
+        let parallel_count_sum = bucket_keys
+            .values()
+            .map(|prompt_cache_keys| prompt_cache_keys.len() as i64)
+            .sum();
+        Self {
+            active_minute_count: Some(active_minute_count),
+            parallel_count_sum,
+        }
+    }
+
+    pub(crate) fn combine(self, other: Self) -> Self {
+        match (self.active_minute_count, other.active_minute_count) {
+            (Some(left), Some(right)) => Self {
+                active_minute_count: Some(left + right),
+                parallel_count_sum: self.parallel_count_sum + other.parallel_count_sum,
+            },
+            _ => Self::unavailable(),
+        }
+    }
+
+    pub(crate) fn average(self) -> Option<f64> {
+        self.active_minute_count
+            .filter(|active_minute_count| *active_minute_count > 0)
+            .map(|active_minute_count| self.parallel_count_sum as f64 / active_minute_count as f64)
     }
 }
 
@@ -199,6 +243,264 @@ pub(crate) fn parallel_work_counts_from_key_sets(
             (bucket_start_epoch, prompt_cache_keys.len() as i64)
         })
         .collect()
+}
+
+fn first_complete_minute_epoch(value: DateTime<Utc>) -> i64 {
+    let epoch = value.timestamp();
+    if epoch.rem_euclid(60) == 0 {
+        epoch
+    } else {
+        epoch.div_euclid(60) * 60 + 60
+    }
+}
+
+fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
+    value.timestamp().div_euclid(60) * 60
+}
+
+async fn parallel_work_hourly_coverage_is_complete(
+    pool: &Pool<Sqlite>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    field: &str,
+) -> Result<bool> {
+    if start_epoch >= end_epoch {
+        return Ok(true);
+    }
+    let expected_hour_count = (end_epoch - start_epoch) / 3_600;
+    let field = match field {
+        "minute_keys_complete" => "minute_keys_complete",
+        "hourly_scalar_complete" => "hourly_scalar_complete",
+        _ => return Err(anyhow!("invalid parallel-work coverage field")),
+    };
+    let count: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM parallel_work_hourly_coverage \
+         WHERE hour_start_epoch >= ?1 AND hour_start_epoch < ?2 \
+           AND source_scope = ?3 AND {field} = 1"
+    ))
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .bind(parallel_work_source_scope_name(source_scope))
+    .fetch_one(pool)
+    .await?;
+    Ok(count == expected_hour_count)
+}
+
+async fn query_parallel_work_minute_rollup_key_sets(
+    pool: &Pool<Sqlite>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<BTreeMap<i64, HashSet<String>>> {
+    let table = if upstream_account_id.is_some() {
+        "parallel_work_upstream_account_minute_key_rollup"
+    } else {
+        "parallel_work_minute_key_rollup"
+    };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT minute_start_epoch AS bucket_start_epoch, prompt_cache_key FROM {table} WHERE minute_start_epoch >= "
+    ));
+    query
+        .push_bind(start_epoch)
+        .push(" AND minute_start_epoch < ")
+        .push_bind(end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(" ORDER BY minute_start_epoch ASC, prompt_cache_key ASC");
+    let rows = query
+        .build_query_as::<ParallelWorkDayRollupRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut bucket_keys = BTreeMap::<i64, HashSet<String>>::new();
+    for row in rows {
+        bucket_keys
+            .entry(row.bucket_start_epoch)
+            .or_default()
+            .insert(row.prompt_cache_key);
+    }
+    Ok(bucket_keys)
+}
+
+async fn query_parallel_work_hourly_scalar_stats(
+    pool: &Pool<Sqlite>,
+    start_epoch: i64,
+    end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<ParallelWorkActiveMinuteStats> {
+    #[derive(FromRow)]
+    struct ScalarSums {
+        active_minute_count: Option<i64>,
+        parallel_count_sum: Option<i64>,
+    }
+
+    let source_scope = parallel_work_source_scope_name(source_scope);
+    let row = if let Some(upstream_account_id) = upstream_account_id {
+        sqlx::query_as::<_, ScalarSums>(
+            r#"
+            SELECT SUM(active_minute_count) AS active_minute_count,
+                   SUM(parallel_count_sum) AS parallel_count_sum
+            FROM parallel_work_upstream_account_hourly_rollup
+            WHERE hour_start_epoch >= ?1 AND hour_start_epoch < ?2
+              AND source_scope = ?3 AND upstream_account_id = ?4
+            "#,
+        )
+        .bind(start_epoch)
+        .bind(end_epoch)
+        .bind(source_scope)
+        .bind(upstream_account_id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, ScalarSums>(
+            r#"
+            SELECT SUM(active_minute_count) AS active_minute_count,
+                   SUM(parallel_count_sum) AS parallel_count_sum
+            FROM parallel_work_hourly_rollup
+            WHERE hour_start_epoch >= ?1 AND hour_start_epoch < ?2
+              AND source_scope = ?3
+            "#,
+        )
+        .bind(start_epoch)
+        .bind(end_epoch)
+        .bind(source_scope)
+        .fetch_one(pool)
+        .await?
+    };
+    Ok(ParallelWorkActiveMinuteStats {
+        active_minute_count: Some(row.active_minute_count.unwrap_or_default()),
+        parallel_count_sum: row.parallel_count_sum.unwrap_or_default(),
+    })
+}
+
+pub(crate) async fn query_parallel_work_active_minute_stats(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    raw_detail_start_epoch: Option<i64>,
+) -> Result<ParallelWorkActiveMinuteStats> {
+    let complete_start_epoch = first_complete_minute_epoch(range_start);
+    let complete_end_epoch = end_of_complete_minutes_epoch(range_end);
+    if complete_start_epoch >= complete_end_epoch {
+        return Ok(ParallelWorkActiveMinuteStats::empty_available());
+    }
+    let complete_start = Utc
+        .timestamp_opt(complete_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid parallel-work complete-minute start"))?;
+    let complete_end = Utc
+        .timestamp_opt(complete_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid parallel-work complete-minute end"))?;
+    let minute_keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
+    let raw_detail_start_epoch = raw_detail_start_epoch.unwrap_or(i64::MIN);
+    if complete_start_epoch >= minute_keep_start_epoch
+        && complete_start_epoch >= raw_detail_start_epoch
+    {
+        return Ok(ParallelWorkActiveMinuteStats::from_key_sets(
+            query_parallel_work_exact_key_sets(
+                pool,
+                complete_start,
+                complete_end,
+                60,
+                chrono_tz::UTC,
+                source_scope,
+                upstream_account_id,
+                None,
+                None,
+            )
+            .await?,
+        ));
+    }
+    let current_hour_start_epoch = Utc::now().timestamp().div_euclid(3_600) * 3_600;
+    let mut result = ParallelWorkActiveMinuteStats::empty_available();
+    let scalar_end_epoch = complete_end_epoch.min(minute_keep_start_epoch);
+    if complete_start_epoch < scalar_end_epoch {
+        if complete_start_epoch.rem_euclid(3_600) != 0
+            || scalar_end_epoch.rem_euclid(3_600) != 0
+            || !parallel_work_hourly_coverage_is_complete(
+                pool,
+                complete_start_epoch,
+                scalar_end_epoch,
+                source_scope,
+                "hourly_scalar_complete",
+            )
+            .await?
+        {
+            return Ok(ParallelWorkActiveMinuteStats::unavailable());
+        }
+        result = result.combine(
+            query_parallel_work_hourly_scalar_stats(
+                pool,
+                complete_start_epoch,
+                scalar_end_epoch,
+                source_scope,
+                upstream_account_id,
+            )
+            .await?,
+        );
+    }
+
+    let minute_start_epoch = complete_start_epoch.max(minute_keep_start_epoch);
+    let minute_end_epoch = complete_end_epoch.min(current_hour_start_epoch);
+    if minute_start_epoch < minute_end_epoch {
+        if minute_start_epoch.rem_euclid(3_600) != 0
+            || minute_end_epoch.rem_euclid(3_600) != 0
+            || !parallel_work_hourly_coverage_is_complete(
+                pool,
+                minute_start_epoch,
+                minute_end_epoch,
+                source_scope,
+                "minute_keys_complete",
+            )
+            .await?
+        {
+            return Ok(ParallelWorkActiveMinuteStats::unavailable());
+        }
+        result = result.combine(ParallelWorkActiveMinuteStats::from_key_sets(
+            query_parallel_work_minute_rollup_key_sets(
+                pool,
+                minute_start_epoch,
+                minute_end_epoch,
+                source_scope,
+                upstream_account_id,
+            )
+            .await?,
+        ));
+    }
+
+    let raw_tail_start_epoch = complete_start_epoch.max(current_hour_start_epoch);
+    if raw_tail_start_epoch < complete_end_epoch {
+        let raw_tail_start = Utc
+            .timestamp_opt(raw_tail_start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work raw-tail start"))?;
+        result = result.combine(ParallelWorkActiveMinuteStats::from_key_sets(
+            query_parallel_work_exact_key_sets(
+                pool,
+                raw_tail_start,
+                complete_end,
+                60,
+                chrono_tz::UTC,
+                source_scope,
+                upstream_account_id,
+                None,
+                None,
+            )
+            .await?,
+        ));
+    }
+    Ok(result)
 }
 
 pub(crate) async fn query_parallel_work_exact_key_sets(
@@ -236,7 +538,11 @@ pub(crate) async fn query_parallel_work_exact_key_sets(
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(
+                crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(
+                    "codex_invocations",
+                ),
+            )
             .push(" = ")
             .push_bind(upstream_account_id);
     }

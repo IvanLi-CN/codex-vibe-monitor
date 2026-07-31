@@ -885,9 +885,12 @@ pub(crate) async fn run_data_retention_maintenance(
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
-        sync_hourly_rollups_from_live_tables(pool)
-            .await
-            .context("failed to sync hourly rollups from live tables before retention")?;
+        sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+            pool,
+            Some(config.invocation_success_full_days),
+        )
+        .await
+        .context("failed to sync hourly rollups from live tables before retention")?;
         let janitor = cleanup_stale_archive_temp_files(config, false)?;
         if janitor.stale_temp_files_removed > 0 {
             info!(

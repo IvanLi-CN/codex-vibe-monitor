@@ -1054,6 +1054,22 @@ pub(crate) async fn load_parallel_work_stats_response(
     } else {
         Vec::new()
     };
+    let configured_full_detail_start_epoch =
+        shanghai_retention_cutoff(state.config.invocation_success_full_days).timestamp();
+    let active_minute_stats = query_parallel_work_active_minute_stats(
+        &state.pool,
+        range_window.start,
+        range_window.end,
+        source_scope,
+        upstream_account_id,
+        Some(
+            load_parallel_work_full_detail_start_epoch(&state.pool)
+                .await?
+                .map(|persisted| persisted.max(configured_full_detail_start_epoch))
+                .unwrap_or(configured_full_detail_start_epoch),
+        ),
+    )
+    .await?;
 
     let current = build_parallel_work_window_response(
         fill_start,
@@ -1061,6 +1077,7 @@ pub(crate) async fn load_parallel_work_stats_response(
         bucket_seconds,
         reporting_tz,
         &current_counts,
+        active_minute_stats,
         reporting_tz,
         time_zone_fallback,
         conversations,

@@ -1183,6 +1183,7 @@ function parallelWork() {
     bucketSeconds: 3600,
     completeBucketCount: points.length,
     activeBucketCount: points.length,
+    activeMinuteCount: points.length,
     minCount: points.length ? 2 : null,
     maxCount: points.length ? 6 : null,
     avgCount: points.length ? 4 : null,
