@@ -24,14 +24,14 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 
 ## Requirements
 
-- The repo-managed catalog version must advance to `openai-standard-2026-07-10`.
+- The repo-managed catalog version must advance to `openai-standard-2026-07-31`.
 - The repo-managed catalog must contain:
   - `gpt-5.6-sol`: input `5.0`, output `30.0`, cache read `0.5`, cache write `6.25`
-  - `gpt-5.6-terra`: input `2.5`, output `15.0`, cache read `0.25`, cache write `3.125`
-  - `gpt-5.6-luna`: input `1.0`, output `6.0`, cache read `0.10`, cache write `1.25`
+  - `gpt-5.6-terra`: input `2.0`, output `12.0`, cache read `0.20`, cache write `2.5`
+  - `gpt-5.6-luna`: input `0.20`, output `1.20`, cache read `0.02`, cache write `0.25`
 - `PUT /api/settings/pricing` must accept both legacy `cacheInputPer1m` and the new `cacheReadPer1m` / `cacheWritePer1m` fields.
 - `GET /api/settings/pricing` must return the new fields and continue mirroring `cacheInputPer1m` from `cacheReadPer1m` during the compatibility window.
-- SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values.
+- SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values. During this catalog revision, only Terra/Luna rows from a repo-managed catalog with `source=official` and all four prior unit prices still intact may be updated in place.
 - Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
 - Structured read-only model fields must render `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as solar, earth, and lunar icons. Exact and date-suffixed IDs share the base icon; tooltips and accessible names retain the complete ID. Editors, filters, selectors, and raw payload viewers keep the original text.
@@ -81,6 +81,9 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 - Given a legacy pricing payload with only `cacheInputPer1m`, when the backend saves and reloads it, then `cacheReadPer1m` matches that value and `cacheInputPer1m` is still mirrored on response.
 - Given an existing SQLite database with legacy pricing rows, when the schema upgrade runs, then read pricing is preserved and no existing user-defined row is overwritten.
+- Given a new SQLite database, when the default catalog is loaded, then its version is `openai-standard-2026-07-31` and the Terra/Luna unit prices match the latest Standard short-context table.
+- Given a repo-managed catalog at `openai-standard-2026-07-10` with unchanged official Terra or Luna rows, when startup loads the catalog, then all four unit prices are refreshed and the catalog version advances; any changed field, non-official row, or custom catalog version remains unchanged.
+- Given a new Terra or Luna invocation, when cost is estimated, then its cache read, cache write, and output buckets use the revised unit prices; existing invocation costs remain persisted truth and are never recomputed or rewritten.
 - Given `model=gpt-5.6-sol`, `input_tokens=1000`, `cached_tokens=400`, and `output_tokens=200`, when cost is estimated, then 600 prompt tokens bill at `6.25 / 1M`, 400 cached tokens bill at `0.5 / 1M`, and 200 output tokens bill at `30 / 1M`.
 - Given `gpt-5.6-sol-2026-07-08`, `gpt-5.6-terra-2026-07-08`, or `gpt-5.6-luna-2026-07-08`, when cost is estimated, then the base GPT-5.6 pricing row is used rather than `unknown`.
 - Given a legacy model entry that only has cached-input pricing, when cost is estimated, then existing legacy tests continue to use the pre-upgrade uncached-input semantics.
@@ -197,3 +200,4 @@ PR: include
 - OpenAI pricing announcement and API pricing pages published on 2026-07-08.
 - `docs/archive/specs/7272y-gpt-5-4-pricing/SPEC.md`
 - `docs/archive/specs/47ran-pool-models-override-gpt55-pricing/SPEC.md`
+- [OpenAI API Pricing](https://platform.openai.com/docs/pricing)

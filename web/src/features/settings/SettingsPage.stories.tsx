@@ -32,21 +32,21 @@ const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   },
   {
     model: "gpt-5.6-terra",
-    inputPer1m: 2.5,
-    outputPer1m: 15.0,
-    cacheInputPer1m: 0.25,
-    cacheReadPer1m: 0.25,
-    cacheWritePer1m: 3.125,
+    inputPer1m: 2.0,
+    outputPer1m: 12.0,
+    cacheInputPer1m: 0.2,
+    cacheReadPer1m: 0.2,
+    cacheWritePer1m: 2.5,
     reasoningPer1m: null,
     source: "official",
   },
   {
     model: "gpt-5.6-luna",
-    inputPer1m: 1.0,
-    outputPer1m: 6.0,
-    cacheInputPer1m: null,
-    cacheReadPer1m: 0.1,
-    cacheWritePer1m: 1.25,
+    inputPer1m: 0.2,
+    outputPer1m: 1.2,
+    cacheInputPer1m: 0.02,
+    cacheReadPer1m: 0.02,
+    cacheWritePer1m: 0.25,
     reasoningPer1m: null,
     source: "official",
   },
@@ -281,7 +281,7 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
   forwardProxy.nodes = buildNodesFromSettings(forwardProxy);
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? "openai-standard-2026-07-10",
+    catalogVersion: overrides?.pricing?.catalogVersion ?? "openai-standard-2026-07-31",
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
   };
 
@@ -903,6 +903,21 @@ export const Default: Story = {
     await expect(canvas.getByText("加密对话路由")).toBeVisible();
     await expect(canvas.getByText("正向代理路由")).toBeVisible();
     await expect(canvas.getByText("价格配置")).toBeVisible();
+    await expect(canvas.getByText("openai-standard-2026-07-31")).toBeVisible();
+    const terraRow = canvas.getByText("gpt-5.6-terra").closest("tr");
+    expect(terraRow).not.toBeNull();
+    const terra = within(terraRow as HTMLElement);
+    await expect(terra.getByDisplayValue("2")).toBeVisible();
+    await expect(terra.getByDisplayValue("0.2")).toBeVisible();
+    await expect(terra.getByDisplayValue("2.5")).toBeVisible();
+    await expect(terra.getByDisplayValue("12")).toBeVisible();
+    const lunaRow = canvas.getByText("gpt-5.6-luna").closest("tr");
+    expect(lunaRow).not.toBeNull();
+    const luna = within(lunaRow as HTMLElement);
+    await expect(luna.getByDisplayValue("0.2")).toBeVisible();
+    await expect(luna.getByDisplayValue("0.02")).toBeVisible();
+    await expect(luna.getByDisplayValue("0.25")).toBeVisible();
+    await expect(luna.getByDisplayValue("1.2")).toBeVisible();
     await expect(canvas.getByText("gpt-5.5")).toBeVisible();
     await expect(canvas.getByText("External API Keys")).toBeVisible();
   },
