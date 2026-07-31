@@ -739,6 +739,7 @@ describe("fetchParallelWorkStats", () => {
               bucketSeconds: 60,
               completeBucketCount: 10080,
               activeBucketCount: 4132,
+              activeMinuteCount: 4132,
               minCount: 0,
               maxCount: 18,
               avgCount: 4.67,
@@ -803,6 +804,7 @@ describe("fetchParallelWorkStats", () => {
 
     const response = await fetchParallelWorkStats();
     expect(response.current.points[0]?.parallelCount).toBe(4);
+    expect(response.current.activeMinuteCount).toBe(4132);
     expect(response.minute7d.points[0]?.parallelCount).toBe(4);
     expect(response.hour30d.avgCount).toBe(2.13);
     expect(response.dayAll.completeBucketCount).toBe(0);

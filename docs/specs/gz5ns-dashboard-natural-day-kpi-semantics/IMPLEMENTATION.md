@@ -10,6 +10,7 @@
 
 ## Coverage / rollout summary
 
+- parallel-work 日均已收口为完整活动分钟的去重并行数平均值，并返回 nullable `activeMinuteCount` 作为实际分母。Dashboard 与账号详情保留既有 `日均` 文案和 `avgCount` 消费链路，不新增 owner-facing 字段或卡片说明。
 - 已修复 Dashboard 自然日 KPI 的账号活动 v2 派生覆盖判定：错误或过期 marker 会由 versioned repair generation 自动失效，重建期间 `today / yesterday / 1d / 7d` 统一走 exact fallback，完整回放后再切回 rollup；HTTP 与 `dashboard.activity.current` 继续复用同一快照口径，公开响应字段不变。
 - 已实现：开放窗口 KPI 的累计 totals 由 write-side terminal delta 与 runtime overlay 共同维护，`today / 1d / 7d` 的 owner-facing 5 秒可见时效不再依赖每轮 SQLite full build；`yesterday / previous7d / usage` 继续保留 exact DB 语义。
 - 已完成 `TodayStatsOverview` 七卡四区布局重构，`较昨日` 统一移动到右上，底部左右辅助位统一改为 inline `label + value`。

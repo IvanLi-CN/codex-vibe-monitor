@@ -12,9 +12,16 @@ const LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
 ];
 
 pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
+    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(pool, None).await
+}
+
+pub(crate) async fn sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+    pool: &Pool<Sqlite>,
+    invocation_live_days: Option<u64>,
+) -> Result<()> {
     let mut attempt = 1_u32;
     loop {
-        match sync_hourly_rollups_from_live_tables_once(pool).await {
+        match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days).await {
             Ok(()) => return Ok(()),
             Err(err)
                 if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
@@ -42,7 +49,10 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) ->
     }
 }
 
-async fn sync_hourly_rollups_from_live_tables_once(pool: &Pool<Sqlite>) -> Result<()> {
+async fn sync_hourly_rollups_from_live_tables_once(
+    pool: &Pool<Sqlite>,
+    invocation_live_days: Option<u64>,
+) -> Result<()> {
     repair_active_account_activity_v2_coverage(pool).await?;
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
@@ -71,6 +81,10 @@ async fn sync_hourly_rollups_from_live_tables_once(pool: &Pool<Sqlite>) -> Resul
         }
     }
     repair_live_invocation_account_activity_v2_once(pool).await?;
+    if let Some(days) = invocation_live_days {
+        maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
+            .await?;
+    }
     Ok(())
 }
 
@@ -1983,8 +1997,19 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 }
 
 pub(crate) async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    bootstrap_hourly_rollups_with_parallel_work_coverage(pool, None).await
+}
+
+pub(crate) async fn bootstrap_hourly_rollups_with_parallel_work_coverage(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+) -> Result<()> {
     repair_live_invocation_usage_breakdown_rollups(pool).await?;
-    sync_hourly_rollups_from_live_tables(pool).await?;
+    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+        pool,
+        invocation_full_detail_days,
+    )
+    .await?;
     repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
     repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
@@ -2010,7 +2035,11 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>
 
 pub(crate) async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<()> {
     let _guard = state.hourly_rollup_sync_lock.lock().await;
-    sync_hourly_rollups_from_live_tables(&state.pool).await
+    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+        &state.pool,
+        Some(state.config.invocation_max_days),
+    )
+    .await
 }
 
 pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(

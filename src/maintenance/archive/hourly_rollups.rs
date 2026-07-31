@@ -8,6 +8,97 @@ use tracing::warn;
 mod archive_hourly_rollup_support;
 pub(crate) use archive_hourly_rollup_support::*;
 
+pub(crate) const PARALLEL_WORK_MINUTE_ROLLUP_RETAINED_COMPLETE_SHANGHAI_DAYS: i64 = 30;
+
+pub(crate) fn parallel_work_minute_rollup_keep_start_epoch(now: DateTime<Utc>) -> Result<i64> {
+    let local_date = now.with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(PARALLEL_WORK_MINUTE_ROLLUP_RETAINED_COMPLETE_SHANGHAI_DAYS);
+    let local_midnight = local_date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow!("invalid Shanghai minute-rollup retention boundary"))?;
+    Shanghai
+        .from_local_datetime(&local_midnight)
+        .single()
+        .ok_or_else(|| anyhow!("ambiguous Shanghai minute-rollup retention boundary"))
+        .map(|boundary| boundary.with_timezone(&Utc).timestamp())
+}
+
+async fn upsert_parallel_work_minute_key_rollups_with_floor_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+    minute_floor_epoch: Option<i64>,
+) -> Result<()> {
+    let mut global_keys = BTreeSet::new();
+    let mut account_keys = BTreeSet::new();
+    for row in rows {
+        let Some(prompt_cache_key) = prompt_cache_key_from_payload(row.payload.as_deref()) else {
+            continue;
+        };
+        let minute_start_epoch = invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)?;
+        if minute_floor_epoch.is_some_and(|floor| minute_start_epoch < floor) {
+            continue;
+        }
+        global_keys.insert((
+            minute_start_epoch,
+            row.source.clone(),
+            prompt_cache_key.clone(),
+        ));
+        if let Some(upstream_account_id) = row.resolved_upstream_account_id() {
+            account_keys.insert((
+                minute_start_epoch,
+                row.source.clone(),
+                upstream_account_id,
+                prompt_cache_key,
+            ));
+        }
+    }
+
+    for (minute_start_epoch, source, prompt_cache_key) in global_keys {
+        sqlx::query(
+            "INSERT OR IGNORE INTO parallel_work_minute_key_rollup \
+             (minute_start_epoch, source, prompt_cache_key) VALUES (?1, ?2, ?3)",
+        )
+        .bind(minute_start_epoch)
+        .bind(source)
+        .bind(prompt_cache_key)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for (minute_start_epoch, source, upstream_account_id, prompt_cache_key) in account_keys {
+        sqlx::query(
+            "INSERT OR IGNORE INTO parallel_work_upstream_account_minute_key_rollup \
+             (minute_start_epoch, source, upstream_account_id, prompt_cache_key) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(minute_start_epoch)
+        .bind(source)
+        .bind(upstream_account_id)
+        .bind(prompt_cache_key)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn upsert_parallel_work_minute_key_rollups_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    upsert_parallel_work_minute_key_rollups_with_floor_tx(
+        tx,
+        rows,
+        Some(parallel_work_minute_rollup_keep_start_epoch(Utc::now())?),
+    )
+    .await
+}
+
+pub(crate) async fn upsert_parallel_work_minute_key_rollups_including_expired_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    upsert_parallel_work_minute_key_rollups_with_floor_tx(tx, rows, None).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PoolAttemptFallbackCapability {
     Unavailable,
@@ -1100,6 +1191,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
     if rows.is_empty() {
         return Ok(());
     }
+    upsert_parallel_work_minute_key_rollups_tx(tx, rows).await?;
     let upsert_overall = targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATIONS);
     let upsert_failures = targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES);
     let upsert_perf = targets.contains(&HOURLY_ROLLUP_TARGET_PROXY_PERF);
@@ -2721,6 +2813,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
 
     let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
+    rebuild_parallel_work_rollups_for_hours_tx(tx, &bucket_epochs).await?;
     let mut bucket_watermarks = BTreeMap::<i64, i64>::new();
     for row in rows
         .iter()

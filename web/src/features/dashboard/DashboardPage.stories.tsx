@@ -481,17 +481,21 @@ function buildParallelWorkWindow(
 ): ParallelWorkStatsResponse["current"] {
   const startMs = Date.parse(rangeStart);
   const rangeEnd = new Date(startMs + counts.length * bucketSeconds * 1000).toISOString();
+  const activeCounts = counts.filter((count) => count > 0);
   return {
     rangeStart,
     rangeEnd,
     bucketSeconds,
     completeBucketCount: counts.length,
-    activeBucketCount: counts.filter((count) => count > 0).length,
+    activeBucketCount: activeCounts.length,
+    activeMinuteCount: activeCounts.length,
     minCount: counts.length > 0 ? Math.min(...counts) : null,
     maxCount: counts.length > 0 ? Math.max(...counts) : null,
     avgCount:
-      counts.length > 0
-        ? Number((counts.reduce((sum, count) => sum + count, 0) / counts.length).toFixed(2))
+      activeCounts.length > 0
+        ? Number(
+            (activeCounts.reduce((sum, count) => sum + count, 0) / activeCounts.length).toFixed(2),
+          )
         : null,
     effectiveTimeZone: "Asia/Shanghai",
     timeZoneFallback: false,

@@ -427,6 +427,7 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) bucket_seconds: i64,
     pub(crate) complete_bucket_count: i64,
     pub(crate) active_bucket_count: i64,
+    pub(crate) active_minute_count: Option<i64>,
     pub(crate) min_count: Option<i64>,
     pub(crate) max_count: Option<i64>,
     pub(crate) avg_count: Option<f64>,

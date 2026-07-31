@@ -535,6 +535,19 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
         .await;
     }
 
+    if !cancel.is_cancelled() {
+        let _guard = state.hourly_rollup_sync_lock.lock().await;
+        let live_start_epoch =
+            shanghai_retention_cutoff(state.config.invocation_max_days).timestamp();
+        if let Err(err) = maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)).await
+        {
+            had_failure = true;
+            crate::db_pressure::global_db_pressure_gate()
+                .record_error("parallel_work_rollup_maintenance", &err);
+            warn!(error = %err, "parallel-work rollup maintenance pass failed");
+        }
+    }
+
     let backfill_updated_rows = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT EXISTS(

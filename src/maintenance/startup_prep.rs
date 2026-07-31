@@ -64,7 +64,11 @@ pub(crate) async fn run_startup_persistent_prep_inner(
     let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false).await?;
     let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
     if include_hourly_rollup_bootstrap {
-        bootstrap_hourly_rollups(pool).await?;
+        bootstrap_hourly_rollups_with_parallel_work_coverage(
+            pool,
+            Some(config.invocation_max_days),
+        )
+        .await?;
         ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
     }
     let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;

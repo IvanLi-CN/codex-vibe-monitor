@@ -2207,6 +2207,147 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_prompt_cache_upstream_account_hourly_key_bucket")?;
 
+    // These tables intentionally keep only the key identity needed to calculate
+    // parallel-work averages. They are not a second copy of invocation history.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_minute_key_rollup (
+            minute_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            prompt_cache_key TEXT NOT NULL,
+            PRIMARY KEY (minute_start_epoch, source, prompt_cache_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_minute_key_rollup table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_parallel_work_minute_key_rollup_source_minute
+        ON parallel_work_minute_key_rollup (source, minute_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel-work minute source range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_upstream_account_minute_key_rollup (
+            minute_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            prompt_cache_key TEXT NOT NULL,
+            PRIMARY KEY (minute_start_epoch, source, upstream_account_id, prompt_cache_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_upstream_account_minute_key_rollup table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_parallel_work_account_minute_key_rollup_account_range
+        ON parallel_work_upstream_account_minute_key_rollup (upstream_account_id, minute_start_epoch, source)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel-work account minute range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_hourly_rollup (
+            hour_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL CHECK(source_scope IN ('all', 'proxy_only')),
+            active_minute_count INTEGER NOT NULL,
+            parallel_count_sum INTEGER NOT NULL,
+            PRIMARY KEY (hour_start_epoch, source_scope)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_hourly_rollup table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_parallel_work_hourly_rollup_scope_range
+        ON parallel_work_hourly_rollup (source_scope, hour_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel-work hourly scope range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_upstream_account_hourly_rollup (
+            hour_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL CHECK(source_scope IN ('all', 'proxy_only')),
+            upstream_account_id INTEGER NOT NULL,
+            active_minute_count INTEGER NOT NULL,
+            parallel_count_sum INTEGER NOT NULL,
+            PRIMARY KEY (hour_start_epoch, source_scope, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_upstream_account_hourly_rollup table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_parallel_work_account_hourly_rollup_account_range
+        ON parallel_work_upstream_account_hourly_rollup (upstream_account_id, source_scope, hour_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel-work account hourly range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_hourly_coverage (
+            hour_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL CHECK(source_scope IN ('all', 'proxy_only')),
+            minute_keys_complete INTEGER NOT NULL DEFAULT 0,
+            hourly_scalar_complete INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour_start_epoch, source_scope)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_hourly_coverage table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_rollup_coverage_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            full_detail_start_epoch INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_rollup_coverage_state table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS parallel_work_rollup_maintenance_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_hour_epoch INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure parallel_work_rollup_maintenance_state table existence")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS upstream_account_usage_hourly (

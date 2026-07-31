@@ -51,6 +51,7 @@
 - `消费速率` 右下为 `每对话`，公式是 `当前 spendRate / strict inProgressConversationCount`；分母为 `0` 或缺失时显示 `—`。
 - `成功` 右上为 `较昨日`，语义是 `当前成功数 / 昨日同进度成功数` 的比例，不是 delta；底部仍保留 `失败` 与 `失败率`。
 - `进行中对话` 右下为 `重试`，定义为当前 strict in-progress 对话里，上一条调用 display status 为 `failed` 且不含 `interrupted` 的唯一对话数。
+- `进行中对话` 左下 `日均` 必须读取 parallel-work 的 `avgCount`。对每个完整一分钟，以过滤作用域后去重的 `prompt_cache_key` 集合大小作为该分钟并行数；日均等于活动分钟并行数之和除以活动分钟数。尚未结束的当前分钟不纳入，活动分钟数为 `0` 或时间范围覆盖不足时显示 `—`。
 - `TTFT` 主值与日均只读取 `#6qe6u` 的真实首 Token 聚合；右下 `响应时间` 仍为最近 5 分钟完整调用结束的 `t_total_ms` 均值。任一指标缺样本显示 `—`，TTFT 不回退到 TTFB 或旧累计首字节耗时。
 - `今日成本` / `今日 Tokens` 右下都为 `失败`，聚合 `failed + interrupted` 调用的 cost / tokens。
 - 增强后的 summary 字段必须同时在全局 Dashboard 与 `upstreamAccountId` 账号作用域下可用。
@@ -112,6 +113,7 @@
 | `StatsResponse.nonSuccessTokens`                  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens；future `warning_success` 不计入            |
 | `TimeseriesPoint.nonSuccessCost`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart | bucket-level `failed + interrupted` cost；future `warning_success` 不计入 |
 | `TodayStatsOverview` metric tile contract         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                                           |
+| `ParallelWorkWindowResponse.activeMinuteCount`    | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard, account detail activity overview                 | `avgCount` 的 nullable 实际分母；不等同于 display bucket 的活动数量       |
 | `DashboardTodayActivityChart` total-cost contract | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | `Success + Non-success` cumulative stacked area                           |
 | same-progress success comparison helper           | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success`                       |
 
@@ -125,6 +127,8 @@
 - Given 打开 Dashboard `今日` 或 `昨日` 自然日页签，When 查看七卡，Then 每张卡都展示为“左上标签 + 右上 comparison/meta + 主值 + 底部左右 inline secondary”，右下不再留白。
 - Given `成功` 卡有昨日同进度成功基线，When 查看右上比较，Then 显示的是比值语义而不是 delta 百分比。
 - Given 当前进行中对话上一条调用是 `failed`，When 该对话仍 in-progress，Then `进行中对话 -> 重试` 会计入；若上一条是 `interrupted`，Then 不计入。
+- Given 两个完整活动分钟的去重并行数分别为 `1` 和 `3`，When Dashboard 或账号详情以任意分钟、小时或日展示粒度读取 `进行中对话 -> 日均`，Then 都显示 `2`；不得按完整展示 bucket 数稀释。
+- Given 请求范围混入尚未验证覆盖的历史时间，When 读取 `进行中对话 -> 日均`，Then `avgCount` 与 `activeMinuteCount` 都为 `null`，前端显示 `—`，不得估算分母。
 - Given 当前最近 5 分钟窗口没有完整调用结束的 `t_total_ms` 样本，When 查看 `TTFT -> 响应时间`，Then 显示 `—`；TTFT 自身不得用 TTFB 填充。
 - Given 今天存在 `failed`、`interrupted` 或二者混合调用，When 查看 `今日成本 -> 失败` 和 `今日 Tokens -> 失败`，Then 两者都包含这些 non-success 调用的累计金额与 Token。
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日七卡，Then 增强字段与 Dashboard 全局视图一样生效，且作用域不泄露为全局数据。
@@ -154,7 +158,7 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `web/src/features/dashboard/TodayStatsOverview.stories.tsx`、`web/src/features/dashboard/DashboardActivityOverview.stories.tsx`、`web/src/features/dashboard/DashboardTodayActivityChart.stories.tsx`。
+- Stories to add/update: `web/src/features/dashboard/TodayStatsOverview.stories.tsx`、`web/src/features/dashboard/DashboardActivityOverview.stories.tsx`、`web/src/features/stats/ParallelWorkStatsSection.stories.tsx`、`web/src/features/stats/StatsPage.stories.tsx`、`web/src/features/dashboard/DashboardTodayActivityChart.stories.tsx`。
 - Docs pages / state galleries to add/update: `TodayStatsOverview` state gallery / autodocs。
 - `play` / interaction coverage to add/update: natural-day populated / account-scoped populated / zero-in-progress。
 - Visual regression baseline changes (if any): 以本 spec 的 `## Visual Evidence` 为准。

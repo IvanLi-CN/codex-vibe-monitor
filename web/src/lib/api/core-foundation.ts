@@ -1180,6 +1180,7 @@ export interface ParallelWorkWindowResponse {
   bucketSeconds: number;
   completeBucketCount: number;
   activeBucketCount: number;
+  activeMinuteCount: number | null;
   minCount: number | null;
   maxCount: number | null;
   avgCount: number | null;
@@ -2323,6 +2324,10 @@ function normalizeParallelWorkWindowResponse(raw: unknown): ParallelWorkWindowRe
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 0,
     completeBucketCount: normalizeFiniteNumber(payload.completeBucketCount) ?? 0,
     activeBucketCount: normalizeFiniteNumber(payload.activeBucketCount) ?? 0,
+    activeMinuteCount:
+      payload.activeMinuteCount == null
+        ? null
+        : (normalizeFiniteNumber(payload.activeMinuteCount) ?? null),
     minCount: payload.minCount == null ? null : (normalizeFiniteNumber(payload.minCount) ?? null),
     maxCount: payload.maxCount == null ? null : (normalizeFiniteNumber(payload.maxCount) ?? null),
     avgCount: payload.avgCount == null ? null : (normalizeFiniteNumber(payload.avgCount) ?? null),

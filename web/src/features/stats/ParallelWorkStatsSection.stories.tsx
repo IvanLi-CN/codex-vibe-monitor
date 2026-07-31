@@ -24,6 +24,7 @@ function buildWindow(
     bucketSeconds: overrides.bucketSeconds,
     completeBucketCount: overrides.completeBucketCount,
     activeBucketCount: overrides.activeBucketCount,
+    activeMinuteCount: overrides.activeMinuteCount ?? null,
     minCount: overrides.minCount ?? 0,
     maxCount: overrides.maxCount ?? 0,
     avgCount: overrides.avgCount ?? 0,
@@ -220,6 +221,30 @@ const emptyCurrentStats: ParallelWorkStatsResponse = {
   dayAll: emptyDayWindow,
 };
 
+const activeMinuteAverageStats: ParallelWorkStatsResponse = {
+  current: buildWindow({
+    rangeStart: "2026-03-07T00:00:00Z",
+    rangeEnd: "2026-03-07T01:00:00Z",
+    bucketSeconds: 3600,
+    completeBucketCount: 1,
+    activeBucketCount: 1,
+    activeMinuteCount: 2,
+    minCount: 1,
+    maxCount: 3,
+    avgCount: 2,
+    points: [
+      {
+        bucketStart: "2026-03-07T00:00:00Z",
+        bucketEnd: "2026-03-07T01:00:00Z",
+        parallelCount: 3,
+      },
+    ],
+  }),
+  minute7d: minuteWindow,
+  hour30d: hourWindow,
+  dayAll: dayWindow,
+};
+
 const meta = {
   title: "Stats/ParallelWorkStatsSection",
   component: ParallelWorkStatsSection,
@@ -322,6 +347,19 @@ export const CurrentHourRange: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("parallel-work-card-current")).toBeInTheDocument();
     await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
+  },
+};
+
+export const ActiveMinuteAverage: Story = {
+  tags: ["test"],
+  args: {
+    stats: activeMinuteAverageStats,
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("parallel-work-card-current")).toHaveTextContent("2");
   },
 };
 

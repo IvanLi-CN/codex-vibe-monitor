@@ -266,18 +266,22 @@ function buildParallelWorkWindow(
   const startMs = Date.parse(rangeStart);
   const lastBucketStart = startMs + Math.max(counts.length - 1, 0) * bucketSeconds * 1000;
   const rangeEnd = new Date(lastBucketStart + bucketSeconds * 1000).toISOString();
+  const activeCounts = counts.filter((count) => count > 0);
 
   return {
     rangeStart,
     rangeEnd,
     bucketSeconds,
     completeBucketCount: counts.length,
-    activeBucketCount: counts.length,
+    activeBucketCount: activeCounts.length,
+    activeMinuteCount: activeCounts.length,
     minCount: counts.length > 0 ? Math.min(...counts) : null,
     maxCount: counts.length > 0 ? Math.max(...counts) : null,
     avgCount:
-      counts.length > 0
-        ? Number((counts.reduce((sum, value) => sum + value, 0) / counts.length).toFixed(2))
+      activeCounts.length > 0
+        ? Number(
+            (activeCounts.reduce((sum, value) => sum + value, 0) / activeCounts.length).toFixed(2),
+          )
         : null,
     points: counts.map((parallelCount, index) => ({
       bucketStart: new Date(startMs + index * bucketSeconds * 1000).toISOString(),
@@ -317,6 +321,24 @@ const comparisonParallelWorkStats: ParallelWorkStatsResponse = {
   }),
   dayAll: buildParallelWorkWindow([8], {
     rangeStart: "2026-04-08T00:00:00.000Z",
+    bucketSeconds: 86400,
+  }),
+};
+
+const activeMinuteAverageParallelWorkStats: ParallelWorkStatsResponse = {
+  current: buildParallelWorkWindow([1, 3], {
+    rangeStart: "2026-04-10T00:00:00.000Z",
+    bucketSeconds: 3600,
+  }),
+  minute7d: buildParallelWorkWindow([1, 3], {
+    rangeStart: "2026-04-03T00:00:00.000Z",
+  }),
+  hour30d: buildParallelWorkWindow([1, 3], {
+    rangeStart: "2026-03-11T00:00:00.000Z",
+    bucketSeconds: 3600,
+  }),
+  dayAll: buildParallelWorkWindow([1, 3], {
+    rangeStart: "2026-04-09T00:00:00.000Z",
     bucketSeconds: 86400,
   }),
 };
@@ -369,6 +391,26 @@ export const Populated: Story = {
     await expect(
       canvas.getByTestId("today-stats-secondary-spend-rate-per-conversation"),
     ).toHaveTextContent("$0.01");
+  },
+};
+
+export const ActiveMinuteAverage: Story = {
+  tags: ["test"],
+  args: {
+    stats: sampleStats,
+    rate: sampleRate,
+    modelPerformance: sampleModelPerformance,
+    ...comparisonArgs,
+    parallelWorkStats: activeMinuteAverageParallelWorkStats,
+    comparisonParallelWorkStats,
+    loading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByTestId("today-stats-secondary-in-progress-day-average"),
+    ).toHaveTextContent("2");
   },
 };
 

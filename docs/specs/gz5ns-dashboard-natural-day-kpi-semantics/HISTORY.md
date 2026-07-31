@@ -7,6 +7,8 @@
 
 ## Decision Trace
 
+- `进行中对话 -> 日均` 的分母固定为有至少一个去重 `prompt_cache_key` 的完整活动分钟，不能使用完整分钟数或任何展示 bucket 数。这样切换分钟、小时、日展示粒度不会改变同一底层时间范围的均值。
+- `activeMinuteCount` 独立暴露为 API 的 nullable 分母；历史覆盖无法验证时，均值和分母同时不可用，避免以 key 的首末时间推测活动分布。
 - 2026-07-27：确认 Dashboard 自然日 KPI 的升级后漏算不是定价、cost 或原始 invocation 被改写，而是账号活动 v2 的 false coverage marker 跳过 exact fallback。实现改为 repair generation + per-bucket completion marker，并保留通用 summary/rollup 作为对账基准。
 - 2026-07-23：101 复查确认 `usage_breakdown_archive_fallback` 残留集中在 pruned legacy archive 缺 `upstream_account_usage_breakdown_hourly` replay marker；冻结修复为 breakdown target 可从裁剪 payload 的结构化列回放，无法恢复的 `reasoning_effort` 只归入空/unknown，不放宽 `prompt_cache_*` / `sticky_key` 的 payload 要求。
 - 2026-07-22：针对 101 线上残留的 `summary_usage_breakdown(previous7d)` 慢读，冻结 `usage_breakdown` 必须补齐 `model + reasoning` 维度的 hourly 内部 rollup；Dashboard 7d / previous7d 总览与 comparison summary 继续保持 owner-facing contract 不变，但实现上不再允许整段 raw aggregate 成为健康主链路。

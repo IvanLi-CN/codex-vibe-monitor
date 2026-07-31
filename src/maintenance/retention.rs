@@ -885,9 +885,12 @@ pub(crate) async fn run_data_retention_maintenance(
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
-        sync_hourly_rollups_from_live_tables(pool)
-            .await
-            .context("failed to sync hourly rollups from live tables before retention")?;
+        sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+            pool,
+            Some(config.invocation_max_days),
+        )
+        .await
+        .context("failed to sync hourly rollups from live tables before retention")?;
         let janitor = cleanup_stale_archive_temp_files(config, false)?;
         if janitor.stale_temp_files_removed > 0 {
             info!(
@@ -926,9 +929,27 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let pruned = prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run)
+    let payload_loss_days = config
+        .invocation_success_full_days
+        .min(config.invocation_max_days);
+    let invocation_payload_retention_ready = dry_run
+        || parallel_work_minute_coverage_ready_for_payload_retention(
+            pool,
+            shanghai_retention_cutoff(payload_loss_days).timestamp(),
+        )
         .await
-        .context("failed to prune old invocation details during retention")?;
+        .context("failed to verify parallel-work minute coverage before invocation retention")?;
+    let pruned = if invocation_payload_retention_ready {
+        prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to prune old invocation details during retention")?
+    } else {
+        info!(
+            payload_loss_days,
+            "invocation detail pruning deferred until parallel-work minute coverage catches up"
+        );
+        (0, 0, 0)
+    };
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
@@ -937,9 +958,17 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let invocation_archive = archive_old_invocations(pool, config, raw_path_fallback_root, dry_run)
-        .await
-        .context("failed to archive old invocations during retention")?;
+    let invocation_archive = if invocation_payload_retention_ready {
+        archive_old_invocations(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to archive old invocations during retention")?
+    } else {
+        info!(
+            payload_loss_days,
+            "invocation archival deferred until parallel-work minute coverage catches up"
+        );
+        (0, 0, 0)
+    };
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;

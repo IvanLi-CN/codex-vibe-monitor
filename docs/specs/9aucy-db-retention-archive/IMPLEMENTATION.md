@@ -12,6 +12,7 @@
 - Status: 已完成
 - Note: 本 spec 保留 retention/archive 基线；在线长期统计主来源与 archive 在线读取边界后续已由 `#h9r2m` 接管。
 - Note: 2026-06-18 继续收口 mixed archive/live summary 边界；summary 读取不再因为 `window.start` 落在“当前 retention cutoff 之后”就退回 live-only，而是固定与 hourly timeseries 共用 rollup-backed 读路径，避免 `previous7d` 这类自然日窗口漏掉先前已 materialize 的历史天数。
+- Note: parallel-work 采用独立的分钟 key 与永久小时标量层。分钟 key 固定保留 30 个完整上海自然日与当前自然日，过期时每小时原子 materialize 并删除 key；这条维护链不读取旧 archive，也不依赖原始明细 retention 开关。
 
 ## Verification
 

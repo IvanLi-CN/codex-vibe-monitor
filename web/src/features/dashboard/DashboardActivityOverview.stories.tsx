@@ -402,17 +402,21 @@ function buildDashboardNetworkPoints(range: "today" | "yesterday" | "1d") {
 
 function buildParallelWorkWindow(counts: number[], rangeStart: string, bucketSeconds: number) {
   const startMs = Date.parse(rangeStart);
+  const activeCounts = counts.filter((count) => count > 0);
   return {
     rangeStart,
     rangeEnd: new Date(startMs + counts.length * bucketSeconds * 1000).toISOString(),
     bucketSeconds,
     completeBucketCount: counts.length,
     activeBucketCount: counts.filter((count) => count > 0).length,
+    activeMinuteCount: activeCounts.length,
     minCount: counts.length > 0 ? Math.min(...counts) : null,
     maxCount: counts.length > 0 ? Math.max(...counts) : null,
     avgCount:
-      counts.length > 0
-        ? Number((counts.reduce((sum, count) => sum + count, 0) / counts.length).toFixed(2))
+      activeCounts.length > 0
+        ? Number(
+            (activeCounts.reduce((sum, count) => sum + count, 0) / activeCounts.length).toFixed(2),
+          )
         : null,
     effectiveTimeZone: "Asia/Shanghai",
     timeZoneFallback: false,
@@ -437,6 +441,12 @@ function buildParallelWorkResponse(
     dayAll: buildParallelWorkWindow([7], "2026-04-08T00:00:00.000Z", 86400),
   };
 }
+
+const ACTIVE_MINUTE_AVERAGE_PARALLEL_WORK_STATS = buildParallelWorkResponse(
+  [1, 3],
+  [1, 3],
+  "2026-04-09T00:00:00.000Z",
+);
 
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
@@ -864,6 +874,26 @@ export const TodayView: Story = {
       expect(canvas.getByTestId("today-stats-secondary-cost-failed")).not.toHaveTextContent("—");
       expect(canvas.getByTestId("today-stats-secondary-tokens-failed")).not.toHaveTextContent("—");
     });
+  },
+};
+
+export const ActiveMinuteAverage: Story = {
+  tags: ["test"],
+  render: () => (
+    <DashboardActivityOverview
+      activeRange="today"
+      snapshotStatus={OFFLINE_SNAPSHOT_STATUS}
+      snapshotBundle={{
+        ...buildSnapshotBundle("today"),
+        parallelWorkStats: ACTIVE_MINUTE_AVERAGE_PARALLEL_WORK_STATS,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByTestId("today-stats-secondary-in-progress-day-average"),
+    ).toHaveTextContent("2");
   },
 };
 
