@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.53.0",
+  "base_stable_version": "2.52.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-31T13:40:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.53.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "cfe1f26fd340264fb452471e39815ebf1f007087",
+  "pr_number": 721,
+  "pr_title": "feat(stats): calculate parallel averages from active minutes",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.53.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.53.0",
+  "target_sha": "e22a5283369411fc49fba79cd939e65d961ee223",
+  "type_label": "type:minor"
+}
