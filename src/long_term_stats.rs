@@ -8595,9 +8595,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("memory pool");
-        ensure_long_term_projection_schema(&pool)
+        ensure_long_term_stats_schema(&pool)
             .await
-            .expect("projection schema");
+            .expect("long-term schema");
         let dates = vec!["2026-07-26".to_string()];
         queue_long_term_projection_repairs(&pool, &dates, "first")
             .await
