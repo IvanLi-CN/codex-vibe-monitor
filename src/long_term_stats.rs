@@ -1337,6 +1337,28 @@ async fn queue_long_term_projection_repairs(
     Ok(())
 }
 
+async fn ensure_long_term_projection_repairs(
+    pool: &Pool<Sqlite>,
+    dates: &[String],
+    repair_reason: &str,
+) -> Result<()> {
+    if dates.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for date in dates {
+        sqlx::query(
+            "INSERT OR IGNORE INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, ?2)",
+        )
+        .bind(date)
+        .bind(repair_reason)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn load_long_term_projection_dirty_buckets(
     pool: &Pool<Sqlite>,
     dates: &[String],
@@ -1577,7 +1599,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         }
         if let Some(event) = repair_event {
             let repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
-            queue_long_term_projection_repairs(&state.pool, &repair_dates, "interval_baseline")
+            ensure_long_term_projection_repairs(&state.pool, &repair_dates, "interval_baseline")
                 .await?;
             let repair_dirty =
                 load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
@@ -8731,6 +8753,9 @@ mod tests {
         defer_long_term_projection_repairs(&pool, &dates)
             .await
             .expect("defer repairs");
+        ensure_long_term_projection_repairs(&pool, &dates, "interval_baseline")
+            .await
+            .expect("ensure existing repairs");
 
         let deferred = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NOT NULL AND datetime(next_attempt_at) > datetime('now')",
