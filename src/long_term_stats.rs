@@ -1214,6 +1214,17 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
                           AND attempt.upstream_account_id = {account_id}
                       )
                 UNION ALL
+                SELECT
+                  COALESCE(CASE WHEN instr(archive.coverage_start_at, 'T') > 0
+                    THEN date(strftime('%s', archive.coverage_start_at), 'unixepoch', '+8 hours')
+                    ELSE date(archive.coverage_start_at) END, date(archive.month_key || '-01')),
+                  COALESCE(CASE WHEN instr(archive.coverage_end_at, 'T') > 0
+                    THEN date(strftime('%s', archive.coverage_end_at), 'unixepoch', '+8 hours')
+                    ELSE date(archive.coverage_end_at) END, date(archive.month_key || '-01', '+1 month', '-1 day'))
+                FROM archive_batches archive
+                WHERE archive.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
+                  AND archive.status = 'completed'
+                UNION ALL
                 SELECT date(bucket_date, '+1 day'), end_date
                 FROM affected_dates
                 WHERE bucket_date < end_date
@@ -5279,9 +5290,10 @@ async fn apply_long_term_projection_incremental_with_runtime(
         .min()
         .map(str::to_string);
     sqlx::query(
-        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 > 0 THEN ?2 ELSE status END, statistics_start_date = CASE WHEN ?3 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?3 < statistics_start_date THEN ?3 ELSE statistics_start_date END, processed_rows = processed_rows + ?1, total_rows = total_rows + ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?4",
+        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 > 0 AND status <> ?2 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets) THEN ?3 ELSE status END, statistics_start_date = CASE WHEN ?4 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?4 < statistics_start_date THEN ?4 ELSE statistics_start_date END, processed_rows = processed_rows + ?1, total_rows = total_rows + ?1, last_error = CASE WHEN ?1 > 0 AND status <> ?2 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?5",
     )
     .bind(event_count as i64)
+    .bind(LONG_TERM_STATUS_ERROR)
     .bind(LONG_TERM_STATUS_READY)
     .bind(statistics_start_date)
     .bind(LONG_TERM_STATE_ID)
@@ -8755,6 +8767,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incremental_projection_preserves_an_existing_error_state() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = 'source unavailable' WHERE id = ?2",
+        )
+        .bind(LONG_TERM_STATUS_ERROR)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&pool)
+        .await
+        .expect("error state");
+        queue_long_term_projection_repairs(
+            &pool,
+            &["2026-07-25".to_string()],
+            "source_unavailable",
+        )
+        .await
+        .expect("dirty bucket");
+        let runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+
+        apply_long_term_projection_incremental_with_runtime(
+            &pool,
+            &runtime,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            7,
+            1,
+        )
+        .await
+        .expect("incremental flush");
+
+        let (status, last_error) = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("preserved state");
+        assert_eq!(status, LONG_TERM_STATUS_ERROR);
+        assert_eq!(last_error.as_deref(), Some("source unavailable"));
+    }
+
+    #[tokio::test]
     async fn account_kind_change_invalidates_affected_projection_dates() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -8770,6 +8832,10 @@ mod tests {
             .execute(&pool)
             .await
             .expect("attempt schema");
+        sqlx::query("CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, month_key TEXT NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT)")
+            .execute(&pool)
+            .await
+            .expect("archive schema");
         ensure_long_term_projection_schema(&pool)
             .await
             .expect("projection schema");
@@ -8780,6 +8846,10 @@ mod tests {
             .execute(&pool)
             .await
             .expect("account");
+        sqlx::query("INSERT INTO archive_batches (id, dataset, month_key, status, coverage_start_at, coverage_end_at) VALUES (1, 'codex_invocations', '2026-06', 'completed', '2026-06-01 00:00:00', '2026-06-02 23:59:59')")
+            .execute(&pool)
+            .await
+            .expect("archived coverage");
         sqlx::query("INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, payload) VALUES (1, 'classified', '2026-07-26 10:00:00', 'success', 100, '{\"upstreamAccountId\":42}')")
             .execute(&pool)
             .await
@@ -8797,5 +8867,12 @@ mod tests {
         .await
         .expect("affected date");
         assert_eq!(reason, "account_classification_changed");
+        let archived_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE bucket_date LIKE '2026-06-%' ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("archived dates");
+        assert_eq!(archived_dates, vec!["2026-06-01", "2026-06-02"]);
     }
 }

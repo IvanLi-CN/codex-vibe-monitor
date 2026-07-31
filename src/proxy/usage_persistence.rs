@@ -3509,6 +3509,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: delta.terminal_sequence,
+                terminal_projection_event_ids: projection.event_id.into_iter().collect(),
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {

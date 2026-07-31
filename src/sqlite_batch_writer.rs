@@ -80,6 +80,7 @@ pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
     pub(crate) dashboard_terminal_sequence: Option<u64>,
+    pub(crate) terminal_projection_event_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +191,11 @@ impl PendingBatch {
                             .or(entry.get().dashboard_terminal_sequence);
                         let mut terminal = terminal;
                         terminal.dashboard_terminal_sequence = preserved_sequence;
+                        terminal
+                            .terminal_projection_event_ids
+                            .extend(entry.get().terminal_projection_event_ids.iter().copied());
+                        terminal.terminal_projection_event_ids.sort_unstable();
+                        terminal.terminal_projection_event_ids.dedup();
                         entry.insert(terminal);
                         self.coalesced_rows += 1;
                     }
@@ -1339,9 +1345,13 @@ pub(crate) async fn flush_pending_batch_inner(
             lookup_tx.commit().await?;
             identity.map(|row| (row.id, terminal.record.occurred_at.clone()))
         };
-        let Some((invocation_id, occurred_at)) = derived_identity else {
-            continue;
-        };
+        let (invocation_id, occurred_at) = derived_identity.ok_or_else(|| {
+            anyhow!(
+                "terminal write completed without a persisted identity: invoke_id={} occurred_at={}",
+                terminal.record.invoke_id,
+                terminal.record.occurred_at
+            )
+        })?;
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
             .ok()
@@ -1361,12 +1371,23 @@ pub(crate) async fn flush_pending_batch_inner(
             .ok()
             .and_then(|guard| guard.clone())
         {
-            hub.acknowledge_persisted(
-                None,
-                &terminal.record.invoke_id,
-                &terminal.record.occurred_at,
-                invocation_id,
-            );
+            if terminal.terminal_projection_event_ids.is_empty() {
+                hub.acknowledge_persisted(
+                    None,
+                    &terminal.record.invoke_id,
+                    &terminal.record.occurred_at,
+                    invocation_id,
+                );
+            } else {
+                for event_id in &terminal.terminal_projection_event_ids {
+                    hub.acknowledge_persisted(
+                        Some(*event_id),
+                        &terminal.record.invoke_id,
+                        &terminal.record.occurred_at,
+                        invocation_id,
+                    );
+                }
+            }
         }
         if prompt_cache_key_from_payload(terminal.record.payload.as_deref())
             .as_deref()
@@ -1644,18 +1665,19 @@ mod tests {
             capture_started: None,
             raw_capture: false,
             dashboard_terminal_sequence,
+            terminal_projection_event_ids: Vec::new(),
         }
     }
 
     #[test]
     fn terminal_batch_coalescing_preserves_the_persistence_ack_sequence() {
         let mut batch = PendingBatch::default();
-        batch.push(SqliteBatchWrite::TerminalInvocation(
-            terminal_write_for_coalescing("coalesced-terminal", Some(7)),
-        ));
-        batch.push(SqliteBatchWrite::TerminalInvocation(
-            terminal_write_for_coalescing("coalesced-terminal", None),
-        ));
+        let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
+        first.terminal_projection_event_ids.push(11);
+        batch.push(SqliteBatchWrite::TerminalInvocation(first));
+        let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
+        second.terminal_projection_event_ids.push(12);
+        batch.push(SqliteBatchWrite::TerminalInvocation(second));
 
         let terminal = batch
             .terminal_invocations
@@ -1663,6 +1685,7 @@ mod tests {
             .next()
             .expect("coalesced terminal");
         assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
+        assert_eq!(terminal.terminal_projection_event_ids, vec![11, 12]);
         assert_eq!(batch.coalesced_rows, 1);
     }
 
@@ -2074,6 +2097,7 @@ mod tests {
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
+                    terminal_projection_event_ids: Vec::new(),
                     record,
                 },
             )],
@@ -2176,6 +2200,7 @@ mod tests {
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
                 record,
             },
         )));
@@ -2242,6 +2267,7 @@ mod tests {
             capture_started: None,
             raw_capture: true,
             dashboard_terminal_sequence: None,
+            terminal_projection_event_ids: Vec::new(),
         }));
         let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
         let mut pending = PendingBatch::default();
@@ -2305,6 +2331,7 @@ mod tests {
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
                 record,
             },
         )));

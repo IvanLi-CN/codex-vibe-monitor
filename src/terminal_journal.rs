@@ -380,6 +380,7 @@ impl TerminalJournal {
                 }),
                 raw_capture: entry.raw_capture,
                 dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
             })
             .collect()
     }
