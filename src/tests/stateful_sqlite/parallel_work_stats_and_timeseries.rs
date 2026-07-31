@@ -957,7 +957,7 @@ async fn parallel_work_payload_retention_waits_for_complete_minute_coverage() {
 }
 
 #[tokio::test]
-async fn parallel_work_payload_retention_ignores_unrecoverable_pre_coverage_hours() {
+async fn parallel_work_payload_retention_backfills_recoverable_pre_cutoff_hours() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -970,6 +970,9 @@ async fn parallel_work_payload_retention_ignores_unrecoverable_pre_coverage_hour
     maintain_parallel_work_rollups(&state.pool, Some(full_detail_start))
         .await
         .expect("maintain recoverable full-detail interval");
+    maintain_parallel_work_rollups(&state.pool, Some(full_detail_start + 3_600))
+        .await
+        .expect("preserve earliest verified coverage start");
 
     assert!(
         parallel_work_minute_coverage_ready_for_payload_retention(
@@ -979,14 +982,20 @@ async fn parallel_work_payload_retention_ignores_unrecoverable_pre_coverage_hour
         .await
         .expect("check recoverable minute coverage")
     );
-    let pre_coverage_rows: i64 = sqlx::query_scalar(
+    let pre_cutoff_coverage_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM parallel_work_hourly_coverage WHERE hour_start_epoch < ?1",
     )
     .bind(full_detail_start)
     .fetch_one(&state.pool)
     .await
-    .expect("count pre-coverage markers");
-    assert_eq!(pre_coverage_rows, 0);
+    .expect("count recoverable pre-cutoff markers");
+    assert_eq!(pre_cutoff_coverage_rows, 4);
+    assert_eq!(
+        load_parallel_work_full_detail_start_epoch(&state.pool)
+            .await
+            .expect("load verified coverage start"),
+        Some(keep_start)
+    );
 }
 
 #[tokio::test]
@@ -1000,6 +1009,20 @@ async fn parallel_work_maintenance_never_marks_pre_retention_raw_hours_as_covere
         .div_euclid(3_600)
         * 3_600;
     let earlier_hour = full_detail_start - 3_600;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level, raw_response
+        ) VALUES (?1, datetime(?2, 'unixepoch'), ?3, 'completed', ?4, '')
+        "#,
+    )
+    .bind("inv-pre-retention-structured")
+    .bind(earlier_hour)
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+    .execute(&state.pool)
+    .await
+    .expect("seed unrecoverable pre-retention invocation");
 
     maintain_parallel_work_rollups(&state.pool, Some(full_detail_start))
         .await

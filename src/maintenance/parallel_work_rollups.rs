@@ -92,22 +92,47 @@ async fn advance_parallel_work_full_detail_start_epoch(
     pool: &Pool<Sqlite>,
     current_full_detail_start_epoch: Option<i64>,
 ) -> Result<Option<i64>> {
-    let Some(current_full_detail_start_epoch) = current_full_detail_start_epoch else {
+    let Some(_) = current_full_detail_start_epoch else {
         return load_parallel_work_full_detail_start_epoch(pool).await;
     };
+    let keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
+    let latest_unrecoverable_epoch: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT MAX(CASE
+            WHEN instr(occurred_at, 'T') > 0
+                THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+            ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+        END)
+        FROM codex_invocations
+        WHERE (CASE
+            WHEN instr(occurred_at, 'T') > 0
+                THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+            ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+        END) >= ?1
+            AND detail_level != ?2
+        "#,
+    )
+    .bind(keep_start_epoch)
+    .bind(DETAIL_LEVEL_FULL)
+    .fetch_one(pool)
+    .await?;
+    let verified_start_epoch = latest_unrecoverable_epoch
+        .map(|epoch| (epoch.div_euclid(3_600) + 1) * 3_600)
+        .unwrap_or(keep_start_epoch)
+        .max(keep_start_epoch);
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
         INSERT INTO parallel_work_rollup_coverage_state (id, full_detail_start_epoch)
         VALUES (1, ?1)
         ON CONFLICT(id) DO UPDATE SET
-            full_detail_start_epoch = MAX(
+            full_detail_start_epoch = MIN(
                 parallel_work_rollup_coverage_state.full_detail_start_epoch,
                 excluded.full_detail_start_epoch
             )
         "#,
     )
-    .bind(current_full_detail_start_epoch)
+    .bind(verified_start_epoch)
     .execute(tx.as_mut())
     .await?;
     let full_detail_start_epoch: i64 = sqlx::query_scalar(
