@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.52.3",
+  "base_stable_version": "2.52.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-31T04:33:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.52.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "98f642c3f8ac0bc36bce99349d51999a8b6dfef9",
+  "pr_number": 718,
+  "pr_title": "fix(pricing): lower gpt-5.6 terra and luna rates",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.52.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.52.3",
+  "target_sha": "4778fc200d7883563c497f1caab8e860db8c07e9",
+  "type_label": "type:patch"
+}
