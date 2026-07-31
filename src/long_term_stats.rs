@@ -1057,6 +1057,7 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           ON CONFLICT(bucket_date) DO UPDATE SET
             repair_reason = excluded.repair_reason,
             generation = long_term_projection_dirty_buckets.generation + 1,
+            next_attempt_at = NULL,
             updated_at = datetime('now');
         END
         "#,
@@ -1367,6 +1368,16 @@ async fn defer_long_term_projection_repair(pool: &Pool<Sqlite>, bucket_date: &st
     Ok(())
 }
 
+async fn defer_long_term_projection_repairs(
+    pool: &Pool<Sqlite>,
+    bucket_dates: &[String],
+) -> Result<()> {
+    for bucket_date in bucket_dates {
+        defer_long_term_projection_repair(pool, bucket_date).await?;
+    }
+    Ok(())
+}
+
 async fn load_long_term_projection_ready_dates(
     pool: &Pool<Sqlite>,
     dates: &HashSet<String>,
@@ -1499,6 +1510,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
 
     let mut repaired = Vec::new();
     let mut event_count = 0usize;
+    let mut deferred_repair_count = 0usize;
     if let Some(baseline_cursor) = baseline_cursor {
         let baseline_dates = long_term_projection_open_baseline_dates();
         queue_long_term_projection_repairs(&state.pool, &baseline_dates, "interval_baseline")
@@ -1570,19 +1582,38 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             let repair_dirty =
                 load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
             let mut rebuilds = Vec::with_capacity(repair_dates.len());
+            let mut rebuild_error = None;
             for date in &repair_dates {
-                rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
+                match build_long_term_projection_date_rebuild(&state.pool, date).await {
+                    Ok(rebuild) => rebuilds.push(rebuild),
+                    Err(error) => {
+                        rebuild_error = Some(error);
+                        break;
+                    }
+                }
             }
-            commit_long_term_projection_date_rebuilds(
-                &state.pool,
-                &rebuilds,
-                Some(event.row_id),
-                &repair_dirty,
-                false,
-            )
-            .await?;
-            repaired.extend(repair_dates);
-            cursor = event.row_id;
+            if let Some(error) = rebuild_error {
+                defer_long_term_projection_repairs(&state.pool, &repair_dates).await?;
+                deferred_repair_count = deferred_repair_count.saturating_add(repair_dates.len());
+                warn!(
+                    error = %error,
+                    projection = "long_term",
+                    repair_scope = ?repair_dates,
+                    retry_after_ms = 300_000_u64,
+                    "long-term cursor repair deferred after an unavailable source"
+                );
+            } else {
+                commit_long_term_projection_date_rebuilds(
+                    &state.pool,
+                    &rebuilds,
+                    Some(event.row_id),
+                    &repair_dirty,
+                    false,
+                )
+                .await?;
+                repaired.extend(repair_dates);
+                cursor = event.row_id;
+            }
         }
     }
 
@@ -1596,7 +1627,6 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
     .bind(LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH)
     .fetch_all(&state.pool)
     .await?;
-    let mut deferred_repair_count = 0usize;
     for dirty in dirty_dates {
         let date = dirty.bucket_date.clone();
         if repaired.contains(&date) {
@@ -8633,6 +8663,82 @@ mod tests {
         .await
         .expect("newer marker remains");
         assert_eq!(generation, 2);
+    }
+
+    #[tokio::test]
+    async fn invocation_correction_wakes_a_deferred_projection_repair() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("invocation schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_correction_trigger(&pool)
+            .await
+            .expect("correction trigger");
+        sqlx::query("INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (1, '2026-07-26 10:00:00', 'success', 'before')")
+            .execute(&pool)
+            .await
+            .expect("invocation");
+        queue_long_term_projection_repairs(
+            &pool,
+            &["2026-07-26".to_string()],
+            "source_unavailable",
+        )
+        .await
+        .expect("dirty bucket");
+        defer_long_term_projection_repair(&pool, "2026-07-26")
+            .await
+            .expect("defer repair");
+
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("correct invocation");
+
+        let next_attempt_at = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT next_attempt_at FROM long_term_projection_dirty_buckets WHERE bucket_date = '2026-07-26'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("repair marker");
+        assert!(next_attempt_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn cursor_repair_defer_applies_to_every_affected_date() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        let dates = vec!["2026-07-26".to_string(), "2026-07-27".to_string()];
+        queue_long_term_projection_repairs(&pool, &dates, "interval_baseline")
+            .await
+            .expect("dirty buckets");
+
+        defer_long_term_projection_repairs(&pool, &dates)
+            .await
+            .expect("defer repairs");
+
+        let deferred = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NOT NULL AND datetime(next_attempt_at) > datetime('now')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("deferred markers");
+        assert_eq!(deferred, 2);
     }
 
     #[tokio::test]
