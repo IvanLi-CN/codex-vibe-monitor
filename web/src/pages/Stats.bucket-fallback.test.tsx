@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FailureSummaryResponse, TimeseriesResponse } from "../lib/api";
+import { ThemeProvider } from "../theme";
 import StatsPage from "./Stats";
 
 const hookMocks = vi.hoisted(() => ({
@@ -137,7 +138,7 @@ function render(ui: React.ReactNode) {
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
-    root?.render(ui);
+    root?.render(<ThemeProvider>{ui}</ThemeProvider>);
   });
 }
 

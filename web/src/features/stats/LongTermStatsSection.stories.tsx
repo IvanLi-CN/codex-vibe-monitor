@@ -90,6 +90,72 @@ const upstreamSeries: LongTermSeries[] = [
   })),
 }));
 
+const identityModelEntries = [
+  ["model:gpt-5.6-sol|reasoning:high", "gpt-5.6-sol", "high", 128_400],
+  ["model:gpt-5.6-sol|reasoning:medium", "gpt-5.6-sol", "medium", 110_200],
+  ["model:gpt-5.6-sol|reasoning:low", "gpt-5.6-sol", "low", 92_800],
+  ["model:gpt-5.6-terra|reasoning:high", "gpt-5.6-terra", "high", 78_900],
+  ["model:gpt-5.6-luna|reasoning:medium", "gpt-5.6-luna", "medium", 66_700],
+  ["model:o3|reasoning:high", "o3", "high", 54_500],
+  ["model:claude-sonnet-4|reasoning:medium", "claude-sonnet-4", "medium", 42_600],
+  [
+    "model:very-long-model-name-for-legend-wrapping|reasoning:minimal",
+    "very-long-model-name-for-legend-wrapping",
+    "minimal",
+    31_200,
+  ],
+] as const;
+
+const identityUpstreamEntries = [
+  ["account:primary", "Primary API key - production west", 99_000],
+  ["account:research", "Research API key - east", 88_000],
+  ["account:staging", "Staging API key", 77_000],
+  ["account:batch", "Batch workloads", 66_000],
+  ["account:partner", "Partner integration", 55_000],
+  ["account:archive", "Archive importer", 44_000],
+  ["account:automation", "Automation service", 33_000],
+  ["other", "Other upstream account with a deliberately long display name", 22_000],
+] as const;
+
+const identityOverview: LongTermStatsOverviewResponse = {
+  ...buildOverview(),
+  global: metrics(604_100, 46.4, 690),
+  models: identityModelEntries.map(([seriesKey, displayName, reasoningEffort, tokens], index) => ({
+    seriesKey,
+    displayName,
+    reasoningEffort,
+    ...metrics(tokens, tokens / 13_000, 96 - index * 8),
+  })),
+  upstreams: identityUpstreamEntries.map(([seriesKey, displayName, tokens], index) => ({
+    seriesKey,
+    displayName,
+    ...metrics(tokens, tokens / 14_000, 80 - index * 7),
+  })),
+};
+
+const identityModelSeries: LongTermSeries[] = identityModelEntries.map(
+  ([seriesKey, displayName, reasoningEffort], seriesIndex) => ({
+    seriesKey,
+    displayName,
+    reasoningEffort,
+    points: dates.map((date, index) => ({
+      date,
+      ...metrics(7_000 + seriesIndex * 950 + index * 330, 0.7 + index / 20, 14 + seriesIndex),
+    })),
+  }),
+);
+
+const identityUpstreamSeries: LongTermSeries[] = identityUpstreamEntries.map(
+  ([seriesKey, displayName], seriesIndex) => ({
+    seriesKey,
+    displayName,
+    points: dates.map((date, index) => ({
+      date,
+      ...metrics(6_000 + seriesIndex * 860 + index * 260, 0.6 + index / 20, 12 + seriesIndex),
+    })),
+  }),
+);
+
 const sparseDates = Array.from({ length: 21 }, (_, index) => {
   const date = new Date(Date.UTC(2026, 6, 10 + index));
   return date.toISOString().slice(0, 10);
@@ -131,6 +197,7 @@ const sparseUpstreamSeries: LongTermSeries[] = upstreamSeries.map((entry, series
 const meta = {
   title: "Stats/LongTermStatsSection",
   component: LongTermStatsSection,
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
       <I18nProvider>
@@ -200,6 +267,35 @@ export const SparseSeries: Story = {
         .getByTestId("long-term-chart-upstream-usage")
         .querySelector('[data-chart-mode="stacked-area"]'),
     ).toBeTruthy();
+  },
+};
+
+export const SeriesIdentity: Story = {
+  args: {
+    overviewOverride: identityOverview,
+    seriesOverride: identityModelSeries,
+    upstreamSeriesOverride: identityUpstreamSeries,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvas.getAllByTestId("long-term-series-legend").length).toBeGreaterThan(0);
+    expect(canvas.getByTestId("long-term-table-Models-identity-header")).toBeVisible();
+    expect(
+      canvas.getByTestId("long-term-model-identity-model:gpt-5.6-sol|reasoning:high"),
+    ).toHaveAttribute("data-model-context-display", "model-badge");
+    const iconLegendItem = canvasElement.querySelector(
+      '[data-series-key="model:gpt-5.6-sol|reasoning:high"]',
+    );
+    expect(iconLegendItem).toHaveAttribute("data-long-term-legend-display", "icon-and-effort");
+    expect(iconLegendItem).toHaveAttribute("title", "gpt-5.6-sol · high");
+    const iconLegendContent = iconLegendItem?.querySelector(
+      '[data-long-term-legend-label="effort"]',
+    );
+    expect(iconLegendContent).toHaveTextContent("high");
+    expect(iconLegendContent).not.toHaveTextContent("gpt-5.6-sol");
+    expect(
+      canvas.getAllByText("very-long-model-name-for-legend-wrapping · minimal").length,
+    ).toBeGreaterThan(0);
   },
 };
 

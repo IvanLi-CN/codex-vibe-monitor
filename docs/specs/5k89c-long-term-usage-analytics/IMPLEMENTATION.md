@@ -25,6 +25,10 @@
 - Storybook ready fixture 与 mock-only demo fixture 使用独立的模型思考程度字段，覆盖桌面/移动状态和关键交互。
 - Storybook `SparseSeries` 与 mock-only demo 的稀疏长期序列覆盖数据岛场景，作为连续零基线的可视化回归入口。
 - 全局趋势以当前选择指标对应的序列名驱动 Recharts 图例和 tooltip：Token、成本、调用次数分别显示各自的总计标签，避免折线数值与“全部调用”混淆。
+- `LongTermSeriesVisual` 将长期多序列图的颜色、面积透明度、线型和完整标签集中到稳定映射：完整模型名决定家族色，思考程度决定明暗与虚线；账号序列独立分配八色分类色板。图表、tooltip、图例和已选表格行复用该映射。
+- 长期图例改为固定可读的自定义内容：已识别模型以图标替代重复名称并保留思考程度，无图标模型和上游账号继续显示完整名称；完整模型名通过原生悬浮提示与辅助文本提供。色标、图标和文字使用同一居中基线。Storybook 的 `SeriesIdentity` 与 mock demo 提供八项模型/账号高密度状态。
+- 虚拟化表格的表头、总计行和数据行统一使用块级 flex 冻结列，避免身份列与绝对定位的指标虚拟列发生行内基线错位。
+- 表格沿用 `ModelIdentity` 的图标优先合同：已识别模型以图标取代可见名称，完整名称通过原生悬浮提示与辅助文本提供；未识别模型保留文字名称。
 
 ## 验证记录
 
@@ -35,3 +39,4 @@
 - 删除收尾以 `id + dataset + 路径 + SHA-256 + delete_pending` 作为 CAS 身份，并在 `BEGIN IMMEDIATE` 中锁定该身份再删除文件与元数据；legacy writer 在同一 SQLite 写入区间内重新激活 manifest 并替换文件，避免重写与收尾竞态删除新归档。
 - 已通过：前端 `bun run test`（1310 passed / 6 skipped）、目标组件 Vitest、`bun run build` 与 5 个变更文件 Biome 检查；根级 `lint:web` 仍有既有无关文件错误，未扩大范围修复。
 - Storybook interaction/a11y、mock-only `ui_demo` 桌面/移动视觉证据及最终截图 SHA 在本次收口阶段补录到 `SPEC.md` 的 `## Visual Evidence`。
+- 已通过：长期系列视觉解析器 Vitest（7 assertions），专用 Biome 检查，`bun run build`、`bun run demo:build`、`bun run test-storybook` 与 `bun run storybook:build`；全仓 `lint:web` 仍有既有无关诊断，未扩大范围修复。

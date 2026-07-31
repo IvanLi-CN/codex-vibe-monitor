@@ -4,8 +4,6 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  type DefaultLegendContentProps,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -26,10 +24,11 @@ import type {
   LongTermStatsOverviewResponse,
   LongTermStatsRange,
 } from "../../lib/api";
-import { chartBaseTokens, piePalette } from "../../lib/chartTheme";
+import { chartBaseTokens } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import { ModelPerformanceModelIdentity } from "../dashboard/ModelPerformanceModelIdentity";
-import { ModelIdentity } from "../shared/ModelIdentity";
+import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
+import { type LongTermSeriesVisual, resolveLongTermSeriesVisuals } from "./longTermSeriesVisuals";
 
 type MetricKey =
   | "tokens"
@@ -239,6 +238,7 @@ function LongTermChart({
   modelSeries = false,
   stackedArea = false,
   canonicalDates,
+  visuals,
 }: {
   series: LongTermSeries[];
   metric: MetricKey;
@@ -246,12 +246,30 @@ function LongTermChart({
   modelSeries?: boolean;
   stackedArea?: boolean;
   canonicalDates?: readonly string[];
+  visuals?: ReadonlyMap<string, LongTermSeriesVisual>;
 }) {
   const { t } = useTranslation();
   const { themeMode } = useTheme();
   const colors = chartBaseTokens(themeMode);
-  const seriesColors = piePalette(themeMode);
   const chartData = mergeSeriesPoints(series, metric, stackedArea, canonicalDates);
+  const fallbackVisuals = useMemo(
+    () =>
+      new Map(
+        series.map((item) => [
+          item.seriesKey,
+          {
+            color: metricColors[metric],
+            fill: metricColors[metric],
+            fillOpacity: 0.42,
+            label: item.displayName,
+            stroke: metricColors[metric],
+            strokeDasharray: undefined,
+          },
+        ]),
+      ),
+    [metric, series],
+  );
+  const resolvedVisuals = visuals ?? fallbackVisuals;
   if (series.length === 0 || chartData.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm opacity-70">
@@ -261,98 +279,113 @@ function LongTermChart({
   }
   return (
     <div
-      className="h-64 w-full min-w-0"
+      className="w-full min-w-0"
       data-chart-kind={stackedArea ? "long-term-stacked-area" : "long-term-series"}
       data-chart-mode={stackedArea ? "stacked-area" : "line"}
     >
-      <ResponsiveContainer>
-        {stackedArea ? (
-          <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
-            <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fill: colors.axisText, fontSize: 11 }} minTickGap={24} />
-            <YAxis
-              tick={{ fill: colors.axisText, fontSize: 11 }}
-              tickFormatter={(value) => formatMetric(Number(value), metric)}
-              width={76}
-            />
-            <Tooltip
-              content={
-                <StackedAreaTooltip
-                  metric={metric}
-                  series={series}
-                  colors={colors}
-                  seriesColors={seriesColors}
-                  totalLabel={t("stats.longTerm.total")}
-                />
-              }
-            />
-            <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
-            {series.map((item, index) => {
-              const color = seriesColors[index % seriesColors.length] ?? metricColors[metric];
-              return (
-                <Area
-                  key={item.seriesKey}
-                  type="monotone"
-                  dataKey={item.seriesKey}
-                  name={item.displayName}
-                  stackId="long-term-usage"
-                  stroke={color}
-                  fill={color}
-                  fillOpacity={0.42}
-                  strokeWidth={2}
-                  connectNulls={false}
-                />
-              );
-            })}
-          </AreaChart>
-        ) : (
-          <LineChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
-            <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fill: colors.axisText, fontSize: 11 }} minTickGap={24} />
-            <YAxis
-              tick={{ fill: colors.axisText, fontSize: 11 }}
-              tickFormatter={(value) => formatMetric(Number(value), metric)}
-              width={76}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: colors.tooltipBg,
-                borderColor: colors.tooltipBorder,
-                borderRadius: 8,
-              }}
-              formatter={(value, key) => [
-                formatMetric(value == null ? null : Number(value), metric),
-                String(key),
-              ]}
-            />
-            <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
-            {series.map((item, index) => (
-              <Line
-                key={item.seriesKey}
-                type="monotone"
-                dataKey={item.seriesKey}
-                name={item.displayName}
-                stroke={seriesColors[index % seriesColors.length] ?? metricColors[metric]}
-                strokeWidth={2}
-                dot={false}
-                connectNulls
+      <div className="h-64">
+        <ResponsiveContainer>
+          {stackedArea ? (
+            <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+              <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: colors.axisText, fontSize: 11 }}
+                minTickGap={24}
               />
-            ))}
-          </LineChart>
-        )}
-      </ResponsiveContainer>
+              <YAxis
+                tick={{ fill: colors.axisText, fontSize: 11 }}
+                tickFormatter={(value) => formatMetric(Number(value), metric)}
+                width={76}
+              />
+              <Tooltip
+                content={
+                  <LongTermSeriesTooltip
+                    metric={metric}
+                    series={series}
+                    colors={colors}
+                    visuals={resolvedVisuals}
+                    totalLabel={t("stats.longTerm.total")}
+                  />
+                }
+              />
+              {series.map((item) => {
+                const visual = resolvedVisuals.get(item.seriesKey);
+                if (!visual) return null;
+                return (
+                  <Area
+                    key={item.seriesKey}
+                    type="monotone"
+                    dataKey={item.seriesKey}
+                    name={visual.label}
+                    stackId="long-term-usage"
+                    stroke={visual.stroke}
+                    strokeDasharray={visual.strokeDasharray}
+                    fill={visual.fill}
+                    fillOpacity={visual.fillOpacity}
+                    strokeWidth={2}
+                    connectNulls={false}
+                  />
+                );
+              })}
+            </AreaChart>
+          ) : (
+            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+              <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: colors.axisText, fontSize: 11 }}
+                minTickGap={24}
+              />
+              <YAxis
+                tick={{ fill: colors.axisText, fontSize: 11 }}
+                tickFormatter={(value) => formatMetric(Number(value), metric)}
+                width={76}
+              />
+              <Tooltip
+                content={
+                  <LongTermSeriesTooltip
+                    metric={metric}
+                    series={series}
+                    colors={colors}
+                    visuals={resolvedVisuals}
+                  />
+                }
+              />
+              {series.map((item) => {
+                const visual = resolvedVisuals.get(item.seriesKey);
+                if (!visual) return null;
+                return (
+                  <Line
+                    key={item.seriesKey}
+                    type="monotone"
+                    dataKey={item.seriesKey}
+                    name={visual.label}
+                    stroke={visual.stroke}
+                    strokeDasharray={visual.strokeDasharray}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                );
+              })}
+            </LineChart>
+          )}
+        </ResponsiveContainer>
+      </div>
+      <LongTermChartLegend series={series} visuals={resolvedVisuals} modelSeries={modelSeries} />
     </div>
   );
 }
 
-function StackedAreaTooltip({
+function LongTermSeriesTooltip({
   active,
   payload,
   label,
   metric,
   series,
   colors,
-  seriesColors,
+  visuals,
   totalLabel,
 }: {
   active?: boolean;
@@ -361,8 +394,8 @@ function StackedAreaTooltip({
   metric: MetricKey;
   series: LongTermSeries[];
   colors: ReturnType<typeof chartBaseTokens>;
-  seriesColors: string[];
-  totalLabel: string;
+  visuals: ReadonlyMap<string, LongTermSeriesVisual>;
+  totalLabel?: string;
 }) {
   if (!active || !payload?.length) return null;
   const datum = payload.find((entry) => entry.payload)?.payload;
@@ -382,21 +415,16 @@ function StackedAreaTooltip({
     >
       <div className="mb-1 font-semibold">{String(label ?? datum.date)}</div>
       <div className="space-y-0.5">
-        {series.map((item, index) => {
-          const entry = payload.find((candidate) => candidate.dataKey === item.seriesKey);
+        {series.map((item) => {
           const value = datum[item.seriesKey];
+          const visual = visuals.get(item.seriesKey);
+          if (!visual) return null;
           return (
             <div key={item.seriesKey} className="flex items-center justify-between gap-4">
               <span className="inline-flex min-w-0 items-center gap-1.5">
-                <span
-                  className="h-2 w-2 flex-none rounded-full"
-                  style={{
-                    backgroundColor: entry?.color ?? seriesColors[index % seriesColors.length],
-                  }}
-                  aria-hidden
-                />
-                <span className="max-w-[14rem] truncate" title={item.displayName}>
-                  {item.displayName}
+                <SeriesSwatch visual={visual} />
+                <span className="max-w-[14rem] break-words" title={visual.label}>
+                  {visual.label}
                 </span>
               </span>
               <span className="tabular-nums">
@@ -405,42 +433,78 @@ function StackedAreaTooltip({
             </div>
           );
         })}
-        <div className="mt-1 flex items-center justify-between gap-4 border-t border-current/15 pt-1 font-semibold">
-          <span>{totalLabel}</span>
-          <span className="tabular-nums">{formatMetric(total, metric)}</span>
-        </div>
+        {totalLabel ? (
+          <div className="mt-1 flex items-center justify-between gap-4 border-t border-current/15 pt-1 font-semibold">
+            <span>{totalLabel}</span>
+            <span className="tabular-nums">{formatMetric(total, metric)}</span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
+function SeriesSwatch({ visual, seriesKey }: { visual: LongTermSeriesVisual; seriesKey?: string }) {
+  return (
+    <svg className="h-3 w-7 flex-none" viewBox="0 0 28 12" aria-hidden data-series-key={seriesKey}>
+      <title>{visual.label}</title>
+      <line
+        x1="1"
+        x2="27"
+        y1="6"
+        y2="6"
+        stroke={visual.stroke}
+        strokeWidth="3"
+        strokeDasharray={visual.strokeDasharray}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function LongTermChartLegend({
-  payload,
+  series,
+  visuals,
   modelSeries,
-}: DefaultLegendContentProps & { modelSeries: boolean }) {
-  if (!payload || payload.length === 0) return null;
+}: {
+  series: LongTermSeries[];
+  visuals: ReadonlyMap<string, LongTermSeriesVisual>;
+  modelSeries: boolean;
+}) {
+  const { t } = useTranslation();
+  if (series.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 px-2 pt-1 text-xs text-base-content/75">
-      {payload.map((entry) => {
-        const label = entry.value ?? "";
+    <div
+      className="grid grid-cols-1 gap-x-4 gap-y-1.5 px-1 pt-3 text-xs text-base-content/80 sm:grid-cols-2 xl:grid-cols-4"
+      data-testid="long-term-series-legend"
+    >
+      {series.map((item) => {
+        const visual = visuals.get(item.seriesKey);
+        if (!visual) return null;
+        const showIcon = modelSeries && resolveModelIdentityIcon(item.displayName) !== null;
+        const visibleLabel = showIcon
+          ? item.reasoningEffort?.trim() || t("stats.longTerm.unspecified")
+          : visual.label;
         return (
           <span
-            key={String(entry.dataKey ?? label)}
-            className="inline-flex min-w-0 items-center gap-1.5"
+            key={item.seriesKey}
+            className="inline-flex min-w-0 items-center gap-1.5 leading-4"
+            data-series-key={item.seriesKey}
+            data-long-term-legend-display={showIcon ? "icon-and-effort" : "full-label"}
+            title={visual.label}
           >
-            <span
-              className="h-2 w-2 flex-none rounded-full"
-              style={{ backgroundColor: entry.color ?? "currentColor" }}
-              aria-hidden
-            />
-            {modelSeries ? (
-              <ModelIdentity model={label} className="max-w-[12rem] justify-start" />
-            ) : (
-              <span className="max-w-[12rem] truncate" title={label}>
-                {label}
+            <span className="sr-only">{visual.label}</span>
+            <span className="contents" aria-hidden="true">
+              <SeriesSwatch visual={visual} seriesKey={item.seriesKey} />
+              {showIcon ? <ModelIdentity model={item.displayName} className="h-4 w-4" /> : null}
+              <span
+                className="min-w-0 break-words"
+                data-long-term-legend-label={showIcon ? "effort" : "full"}
+              >
+                {visibleLabel}
               </span>
-            )}
+            </span>
           </span>
         );
       })}
@@ -459,6 +523,7 @@ function SeriesTable({
   search,
   onSearch,
   modelEntries = false,
+  visuals,
 }: {
   title: string;
   entries: LongTermSeriesSummary[];
@@ -470,6 +535,7 @@ function SeriesTable({
   search: string;
   onSearch: (value: string) => void;
   modelEntries?: boolean;
+  visuals: ReadonlyMap<string, LongTermSeriesVisual>;
 }) {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -560,11 +626,14 @@ function SeriesTable({
       >
         <div style={{ width: gridWidth }}>
           <div
-            className="sticky top-0 z-10 h-10 border-b border-base-300 bg-base-200/95 text-xs font-semibold backdrop-blur"
+            className="sticky top-0 z-10 flex h-10 border-b border-base-300 bg-base-200/95 text-xs font-semibold backdrop-blur"
             style={{ width: gridWidth }}
           >
-            <span className="sticky left-0 z-20 inline-flex h-full w-12 items-center bg-base-200/95 px-3" />
-            <span className="sticky left-12 z-20 inline-flex h-full w-60 items-center bg-base-200/95 px-3">
+            <span className="sticky left-0 z-20 flex h-full w-12 shrink-0 items-center bg-base-200/95 px-3" />
+            <span
+              className="sticky left-12 z-20 flex h-full w-60 shrink-0 items-center bg-base-200/95 px-3"
+              data-testid={`long-term-table-${title}-identity-header`}
+            >
               {modelEntries ? t("stats.longTerm.modelAndReasoning") : t("stats.longTerm.name")}
             </span>
             <div
@@ -590,12 +659,12 @@ function SeriesTable({
           </div>
           {modelEntries && totalMetrics ? (
             <div
-              className="sticky top-10 z-[9] h-10 border-b border-base-300 bg-base-100 text-sm font-semibold"
+              className="sticky top-10 z-[9] flex h-10 border-b border-base-300 bg-base-100 text-sm font-semibold"
               style={{ width: gridWidth }}
               data-testid="long-term-model-total-row"
             >
-              <span className="sticky left-0 z-10 inline-flex h-full w-12 items-center bg-base-100 px-3" />
-              <span className="sticky left-12 z-10 inline-flex h-full w-60 items-center bg-base-100 px-3">
+              <span className="sticky left-0 z-10 flex h-full w-12 shrink-0 items-center bg-base-100 px-3" />
+              <span className="sticky left-12 z-10 flex h-full w-60 shrink-0 items-center bg-base-100 px-3">
                 {t("stats.longTerm.total")}
               </span>
               {renderMetricCells(totalMetrics, false)}
@@ -608,17 +677,18 @@ function SeriesTable({
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
               const entry = filtered[virtualRow.index];
               const selected = selectedKeys.includes(entry.seriesKey);
+              const visual = visuals.get(entry.seriesKey);
               return (
                 <div
                   key={entry.seriesKey}
-                  className="absolute left-0 border-b border-base-300/50 text-sm"
+                  className="absolute left-0 flex border-b border-base-300/50 text-sm"
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
                     height: virtualRow.size,
                     width: gridWidth,
                   }}
                 >
-                  <span className="sticky left-0 z-10 inline-flex h-full w-12 items-center bg-base-100 px-3">
+                  <span className="sticky left-0 z-10 flex h-full w-12 shrink-0 items-center bg-base-100 px-3">
                     <input
                       type="checkbox"
                       checked={selected}
@@ -627,7 +697,10 @@ function SeriesTable({
                       disabled={!selected && selectedKeys.length >= 8}
                     />
                   </span>
-                  <span className="sticky left-12 z-10 inline-flex h-full w-60 min-w-0 items-center bg-base-100 px-3 pr-3">
+                  <span className="sticky left-12 z-10 flex h-full w-60 min-w-0 shrink-0 items-center bg-base-100 px-3 pr-3">
+                    {selected && visual ? (
+                      <SeriesSwatch visual={visual} seriesKey={entry.seriesKey} />
+                    ) : null}
                     {modelEntries ? (
                       <ModelPerformanceModelIdentity
                         model={entry.displayName}
@@ -667,6 +740,7 @@ export function LongTermStatsSection({
   upstreamSeriesOverride,
 }: LongTermStatsSectionProps) {
   const { t } = useTranslation();
+  const { themeMode } = useTheme();
   const [range, setRange] = useState<LongTermStatsRange>(initialRange);
   const [modelMetric, setModelMetric] = useState<MetricKey>("usageTimeMs");
   const [performanceMetric, setPerformanceMetric] = useState<MetricKey>(
@@ -709,6 +783,15 @@ export function LongTermStatsSection({
         overview?.upstreams ?? [],
       ),
     [fetchedUpstreamSeries?.series, overview?.upstreams, overviewOverride, upstreamSeriesOverride],
+  );
+  const unspecifiedLabel = t("stats.longTerm.unspecified");
+  const modelVisuals = useMemo(
+    () => resolveLongTermSeriesVisuals(modelSeries, "model", themeMode, unspecifiedLabel),
+    [modelSeries, themeMode, unspecifiedLabel],
+  );
+  const upstreamVisuals = useMemo(
+    () => resolveLongTermSeriesVisuals(upstreamSeries, "upstream", themeMode, unspecifiedLabel),
+    [themeMode, unspecifiedLabel, upstreamSeries],
   );
 
   useEffect(() => {
@@ -818,6 +901,7 @@ export function LongTermStatsSection({
                   metric={modelMetric}
                   emptyLabel={t("stats.longTerm.emptyChart")}
                   modelSeries
+                  visuals={modelVisuals}
                 />
               </div>
               <div className="space-y-3" data-testid="long-term-chart-model-performance">
@@ -836,6 +920,7 @@ export function LongTermStatsSection({
                   metric={performanceMetric}
                   emptyLabel={t("stats.longTerm.emptyChart")}
                   modelSeries
+                  visuals={modelVisuals}
                 />
               </div>
             </div>
@@ -855,6 +940,7 @@ export function LongTermStatsSection({
                 modelSeries
                 stackedArea
                 canonicalDates={stackedAreaDates}
+                visuals={modelVisuals}
               />
             </div>
             <SeriesTable
@@ -862,6 +948,7 @@ export function LongTermStatsSection({
               entries={modelTable}
               totalMetrics={overview.global}
               modelEntries
+              visuals={modelVisuals}
               selectedKeys={modelSelection}
               onToggle={(key) =>
                 setModelSelection((current) =>
@@ -896,6 +983,7 @@ export function LongTermStatsSection({
                 }
                 stackedArea
                 canonicalDates={stackedAreaDates}
+                visuals={upstreamVisuals}
               />
             </div>
             {seriesError || upstreamSeriesError ? (
@@ -904,6 +992,7 @@ export function LongTermStatsSection({
             <SeriesTable
               title={t("stats.longTerm.upstreams")}
               entries={upstreamTable}
+              visuals={upstreamVisuals}
               selectedKeys={upstreamSelection}
               onToggle={(key) =>
                 setUpstreamSelection((current) =>
