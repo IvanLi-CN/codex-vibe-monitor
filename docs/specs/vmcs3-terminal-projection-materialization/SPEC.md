@@ -38,6 +38,8 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 
 ## Visual Evidence
 
+PR: include
 ![System Status projection health on desktop](./assets/projection-health-desktop.png)
 
+PR: include
 ![System Status projection health on mobile](./assets/projection-health-mobile.png)
