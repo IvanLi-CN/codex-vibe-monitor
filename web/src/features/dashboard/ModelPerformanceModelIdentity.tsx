@@ -53,7 +53,7 @@ export function ModelPerformanceModelIdentity({
     >
       <span className="sr-only">{accessibleLabel}</span>
       <span className="contents" aria-hidden>
-        {hasModelIcon ? null : (
+        {!hasModelIcon ? (
           <span
             data-testid={testId ? `${testId}-name` : undefined}
             className={cn("min-w-0 truncate font-mono", modelClassName)}
@@ -61,7 +61,7 @@ export function ModelPerformanceModelIdentity({
           >
             {model}
           </span>
-        )}
+        ) : null}
         <span
           data-testid={testId ? `${testId}-badge` : undefined}
           className="inline-flex h-6 shrink-0 items-stretch overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none"

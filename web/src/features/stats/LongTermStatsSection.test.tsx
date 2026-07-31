@@ -217,10 +217,13 @@ describe("LongTermStatsSection charts", () => {
       ],
     };
     const modelSeries = [
-      series("a", "gpt-5.6-sol", [
-        { date: "2026-07-10", ...metrics(10, 1, 1) },
-        { date: "2026-07-30", ...metrics(null, null, 1) },
-      ]),
+      {
+        ...series("a", "gpt-5.6-sol", [
+          { date: "2026-07-10", ...metrics(10, 1, 1) },
+          { date: "2026-07-30", ...metrics(null, null, 1) },
+        ]),
+        reasoningEffort: "high",
+      },
     ];
     const upstreamSeries = [
       series("account:1", "Primary", [{ date: "2026-07-30", ...metrics(20, 2, 2) }]),
@@ -239,8 +242,14 @@ describe("LongTermStatsSection charts", () => {
     expect(html).toContain('data-stack-id="long-term-usage"');
     expect((html.match(/data-testid="long-term-line-chart"/g) ?? []).length).toBe(3);
     expect(html).toContain('data-testid="long-term-model-total-row"');
+    expect(html).toContain('data-testid="long-term-table-Models-identity-header"');
     expect(html).toContain('data-testid="long-term-chart-model-usage"');
     expect(html).toContain('data-testid="long-term-chart-upstream-usage"');
+    expect(html).toContain('data-long-term-legend-display="icon-and-effort"');
+    expect(html).toContain('title="gpt-5.6-sol · high"');
+    expect(html).toContain('data-model-icon="white-balance-sunny"');
+    expect(html).toContain('data-long-term-legend-label="effort">high</span>');
+    expect(html).not.toContain('data-long-term-legend-label="effort">gpt-5.6-sol');
     expect(areaChartData).toHaveLength(2);
     for (const data of areaChartData) {
       expect(data.map((point) => point.date)).toEqual(daily.map((point) => point.date));

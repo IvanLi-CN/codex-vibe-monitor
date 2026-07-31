@@ -95,6 +95,11 @@ const PIE_PALETTE: Record<ThemeMode, string[]> = {
   ],
 };
 
+const LONG_TERM_SERIES_PALETTE: Record<ThemeMode, string[]> = {
+  light: ["#2166ac", "#087b73", "#7c3aad", "#a46b00", "#bc4055", "#218443", "#5d6673", "#ad3b82"],
+  dark: ["#7ab8f5", "#4bd5c6", "#c5a6f5", "#f2c766", "#f08d9d", "#78d49a", "#c2cad6", "#ee9dcc"],
+};
+
 export function metricAccent(metric: MetricPaletteKey, themeMode: ThemeMode): string {
   return METRIC_ACCENTS[metric][themeMode];
 }
@@ -117,6 +122,10 @@ export function chartStatusTokens(themeMode: ThemeMode): ChartStatusTokens {
 
 export function piePalette(themeMode: ThemeMode): string[] {
   return PIE_PALETTE[themeMode];
+}
+
+export function longTermSeriesPalette(themeMode: ThemeMode): string[] {
+  return LONG_TERM_SERIES_PALETTE[themeMode];
 }
 
 export function withOpacity(hex: string, opacity: number): string {

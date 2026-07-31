@@ -2089,7 +2089,18 @@ function demoLongTermOverview(range: string) {
     : [
         ["model:gpt-5.6-sol|reasoning:high", "gpt-5.6-sol", 128_000, 211, 9.8],
         ["model:gpt-5.6-sol|reasoning:medium", "gpt-5.6-sol", 86_000, 142, 6.4],
-        ["model:gpt-5.6-terra|reasoning:未指定", "gpt-5.6-terra", 23_000, 59, 2.5],
+        ["model:gpt-5.6-sol|reasoning:low", "gpt-5.6-sol", 72_000, 117, 5.3],
+        ["model:gpt-5.6-terra|reasoning:high", "gpt-5.6-terra", 61_000, 98, 4.7],
+        ["model:gpt-5.6-luna|reasoning:medium", "gpt-5.6-luna", 48_000, 76, 3.8],
+        ["model:o3|reasoning:high", "o3", 39_000, 63, 2.9],
+        ["model:claude-sonnet-4|reasoning:medium", "claude-sonnet-4", 31_000, 51, 2.4],
+        [
+          "model:very-long-model-name-for-legend-wrapping|reasoning:minimal",
+          "very-long-model-name-for-legend-wrapping",
+          22_000,
+          38,
+          1.7,
+        ],
       ].map(([seriesKey, displayName, tokens, calls, cost]) => ({
         seriesKey,
         displayName,
@@ -2101,25 +2112,44 @@ function demoLongTermOverview(range: string) {
     : [
         ["account:1", "Primary API key", 154_000, 260, 11.2],
         ["account:2", "Research API key", 61_000, 108, 5.1],
-        ["other", "其他", 22_000, 44, 2.4],
+        ["account:3", "Staging API key", 52_000, 81, 4.1],
+        ["account:4", "Batch workloads", 43_000, 70, 3.5],
+        ["account:5", "Partner integration", 35_000, 61, 2.8],
+        ["account:6", "Archive importer", 28_000, 49, 2.2],
+        ["account:7", "Automation service", 25_000, 43, 2],
+        ["other", "Other upstream account with a deliberately long display name", 22_000, 44, 1.8],
       ].map(([seriesKey, displayName, tokens, calls, cost]) => ({
         seriesKey,
         displayName,
         ...demoLongTermMetrics(Number(tokens), Number(calls), Number(cost)),
       }));
+  const totals = models.reduce(
+    (total, item) => ({
+      tokens: total.tokens + (item.tokens ?? 0),
+      calls: total.calls + item.calls,
+      cost: total.cost + (item.cost ?? 0),
+    }),
+    { tokens: 0, calls: 0, cost: 0 },
+  );
   return {
     status: empty ? "empty" : "ready",
     statisticsStartDate: "2026-01-01",
-    processedRows: empty ? 0 : 412,
-    totalRows: empty ? 0 : 412,
+    processedRows: empty ? 0 : totals.calls,
+    totalRows: empty ? 0 : totals.calls,
     timezone: "Asia/Shanghai",
     range,
-    global: empty ? demoLongTermMetrics(0, 0, 0) : demoLongTermMetrics(237_000, 412, 18.7),
+    global: empty
+      ? demoLongTermMetrics(0, 0, 0)
+      : demoLongTermMetrics(totals.tokens, totals.calls, totals.cost),
     daily: empty
       ? []
       : days.map((date, index) => ({
           date,
-          ...demoLongTermMetrics(22_000 + index * 400, 38 + (index % 7), 1.2 + index / 100),
+          ...demoLongTermMetrics(
+            Math.round(totals.tokens / length) + index * 400,
+            Math.round(totals.calls / length) + (index % 7),
+            Number((totals.cost / length + index / 100).toFixed(2)),
+          ),
         })),
     models,
     upstreams,
@@ -2143,6 +2173,7 @@ function demoLongTermSeries(url: URL) {
       )
       .map((point) => point.date),
   );
+  const pointCount = Math.max(1, sparseDates.size);
   return {
     status: overview.status,
     statisticsStartDate: overview.statisticsStartDate,
@@ -2161,9 +2192,9 @@ function demoLongTermSeries(url: URL) {
           .filter((point) => sparseDates.has(point.date))
           .map((point) => ({
             ...point,
-            tokens: item.tokens,
-            cost: item.cost,
-            calls: item.calls,
+            tokens: Math.round((item.tokens ?? 0) / pointCount),
+            cost: Number(((item.cost ?? 0) / pointCount).toFixed(2)),
+            calls: Math.round(item.calls / pointCount),
           })),
       })),
   };
