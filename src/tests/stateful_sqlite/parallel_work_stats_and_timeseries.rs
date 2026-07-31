@@ -911,6 +911,52 @@ async fn parallel_work_maintenance_materializes_before_expiring_minute_keys() {
 }
 
 #[tokio::test]
+async fn parallel_work_payload_retention_waits_for_complete_minute_coverage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let keep_start = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start");
+    let payload_loss_cutoff = keep_start + 2 * 3_600;
+    assert!(
+        !parallel_work_minute_coverage_ready_for_payload_retention(
+            &state.pool,
+            payload_loss_cutoff,
+        )
+        .await
+        .expect("check missing minute coverage")
+    );
+
+    for hour_start_epoch in [keep_start, keep_start + 3_600] {
+        for source_scope in ["all", "proxy_only"] {
+            sqlx::query(
+                r#"
+                INSERT INTO parallel_work_hourly_coverage (
+                    hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+                )
+                VALUES (?1, ?2, 1, 0)
+                "#,
+            )
+            .bind(hour_start_epoch)
+            .bind(source_scope)
+            .execute(&state.pool)
+            .await
+            .expect("seed complete minute coverage");
+        }
+    }
+
+    assert!(
+        parallel_work_minute_coverage_ready_for_payload_retention(
+            &state.pool,
+            payload_loss_cutoff,
+        )
+        .await
+        .expect("check complete minute coverage")
+    );
+}
+
+#[tokio::test]
 async fn parallel_work_maintenance_never_marks_pre_retention_raw_hours_as_covered() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
