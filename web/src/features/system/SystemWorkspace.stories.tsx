@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
@@ -31,6 +31,23 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   responseRawBodies: { count: 670, bytes: 8_000_000_000 },
   databaseBytes: 618_659_840,
   otherFilesBytes: 142_344_192,
+  projectionHealth: {
+    terminal: {
+      state: "healthy",
+      cursorLag: 0,
+      dirtyBucketCount: 0,
+      pendingEventCount: 3,
+      lastFlushAgeMs: 320,
+    },
+    longTerm: {
+      state: "healthy",
+      cursorLag: 0,
+      dirtyBucketCount: 0,
+      pendingEventCount: 0,
+      lastFlushElapsedMs: 84,
+      lastFlushAgeMs: 1_812,
+    },
+  },
   refreshedAt: "2026-06-22T09:28:00Z",
 };
 
@@ -332,6 +349,7 @@ export const Status: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("heading", { name: "系统状态" })).toBeVisible();
     await expect(canvas.getByTestId("system-status-overview")).toBeVisible();
+    await expect(canvas.getByTestId("system-status-projection-health")).toBeVisible();
     await expect(canvas.getByRole("link", { name: "状态" })).toHaveAttribute(
       "aria-current",
       "page",
@@ -366,6 +384,22 @@ export const StatusRequestHeavy: Story = {
       archivedBodies: { count: 118_420, bytes: 649_117_696 },
       databaseBytes: 5_261_484_032,
       otherFilesBytes: 8_806,
+      projectionHealth: {
+        terminal: {
+          state: "dirty_last_good",
+          cursorLag: 16,
+          dirtyBucketCount: 0,
+          pendingEventCount: 16,
+          lastDeferReason: "pending_event_count",
+        },
+        longTerm: {
+          state: "deferred",
+          cursorLag: 16,
+          dirtyBucketCount: 2,
+          pendingEventCount: 16,
+          lastDeferReason: "writer_pressure",
+        },
+      },
     } satisfies SystemStatusResponse,
   },
   play: async ({ canvasElement }) => {
@@ -384,6 +418,9 @@ export const StatusRequestHeavy: Story = {
     );
     await expect(canvas.getByText("64 GB")).toBeVisible();
     await expect(canvas.getByText("5.5 GB")).toBeVisible();
+    await userEvent.click(canvas.getByText("投影详情"));
+    await expect(canvas.getByText("writer_pressure")).toBeVisible();
+    await expect(canvas.getByText("2")).toBeVisible();
   },
 };
 

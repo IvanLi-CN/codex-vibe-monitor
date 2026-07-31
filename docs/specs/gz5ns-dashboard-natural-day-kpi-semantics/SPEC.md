@@ -243,3 +243,7 @@
 - `docs/archive/specs/2qsev-dashboard-tpm-cost-per-minute-kpi/SPEC.md`
 - `docs/specs/t6d9r-account-detail-stats-read-model/SPEC.md`
 - `docs/solutions/performance/realtime-dashboard-reconcile-budget.md`
+
+## Projection Health
+
+- Dashboard 自然日 KPI 的 terminal 累计态独立于长期统计 P2 物化；长期投影延期时，当前态继续沿用 Dashboard 内存 read model 与 last-good 语义。

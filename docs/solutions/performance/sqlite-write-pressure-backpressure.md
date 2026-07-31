@@ -94,3 +94,13 @@
 
 - 如果前台关键写入本身持续超过单写者能力，应用层背压只能缓解，不能替代数据库迁移。
 - 如果需要跨进程 worker 或严格 FIFO，需要引入外部队列或 PostgreSQL，而不是继续扩大 SQLite 连接池。
+
+## Terminal Projection
+
+- P1 journal ACK 后可向多个 read-side consumer 发布紧凑 terminal event 与 durable row cursor；consumer cursor 必须独立，不能让 P2 rollup 成功阻塞 raw terminal durability。
+- 用 cursor 与持久 interval segment 替代定时范围重算：正常窗口只 hydrate 新增 rowId 并 additive upsert 受影响 rollup key，明确 repair 才精确重建目标桶。压力期保持 last-good 并 defer，不得为了补账重新抢 P1 锁。
+- 对已持久化 terminal 的字段修正要在同一事务中写入 target bucket repair marker；只更新全局 materialization 状态会让 cursor 之后没有新 row 的投影永远看不到修正。
+- 目标桶 repair 的 archive source 不只包含 terminal archive，也包含补齐账号归属所需的 attempt archive。archive rewrite 要同时排入旧、新 coverage；单个文件不可读时只延后对应桶并保留 last-good，不能让最老的失败 marker 饿死整个 repair 队列。repair 查询必须按目标自然日绑定范围，避免每个桶都读出整份 archive 后再过滤。
+- Projection schema、trigger 和兼容迁移属于启动期工作；固定 cadence 的 flush 或验证路径不得重复执行 DDL，否则后台维护本身会重新抢占 SQLite 写锁。
+- 增量 projection 替换全窗重算时，必须把旧 builder 的 hourly retention 一并迁入 P2 维护路径，并同步清理对应 hourly interval 状态；否则 service 虽然不再慢扫原表，却会在长期运行中把 projection 表无限累积。
+- `wall_time_ms` 由 interval union 派生，不能像 token/cost 一样对每批 delta 直接相加。持久化 interval segment 是重启恢复 union 的必要条件；upsert 应以完整 union 覆盖旧快照，才能保持重叠调用的精确值。

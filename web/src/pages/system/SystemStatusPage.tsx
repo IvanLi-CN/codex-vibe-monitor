@@ -261,6 +261,83 @@ function MetricSection({ title, description, metrics, testId }: MetricSectionPro
   );
 }
 
+function ProjectionHealthSection({ status, t }: OverviewPanelProps) {
+  const { terminal, longTerm } = status.projectionHealth;
+  const consumerLabel = (state: string) =>
+    state === "healthy"
+      ? t("system.status.projection.healthy")
+      : state === "deferred"
+        ? t("system.status.projection.deferred")
+        : state === "repairing"
+          ? t("system.status.projection.repairing")
+          : state === "dirty_last_good"
+            ? t("system.status.projection.lastGood")
+            : t("system.status.projection.preparing");
+  const age = (value?: number) => (value == null ? "-" : `${Math.round(value / 1000)} s`);
+
+  return (
+    <section
+      className="surface-panel overflow-hidden"
+      data-testid="system-status-projection-health"
+    >
+      <div className="surface-panel-body gap-4">
+        <div className="section-heading">
+          <h3 className="section-title">{t("system.status.projection.title")}</h3>
+          <p className="section-description max-w-[72ch]">
+            {t("system.status.projection.description")}
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <MetricCell
+            title={t("system.status.projection.terminal")}
+            value={consumerLabel(terminal.state)}
+            hint={t("system.status.projection.terminalHint", {
+              count: terminal.pendingEventCount.toLocaleString(),
+            })}
+            tone={terminal.state === "healthy" ? "primary" : "secondary"}
+          />
+          <MetricCell
+            title={t("system.status.projection.longTerm")}
+            value={consumerLabel(longTerm.state)}
+            hint={t("system.status.projection.longTermHint", {
+              count: longTerm.dirtyBucketCount.toLocaleString(),
+            })}
+            tone={longTerm.state === "healthy" ? "primary" : "secondary"}
+          />
+        </div>
+        <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
+          <summary className="cursor-pointer text-sm font-semibold text-base-content">
+            {t("system.status.projection.details")}
+          </summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <BreakdownRow
+              label={t("system.status.projection.cursorLag")}
+              value={longTerm.cursorLag.toLocaleString()}
+            />
+            <BreakdownRow
+              label={t("system.status.projection.dirtyBuckets")}
+              value={longTerm.dirtyBucketCount.toLocaleString()}
+            />
+            <BreakdownRow
+              label={t("system.status.projection.lastFlush")}
+              value={age(longTerm.lastFlushAgeMs)}
+              hint={
+                longTerm.lastFlushElapsedMs == null
+                  ? undefined
+                  : `${longTerm.lastFlushElapsedMs.toLocaleString()} ms`
+              }
+            />
+            <BreakdownRow
+              label={t("system.status.projection.deferReason")}
+              value={longTerm.lastDeferReason ?? terminal.lastDeferReason ?? "-"}
+            />
+          </div>
+        </details>
+      </div>
+    </section>
+  );
+}
+
 export default function SystemStatusPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
@@ -382,6 +459,7 @@ export default function SystemStatusPage() {
           {status ? (
             <div className="space-y-4" data-testid="system-status-layout">
               <OverviewPanel status={status} t={t} />
+              <ProjectionHealthSection status={status} t={t} />
               <div className="grid gap-4 xl:grid-cols-2" data-testid="system-status-sections">
                 <MetricSection
                   testId="system-status-records-section"

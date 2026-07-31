@@ -191,6 +191,8 @@ export type {
   StickyKeyConversationRequestPoint,
   StickyKeyConversationSelection,
   StickyKeyConversationSelectionMode,
+  SystemProjectionConsumerHealth,
+  SystemProjectionHealth,
   SystemStatusMetric,
   SystemStatusResponse,
   SystemTaskRun,

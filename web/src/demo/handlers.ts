@@ -1460,6 +1460,22 @@ function systemStatus() {
     responseRawBodies: { count: 670, bytes: 8_000_000 },
     databaseBytes: 618_659_840,
     otherFilesBytes: 142_344_192,
+    projectionHealth: {
+      terminal: {
+        state: "healthy",
+        cursorLag: 0,
+        dirtyBucketCount: 0,
+        pendingEventCount: 0,
+      },
+      longTerm: {
+        state: "healthy",
+        cursorLag: 0,
+        dirtyBucketCount: 0,
+        pendingEventCount: 0,
+        lastFlushElapsedMs: 72,
+        lastFlushAgeMs: 1_200,
+      },
+    },
     refreshedAt: demoNow(),
   };
 }

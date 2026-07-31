@@ -2077,6 +2077,23 @@ export interface SystemStatusMetric {
   bytes: number;
 }
 
+export interface SystemProjectionConsumerHealth {
+  state: string;
+  cursorLag: number;
+  dirtyBucketCount: number;
+  pendingEventCount: number;
+  lastFlushElapsedMs?: number;
+  lastFlushAgeMs?: number;
+  lastRepairScope?: string;
+  lastDeferReason?: string;
+  lastErrorKind?: string;
+}
+
+export interface SystemProjectionHealth {
+  terminal: SystemProjectionConsumerHealth;
+  longTerm: SystemProjectionConsumerHealth;
+}
+
 export interface SystemStatusResponse {
   liveInvocationsCount: number;
   successCount: number;
@@ -2088,6 +2105,7 @@ export interface SystemStatusResponse {
   responseRawBodies: SystemStatusMetric;
   databaseBytes: number;
   otherFilesBytes: number;
+  projectionHealth: SystemProjectionHealth;
   refreshedAt: string;
 }
 
@@ -3791,6 +3809,31 @@ function normalizeSystemStatusMetric(raw: unknown): SystemStatusMetric {
   };
 }
 
+function normalizeSystemProjectionConsumerHealth(raw: unknown): SystemProjectionConsumerHealth {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    state: typeof payload.state === "string" ? payload.state : "preparing",
+    cursorLag: normalizeFiniteNumber(payload.cursorLag) ?? 0,
+    dirtyBucketCount: normalizeFiniteNumber(payload.dirtyBucketCount) ?? 0,
+    pendingEventCount: normalizeFiniteNumber(payload.pendingEventCount) ?? 0,
+    lastFlushElapsedMs: normalizeFiniteNumber(payload.lastFlushElapsedMs) ?? undefined,
+    lastFlushAgeMs: normalizeFiniteNumber(payload.lastFlushAgeMs) ?? undefined,
+    lastRepairScope:
+      typeof payload.lastRepairScope === "string" ? payload.lastRepairScope : undefined,
+    lastDeferReason:
+      typeof payload.lastDeferReason === "string" ? payload.lastDeferReason : undefined,
+    lastErrorKind: typeof payload.lastErrorKind === "string" ? payload.lastErrorKind : undefined,
+  };
+}
+
+function normalizeSystemProjectionHealth(raw: unknown): SystemProjectionHealth {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    terminal: normalizeSystemProjectionConsumerHealth(payload.terminal),
+    longTerm: normalizeSystemProjectionConsumerHealth(payload.longTerm),
+  };
+}
+
 function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -3804,6 +3847,7 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
     responseRawBodies: normalizeSystemStatusMetric(payload.responseRawBodies),
     databaseBytes: normalizeFiniteNumber(payload.databaseBytes) ?? 0,
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
+    projectionHealth: normalizeSystemProjectionHealth(payload.projectionHealth),
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
 }

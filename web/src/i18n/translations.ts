@@ -1593,6 +1593,24 @@ const baseTranslations = {
     "system.status.cards.otherFilesBytes": "Other files size",
     "system.status.cards.otherFilesBytesHint":
       "Remaining runtime files under the database root excluding DB, raw, and archive directories.",
+    "system.status.projection.title": "Projection health",
+    "system.status.projection.description":
+      "Read-side projection state is derived from persisted terminal records and remains pressure-gated.",
+    "system.status.projection.terminal": "Terminal projection",
+    "system.status.projection.longTerm": "Long-term projection",
+    "system.status.projection.terminalHint":
+      "{{count}} event(s) are pending a durable consumer cursor.",
+    "system.status.projection.longTermHint": "{{count}} targeted bucket repair(s) are pending.",
+    "system.status.projection.healthy": "Healthy",
+    "system.status.projection.deferred": "Deferred",
+    "system.status.projection.repairing": "Repairing",
+    "system.status.projection.lastGood": "Last good",
+    "system.status.projection.preparing": "Preparing",
+    "system.status.projection.details": "Projection details",
+    "system.status.projection.cursorLag": "Cursor lag",
+    "system.status.projection.dirtyBuckets": "Dirty buckets",
+    "system.status.projection.lastFlush": "Last flush age",
+    "system.status.projection.deferReason": "Defer reason",
     "system.tasks.title": "Background tasks",
     "system.tasks.description":
       "Browse recent system-level scheduler, archive, backfill, compression, and forward-proxy refresh runs.",
@@ -4318,6 +4336,23 @@ const baseTranslations = {
     "system.status.cards.otherFilesBytes": "其他文件体积",
     "system.status.cards.otherFilesBytesHint":
       "数据库根目录下除数据库、raw、archive 外的其他运行文件体积。",
+    "system.status.projection.title": "投影健康状态",
+    "system.status.projection.description":
+      "读侧投影从已持久化的 terminal 记录增量恢复，并始终遵守数据库压力门控。",
+    "system.status.projection.terminal": "Terminal 投影",
+    "system.status.projection.longTerm": "长期统计投影",
+    "system.status.projection.terminalHint": "{{count}} 条事件正在等待持久化消费者水位确认。",
+    "system.status.projection.longTermHint": "{{count}} 个目标桶等待修复。",
+    "system.status.projection.healthy": "健康",
+    "system.status.projection.deferred": "已延后",
+    "system.status.projection.repairing": "修复中",
+    "system.status.projection.lastGood": "保留最近正确值",
+    "system.status.projection.preparing": "准备中",
+    "system.status.projection.details": "投影详情",
+    "system.status.projection.cursorLag": "Cursor 积压",
+    "system.status.projection.dirtyBuckets": "脏桶数量",
+    "system.status.projection.lastFlush": "距上次落盘",
+    "system.status.projection.deferReason": "延后原因",
     "system.tasks.title": "后台任务",
     "system.tasks.description":
       "浏览近期系统级 scheduler、归档、回填、压缩和正向代理订阅刷新任务的运行记录。",

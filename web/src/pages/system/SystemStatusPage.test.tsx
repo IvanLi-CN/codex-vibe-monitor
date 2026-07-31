@@ -80,6 +80,20 @@ describe("SystemStatusPage", () => {
       responseRawBodies: { count: 3, bytes: 2_048 },
       databaseBytes: 2_048,
       otherFilesBytes: 8_192,
+      projectionHealth: {
+        terminal: {
+          state: "healthy",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+        longTerm: {
+          state: "repairing",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+      },
       refreshedAt: "2026-06-22T08:00:00Z",
     });
   });
@@ -109,6 +123,8 @@ describe("SystemStatusPage", () => {
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(1);
     expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="system-status-projection-health"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("修复中");
     expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull();
     expect(host?.textContent ?? "").toContain("实际磁盘占用总览");

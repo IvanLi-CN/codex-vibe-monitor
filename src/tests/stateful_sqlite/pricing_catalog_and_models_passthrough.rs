@@ -1325,6 +1325,10 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),
         )),
+        terminal_projection_hub: Arc::new(crate::TerminalProjectionHub::default()),
+        long_term_projection_runtime: Arc::new(Mutex::new(
+            crate::LongTermProjectionRuntime::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

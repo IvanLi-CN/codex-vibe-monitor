@@ -906,7 +906,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
-    let delta = apply_dashboard_activity_terminal_record(state, &inserted_record).await;
+    let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
+    let delta = &projection.dashboard;
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -923,15 +924,11 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                 capture_started: Some(capture_started),
                 raw_capture: true,
                 dashboard_terminal_sequence: delta.terminal_sequence,
+                terminal_projection_event_ids: projection.event_id.into_iter().collect(),
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
-        rollback_dashboard_activity_terminal_record(
-            state,
-            &inserted_record,
-            delta.terminal_sequence,
-        )
-        .await;
+        rollback_terminal_projection_before_enqueue(state, &inserted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
             .clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);
