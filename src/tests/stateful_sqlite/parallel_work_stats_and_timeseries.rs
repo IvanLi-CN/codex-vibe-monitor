@@ -714,6 +714,66 @@ async fn parallel_work_active_minute_stats_rejects_a_raw_retention_gap_without_r
 }
 
 #[tokio::test]
+async fn parallel_work_active_minute_stats_accepts_partial_hour_minute_rollup_ranges() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let covered_hour = parallel_work_minute_rollup_keep_start_epoch(Utc::now())
+        .expect("minute-rollup retention start")
+        + 3_600;
+    let active_minute = covered_hour + 10 * 60;
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_hourly_coverage (
+            hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+        )
+        VALUES (?1, 'all', 1, 0)
+        "#,
+    )
+    .bind(covered_hour)
+    .execute(&state.pool)
+    .await
+    .expect("seed complete minute-key coverage");
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_minute_key_rollup (
+            minute_start_epoch, source, prompt_cache_key
+        )
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(active_minute)
+    .bind(SOURCE_PROXY)
+    .bind("pck-partial-hour")
+    .execute(&state.pool)
+    .await
+    .expect("seed active minute key");
+
+    let range_start = Utc
+        .timestamp_opt(covered_hour + 5 * 60, 0)
+        .single()
+        .expect("valid partial-hour start");
+    let range_end = Utc
+        .timestamp_opt(covered_hour + 20 * 60, 0)
+        .single()
+        .expect("valid partial-hour end");
+    let result = query_parallel_work_active_minute_stats(
+        &state.pool,
+        range_start,
+        range_end,
+        InvocationSourceScope::All,
+        None,
+        Some(range_end.timestamp()),
+    )
+    .await
+    .expect("query partial-hour minute-rollup range");
+
+    assert_eq!(result.active_minute_count, Some(1));
+    assert_f64_close(result.average().expect("partial-hour average"), 1.0);
+}
+
+#[tokio::test]
 async fn parallel_work_active_minute_stats_uses_pool_attempt_account_fallback_for_raw_tail() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

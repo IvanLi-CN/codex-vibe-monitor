@@ -454,16 +454,16 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
     let minute_start_epoch = complete_start_epoch.max(minute_keep_start_epoch);
     let minute_end_epoch = complete_end_epoch.min(current_hour_start_epoch);
     if minute_start_epoch < minute_end_epoch {
-        if minute_start_epoch.rem_euclid(3_600) != 0
-            || minute_end_epoch.rem_euclid(3_600) != 0
-            || !parallel_work_hourly_coverage_is_complete(
-                pool,
-                minute_start_epoch,
-                minute_end_epoch,
-                source_scope,
-                "minute_keys_complete",
-            )
-            .await?
+        let coverage_start_epoch = minute_start_epoch.div_euclid(3_600) * 3_600;
+        let coverage_end_epoch = (minute_end_epoch.saturating_add(3_599)).div_euclid(3_600) * 3_600;
+        if !parallel_work_hourly_coverage_is_complete(
+            pool,
+            coverage_start_epoch,
+            coverage_end_epoch,
+            source_scope,
+            "minute_keys_complete",
+        )
+        .await?
         {
             return Ok(ParallelWorkActiveMinuteStats::unavailable());
         }
