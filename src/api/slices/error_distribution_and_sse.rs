@@ -387,41 +387,18 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
     range_end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    raw_detail_start_epoch: Option<i64>,
+    _raw_detail_start_epoch: Option<i64>,
 ) -> Result<ParallelWorkActiveMinuteStats> {
     let complete_start_epoch = first_complete_minute_epoch(range_start);
     let complete_end_epoch = end_of_complete_minutes_epoch(range_end);
     if complete_start_epoch >= complete_end_epoch {
         return Ok(ParallelWorkActiveMinuteStats::empty_available());
     }
-    let complete_start = Utc
-        .timestamp_opt(complete_start_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid parallel-work complete-minute start"))?;
     let complete_end = Utc
         .timestamp_opt(complete_end_epoch, 0)
         .single()
         .ok_or_else(|| anyhow!("invalid parallel-work complete-minute end"))?;
     let minute_keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
-    let raw_detail_start_epoch = raw_detail_start_epoch.unwrap_or(i64::MIN);
-    if complete_start_epoch >= minute_keep_start_epoch
-        && complete_start_epoch >= raw_detail_start_epoch
-    {
-        return Ok(ParallelWorkActiveMinuteStats::from_key_sets(
-            query_parallel_work_exact_key_sets(
-                pool,
-                complete_start,
-                complete_end,
-                60,
-                chrono_tz::UTC,
-                source_scope,
-                upstream_account_id,
-                None,
-                None,
-            )
-            .await?,
-        ));
-    }
     let current_hour_start_epoch = Utc::now().timestamp().div_euclid(3_600) * 3_600;
     let mut result = ParallelWorkActiveMinuteStats::empty_available();
     let scalar_end_epoch = complete_end_epoch.min(minute_keep_start_epoch);

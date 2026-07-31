@@ -532,14 +532,8 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     assert_eq!(response.minute7d.active_bucket_count, 2);
     assert_eq!(response.minute7d.max_count, Some(3));
     assert_eq!(response.minute7d.min_count, Some(0));
-    assert_eq!(response.minute7d.active_minute_count, Some(2));
-    assert_f64_close(
-        response
-            .minute7d
-            .avg_count
-            .expect("active-minute average should be present"),
-        2.0,
-    );
+    assert_eq!(response.minute7d.active_minute_count, None);
+    assert_eq!(response.minute7d.avg_count, None);
 
     for bucket in ["1h", "1d"] {
         let Json(window_response) = fetch_parallel_work_stats(
@@ -553,14 +547,8 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
         )
         .await
         .expect("fetch parallel-work stats for display bucket");
-        assert_eq!(window_response.current.active_minute_count, Some(2));
-        assert_f64_close(
-            window_response
-                .current
-                .avg_count
-                .expect("active-minute average should not depend on display bucket"),
-            2.0,
-        );
+        assert_eq!(window_response.current.active_minute_count, None);
+        assert_eq!(window_response.current.avg_count, None);
     }
 
     let Json(account_response) = fetch_parallel_work_stats(
@@ -574,14 +562,8 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     )
     .await
     .expect("fetch account parallel-work stats");
-    assert_eq!(account_response.current.active_minute_count, Some(2));
-    assert_f64_close(
-        account_response
-            .current
-            .avg_count
-            .expect("account active-minute average should be present"),
-        2.0,
-    );
+    assert_eq!(account_response.current.active_minute_count, None);
+    assert_eq!(account_response.current.avg_count, None);
 }
 
 #[tokio::test]
@@ -779,9 +761,18 @@ async fn parallel_work_active_minute_stats_uses_pool_attempt_account_fallback_fo
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let minute_start_epoch = align_reporting_bucket_epoch(Utc::now().timestamp(), 60, Shanghai)
+    let mut now = Utc::now();
+    let seconds_into_hour = now.timestamp().rem_euclid(3_600);
+    if seconds_into_hour < 60 {
+        tokio::time::sleep(std::time::Duration::from_secs(
+            (61 - seconds_into_hour) as u64,
+        ))
+        .await;
+        now = Utc::now();
+    }
+    let minute_start_epoch = align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai)
         .expect("align complete minute")
-        - 3 * 60;
+        - 60;
     let minute_start = Utc
         .timestamp_opt(minute_start_epoch, 0)
         .single()
@@ -1719,7 +1710,7 @@ async fn parallel_work_stats_account_scoped_day_bucket_aggregates_distinct_keys(
     assert_eq!(current_day_point.parallel_count, 1);
     assert_eq!(response.current.active_bucket_count, 2);
     assert_eq!(response.current.max_count, Some(2));
-    assert_eq!(response.current.active_minute_count, Some(0));
+    assert_eq!(response.current.active_minute_count, None);
     assert_eq!(response.current.avg_count, None);
 }
 
