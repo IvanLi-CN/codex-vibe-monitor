@@ -1551,6 +1551,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
     let mut repaired = Vec::new();
     let mut event_count = 0usize;
     let mut deferred_repair_count = 0usize;
+    let mut deferred_repair_backoff_count = 0usize;
     if let Some(baseline_cursor) = baseline_cursor {
         let baseline_dates = long_term_projection_open_baseline_dates();
         queue_long_term_projection_repairs(&state.pool, &baseline_dates, "interval_baseline")
@@ -1623,6 +1624,8 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
                 load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
             if long_term_projection_repairs_are_deferred(&state.pool, &repair_dates).await? {
                 deferred_repair_count = deferred_repair_count.saturating_add(repair_dates.len());
+                deferred_repair_backoff_count =
+                    deferred_repair_backoff_count.saturating_add(repair_dates.len());
                 debug!(
                     projection = "long_term",
                     repair_scope = ?repair_dates,
@@ -1740,8 +1743,13 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
     runtime.last_flush_elapsed_ms = Some(elapsed_ms);
     runtime.last_flush_at = Some(Instant::now());
     runtime.last_repair_scope = (!repaired.is_empty()).then(|| repaired.join(","));
-    runtime.last_defer_reason =
-        (deferred_repair_count > 0).then(|| "repair_source_unavailable".to_string());
+    runtime.last_defer_reason = if deferred_repair_backoff_count > 0 {
+        Some("repair_backoff".to_string())
+    } else if deferred_repair_count > 0 {
+        Some("repair_source_unavailable".to_string())
+    } else {
+        None
+    };
     runtime.last_error_kind = (deferred_repair_count > 0).then(|| "targeted_repair".to_string());
     let interval_bytes = runtime
         .interval_index
@@ -1763,6 +1771,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         interval_bytes,
         interval_key_count = runtime.interval_index.len(),
         deferred_repair_count,
+        deferred_repair_backoff_count,
         retention_pruned_hourly_rows,
         retention_pruned_interval_rows,
         flush_outcome = "accepted",
