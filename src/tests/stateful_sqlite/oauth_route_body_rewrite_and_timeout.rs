@@ -1257,6 +1257,8 @@ async fn replay_route_analysis_preserves_sticky_projection_type_semantics() {
         br#"{"stickyKey":42,"promptCacheKey":"must-not-route"}"#.as_slice(),
         br#"{"stickyKey":"must-not-route","promptCacheKey":42}"#.as_slice(),
         br#"{"metadata":null,"stickyKey":"must-not-route"}"#.as_slice(),
+        br#"{"stickyKey":"owner-a","stickyKey":"owner-b"}"#.as_slice(),
+        br#"{"metadata":{"stickyKey":"owner-a","stickyKey":"owner-b"}}"#.as_slice(),
     ] {
         let snapshot = PoolReplayBodySnapshot::Memory(Bytes::copy_from_slice(request_body));
         let analysis = analyze_replay_snapshot_for_pool_routing(

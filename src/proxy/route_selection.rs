@@ -1,5 +1,7 @@
 use std::{future::Future, pin::Pin};
 
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
 use super::*;
 
 type ViaPoolResponseFuture<'a> =
@@ -100,6 +102,173 @@ pub(crate) fn extract_sticky_key_from_request_body_projection(bytes: &[u8]) -> O
         .and_then(StickyKeyProjection::into_sticky_key)
 }
 
+#[derive(Debug, Default)]
+struct ReplaySnapshotRouteValue {
+    value: Value,
+    sticky_projection_valid: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReplaySnapshotRouteValueScope {
+    Root,
+    Metadata,
+    Nested,
+}
+
+impl ReplaySnapshotRouteValueScope {
+    fn child(self, key: &str) -> Self {
+        if matches!(self, Self::Root) && key == "metadata" {
+            Self::Metadata
+        } else {
+            Self::Nested
+        }
+    }
+
+    fn sticky_projection_key_bit(self, key: &str) -> Option<u8> {
+        match self {
+            Self::Root => match key {
+                "metadata" => Some(1 << 0),
+                "sticky_key" => Some(1 << 1),
+                "stickyKey" => Some(1 << 2),
+                "prompt_cache_key" => Some(1 << 3),
+                "promptCacheKey" => Some(1 << 4),
+                _ => None,
+            },
+            Self::Metadata => match key {
+                "sticky_key" => Some(1 << 0),
+                "stickyKey" => Some(1 << 1),
+                "prompt_cache_key" => Some(1 << 2),
+                "promptCacheKey" => Some(1 << 3),
+                _ => None,
+            },
+            Self::Nested => None,
+        }
+    }
+}
+
+struct ReplaySnapshotRouteValueSeed<'a> {
+    sticky_projection_valid: &'a mut bool,
+    scope: ReplaySnapshotRouteValueScope,
+}
+
+struct ReplaySnapshotRouteValueVisitor<'a> {
+    sticky_projection_valid: &'a mut bool,
+    scope: ReplaySnapshotRouteValueScope,
+}
+
+impl<'de> DeserializeSeed<'de> for ReplaySnapshotRouteValueSeed<'_> {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ReplaySnapshotRouteValueVisitor {
+            sticky_projection_valid: self.sticky_projection_valid,
+            scope: self.scope,
+        })
+    }
+}
+
+impl<'de> Visitor<'de> for ReplaySnapshotRouteValueVisitor<'_> {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("JSON number must be finite"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(ReplaySnapshotRouteValueSeed {
+            sticky_projection_valid: &mut *self.sticky_projection_valid,
+            scope: ReplaySnapshotRouteValueScope::Nested,
+        })? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = serde_json::Map::new();
+        let mut seen_sticky_projection_key_bits = 0_u8;
+        while let Some(key) = map.next_key::<String>()? {
+            if let Some(bit) = self.scope.sticky_projection_key_bit(&key) {
+                if seen_sticky_projection_key_bits & bit != 0 {
+                    *self.sticky_projection_valid = false;
+                }
+                seen_sticky_projection_key_bits |= bit;
+            }
+            let value = map.next_value_seed(ReplaySnapshotRouteValueSeed {
+                sticky_projection_valid: &mut *self.sticky_projection_valid,
+                scope: self.scope.child(&key),
+            })?;
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
+    }
+}
+
+impl<'de> Deserialize<'de> for ReplaySnapshotRouteValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut sticky_projection_valid = true;
+        let value = ReplaySnapshotRouteValueSeed {
+            sticky_projection_valid: &mut sticky_projection_valid,
+            scope: ReplaySnapshotRouteValueScope::Root,
+        }
+        .deserialize(deserializer)?;
+        Ok(Self {
+            value,
+            sticky_projection_valid,
+        })
+    }
+}
+
 fn extract_sticky_key_from_request_value_projection_semantics(value: &Value) -> Option<String> {
     fn projection_field<'a>(
         object: &'a serde_json::Map<String, Value>,
@@ -162,19 +331,21 @@ pub(crate) struct ReplaySnapshotRouteAnalysis {
 }
 
 fn analyze_replay_snapshot_route_value(
-    value: Option<Value>,
+    parsed_value: Option<ReplaySnapshotRouteValue>,
     capture_target: Option<ProxyCaptureTarget>,
 ) -> ReplaySnapshotRouteAnalysis {
-    let image_intent = infer_request_image_intent(capture_target, value.as_ref());
-    let compaction_kind = infer_request_compaction_kind(capture_target, value.as_ref());
-    let sticky_key = value
+    let sticky_projection_valid = parsed_value
         .as_ref()
-        .and_then(extract_sticky_key_from_request_value_projection_semantics);
-    let prompt_cache_key = value
-        .as_ref()
-        .and_then(extract_prompt_cache_key_from_request_body);
-    let requested_model = value.as_ref().and_then(extract_model_from_payload);
-    let contains_encrypted_content = value.as_ref().is_some_and(value_contains_encrypted_content);
+        .is_none_or(|value| value.sticky_projection_valid);
+    let value = parsed_value.as_ref().map(|value| &value.value);
+    let image_intent = infer_request_image_intent(capture_target, value);
+    let compaction_kind = infer_request_compaction_kind(capture_target, value);
+    let sticky_key = sticky_projection_valid
+        .then(|| value.and_then(extract_sticky_key_from_request_value_projection_semantics))
+        .flatten();
+    let prompt_cache_key = value.and_then(extract_prompt_cache_key_from_request_body);
+    let requested_model = value.and_then(extract_model_from_payload);
+    let contains_encrypted_content = value.is_some_and(value_contains_encrypted_content);
 
     ReplaySnapshotRouteAnalysis {
         sticky_key,
@@ -212,9 +383,11 @@ pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
             let path = temp_file.path.clone();
             match tokio::task::spawn_blocking(move || {
                 let file = std::fs::File::open(path).map_err(|_| "read_failed")?;
-                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
-                    .map(Some)
-                    .map_err(|_| "invalid_json")
+                serde_json::from_reader::<_, ReplaySnapshotRouteValue>(std::io::BufReader::new(
+                    file,
+                ))
+                .map(Some)
+                .map_err(|_| "invalid_json")
             })
             .await
             {
