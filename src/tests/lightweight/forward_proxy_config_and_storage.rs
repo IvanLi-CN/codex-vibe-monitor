@@ -225,7 +225,7 @@ fn forward_proxy_manager_v2_keeps_two_positive_weights() {
 }
 
 #[tokio::test]
-async fn async_streaming_raw_payload_writer_respects_global_backpressure_semaphore() {
+async fn async_streaming_raw_payload_writer_queues_when_global_writer_pool_is_saturated() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -246,19 +246,99 @@ async fn async_streaming_raw_payload_writer_respects_global_backpressure_semapho
         "invoke-backpressure",
         "response",
         true,
+        None,
     );
     writer.append(b"hello");
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    assert!(
+        fs::read_dir(&spool_dir)
+            .expect("overflow spool directory")
+            .flatten()
+            .any(
+                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("frames")
+            ),
+        "saturated writer should persist overflow bytes before capacity is released"
+    );
+    drop(permits);
     let meta = writer.finish().await;
 
-    assert!(meta.path.is_none());
     assert_eq!(meta.size_bytes, 5);
-    assert!(meta.truncated);
+    assert!(!meta.truncated);
+    let path = PathBuf::from(meta.path.expect("queued raw capture path"));
     assert_eq!(
-        meta.truncated_reason.as_deref(),
-        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+        read_proxy_raw_bytes(path.to_string_lossy().as_ref(), None).unwrap(),
+        b"hello"
     );
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid_files() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-spool-recovery",
+        "response",
+        true,
+        None,
+    );
+    writer.append(b"recover-me");
+    drop(writer);
+
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    fs::create_dir_all(&spool_dir).expect("create spool dir");
+    let invalid_path = spool_dir.join("incomplete.frames");
+    fs::write(&invalid_path, b"partial").expect("write invalid spool");
 
     drop(permits);
+    recover_raw_overflow_spools(&state.config).await;
+
+    let recovered = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("invoke-spool-recovery-response.bin.zst");
+    assert_eq!(
+        read_proxy_raw_bytes(recovered.to_string_lossy().as_ref(), None).expect("recovered raw"),
+        b"recover-me"
+    );
+    assert!(
+        invalid_path.exists(),
+        "invalid spool must remain for inspection"
+    );
+    let _ = fs::remove_file(recovered);
+    let _ = fs::remove_file(invalid_path);
+}
+
+#[tokio::test]
+async fn streaming_raw_capture_preserves_precompressed_wire_bytes_without_recompression() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(b"already-gzipped-wire-body").unwrap();
+    let wire_bytes = encoder.finish().unwrap();
+
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-precompressed-wire",
+        "response",
+        true,
+        Some("gzip"),
+    );
+    writer.append(&wire_bytes);
+    let meta = writer.finish().await;
+    let path = PathBuf::from(meta.path.expect("raw wire path"));
+    assert!(path.ends_with("invoke-precompressed-wire-response.bin"));
+    assert_eq!(fs::read(&path).expect("read stored wire bytes"), wire_bytes);
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
@@ -2063,20 +2143,51 @@ fn store_raw_payload_file_born_gzips_large_payloads_when_threshold_is_reached() 
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[test]
+fn store_raw_payload_file_born_zstds_identity_payloads() {
+    let temp_dir = make_temp_test_dir("proxy-raw-store-born-zstd");
+    let mut config = test_config();
+    config.database_path = temp_dir.join("codex_vibe_monitor.db");
+    config.proxy_raw_compression = RawCompressionCodec::Zstd;
+    let payload = br#"{"identity":"stored-with-zstd"}"#;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+    let meta = runtime.block_on(store_raw_payload_file(
+        &config,
+        "proxy-born-zstd",
+        "response",
+        Bytes::from_static(payload),
+    ));
+    let path = PathBuf::from(meta.path.expect("zstd path"));
+    assert!(path.ends_with("proxy-born-zstd-response.bin.zst"));
+    assert_eq!(
+        read_proxy_raw_bytes(path.to_string_lossy().as_ref(), None).expect("read zstd raw"),
+        payload
+    );
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[tokio::test]
 async fn write_streaming_raw_payload_to_file_born_gzips_large_streams() {
     let temp_dir = make_temp_test_dir("proxy-stream-born-gzip");
     let raw_path = temp_dir.join("stream-response.bin");
-    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     tx.send(Bytes::from_static(b"hello-"))
-        .await
         .expect("send first chunk");
     tx.send(Bytes::from_static(b"world-large"))
-        .await
         .expect("send second chunk");
     drop(tx);
 
-    let meta = write_streaming_raw_payload_to_file(raw_path.clone(), None, Some(8), &mut rx).await;
+    let meta = write_streaming_raw_payload_to_file(
+        raw_path.clone(),
+        None,
+        Some(8),
+        RawCompressionCodec::Gzip,
+        &mut rx,
+    )
+    .await;
 
     let stored_path = PathBuf::from(meta.path.expect("streaming born-gzip path"));
     assert!(stored_path.ends_with("stream-response.bin.gz"));
@@ -2096,13 +2207,19 @@ async fn write_streaming_raw_payload_to_file_removes_plain_path_after_write_fail
     let raw_path = temp_dir.join("stream-response.bin");
     symlink("/dev/full", &raw_path).expect("symlink plain raw path to /dev/full");
 
-    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     tx.send(Bytes::from_static(b"hello-world"))
-        .await
         .expect("send chunk");
     drop(tx);
 
-    let meta = write_streaming_raw_payload_to_file(raw_path.clone(), None, None, &mut rx).await;
+    let meta = write_streaming_raw_payload_to_file(
+        raw_path.clone(),
+        None,
+        None,
+        RawCompressionCodec::None,
+        &mut rx,
+    )
+    .await;
 
     assert!(meta.path.is_none(), "failed write must not keep raw path");
     assert!(meta.truncated, "failed write should mark payload truncated");
@@ -2130,13 +2247,19 @@ async fn write_streaming_raw_payload_to_file_removes_gzip_path_after_write_failu
     let gzip_path = temp_dir.join("stream-response.bin.gz");
     symlink("/dev/full", &gzip_path).expect("symlink gzip raw path to /dev/full");
 
-    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     tx.send(Bytes::from_static(b"hello-world"))
-        .await
         .expect("send chunk");
     drop(tx);
 
-    let meta = write_streaming_raw_payload_to_file(raw_path, None, Some(1), &mut rx).await;
+    let meta = write_streaming_raw_payload_to_file(
+        raw_path,
+        None,
+        Some(1),
+        RawCompressionCodec::Gzip,
+        &mut rx,
+    )
+    .await;
 
     assert!(meta.path.is_none(), "failed write must not keep raw path");
     assert!(meta.truncated, "failed write should mark payload truncated");

@@ -30,6 +30,12 @@
 ### In scope
 
 - `src/proxy.rs` 中 `/v1/*` 请求入口、pool 路由 body 处理、request/response raw capture 与 summary follow-up 调度。
+
+## Raw Capture Storage
+
+- Response raw capture must preserve an already content-encoded wire response as-is; it must not decode and recompress `gzip`, `zstd`, or `deflate` on the proxy request path.
+- Identity payload storage defaults to Zstd. Existing `.gz` captures remain readable and expire through normal retention; no bulk migration is permitted.
+- A saturated raw writer queues enabled capture work instead of marking it `async_backpressure_dropped`. Compression concurrency is bounded by `PROXY_RAW_ZSTD_MAX_CONCURRENT_WRITERS` or `clamp(available_parallelism / 2, 2, 8)`.
 - `src/config.rs` / `src/app_state.rs` / `src/runtime.rs` 中 whole-proxy admission gate 的移除、纯观测型 in-flight 指标与 deprecated 配置告警。
 - `src/api/mod.rs` 中 invocation 列表分页查询的轻量页 id 预选 + 当前页重型投影（保留并复验，不回退）。
 - `src/tests/mod.rs` 中与 100 并行、不再本地 admission reject、raw 异步和长流 in-flight tracking 相关的回归测试。

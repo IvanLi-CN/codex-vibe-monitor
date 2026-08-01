@@ -150,6 +150,11 @@
 - `prompt-cache.sticky.window`
 - `stats.summary.current`（open-range only）
 - `stats.timeseries.open-window`
+
+### Open-Window Timeseries Projection
+
+- `today` and `1d` minute windows may use a durable minute projection of exact invocation aggregate records. A missing projection is a warming fallback, not a different response contract.
+- Projection entries retain exact latency samples, so P95 remains exact. A covered window reads minute entries plus a bounded post-cursor tail; it does not hydrate the full live invocation range for every topic refresh.
 - `stats.parallel-work.current`
 - `forward-proxy.live`
 - `invocation.pool-attempts`

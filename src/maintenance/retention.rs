@@ -1893,6 +1893,13 @@ pub(crate) async fn prune_old_invocation_details(
             query.push(")");
             clear_pool_attempt_response_captures_for_invocation_ids(tx.as_mut(), &ids).await?;
             query.build().execute(tx.as_mut()).await?;
+            if let Some(latest) = group
+                .iter()
+                .map(|candidate| candidate.occurred_at.as_str())
+                .max()
+            {
+                record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
+            }
             tx.commit().await?;
 
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;

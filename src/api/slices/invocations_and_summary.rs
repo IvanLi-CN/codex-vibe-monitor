@@ -17898,7 +17898,7 @@ pub(crate) struct HourlyRollupExactRangePlan {
     pub(crate) live_exact_ranges: Vec<ExactUtcRange>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
 pub(crate) struct InvocationAggregateRecord {
     pub(crate) id: i64,
     pub(crate) invoke_id: String,

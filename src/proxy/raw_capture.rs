@@ -489,20 +489,46 @@ pub(crate) async fn store_raw_payload_file(
 
     let raw_dir = config.resolved_proxy_raw_dir();
 
-    let born_gzip = config
-        .proxy_raw_immediate_gzip_threshold()
-        .is_some_and(|threshold| content.len() >= threshold);
+    let born_compressed = match config.proxy_raw_compression {
+        // Zstd is the current storage format for identity captures. It is applied from
+        // the first byte rather than waiting for the legacy gzip size threshold.
+        RawCompressionCodec::Zstd => true,
+        RawCompressionCodec::Gzip => config
+            .proxy_raw_immediate_compression_threshold()
+            .is_some_and(|threshold| content.len() >= threshold),
+        RawCompressionCodec::None => false,
+    };
     let file_bytes = content.len();
-    let codec = if born_gzip {
-        RAW_CODEC_GZIP
+    let codec = if born_compressed {
+        match config.proxy_raw_compression {
+            RawCompressionCodec::Gzip => RAW_CODEC_GZIP,
+            RawCompressionCodec::Zstd => RAW_CODEC_ZSTD,
+            RawCompressionCodec::None => RAW_CODEC_IDENTITY,
+        }
     } else {
         RAW_CODEC_IDENTITY
     };
-    let path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, born_gzip);
-    let write_result = if born_gzip {
+    let plain_path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, false);
+    let path = if codec == RAW_CODEC_ZSTD {
+        raw_payload_zstd_path(&plain_path)
+    } else if codec == RAW_CODEC_GZIP {
+        raw_payload_gzip_path(&plain_path)
+    } else {
+        plain_path
+    };
+    let write_result = if codec == RAW_CODEC_GZIP {
         let write_path = path.clone();
         run_blocking_raw_writer_io(move || {
             let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
+            encoder.write_all(content.as_ref())?;
+            let mut writer = encoder.finish()?;
+            writer.flush()
+        })
+        .await
+    } else if codec == RAW_CODEC_ZSTD {
+        let write_path = path.clone();
+        run_blocking_raw_writer_io(move || {
+            let mut encoder = create_zstd_streaming_raw_encoder(&write_path)?;
             encoder.write_all(content.as_ref())?;
             let mut writer = encoder.finish()?;
             writer.flush()
@@ -521,7 +547,7 @@ pub(crate) async fn store_raw_payload_file(
             meta.path = Some(path.to_string_lossy().to_string());
         }
         Err(err) => {
-            if born_gzip {
+            if codec != RAW_CODEC_IDENTITY {
                 let _ = fs::remove_file(&path);
             }
             meta.truncated = true;
@@ -1323,6 +1349,17 @@ pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Re
             )
         })?;
         Ok(decoded)
+    } else if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zst"))
+    {
+        zstd::stream::decode_all(bytes.as_slice()).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to decompress raw payload {}: {err}", path.display()),
+            )
+        })
     } else {
         Ok(bytes)
     }
