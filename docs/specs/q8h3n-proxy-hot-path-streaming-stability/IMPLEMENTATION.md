@@ -18,6 +18,7 @@
 - Note: `proxy capture follow-up` 的热路径门禁前移到 subscriber-aware 调度，避免无订阅者时每次代理收尾都触发重型 summary/quota 与 rollup 预算；对应回归测试与 `cargo check --tests` 已通过。
 - Note: capture 入口的 request body 读取改为 replay snapshot 控制面；大 body 先落 file-backed replay snapshot，再进入现有完整 parse/rewrite/owner-binding 路径。超限错误只保留有界 partial body，避免 raw failure 证据回退且不重新制造整包内存副本。
 - Note: file-backed capture snapshot 在进入现有 parse/rewrite 语义时只做一次 consume materialization；本轮没有把 capture pipeline 改成零拷贝 shared snapshot，因为这会牵涉 raw、failover、rewrite 与 terminal record 的共同数据模型。
+- Note: file-backed pool routing 的 sticky key、prompt-cache key、model、encrypted、image 与 compaction 投影统一由一次 snapshot read / JSON parse 得出；解析后的完整 JSON 会立即释放，route/retry 分支只保留紧凑投影。慢日志带有 `file_read_count`、`json_parse_count`、`parse_outcome` 与 `analysis_elapsed_ms`，用于识别回归。
 - Note: 本轮没有强开 capture live-first；对仍需完整 request 语义的 capture 请求输出 `live_first_reason=capture_requires_full_request_semantics`，并新增 `body_size_bucket`、`request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 证据，供 101 判断剩余慢点。
 - Note: pool failover replay snapshot 构造已收口到统一 helper：`Bytes` / `Vec<u8>` 小于等于 `POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES` 时保留 memory，大于阈值时写入 `cvm-pool-replay-*` 临时文件并返回 file snapshot；临时文件失败只 fail-soft 回退 memory 并输出 warning。
 - Note: direct-image 路径使用独立首字节预算；超时后立即以 `504 upstream_handshake_timeout` 收口并释放 reservation，不进入 replay retry 或切号。
