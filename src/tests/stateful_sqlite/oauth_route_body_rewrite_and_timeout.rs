@@ -1206,29 +1206,74 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
 }
 
 #[tokio::test]
-async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
-    let sticky_body = serde_json::to_vec(&json!({
+async fn analyze_large_file_backed_replay_snapshot_once_for_pool_routing() {
+    let request_body = serde_json::to_vec(&json!({
         "stickyKey": "sticky-large-file",
-        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+        "metadata": {},
+        "promptCacheKey": "cache-large-file",
+        "model": "gpt-5.5",
+        "input": [
+            { "type": "encrypted_content" },
+            "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+        ],
     }))
     .expect("serialize sticky replay body");
     let temp_file = Arc::new(PoolReplayTempFile {
         path: build_pool_replay_temp_path(737373),
     });
-    tokio::fs::write(&temp_file.path, &sticky_body)
+    tokio::fs::write(&temp_file.path, &request_body)
         .await
         .expect("write sticky replay temp file");
     let snapshot = PoolReplayBodySnapshot::File {
         temp_file,
-        size: sticky_body.len(),
+        size: request_body.len(),
     };
 
+    let analysis = analyze_replay_snapshot_for_pool_routing(
+        &snapshot,
+        Some(ProxyCaptureTarget::Responses),
+        737373,
+        "test",
+    )
+    .await;
+
+    assert_eq!(analysis.sticky_key.as_deref(), Some("sticky-large-file"));
     assert_eq!(
-        extract_sticky_key_from_replay_snapshot(&snapshot)
-            .await
-            .as_deref(),
-        Some("sticky-large-file")
+        analysis.prompt_cache_key.as_deref(),
+        Some("cache-large-file")
     );
+    assert_eq!(analysis.requested_model.as_deref(), Some("gpt-5.5"));
+    assert!(analysis.contains_encrypted_content);
+    assert_eq!(analysis.file_read_count, 1);
+    assert_eq!(analysis.json_parse_count, 1);
+    assert_eq!(analysis.parse_outcome, "parsed");
+}
+
+#[tokio::test]
+async fn replay_route_analysis_preserves_sticky_projection_type_semantics() {
+    for request_body in [
+        br#"{"metadata":{"stickyKey":"metadata-sticky"},"stickyKey":"body-sticky"}"#.as_slice(),
+        br#"{"stickyKey":"  ","promptCacheKey":"fallback-sticky"}"#.as_slice(),
+        br#"{"stickyKey":42,"promptCacheKey":"must-not-route"}"#.as_slice(),
+        br#"{"stickyKey":"must-not-route","promptCacheKey":42}"#.as_slice(),
+        br#"{"metadata":null,"stickyKey":"must-not-route"}"#.as_slice(),
+        br#"{"stickyKey":"owner-a","stickyKey":"owner-b"}"#.as_slice(),
+        br#"{"metadata":{"stickyKey":"owner-a","stickyKey":"owner-b"}}"#.as_slice(),
+    ] {
+        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::copy_from_slice(request_body));
+        let analysis = analyze_replay_snapshot_for_pool_routing(
+            &snapshot,
+            Some(ProxyCaptureTarget::Responses),
+            737374,
+            "test",
+        )
+        .await;
+
+        assert_eq!(
+            analysis.sticky_key,
+            extract_sticky_key_from_request_body_projection(request_body)
+        );
+    }
 }
 
 #[test]

@@ -55,6 +55,7 @@
 - 号池路由只能把近期 `transport_failure` 且 failure kind 属于 `upstream_handshake_timeout`、`failed_contact_upstream` 或 `upstream_stream_error` 的 `upstream_route_key + proxy_binding_key_snapshot` 组合纳入短期降权；同组合后续成功应清除该短期惩罚，认证、配额、402 等账号级硬失败不得混入组合降权。
 - `/v1/images/generations` 与 `/v1/images/edits` 的首字节超时必须视为可能已产生上游副作用的终态：只保留一次 upstream attempt，不做同账号重试或切号，并返回 `504` + `upstream_handshake_timeout`，不得改写成 `pool_no_available_account`。
 - capture 入口不得为了提速跳过完整 raw、usage、failure、prompt-cache/encrypted owner 与 body rewrite 语义。可证明安全前，capture 请求必须先使用 replay snapshot 控制面读取：小体积保留内存，大体积落 file-backed replay；日志必须给出 `body_read_done`、`body_size_bucket`、`request_body_snapshot_kind` 与 `live_first_reason`，说明为何未启用 live-first。
+- 同一个 file-backed replay snapshot 的路由准备只允许执行一次文件读取与一次 JSON parse，并在解析后仅保留 sticky key、prompt-cache key、model、encrypted、image/compaction 等紧凑投影；不得为每个投影重复打开或物化整个 request body。sticky 投影字段的类型错误或重复字段必须继续降级为无 sticky 路由。
 - capture response streaming 必须先向下游转发 chunk，再异步收敛 raw/record；日志应能区分 `downstream_first_byte_elapsed` 与 `raw_response_write_elapsed`，避免把原始响应落盘耗时误判为上游首字节慢。
 - 对 `/v1/responses` SSE，完整可解析且事件类型与 payload `type` 均为 `response.completed`、`response.status == "completed"` 的事件是不可逆的协议成功终态。代理仍必须继续读取上游到 EOF 并写完整 raw；终态后的上游读取异常或超时只能作为中性诊断，不能改写调用成功、失败分类、账号健康或路由评分。
 - 只有成功终态所在 chunk 已实际送入下游 body 后，普通 body release 才是正常释放，不能生成 `body_dropped`、`downstream_closed` 或 `warning_success`。终态送达前下游断开仍须记录 `client_abort/downstream_closed`；若上游随后完成，号池 attempt 仍成功且不惩罚上游。
@@ -83,6 +84,12 @@
 - Given direct-image 上游超过有效 `imageFirstByteTimeoutSecs`，When 请求终止，Then 调用方收到单次 `504`、`code=upstream_handshake_timeout` 与 `cvmId`，attempt 数为 1，且账号 reservation 已释放。
 - Given `/v1/responses` 已将严格合法的 `response.completed` 送入下游，When 后续上游读取失败、超时或 body 被释放，Then 调用保持 `success`、`failure_class=none`，只在 payload 记录可选的终态后诊断字段，且继续保留至 EOF 前已采集的完整 raw。
 - Given 下游在严格成功终态送达前断开、上游随后完成，When 调用落盘，Then invocation 保留 `client_abort/downstream_closed` 与 `upstreamOutcome=completed`，而号池 attempt 为成功且不对账号或路由降权。
+
+## Visual Evidence
+
+PR: none
+
+本次仅收口 file-backed replay 的后端路由解析与结构化 telemetry，不改变 owner-facing 页面或可视交互。
 
 ## 参考
 

@@ -1,5 +1,7 @@
 use std::{future::Future, pin::Pin};
 
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
 use super::*;
 
 type ViaPoolResponseFuture<'a> =
@@ -45,6 +47,7 @@ pub(crate) async fn request_matches_pool_route(
     pool_api_key_matches(state, &api_key).await
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct StickyKeyProjection {
     #[serde(default)]
@@ -59,6 +62,7 @@ pub(crate) struct StickyKeyProjection {
     prompt_cache_key_alias: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct StickyKeyProjectionMetadata {
     #[serde(default)]
@@ -71,6 +75,7 @@ pub(crate) struct StickyKeyProjectionMetadata {
     prompt_cache_key_alias: Option<String>,
 }
 
+#[cfg(test)]
 impl StickyKeyProjection {
     fn into_sticky_key(self) -> Option<String> {
         [
@@ -90,103 +95,343 @@ impl StickyKeyProjection {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn extract_sticky_key_from_request_body_projection(bytes: &[u8]) -> Option<String> {
     serde_json::from_slice::<StickyKeyProjection>(bytes)
         .ok()
         .and_then(StickyKeyProjection::into_sticky_key)
 }
 
-pub(crate) async fn extract_sticky_key_from_replay_snapshot(
-    snapshot: &PoolReplayBodySnapshot,
-) -> Option<String> {
-    match snapshot {
-        PoolReplayBodySnapshot::Empty => None,
-        PoolReplayBodySnapshot::Memory(bytes) => {
-            extract_sticky_key_from_request_body_projection(bytes.as_ref())
+#[derive(Debug, Default)]
+struct ReplaySnapshotRouteValue {
+    value: Value,
+    sticky_projection_valid: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReplaySnapshotRouteValueScope {
+    Root,
+    Metadata,
+    Nested,
+}
+
+impl ReplaySnapshotRouteValueScope {
+    fn child(self, key: &str) -> Self {
+        if matches!(self, Self::Root) && key == "metadata" {
+            Self::Metadata
+        } else {
+            Self::Nested
         }
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
-            let path = temp_file.path.clone();
-            tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(path).ok()?;
-                serde_json::from_reader::<_, StickyKeyProjection>(std::io::BufReader::new(file))
-                    .ok()
-                    .and_then(StickyKeyProjection::into_sticky_key)
-            })
-            .await
-            .ok()
-            .flatten()
+    }
+
+    fn sticky_projection_key_bit(self, key: &str) -> Option<u8> {
+        match self {
+            Self::Root => match key {
+                "metadata" => Some(1 << 0),
+                "sticky_key" => Some(1 << 1),
+                "stickyKey" => Some(1 << 2),
+                "prompt_cache_key" => Some(1 << 3),
+                "promptCacheKey" => Some(1 << 4),
+                _ => None,
+            },
+            Self::Metadata => match key {
+                "sticky_key" => Some(1 << 0),
+                "stickyKey" => Some(1 << 1),
+                "prompt_cache_key" => Some(1 << 2),
+                "promptCacheKey" => Some(1 << 3),
+                _ => None,
+            },
+            Self::Nested => None,
         }
     }
 }
 
-pub(crate) async fn extract_prompt_cache_key_from_replay_snapshot(
-    snapshot: &PoolReplayBodySnapshot,
-) -> Option<String> {
-    match snapshot {
-        PoolReplayBodySnapshot::Empty => None,
-        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
-            .ok()
-            .and_then(|value| extract_prompt_cache_key_from_request_body(&value)),
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
-            let path = temp_file.path.clone();
-            tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(path).ok()?;
-                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
-                    .ok()
-                    .and_then(|value| extract_prompt_cache_key_from_request_body(&value))
-            })
-            .await
-            .ok()
-            .flatten()
-        }
+struct ReplaySnapshotRouteValueSeed<'a> {
+    sticky_projection_valid: &'a mut bool,
+    scope: ReplaySnapshotRouteValueScope,
+}
+
+struct ReplaySnapshotRouteValueVisitor<'a> {
+    sticky_projection_valid: &'a mut bool,
+    scope: ReplaySnapshotRouteValueScope,
+}
+
+impl<'de> DeserializeSeed<'de> for ReplaySnapshotRouteValueSeed<'_> {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ReplaySnapshotRouteValueVisitor {
+            sticky_projection_valid: self.sticky_projection_valid,
+            scope: self.scope,
+        })
     }
 }
 
-pub(crate) async fn extract_model_from_replay_snapshot(
-    snapshot: &PoolReplayBodySnapshot,
-) -> Option<String> {
-    match snapshot {
-        PoolReplayBodySnapshot::Empty => None,
-        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
-            .ok()
-            .and_then(|value| extract_model_from_payload(&value)),
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
-            let path = temp_file.path.clone();
-            tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(path).ok()?;
-                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
-                    .ok()
-                    .and_then(|value| extract_model_from_payload(&value))
-            })
-            .await
-            .ok()
-            .flatten()
+impl<'de> Visitor<'de> for ReplaySnapshotRouteValueVisitor<'_> {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("JSON number must be finite"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(ReplaySnapshotRouteValueSeed {
+            sticky_projection_valid: &mut *self.sticky_projection_valid,
+            scope: ReplaySnapshotRouteValueScope::Nested,
+        })? {
+            values.push(value);
         }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = serde_json::Map::new();
+        let mut seen_sticky_projection_key_bits = 0_u8;
+        while let Some(key) = map.next_key::<String>()? {
+            if let Some(bit) = self.scope.sticky_projection_key_bit(&key) {
+                if seen_sticky_projection_key_bits & bit != 0 {
+                    *self.sticky_projection_valid = false;
+                }
+                seen_sticky_projection_key_bits |= bit;
+            }
+            let value = map.next_value_seed(ReplaySnapshotRouteValueSeed {
+                sticky_projection_valid: &mut *self.sticky_projection_valid,
+                scope: self.scope.child(&key),
+            })?;
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
     }
 }
 
-pub(crate) async fn replay_snapshot_contains_encrypted_content(
-    snapshot: &PoolReplayBodySnapshot,
-) -> bool {
-    match snapshot {
-        PoolReplayBodySnapshot::Empty => false,
-        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
-            .ok()
-            .is_some_and(|value| value_contains_encrypted_content(&value)),
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
-            let path = temp_file.path.clone();
-            tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(path).ok()?;
-                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
-                    .ok()
-                    .map(|value| value_contains_encrypted_content(&value))
-            })
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(false)
+impl<'de> Deserialize<'de> for ReplaySnapshotRouteValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut sticky_projection_valid = true;
+        let value = ReplaySnapshotRouteValueSeed {
+            sticky_projection_valid: &mut sticky_projection_valid,
+            scope: ReplaySnapshotRouteValueScope::Root,
+        }
+        .deserialize(deserializer)?;
+        Ok(Self {
+            value,
+            sticky_projection_valid,
+        })
+    }
+}
+
+fn extract_sticky_key_from_request_value_projection_semantics(value: &Value) -> Option<String> {
+    fn projection_field<'a>(
+        object: &'a serde_json::Map<String, Value>,
+        key: &str,
+    ) -> Result<Option<&'a str>, ()> {
+        match object.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(value)) => Ok(Some(value)),
+            Some(_) => Err(()),
         }
     }
+
+    let root = value.as_object()?;
+    let metadata = match root.get("metadata") {
+        None => None,
+        Some(Value::Object(metadata)) => Some(metadata),
+        Some(_) => return None,
+    };
+    let metadata_field = |key| match metadata {
+        Some(metadata) => projection_field(metadata, key),
+        None => Ok(None),
+    };
+    let candidates = [
+        metadata_field("sticky_key"),
+        metadata_field("stickyKey"),
+        metadata_field("prompt_cache_key"),
+        metadata_field("promptCacheKey"),
+        projection_field(root, "sticky_key"),
+        projection_field(root, "stickyKey"),
+        projection_field(root, "prompt_cache_key"),
+        projection_field(root, "promptCacheKey"),
+    ];
+
+    if candidates.iter().any(Result::is_err) {
+        return None;
+    }
+    for candidate in candidates {
+        match candidate {
+            Ok(Some(value)) if !value.trim().is_empty() => return Some(value.trim().to_string()),
+            Ok(_) => {}
+            Err(()) => unreachable!("invalid sticky projection fields were checked above"),
+        }
+    }
+    None
+}
+
+const REPLAY_SNAPSHOT_ROUTE_ANALYSIS_SLOW_MS: f64 = 100.0;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReplaySnapshotRouteAnalysis {
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) requested_model: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
+    pub(crate) image_intent: ImageIntent,
+    pub(crate) compaction_kind: Option<CompactionKind>,
+    pub(crate) file_read_count: u8,
+    pub(crate) json_parse_count: u8,
+    pub(crate) parse_outcome: &'static str,
+}
+
+fn analyze_replay_snapshot_route_value(
+    parsed_value: Option<ReplaySnapshotRouteValue>,
+    capture_target: Option<ProxyCaptureTarget>,
+) -> ReplaySnapshotRouteAnalysis {
+    let sticky_projection_valid = parsed_value
+        .as_ref()
+        .is_none_or(|value| value.sticky_projection_valid);
+    let value = parsed_value.as_ref().map(|value| &value.value);
+    let image_intent = infer_request_image_intent(capture_target, value);
+    let compaction_kind = infer_request_compaction_kind(capture_target, value);
+    let sticky_key = sticky_projection_valid
+        .then(|| value.and_then(extract_sticky_key_from_request_value_projection_semantics))
+        .flatten();
+    let prompt_cache_key = value.and_then(extract_prompt_cache_key_from_request_body);
+    let requested_model = value.and_then(extract_model_from_payload);
+    let contains_encrypted_content = value.is_some_and(value_contains_encrypted_content);
+
+    ReplaySnapshotRouteAnalysis {
+        sticky_key,
+        prompt_cache_key,
+        requested_model,
+        contains_encrypted_content,
+        image_intent,
+        compaction_kind,
+        file_read_count: 0,
+        json_parse_count: 0,
+        parse_outcome: "empty",
+    }
+}
+
+/// Derive every routing projection from a replay snapshot in one read and one JSON parse.
+///
+/// The parsed `Value` is deliberately dropped before returning: callers keep only the small
+/// projections needed for routing, while file-backed snapshots remain replayable for failover.
+pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
+    snapshot: &PoolReplayBodySnapshot,
+    capture_target: Option<ProxyCaptureTarget>,
+    proxy_request_id: u64,
+    purpose: &'static str,
+) -> ReplaySnapshotRouteAnalysis {
+    let started = Instant::now();
+    let snapshot_kind = pool_request_snapshot_kind(snapshot);
+    let snapshot_bytes = pool_request_snapshot_body_bytes(snapshot);
+    let (value, parse_outcome, file_read_count, json_parse_count) = match snapshot {
+        PoolReplayBodySnapshot::Empty => (None, "empty", 0_u8, 0_u8),
+        PoolReplayBodySnapshot::Memory(bytes) => match serde_json::from_slice(bytes.as_ref()) {
+            Ok(value) => (Some(value), "parsed", 0, 1),
+            Err(_) => (None, "invalid_json", 0, 1),
+        },
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let path = temp_file.path.clone();
+            match tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(path).map_err(|_| "read_failed")?;
+                serde_json::from_reader::<_, ReplaySnapshotRouteValue>(std::io::BufReader::new(
+                    file,
+                ))
+                .map(Some)
+                .map_err(|_| "invalid_json")
+            })
+            .await
+            {
+                Ok(Ok(value)) => (value, "parsed", 1, 1),
+                Ok(Err(outcome)) => (None, outcome, 1, 1),
+                Err(_) => (None, "worker_failed", 1, 0),
+            }
+        }
+    };
+    let mut analysis = analyze_replay_snapshot_route_value(value, capture_target);
+    analysis.file_read_count = file_read_count;
+    analysis.json_parse_count = json_parse_count;
+    analysis.parse_outcome = parse_outcome;
+    let analysis_elapsed_ms = elapsed_ms(started);
+
+    if snapshot_kind == "file" {
+        if analysis_elapsed_ms >= REPLAY_SNAPSHOT_ROUTE_ANALYSIS_SLOW_MS {
+            info!(
+                proxy_request_id,
+                purpose,
+                snapshot_kind,
+                snapshot_bytes,
+                file_read_count = analysis.file_read_count,
+                json_parse_count = analysis.json_parse_count,
+                parse_outcome = analysis.parse_outcome,
+                analysis_elapsed_ms,
+                "pool replay snapshot route analysis exceeded slow-path threshold"
+            );
+        } else {
+            debug!(
+                proxy_request_id,
+                purpose,
+                snapshot_kind,
+                snapshot_bytes,
+                file_read_count = analysis.file_read_count,
+                json_parse_count = analysis.json_parse_count,
+                parse_outcome = analysis.parse_outcome,
+                analysis_elapsed_ms,
+                "pool replay snapshot route analysis completed"
+            );
+        }
+    }
+
+    analysis
 }
 
 pub(crate) async fn encrypted_session_owner_routing_enabled(state: &AppState) -> bool {
@@ -1998,17 +2243,18 @@ async fn continue_or_retry_pool_live_request_inner(
                     distinct_account_count,
                 ));
             }
-            let replay_sticky_key = extract_sticky_key_from_replay_snapshot(&snapshot)
-                .await
-                .or(sticky_key);
-            let replay_requested_model = extract_model_from_replay_snapshot(&snapshot)
-                .await
-                .or(requested_model.clone());
-            let replay_prompt_cache_key = extract_prompt_cache_key_from_replay_snapshot(&snapshot)
-                .await
-                .or(prompt_cache_key);
-            let replay_contains_encrypted_content =
-                replay_snapshot_contains_encrypted_content(&snapshot).await;
+            let replay_analysis = analyze_replay_snapshot_for_pool_routing(
+                &snapshot,
+                Some(ProxyCaptureTarget::Responses),
+                proxy_request_id,
+                "live_retry",
+            )
+            .await;
+            let replay_sticky_key = replay_analysis.sticky_key.or(sticky_key);
+            let replay_requested_model =
+                replay_analysis.requested_model.or(requested_model.clone());
+            let replay_prompt_cache_key = replay_analysis.prompt_cache_key.or(prompt_cache_key);
+            let replay_contains_encrypted_content = replay_analysis.contains_encrypted_content;
             let (
                 replay_prompt_cache_binding_constraint,
                 replay_owner_auto_guard_active,
@@ -2111,19 +2357,8 @@ async fn continue_or_retry_pool_live_request_inner(
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
                     )
                 };
-            let replay_request_value = snapshot
-                .to_prefix_bytes(usize::MAX)
-                .await
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(bytes.as_ref()).ok());
-            let replay_request_image_intent = infer_request_image_intent(
-                Some(ProxyCaptureTarget::Responses),
-                replay_request_value.as_ref(),
-            );
-            let replay_request_compaction_kind = infer_request_compaction_kind(
-                Some(ProxyCaptureTarget::Responses),
-                replay_request_value.as_ref(),
-            );
+            let replay_request_image_intent = replay_analysis.image_intent;
+            let replay_request_compaction_kind = replay_analysis.compaction_kind;
             send_pool_request_with_failover_and_binding_constraint(
                 state,
                 proxy_request_id,
@@ -2896,14 +3131,16 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 }
                             }
                         };
-                        let body_sticky_key =
-                            if let Some(observed_body_sticky_key) = observed_body_sticky_key {
-                                Some(observed_body_sticky_key)
-                            } else {
-                                extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                                    .await
-                                    .or(Some(sticky_key.clone()))
-                            };
+                        let request_analysis = analyze_replay_snapshot_for_pool_routing(
+                            &request_body_snapshot,
+                            capture_target,
+                            proxy_request_id,
+                            "initial_via_pool",
+                        )
+                        .await;
+                        let body_sticky_key = observed_body_sticky_key
+                            .or(request_analysis.sticky_key)
+                            .or(Some(sticky_key.clone()));
                         if !header_sticky_resolution_finished
                             && body_sticky_key.as_deref() == Some(sticky_key.as_str())
                         {
@@ -2974,36 +3211,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 )) => {}
                             }
                         }
-                        let body_prompt_cache_key =
-                            extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot)
-                                .await;
+                        let body_prompt_cache_key = request_analysis.prompt_cache_key;
                         let request_contains_encrypted_content =
-                            replay_snapshot_contains_encrypted_content(&request_body_snapshot)
-                                .await;
-                        let request_image_intent = match request_body_snapshot.to_bytes().await {
-                            Ok(request_body_bytes) => {
-                                serde_json::from_slice::<Value>(&request_body_bytes)
-                                    .ok()
-                                    .map(|value| {
-                                        infer_request_image_intent(capture_target, Some(&value))
-                                    })
-                                    .unwrap_or_else(|| {
-                                        infer_request_image_intent(capture_target, None)
-                                    })
-                            }
-                            Err(_) => infer_request_image_intent(capture_target, None),
-                        };
-                        let _request_compaction_kind = match request_body_snapshot.to_bytes().await
-                        {
-                            Ok(request_body_bytes) => {
-                                serde_json::from_slice::<Value>(&request_body_bytes)
-                                    .ok()
-                                    .and_then(|value| {
-                                        infer_request_compaction_kind(capture_target, Some(&value))
-                                    })
-                            }
-                            Err(_) => infer_request_compaction_kind(capture_target, None),
-                        };
+                            request_analysis.contains_encrypted_content;
+                        let request_image_intent = request_analysis.image_intent;
+                        let _request_compaction_kind = request_analysis.compaction_kind;
                         let (
                             prompt_cache_binding_constraint,
                             owner_auto_guard_active,
@@ -3017,8 +3229,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         )
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
-                        let requested_model =
-                            extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                        let requested_model = request_analysis.requested_model;
                         if prompt_cache_binding_constraint.is_none()
                             && conversation_override.is_none()
                             && body_sticky_key.as_deref() == Some(sticky_key.as_str())
@@ -3920,33 +4131,22 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         )
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
-                        let body_sticky_key =
-                            extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                                .await
-                                .or(live_body_sticky_key);
-                        let body_prompt_cache_key =
-                            extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot)
-                                .await;
-                        let requested_model =
-                            extract_model_from_replay_snapshot(&request_body_snapshot)
-                                .await
-                                .or(live_requested_model);
+                        let request_analysis = analyze_replay_snapshot_for_pool_routing(
+                            &request_body_snapshot,
+                            capture_target,
+                            proxy_request_id,
+                            "live_fallback",
+                        )
+                        .await;
+                        let body_sticky_key = request_analysis.sticky_key.or(live_body_sticky_key);
+                        let body_prompt_cache_key = request_analysis.prompt_cache_key;
+                        let requested_model = request_analysis
+                            .requested_model
+                            .clone()
+                            .or(live_requested_model);
                         let request_contains_encrypted_content =
-                            replay_snapshot_contains_encrypted_content(&request_body_snapshot)
-                                .await;
-                        let request_image_intent = match request_body_snapshot.to_bytes().await {
-                            Ok(request_body_bytes) => {
-                                serde_json::from_slice::<Value>(&request_body_bytes)
-                                    .ok()
-                                    .map(|value| {
-                                        infer_request_image_intent(capture_target, Some(&value))
-                                    })
-                                    .unwrap_or_else(|| {
-                                        infer_request_image_intent(capture_target, None)
-                                    })
-                            }
-                            Err(_) => infer_request_image_intent(capture_target, None),
-                        };
+                            request_analysis.contains_encrypted_content;
+                        let request_image_intent = request_analysis.image_intent;
                         let (
                             prompt_cache_binding_constraint,
                             owner_auto_guard_active,
@@ -3996,8 +4196,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     .or(header_prompt_cache_key.as_deref()),
                             )
                             .await?;
-                        let request_body_model =
-                            extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                        let request_body_model = request_analysis.requested_model;
                         let effective_prompt_cache_key = body_prompt_cache_key
                             .clone()
                             .or(header_prompt_cache_key.clone());
