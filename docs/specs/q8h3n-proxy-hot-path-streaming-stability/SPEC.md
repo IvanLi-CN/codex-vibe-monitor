@@ -85,6 +85,12 @@
 - Given `/v1/responses` 已将严格合法的 `response.completed` 送入下游，When 后续上游读取失败、超时或 body 被释放，Then 调用保持 `success`、`failure_class=none`，只在 payload 记录可选的终态后诊断字段，且继续保留至 EOF 前已采集的完整 raw。
 - Given 下游在严格成功终态送达前断开、上游随后完成，When 调用落盘，Then invocation 保留 `client_abort/downstream_closed` 与 `upstreamOutcome=completed`，而号池 attempt 为成功且不对账号或路由降权。
 
+## Visual Evidence
+
+PR: none
+
+本次仅收口 file-backed replay 的后端路由解析与结构化 telemetry，不改变 owner-facing 页面或可视交互。
+
 ## 参考
 
 - `/Users/ivan/.codex/worktrees/4032/codex-vibe-monitor/src/proxy.rs`
