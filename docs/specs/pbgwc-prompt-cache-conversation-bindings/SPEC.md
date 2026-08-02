@@ -270,7 +270,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 
 ### Sticky Causality (UI Demo)
 
-PR: none
+PR: include
 ![Desktop event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-desktop.png)
 
 - source_type: ui_demo
@@ -281,11 +281,11 @@ PR: none
 - margin_policy: trim_only
 - evidence_surface: page
 - sensitive_exclusion: fixture-only conversation and attempt identifiers
-- submission_gate: pending owner approval for screenshot artifact publication
+- submission_gate: approved
 - state: a failed 429 attempt leads to fresh assignment; a later concurrent success is visibly suppressed and links to its attempt.
 - evidence_note: the third historical event intentionally has no context and displays `历史原因未记录`.
 
-PR: none
+PR: include
 ![Mobile event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-mobile.png)
 
 - source_type: ui_demo
@@ -296,7 +296,7 @@ PR: none
 - margin_policy: trim_only
 - evidence_surface: page
 - sensitive_exclusion: fixture-only conversation and attempt identifiers
-- submission_gate: pending owner approval for screenshot artifact publication
+- submission_gate: approved
 - state: the same causal chain is readable at the required mobile viewport without overlap or truncation.
 
 ### Dashboard Bulk Actions (Web Demo)
