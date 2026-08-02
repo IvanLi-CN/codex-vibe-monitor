@@ -362,6 +362,62 @@ async fn raw_overflow_spool_rotates_segments_and_recovers_the_capture_in_order()
 }
 
 #[tokio::test]
+async fn raw_overflow_spool_recovery_retains_a_capture_when_a_later_segment_is_corrupt() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-corrupt-segments",
+        "response",
+        true,
+        None,
+    );
+    writer.append(&vec![b'a'; RAW_OVERFLOW_SPOOL_SEGMENT_BYTES as usize]);
+    writer.append(b"tail");
+    drop(writer);
+
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    let mut segments = fs::read_dir(&spool_dir)
+        .expect("read spool directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("frames"))
+        .collect::<Vec<_>>();
+    segments.sort();
+    assert_eq!(
+        segments.len(),
+        2,
+        "overflow capture should rotate at 16 MiB"
+    );
+    fs::write(&segments[1], b"partial").expect("corrupt later spool segment");
+
+    drop(permits);
+    recover_raw_overflow_spools(&state.config).await;
+
+    let recovered = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("invoke-corrupt-segments-response.bin.zst");
+    assert!(
+        !recovered.exists(),
+        "a capture with a corrupt later segment must not publish its valid prefix"
+    );
+    assert!(
+        segments.iter().all(|path| path.exists()),
+        "all segments must remain available for inspection and recovery"
+    );
+    for segment in segments {
+        let _ = fs::remove_file(segment);
+    }
+}
+
+#[tokio::test]
 async fn streaming_raw_capture_preserves_precompressed_wire_bytes_without_recompression() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

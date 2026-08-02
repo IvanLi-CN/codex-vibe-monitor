@@ -4868,6 +4868,15 @@ fn raw_overflow_spool_capture_key(path: &Path, header: &RawOverflowSpoolHeader) 
         .unwrap_or_else(|| format!("legacy:{}", path.display()))
 }
 
+fn raw_overflow_spool_capture_key_from_path(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let (capture_id, segment_index) = stem.rsplit_once('-')?;
+    (!capture_id.is_empty()
+        && segment_index.len() == 6
+        && segment_index.bytes().all(|byte| byte.is_ascii_digit()))
+    .then(|| capture_id.to_string())
+}
+
 fn validate_raw_overflow_spool_segments(
     segments: &[(PathBuf, RawOverflowSpoolHeader)],
 ) -> io::Result<RawOverflowSpoolHeader> {
@@ -5008,6 +5017,7 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
     };
 
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
+    let mut corrupt_captures = std::collections::HashSet::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
@@ -5022,6 +5032,9 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
             Ok(header) => header,
             Err(err) => {
                 warn!(path = %path.display(), error = %err, "raw overflow spool is incomplete or corrupt; retaining for inspection");
+                if let Some(capture_key) = raw_overflow_spool_capture_key_from_path(&path) {
+                    corrupt_captures.insert(capture_key);
+                }
                 continue;
             }
         };
@@ -5033,7 +5046,15 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
     }
 
     let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
-    for (_, mut segments) in captures {
+    for (capture_key, mut segments) in captures {
+        if corrupt_captures.contains(&capture_key) {
+            warn!(
+                capture_key,
+                spool_segment_count = segments.len(),
+                "raw overflow spool capture has a corrupt segment; retaining all segments"
+            );
+            continue;
+        }
         segments.sort_by_key(|(_, header)| header.segment_index);
         let header = match validate_raw_overflow_spool_segments(&segments) {
             Ok(header) => header,
