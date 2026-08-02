@@ -4406,7 +4406,7 @@ pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const RAW_OVERFLOW_MEMORY_QUEUE_TOTAL_MAX_BYTES: u64 = 64 * 1024 * 1024;
-const RAW_OVERFLOW_SPOOL_RESERVATION_HEADROOM_BYTES: u64 = 1024 * 1024;
+const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
 
 static RAW_OVERFLOW_SPOOL_RESERVATIONS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
@@ -4526,10 +4526,10 @@ struct RawOverflowSpool {
     semaphore: Arc<Semaphore>,
     pending_records: u64,
     pending_bytes: u64,
-    reserved_bytes: u64,
     payload_limit_bytes: u64,
     payload_bytes: u64,
     exceeded_payload_limit: bool,
+    truncation_reason: Option<&'static str>,
 }
 
 impl RawOverflowSpool {
@@ -4548,30 +4548,10 @@ impl RawOverflowSpool {
             .config
             .proxy_raw_max_bytes
             .map(|limit| u64::try_from(limit).unwrap_or(u64::MAX))
-            .unwrap_or(
-                RAW_OVERFLOW_SPOOL_MAX_BYTES
-                    .saturating_sub(RAW_OVERFLOW_SPOOL_RESERVATION_HEADROOM_BYTES),
-            )
-            .min(
-                RAW_OVERFLOW_SPOOL_MAX_BYTES
-                    .saturating_sub(RAW_OVERFLOW_SPOOL_RESERVATION_HEADROOM_BYTES),
-            );
-        reserve_raw_overflow_spool_bytes(&directory, payload_limit_bytes)?;
+            .unwrap_or(u64::MAX);
         let capture_id = nanoid::nanoid!();
-        let (path, file) = match create_raw_overflow_spool_segment(
-            &directory,
-            invoke_id,
-            kind,
-            codec,
-            &capture_id,
-            0,
-        ) {
-            Ok(segment) => segment,
-            Err(error) => {
-                release_raw_overflow_spool_bytes(&directory, payload_limit_bytes);
-                return Err(error);
-            }
-        };
+        let (path, file) =
+            create_raw_overflow_spool_segment(&directory, invoke_id, kind, codec, &capture_id, 0)?;
         let mut config = state.config.clone();
         config.proxy_raw_compression = codec;
         Ok(Self {
@@ -4587,10 +4567,10 @@ impl RawOverflowSpool {
             semaphore: state.proxy_raw_async_semaphore.clone(),
             pending_records: 0,
             pending_bytes: 0,
-            reserved_bytes: payload_limit_bytes,
             payload_limit_bytes,
             payload_bytes: 0,
             exceeded_payload_limit: false,
+            truncation_reason: None,
         })
     }
 
@@ -4599,26 +4579,48 @@ impl RawOverflowSpool {
         let accepted_len = remaining_capacity.min(bytes.len() as u64) as usize;
         if accepted_len < bytes.len() {
             self.exceeded_payload_limit = true;
+            self.truncation_reason = Some("max_bytes_exceeded");
         }
         let mut remaining = &bytes[..accepted_len];
         while !remaining.is_empty() {
-            if self.segment_payload_bytes == RAW_OVERFLOW_SPOOL_SEGMENT_BYTES {
-                self.rotate_segment()?;
+            if self.segment_payload_bytes == RAW_OVERFLOW_SPOOL_SEGMENT_BYTES
+                && let Err(error) = self.rotate_segment()
+            {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    self.mark_spool_capacity_exceeded();
+                    break;
+                }
+                return Err(error);
             }
             let writable = (RAW_OVERFLOW_SPOOL_SEGMENT_BYTES - self.segment_payload_bytes) as usize;
             let frame = &remaining[..remaining.len().min(writable)];
-            write_raw_overflow_spool_frame(&mut self.file, frame)?;
+            let reservation_bytes =
+                (frame.len() as u64).saturating_add(RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES);
+            if let Err(error) = reserve_raw_overflow_spool_bytes(&self.directory, reservation_bytes)
+            {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    self.mark_spool_capacity_exceeded();
+                    break;
+                }
+                return Err(error);
+            }
+            let write_result = write_raw_overflow_spool_frame(&mut self.file, frame);
+            release_raw_overflow_spool_bytes(&self.directory, reservation_bytes);
+            write_result?;
             self.segment_payload_bytes = self
                 .segment_payload_bytes
                 .saturating_add(frame.len() as u64);
             self.pending_records = self.pending_records.saturating_add(1);
             self.pending_bytes = self.pending_bytes.saturating_add(frame.len() as u64);
             self.payload_bytes = self.payload_bytes.saturating_add(frame.len() as u64);
-            self.reserved_bytes = self.reserved_bytes.saturating_sub(frame.len() as u64);
-            release_raw_overflow_spool_bytes(&self.directory, frame.len() as u64);
             remaining = &remaining[frame.len()..];
         }
         Ok(())
+    }
+
+    fn mark_spool_capacity_exceeded(&mut self) {
+        self.exceeded_payload_limit = true;
+        self.truncation_reason = Some("spool_capacity_exceeded");
     }
 
     fn rotate_segment(&mut self) -> io::Result<()> {
@@ -4667,11 +4669,14 @@ impl RawOverflowSpool {
         if self.exceeded_payload_limit {
             meta.truncated = true;
             meta.truncated_reason.get_or_insert_with(|| {
-                raw_overflow_payload_limit_reason(
-                    self.config.proxy_raw_max_bytes,
-                    self.payload_limit_bytes,
-                )
-                .to_string()
+                self.truncation_reason
+                    .unwrap_or_else(|| {
+                        raw_overflow_payload_limit_reason(
+                            self.config.proxy_raw_max_bytes,
+                            self.payload_limit_bytes,
+                        )
+                    })
+                    .to_string()
             });
         }
         meta
@@ -4688,12 +4693,6 @@ fn raw_overflow_payload_limit_reason(
         "max_bytes_exceeded"
     } else {
         "spool_capacity_exceeded"
-    }
-}
-
-impl Drop for RawOverflowSpool {
-    fn drop(&mut self) {
-        release_raw_overflow_spool_bytes(&self.directory, self.reserved_bytes);
     }
 }
 
@@ -4758,34 +4757,45 @@ fn create_raw_overflow_spool_segment(
     segment_index: u32,
 ) -> io::Result<(PathBuf, fs::File)> {
     let path = directory.join(format!("{capture_id}-{segment_index:06}.frames"));
+    let header = RawOverflowSpoolHeader {
+        invoke_id: invoke_id.to_string(),
+        kind: kind.to_string(),
+        codec,
+        capture_id: Some(capture_id.to_string()),
+        segment_index,
+    };
+    let header_bytes = raw_overflow_spool_header_bytes(&header)?;
+    let reserved_bytes = (RAW_OVERFLOW_SPOOL_MAGIC.len() as u64)
+        .saturating_add(4)
+        .saturating_add(header_bytes.len() as u64);
+    reserve_raw_overflow_spool_bytes(directory, reserved_bytes)?;
     let mut file = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(&path)?;
-    write_raw_overflow_spool_header(
-        &mut file,
-        &RawOverflowSpoolHeader {
-            invoke_id: invoke_id.to_string(),
-            kind: kind.to_string(),
-            codec,
-            capture_id: Some(capture_id.to_string()),
-            segment_index,
-        },
-    )?;
+        .open(&path);
+    let write_result = match &mut file {
+        Ok(file) => write_raw_overflow_spool_header_bytes(file, &header_bytes),
+        Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+    };
+    release_raw_overflow_spool_bytes(directory, reserved_bytes);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    let file = file?;
     Ok((path, file))
 }
 
-fn write_raw_overflow_spool_header(
-    file: &mut fs::File,
-    header: &RawOverflowSpoolHeader,
-) -> io::Result<()> {
-    let header = serde_json::to_vec(header)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+fn raw_overflow_spool_header_bytes(header: &RawOverflowSpoolHeader) -> io::Result<Vec<u8>> {
+    serde_json::to_vec(header).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+fn write_raw_overflow_spool_header_bytes(file: &mut fs::File, header: &[u8]) -> io::Result<()> {
     let header_len = u32::try_from(header.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "raw spool header too large"))?;
     file.write_all(RAW_OVERFLOW_SPOOL_MAGIC)?;
     file.write_all(&header_len.to_le_bytes())?;
-    file.write_all(&header)
+    file.write_all(header)
 }
 
 fn write_raw_overflow_spool_frame(file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {

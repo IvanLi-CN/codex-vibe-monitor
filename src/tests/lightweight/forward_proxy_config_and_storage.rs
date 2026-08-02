@@ -273,6 +273,62 @@ async fn async_streaming_raw_payload_writer_queues_when_global_writer_pool_is_sa
 }
 
 #[tokio::test]
+async fn raw_overflow_spool_allows_concurrent_captures_without_preallocating_global_capacity() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+
+    let mut first = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-concurrent-spool-first",
+        "response",
+        true,
+        None,
+    );
+    let mut second = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-concurrent-spool-second",
+        "response",
+        true,
+        None,
+    );
+    first.append(b"first");
+    second.append(b"second");
+
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    let segment_count = fs::read_dir(&spool_dir)
+        .expect("overflow spool directory")
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("frames"))
+        .count();
+    assert_eq!(
+        segment_count, 2,
+        "small concurrent captures should each receive a durable spool segment"
+    );
+
+    drop(permits);
+    let first_meta = first.finish().await;
+    let second_meta = second.finish().await;
+    for (meta, expected) in [
+        (first_meta, b"first".as_slice()),
+        (second_meta, b"second".as_slice()),
+    ] {
+        assert!(!meta.truncated);
+        let path = PathBuf::from(meta.path.expect("concurrent spool raw capture path"));
+        assert_eq!(
+            read_proxy_raw_bytes(path.to_string_lossy().as_ref(), None).expect("read raw"),
+            expected
+        );
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid_files() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
