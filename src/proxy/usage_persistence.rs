@@ -4621,6 +4621,11 @@ impl RawOverflowSpool {
     fn mark_spool_capacity_exceeded(&mut self) {
         self.exceeded_payload_limit = true;
         self.truncation_reason = Some("spool_capacity_exceeded");
+        // A raw capture is useful only when it is complete. Leave an invalid trailing
+        // frame marker so restart recovery retains this evidence instead of publishing
+        // the durable prefix as if it were a complete response.
+        let _ = self.file.write_all(&[0]);
+        let _ = self.file.flush();
     }
 
     fn rotate_segment(&mut self) -> io::Result<()> {
@@ -4641,6 +4646,21 @@ impl RawOverflowSpool {
     }
 
     async fn finish(mut self, observed_size_bytes: i64) -> RawPayloadMeta {
+        if self.truncation_reason == Some("spool_capacity_exceeded") {
+            warn!(
+                capture_path = "overflow_spool",
+                durability_mode = "rejected_at_capacity",
+                spool_pending_bytes = self.pending_bytes,
+                spool_segment_count = self.paths.len(),
+                "raw capture exceeded the durable overflow spool budget; retaining evidence"
+            );
+            return RawPayloadMeta {
+                path: None,
+                size_bytes: observed_size_bytes,
+                truncated: true,
+                truncated_reason: Some("spool_capacity_exceeded".to_string()),
+            };
+        }
         if let Err(err) = self.file.flush() {
             return RawPayloadMeta {
                 path: None,
