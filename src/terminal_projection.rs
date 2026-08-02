@@ -281,7 +281,7 @@ impl TerminalProjectionHub {
     pub(crate) fn pending_timeseries_deltas(
         &self,
         limit: usize,
-    ) -> Vec<(i64, TimeseriesTerminalDelta)> {
+    ) -> Vec<(u64, i64, TimeseriesTerminalDelta)> {
         let state = self
             .state
             .lock()
@@ -292,20 +292,25 @@ impl TerminalProjectionHub {
             .filter_map(|event| {
                 let row_id = event.persisted_row_id?;
                 (!event.timeseries_flushed)
-                    .then(|| event.timeseries.clone().map(|delta| (row_id, delta)))
+                    .then(|| {
+                        event
+                            .timeseries
+                            .clone()
+                            .map(|delta| (event.id, row_id, delta))
+                    })
                     .flatten()
             })
             .collect::<Vec<_>>();
-        deltas.sort_by_key(|(row_id, _)| *row_id);
+        deltas.sort_by_key(|(event_id, row_id, _)| (*row_id, *event_id));
         deltas.truncate(limit);
         deltas
     }
 
-    pub(crate) fn mark_timeseries_deltas_flushed(&self, row_ids: &[i64]) {
-        if row_ids.is_empty() {
+    pub(crate) fn mark_timeseries_deltas_flushed(&self, event_ids: &[u64]) {
+        if event_ids.is_empty() {
             return;
         }
-        let flushed = row_ids
+        let flushed = event_ids
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
@@ -314,14 +319,17 @@ impl TerminalProjectionHub {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for event in &mut state.pending {
-            if event
-                .persisted_row_id
-                .is_some_and(|row_id| flushed.contains(&row_id))
-            {
+            if flushed.contains(&event.id) {
                 event.timeseries_flushed = true;
             }
         }
-        if let Some(cursor) = row_ids.iter().copied().max() {
+        if let Some(cursor) = state
+            .pending
+            .iter()
+            .filter(|event| flushed.contains(&event.id))
+            .filter_map(|event| event.persisted_row_id)
+            .max()
+        {
             state.timeseries_cursor_row_id = state.timeseries_cursor_row_id.max(cursor);
         }
         Self::prune_acknowledged_locked(&mut state);
@@ -460,25 +468,63 @@ mod tests {
     #[test]
     fn active_timeseries_consumer_prevents_early_long_term_pruning() {
         let hub = TerminalProjectionHub::default();
-        let event = hub.register_pending_parts_with_delta(
-            "invoke",
-            "2026-07-30 10:00:00",
-            128,
-            Some(timeseries_delta()),
-        );
+        let event = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                "2026-07-30 10:00:00",
+                128,
+                Some(timeseries_delta()),
+            )
+            .expect("event is within the projection hard limit");
 
         hub.activate_timeseries_consumer(0);
-        hub.acknowledge_persisted(event, "invoke", "2026-07-30 10:00:00", 17);
+        hub.acknowledge_persisted(Some(event), "invoke", "2026-07-30 10:00:00", 17);
         hub.advance_long_term_cursor(17);
         assert_eq!(hub.health().pending_event_count, 1);
         assert_eq!(hub.pending_timeseries_deltas(10).len(), 1);
 
-        hub.mark_timeseries_deltas_flushed(&[17]);
+        hub.mark_timeseries_deltas_flushed(&[event]);
         let health = hub.health();
         assert_eq!(health.pending_event_count, 0);
         assert_eq!(health.timeseries_cursor_row_id, 17);
         assert!(health.timeseries_consumer_active);
         assert!(hub.pending_timeseries_deltas(10).is_empty());
+    }
+
+    #[test]
+    fn flushing_a_snapshot_does_not_ack_a_later_event_with_the_same_row() {
+        let hub = TerminalProjectionHub::default();
+        hub.activate_timeseries_consumer(0);
+        let first = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                "2026-07-30 10:00:00",
+                128,
+                Some(timeseries_delta()),
+            )
+            .expect("first event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(first), "invoke", "2026-07-30 10:00:00", 17);
+        hub.advance_long_term_cursor(17);
+
+        let snapshot = hub.pending_timeseries_deltas(10);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0, first);
+
+        let second = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                "2026-07-30 10:00:01",
+                128,
+                Some(timeseries_delta()),
+            )
+            .expect("second event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(second), "invoke", "2026-07-30 10:00:01", 17);
+
+        hub.mark_timeseries_deltas_flushed(&[first]);
+        let pending = hub.pending_timeseries_deltas(10);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, second);
+        assert_eq!(pending[0].1, 17);
     }
 
     #[test]

@@ -4455,6 +4455,7 @@ impl Drop for RawOverflowMemoryReservation {
 struct StreamingRawPayloadChunk {
     bytes: Bytes,
     _overflow_reservation: Option<RawOverflowMemoryReservation>,
+    overflow_capture_pending_bytes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl StreamingRawPayloadChunk {
@@ -4462,15 +4463,33 @@ impl StreamingRawPayloadChunk {
         Self {
             bytes,
             _overflow_reservation: None,
+            overflow_capture_pending_bytes: None,
         }
     }
 
-    fn reserved(bytes: Bytes, reservation_bytes: usize) -> Self {
+    fn reserved(
+        bytes: Bytes,
+        reservation_bytes: usize,
+        overflow_capture_pending_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
         Self {
             bytes,
             _overflow_reservation: Some(RawOverflowMemoryReservation {
                 bytes: reservation_bytes,
             }),
+            overflow_capture_pending_bytes: Some(overflow_capture_pending_bytes),
+        }
+    }
+}
+
+impl Drop for StreamingRawPayloadChunk {
+    fn drop(&mut self) {
+        if let Some(pending_bytes) = &self.overflow_capture_pending_bytes {
+            let _ = pending_bytes.fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |current| Some(current.saturating_sub(self.bytes.len())),
+            );
         }
     }
 }
@@ -5057,7 +5076,7 @@ pub(crate) struct AsyncStreamingRawPayloadWriter {
     local_truncated_reason: Option<String>,
     local_truncated: bool,
     memory_overflow_max_bytes: Option<usize>,
-    memory_overflow_queued_bytes: usize,
+    memory_overflow_pending_bytes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     spool: Option<RawOverflowSpool>,
 }
 
@@ -5077,7 +5096,7 @@ impl AsyncStreamingRawPayloadWriter {
                 local_truncated_reason: None,
                 local_truncated: false,
                 memory_overflow_max_bytes: None,
-                memory_overflow_queued_bytes: 0,
+                memory_overflow_pending_bytes: None,
                 spool: None,
             };
         }
@@ -5120,13 +5139,15 @@ impl AsyncStreamingRawPayloadWriter {
                         local_truncated_reason: None,
                         local_truncated: false,
                         memory_overflow_max_bytes: None,
-                        memory_overflow_queued_bytes: 0,
+                        memory_overflow_pending_bytes: None,
                         spool: Some(spool),
                     }
                 }
                 Err(err) => {
                     let (tx, mut rx) = mpsc::unbounded_channel::<StreamingRawPayloadChunk>();
                     let (meta_tx, meta_rx) = oneshot::channel();
+                    let memory_overflow_pending_bytes =
+                        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                     let config = state.config.clone();
                     let invoke_id = invoke_id.to_string();
                     debug!(
@@ -5167,7 +5188,7 @@ impl AsyncStreamingRawPayloadWriter {
                                 .unwrap_or(RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES)
                                 .min(RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES),
                         ),
-                        memory_overflow_queued_bytes: 0,
+                        memory_overflow_pending_bytes: Some(memory_overflow_pending_bytes),
                         spool: None,
                     }
                 }
@@ -5203,7 +5224,7 @@ impl AsyncStreamingRawPayloadWriter {
             local_truncated_reason: None,
             local_truncated: false,
             memory_overflow_max_bytes: None,
-            memory_overflow_queued_bytes: 0,
+            memory_overflow_pending_bytes: None,
             spool: None,
         }
     }
@@ -5232,7 +5253,12 @@ impl AsyncStreamingRawPayloadWriter {
         };
         let (queued_bytes, overflow_reservation_bytes) =
             if let Some(limit) = self.memory_overflow_max_bytes {
-                let remaining = limit.saturating_sub(self.memory_overflow_queued_bytes);
+                let pending_bytes = self
+                    .memory_overflow_pending_bytes
+                    .as_ref()
+                    .expect("memory overflow writer tracks its queued bytes");
+                let remaining =
+                    limit.saturating_sub(pending_bytes.load(std::sync::atomic::Ordering::Acquire));
                 if remaining == 0 {
                     self.local_truncated = true;
                     self.local_truncated_reason
@@ -5246,8 +5272,7 @@ impl AsyncStreamingRawPayloadWriter {
                         .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
                     return;
                 }
-                self.memory_overflow_queued_bytes =
-                    self.memory_overflow_queued_bytes.saturating_add(queued);
+                pending_bytes.fetch_add(queued, std::sync::atomic::Ordering::AcqRel);
                 if queued < bytes.len() {
                     self.local_truncated = true;
                     self.local_truncated_reason
@@ -5261,6 +5286,10 @@ impl AsyncStreamingRawPayloadWriter {
             Some(reservation_bytes) => StreamingRawPayloadChunk::reserved(
                 Bytes::copy_from_slice(queued_bytes),
                 reservation_bytes,
+                self.memory_overflow_pending_bytes
+                    .as_ref()
+                    .expect("reserved chunks originate from memory overflow writers")
+                    .clone(),
             ),
             None => StreamingRawPayloadChunk::unreserved(Bytes::copy_from_slice(queued_bytes)),
         };
@@ -5716,6 +5745,7 @@ mod raw_overflow_memory_tests {
     fn queued_overflow_memory_remains_reserved_after_capture_sender_drops() {
         let before = RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire);
         let (tx, mut rx) = mpsc::unbounded_channel();
+        let pending_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut writer = AsyncStreamingRawPayloadWriter {
             tx: Some(tx),
             meta_rx: None,
@@ -5723,11 +5753,12 @@ mod raw_overflow_memory_tests {
             local_truncated_reason: None,
             local_truncated: false,
             memory_overflow_max_bytes: Some(16),
-            memory_overflow_queued_bytes: 0,
+            memory_overflow_pending_bytes: Some(pending_bytes.clone()),
             spool: None,
         };
 
         writer.append(b"queued");
+        assert_eq!(pending_bytes.load(std::sync::atomic::Ordering::Acquire), 6);
         drop(writer);
         assert_eq!(
             RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
@@ -5736,6 +5767,7 @@ mod raw_overflow_memory_tests {
 
         let chunk = rx.try_recv().expect("queued capture chunk");
         drop(chunk);
+        assert_eq!(pending_bytes.load(std::sync::atomic::Ordering::Acquire), 0);
         assert_eq!(
             RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
             before

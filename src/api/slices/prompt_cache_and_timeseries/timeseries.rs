@@ -335,7 +335,7 @@ fn add_pending_timeseries_deltas(
     snapshot_id: i64,
 ) -> Result<usize, ApiError> {
     let mut applied = 0;
-    for (row_id, delta) in state
+    for (_, row_id, delta) in state
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000)
     {
@@ -615,9 +615,9 @@ pub(crate) async fn flush_timeseries_minute_projection(
     };
     let started = Instant::now();
     let mut grouped = HashMap::new();
-    let mut flushed_row_ids = Vec::with_capacity(pending.len());
-    for (row_id, delta) in pending {
-        flushed_row_ids.push(row_id);
+    let mut flushed_event_ids = Vec::with_capacity(pending.len());
+    for (event_id, row_id, delta) in pending {
+        flushed_event_ids.push(event_id);
         add_timeseries_delta_projection_keys(&mut grouped, row_id, delta);
     }
     let mut tx = state.pool.begin().await?;
@@ -671,13 +671,13 @@ pub(crate) async fn flush_timeseries_minute_projection(
     }
     state
         .terminal_projection_hub
-        .mark_timeseries_deltas_flushed(&flushed_row_ids);
+        .mark_timeseries_deltas_flushed(&flushed_event_ids);
     debug!(
         route = "timeseries_projection",
         builder = "minute_projection_v2",
         trigger,
         response_source = "memory_overlay_flush",
-        event_count = flushed_row_ids.len(),
+        event_count = flushed_event_ids.len(),
         minute_rollup_count = written_key_count,
         exact_fallback_minute_count,
         coverage_invalidation_pending = coverage_invalidation_generation.is_some(),
