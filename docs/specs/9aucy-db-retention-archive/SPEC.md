@@ -127,6 +127,7 @@
 - 给定 `previous7d`、`昨天前 7 天`、账号 usage 等跨自然日 summary 窗口，若其中一部分自然日已在更早的 retention 配置下 materialize 到 hourly rollup / archive，而另一部分仍保留在 live DB，读取结果仍必须与对应日粒度 timeseries totals 一致，不能因为当前 retention cutoff 已覆盖 `window.start` 就漏掉较早那几天。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
 - parallel-work 分钟 key 在达到 30 个完整上海自然日边界后，只有对应小时无 key 标量和覆盖标记都已提交时才能删除；历史小时均值仍可精确计算，缺覆盖历史必须显式不可用。
+- `parallel_work_rollup_coverage_state` records the latest unrecoverable-detail watermark transactionally when retention prunes detail. Regular maintenance reads that watermark; the legacy retained-row reverse scan is only allowed once to seed an old database.
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
 
 ## 参考

@@ -2149,6 +2149,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             &invoke_id_for_task,
             "response",
             proxy_settings.response_body_logging_enabled,
+            upstream_content_encoding_for_task.as_deref(),
         );
         let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
             && pending_pool_attempt_record_for_task.is_some();
@@ -2161,6 +2162,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             &attempt_response_capture_key,
             "response",
             attempt_response_capture_enabled,
+            upstream_content_encoding_for_task.as_deref(),
         );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut stream_response_decoder =

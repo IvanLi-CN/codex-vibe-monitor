@@ -27,7 +27,8 @@
 - 当并发不能降低且业务成功率高于观测记录完整性时，用进程内短窗口 write controller 承接所有观测记录写：terminal invocation 进入 P1 best-effort 队列，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项进入 P2 并按 key coalesce。记录入队/flush 失败必须报警和计数，但不得让已经完成的业务响应失败。
 - 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；如果服务选择业务优先于记录，terminal success/failure 也可以先进入 P1 write controller，并用 SSE terminal payload + runtime tombstone 支撑短暂最终一致窗口。
 - 路由公平性字段如果不是路由正确性的硬状态，可以拆成“进程内立即生效 + batch 落库”。例如 `last_selected_at` 可先写内存锚点并叠加候选排序，账号 status/cooldown/failure 则继续同步写。
-- raw payload 完整保留属于观测合同，不应作为 SQLite 止血手段被截断或丢弃；只能补齐 raw IO / gzip / metadata 写入证据，并通过调度、窄写或配置化压缩策略减压。
+- raw payload 完整保留属于观测合同，不应作为 SQLite 止血手段被截断或丢弃；只能补齐 raw IO / Zstd / metadata 写入证据，并通过调度、窄写或配置化压缩策略减压。
+- 用写侧 watermark 表达 retention 后的不可恢复 detail 边界。读侧周期任务不得为发现这个边界反向扫描 retained invocation 表。
 
 ## 推荐模式
 

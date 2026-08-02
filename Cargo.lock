@@ -452,6 +452,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
+ "crc32fast",
  "dotenvy",
  "filetime",
  "flate2",

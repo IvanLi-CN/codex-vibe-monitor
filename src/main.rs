@@ -56,6 +56,7 @@ use chrono::{
 };
 use chrono_tz::{Asia::Shanghai, Tz};
 use clap::{Args, Parser, Subcommand};
+use crc32fast::Hasher as Crc32Hasher;
 use dotenvy::dotenv;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::{
@@ -209,7 +210,7 @@ const STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS: &str = "historical_rollup_materi
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
-const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Gzip;
+const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Zstd;
 const DEFAULT_PROXY_RAW_IMMEDIATE_GZIP_BYTES: Option<usize> = Some(1024 * 1024);
 const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
 const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
@@ -221,6 +222,7 @@ const PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED: &str =
     "non_stream_response_parse_skipped_body_too_large";
 const RAW_CODEC_IDENTITY: &str = "identity";
 const RAW_CODEC_GZIP: &str = "gzip";
+const RAW_CODEC_ZSTD: &str = "zstd";
 const POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES: usize = 1024 * 1024;
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
@@ -291,9 +293,16 @@ const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
     "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
 
 fn proxy_raw_async_writer_limit(_config: &AppConfig) -> usize {
-    // Pool attempts now keep an independent response writer alongside the
-    // invocation writer; preserve the original invocation capacity.
-    DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS * 2
+    if let Ok(raw) = env::var("PROXY_RAW_ZSTD_MAX_CONCURRENT_WRITERS")
+        && let Ok(limit) = raw.parse::<usize>()
+        && limit > 0
+    {
+        return limit;
+    }
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get() / 2)
+        .unwrap_or(DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS)
+        .clamp(2, 8)
 }
 const ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "QUOTA_SNAPSHOT_FULL_DAYS";
 const ENV_LONG_TERM_STATS_HOURLY_RETENTION_DAYS: &str = "LONG_TERM_STATS_HOURLY_RETENTION_DAYS";

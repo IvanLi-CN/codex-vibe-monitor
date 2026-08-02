@@ -29,6 +29,8 @@ Proxy capture endpoints need to forward requests quickly, but they also own raw 
 
 The capture path historically used one full in-memory request body as both routing input and raw capture input. That makes large bodies expensive, but replacing it with unconditional live-first would bypass semantic checks that require full request knowledge.
 
+For response capture, compression must be treated as a storage concern. Preserve already encoded wire bytes, use Zstd only for identity bytes, and queue work behind a bounded writer pool. Dropping an enabled capture because a CPU writer is busy hides overload and makes replay completeness nondeterministic.
+
 ## Resolution
 
 - Put capture request reads on the same replay snapshot control plane as pool routing: memory for small bodies, file-backed replay for large bodies.
