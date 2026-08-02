@@ -1912,7 +1912,13 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     }
 
     let now_iso = format_utc_iso(Utc::now());
-    upsert_sticky_route(pool, prompt_cache_key, upstream_account_id, &now_iso).await?;
+    upsert_sticky_route_and_bump_generation_if_changed(
+        pool,
+        prompt_cache_key,
+        upstream_account_id,
+        &now_iso,
+    )
+    .await?;
     let promoted_binding =
         load_prompt_cache_conversation_binding_row(pool, prompt_cache_key).await?;
     let sticky_after =
@@ -2740,8 +2746,13 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .execute(&state.pool)
             .await?;
             let now_iso = format_utc_iso(Utc::now());
-            upsert_sticky_route(&state.pool, prompt_cache_key, upstream_account_id, &now_iso)
-                .await?;
+            upsert_sticky_route_and_bump_generation_if_changed(
+                &state.pool,
+                prompt_cache_key,
+                upstream_account_id,
+                &now_iso,
+            )
+            .await?;
         }
         _ => {
             return Err(ApiError::bad_request(anyhow!(

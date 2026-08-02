@@ -577,6 +577,28 @@ pub(crate) async fn upsert_sticky_route(
     upsert_sticky_route_executor(pool, sticky_key, account_id, now_iso).await
 }
 
+pub(crate) async fn upsert_sticky_route_and_bump_generation_if_changed(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let previous_account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let target_changed = previous_account_id != Some(account_id);
+    upsert_sticky_route_executor(&mut *tx, sticky_key, account_id, now_iso).await?;
+    if target_changed {
+        bump_sticky_affinity_generation_executor(&mut *tx, sticky_key, now_iso).await?;
+    }
+    tx.commit().await?;
+    Ok(target_changed)
+}
+
 pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
