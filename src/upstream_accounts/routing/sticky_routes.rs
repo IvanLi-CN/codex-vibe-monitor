@@ -439,6 +439,38 @@ pub(crate) async fn load_sticky_route(
     .map_err(Into::into)
 }
 
+pub(crate) async fn load_sticky_route_with_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<(Option<PoolStickyRouteRow>, i64)> {
+    let mut tx = pool.begin().await?;
+    let route = sqlx::query_as::<_, PoolStickyRouteRow>(
+        r#"
+        SELECT sticky_key, account_id, created_at, updated_at, last_seen_at
+        FROM pool_sticky_routes
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let generation = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT generation
+        FROM pool_sticky_route_generations
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or_default();
+    tx.commit().await?;
+    Ok((route, generation))
+}
+
 pub(crate) async fn load_sticky_affinity_generation_executor<'e, E>(
     executor: E,
     sticky_key: &str,

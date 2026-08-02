@@ -785,15 +785,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let route_binding_failure_penalties =
         load_recent_route_binding_failure_penalties(&state.pool).await?;
     let mut resolved_candidates = Vec::new();
-    let sticky_affinity_generation = match sticky_key {
-        Some(sticky_key) => Some(load_sticky_affinity_generation(&state.pool, sticky_key).await?),
-        None => None,
-    };
-
-    let sticky_route = if let Some(sticky_key) = sticky_key {
-        load_sticky_route(&state.pool, sticky_key).await?
+    let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
+        let (route, generation) =
+            load_sticky_route_with_generation(&state.pool, sticky_key).await?;
+        (route, Some(generation))
     } else {
-        None
+        (None, None)
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
     let sticky_model_penalties = load_model_route_penalties(
