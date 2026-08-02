@@ -1,7 +1,7 @@
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
 use super::*;
 use anyhow::anyhow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::{
     task::JoinHandle,
@@ -1183,7 +1183,22 @@ pub(crate) async fn fetch_timeseries(
                 );
             }
         }
-        let db_runtime_records = collect_in_flight_aggregate_records(&exact_records);
+        let in_flight_records = query_in_flight_invocation_aggregate_records_from_live_range(
+            &state.pool,
+            ExactUtcRange {
+                start: full_minute_start,
+                end: full_minute_end,
+            },
+            source_scope,
+            Some(snapshot_id),
+        )
+        .await?;
+        let db_runtime_records = collect_in_flight_aggregate_records(&in_flight_records);
+        let mut seen_ids = exact_records
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        extend_unique_invocation_records(&mut exact_records, &mut seen_ids, in_flight_records);
         for record in exact_records {
             let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
                 continue;
@@ -1537,7 +1552,24 @@ pub(crate) async fn fetch_timeseries_for_account(
                 );
             }
         }
-        let db_runtime_records = collect_in_flight_aggregate_records(&exact_records);
+        let in_flight_records =
+            query_in_flight_invocation_aggregate_records_from_live_range_for_account(
+                &state.pool,
+                ExactUtcRange {
+                    start: full_minute_start,
+                    end: full_minute_end,
+                },
+                source_scope,
+                Some(snapshot_id),
+                upstream_account_id,
+            )
+            .await?;
+        let db_runtime_records = collect_in_flight_aggregate_records(&in_flight_records);
+        let mut seen_ids = exact_records
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        extend_unique_invocation_records(&mut exact_records, &mut seen_ids, in_flight_records);
         for record in exact_records {
             let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
                 continue;
