@@ -18,3 +18,4 @@
 - SSE 的协议成功终态优先于传输 EOF：严格合法的 `response.completed` 一旦实际送达下游，后续上游读取异常和普通 body release 只能保留诊断，不得倒灌为服务失败或下游失败。
 - 2026-07-26: 下游 body EOF 不能覆盖已送达的成功终态；以单调的成功完成状态传递给对应 response body 的所有 watch 接收方。解析器同时要求 `event` 与 payload `type` 完整匹配。终态 chunk 被下游 body stream 成功取出即建立协议送达，不以共享 TCP 连接的写入结果反推 HTTP/2 中某个 response 的状态；之后观察到的 socket error 只保留在 payload 诊断字段。
 - file-backed pool replay 的路由投影收口为单次读取与单次 JSON parse；解析结果限定为路由所需的紧凑字段，保留既有 sticky key 类型错误和重复字段降级语义，避免大请求在同一准备阶段重复打开临时文件。
+- Response raw storage distinguishes wire encoding from storage encoding: identity content is stored with Zstd, while pre-compressed wire bytes remain untouched. A saturated writer uses a CRC-framed local spool so enabled response capture is not silently discarded.

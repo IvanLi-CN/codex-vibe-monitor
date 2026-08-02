@@ -123,32 +123,37 @@ async fn advance_parallel_work_full_detail_start_epoch(
         return load_parallel_work_full_detail_start_epoch(pool).await;
     };
     let keep_start_epoch = parallel_work_minute_rollup_keep_start_epoch(Utc::now())?;
-    let keep_start = Utc
-        .timestamp_opt(keep_start_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid parallel-work minute retention start"))?;
-    let latest_unrecoverable_at: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT occurred_at
-        FROM codex_invocations
-        WHERE occurred_at >= ?1
-            AND detail_level != ?2
-        ORDER BY occurred_at DESC
-        LIMIT 1
-        "#,
+    let persisted_marker = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT latest_unrecoverable_detail_epoch FROM parallel_work_rollup_coverage_state WHERE id = 1",
     )
-    .bind(db_occurred_at_lower_bound(keep_start))
-    .bind(DETAIL_LEVEL_FULL)
     .fetch_optional(pool)
-    .await?;
-    let latest_unrecoverable_epoch = latest_unrecoverable_at
-        .as_deref()
-        .map(|occurred_at| {
-            parse_to_utc_datetime(occurred_at)
-                .map(|parsed| parsed.timestamp())
-                .ok_or_else(|| anyhow!("invalid invocation occurred_at: {occurred_at}"))
-        })
-        .transpose()?;
+    .await?
+    .flatten();
+    let latest_unrecoverable_epoch = if let Some(marker) = persisted_marker {
+        Some(marker)
+    } else {
+        // Legacy databases need one conservative seed. Normal maintenance never performs
+        // this reverse retained-table scan again; retention writes the watermark atomically.
+        let keep_start = Utc
+            .timestamp_opt(keep_start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work minute retention start"))?;
+        let latest_unrecoverable_at: Option<String> = sqlx::query_scalar(
+            "SELECT occurred_at FROM codex_invocations WHERE occurred_at >= ?1 AND detail_level != ?2 ORDER BY occurred_at DESC LIMIT 1",
+        )
+        .bind(db_occurred_at_lower_bound(keep_start))
+        .bind(DETAIL_LEVEL_FULL)
+        .fetch_optional(pool)
+        .await?;
+        latest_unrecoverable_at
+            .as_deref()
+            .map(|occurred_at| {
+                parse_to_utc_datetime(occurred_at)
+                    .map(|parsed| parsed.timestamp())
+                    .ok_or_else(|| anyhow!("invalid invocation occurred_at: {occurred_at}"))
+            })
+            .transpose()?
+    };
     let verified_start_epoch = latest_unrecoverable_epoch
         .map(|epoch| (epoch.div_euclid(3_600) + 1) * 3_600)
         .unwrap_or(keep_start_epoch)
@@ -157,16 +162,22 @@ async fn advance_parallel_work_full_detail_start_epoch(
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
-        INSERT INTO parallel_work_rollup_coverage_state (id, full_detail_start_epoch)
-        VALUES (1, ?1)
+        INSERT INTO parallel_work_rollup_coverage_state (id, full_detail_start_epoch, latest_unrecoverable_detail_epoch)
+        VALUES (1, ?1, ?2)
         ON CONFLICT(id) DO UPDATE SET
-            full_detail_start_epoch = MIN(
+            full_detail_start_epoch = MAX(
                 parallel_work_rollup_coverage_state.full_detail_start_epoch,
                 excluded.full_detail_start_epoch
+            ),
+            latest_unrecoverable_detail_epoch = COALESCE(
+                MAX(parallel_work_rollup_coverage_state.latest_unrecoverable_detail_epoch, excluded.latest_unrecoverable_detail_epoch),
+                parallel_work_rollup_coverage_state.latest_unrecoverable_detail_epoch,
+                excluded.latest_unrecoverable_detail_epoch
             )
         "#,
     )
     .bind(verified_start_epoch)
+    .bind(latest_unrecoverable_epoch)
     .execute(tx.as_mut())
     .await?;
     let full_detail_start_epoch: i64 = sqlx::query_scalar(
@@ -176,6 +187,32 @@ async fn advance_parallel_work_full_detail_start_epoch(
     .await?;
     tx.commit().await?;
     Ok(Some(full_detail_start_epoch))
+}
+
+pub(crate) async fn record_parallel_work_unrecoverable_detail_tx(
+    tx: &mut SqliteConnection,
+    occurred_at: &str,
+) -> Result<()> {
+    let epoch = parse_to_utc_datetime(occurred_at)
+        .ok_or_else(|| anyhow!("invalid invocation occurred_at: {occurred_at}"))?
+        .timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_rollup_coverage_state (id, full_detail_start_epoch, latest_unrecoverable_detail_epoch)
+        VALUES (1, ?1, ?2)
+        ON CONFLICT(id) DO UPDATE SET
+            latest_unrecoverable_detail_epoch = COALESCE(
+                MAX(parallel_work_rollup_coverage_state.latest_unrecoverable_detail_epoch, excluded.latest_unrecoverable_detail_epoch),
+                parallel_work_rollup_coverage_state.latest_unrecoverable_detail_epoch,
+                excluded.latest_unrecoverable_detail_epoch
+            )
+        "#,
+    )
+    .bind((epoch.div_euclid(3_600) + 1) * 3_600)
+    .bind(epoch)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 async fn mark_parallel_work_minute_coverage_tx(

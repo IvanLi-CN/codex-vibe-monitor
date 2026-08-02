@@ -1679,7 +1679,7 @@ export function createApiKeyAccount(
       {
         id: 7201,
         occurredAt: "2026-07-25T10:04:37.000Z",
-        action: "route_cooldown_started",
+        action: "model_route_degraded",
         source: "call",
         reasonCode: "upstream_http_5xx",
         reasonMessage: "Service temporarily unavailable.",
@@ -1688,6 +1688,11 @@ export function createApiKeyAccount(
         invokeId: "story-account-scope-503",
         attemptId: "S64YYP59",
         model: "gpt-5.6-terra",
+        modelRouteStateBefore: "available",
+        modelRouteStateAfter: "degraded",
+        modelRoutePriorityBefore: "normal",
+        modelRoutePriorityAfter: "demoted",
+        modelRouteFailureCount: 1,
         createdAt: "2026-07-25T10:04:37.000Z",
       },
       {

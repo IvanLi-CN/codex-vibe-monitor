@@ -867,12 +867,16 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) = record_pool_route_transport_failure(
+            if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
                 &state.pool,
                 account.account_id,
                 trace.sticky_key.as_deref(),
                 &message,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 Some(trace.invoke_id.as_str()),
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
             )
             .await
             {
@@ -926,12 +930,16 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) = record_pool_route_transport_failure(
+            if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
                 &state.pool,
                 account.account_id,
                 trace.sticky_key.as_deref(),
                 &message,
+                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                 Some(trace.invoke_id.as_str()),
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
             )
             .await
             {
@@ -976,12 +984,16 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await;
         complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-        if let Err(err) = record_pool_route_transport_failure(
+        if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
             &state.pool,
             account.account_id,
             trace.sticky_key.as_deref(),
             &message,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             Some(trace.invoke_id.as_str()),
+            pending_attempt_record
+                .as_ref()
+                .and_then(|pending| pending.attempt_id),
         )
         .await
         {
@@ -1497,12 +1509,16 @@ pub(crate) async fn proxy_websocket_tunnel(
     )
     .await;
     if let Some(message) = upstream_route_failure.as_deref()
-        && let Err(err) = record_pool_route_transport_failure(
+        && let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
             &state.pool,
             usage_tracker.account.account_id,
             usage_tracker.trace.sticky_key.as_deref(),
             message,
+            failure_kind_override.unwrap_or(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
             Some(usage_tracker.trace.invoke_id.as_str()),
+            pending_attempt_record
+                .as_ref()
+                .and_then(|pending| pending.attempt_id),
         )
         .await
     {
@@ -1944,15 +1960,19 @@ impl WsUsageTracker {
         }
         let Some(event) = parse_ws_usage_event(text) else {
             if ws_terminal_event_is_failure_without_usage(text)
+                && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
-                && let Err(err) = record_model_route_failure_from_attempt_with_start(
+                && self.account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && let Err(err) = record_api_key_temporary_model_failure_or_diagnostic(
                     &state.pool,
                     self.account.account_id,
-                    attempt_id,
-                    StatusCode::BAD_REQUEST,
-                    Some(text),
-                    Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
-                    self.request_started_at.as_deref(),
+                    self.trace.sticky_key.as_deref(),
+                    text,
+                    PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                    reason_code,
+                    http_status,
+                    Some(self.trace.invoke_id.as_str()),
+                    Some(attempt_id),
                 )
                 .await
             {
@@ -2257,6 +2277,36 @@ fn ws_terminal_event_is_failure_without_usage(text: &str) -> bool {
             .or_else(|| value.get("status"))
             .and_then(Value::as_str)
             .is_some_and(|status| status.eq_ignore_ascii_case("completed"))
+}
+
+fn ws_terminal_temporary_classification(text: &str) -> Option<(&'static str, StatusCode)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return None;
+    };
+    let error_code = ["/response/error/code", "/error/code"]
+        .into_iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    match error_code.as_deref()? {
+        "server_is_overloaded" => Some((
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+            StatusCode::BAD_GATEWAY,
+        )),
+        "rate_limit_exceeded" => Some((
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+            StatusCode::TOO_MANY_REQUESTS,
+        )),
+        "server_error" | "upstream_error" => Some((
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+            StatusCode::BAD_GATEWAY,
+        )),
+        code if code.starts_with("server_") => Some((
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+            StatusCode::BAD_GATEWAY,
+        )),
+        _ => None,
+    }
 }
 
 pub(crate) fn websocket_upstream_error_marks_account_ws_unsupported(
@@ -2594,17 +2644,34 @@ pub(crate) async fn persist_ws_usage_event(
                 request_started_at,
             )
             .await?;
-        } else {
-            record_model_route_failure_from_attempt_with_start(
-                &state.pool,
-                account.account_id,
-                attempt_id,
-                StatusCode::BAD_REQUEST,
-                Some(raw_event),
-                failure_kind,
-                request_started_at,
-            )
-            .await?;
+        } else if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+            if let Some((reason_code, http_status)) =
+                ws_terminal_temporary_classification(raw_event)
+            {
+                record_api_key_temporary_model_failure_or_diagnostic(
+                    &state.pool,
+                    account.account_id,
+                    trace.sticky_key.as_deref(),
+                    raw_event,
+                    failure_kind.unwrap_or(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                    reason_code,
+                    http_status,
+                    Some(trace.invoke_id.as_str()),
+                    Some(attempt_id),
+                )
+                .await?;
+            } else {
+                record_model_route_failure_from_attempt_with_start(
+                    &state.pool,
+                    account.account_id,
+                    attempt_id,
+                    StatusCode::BAD_REQUEST,
+                    Some(raw_event),
+                    failure_kind,
+                    request_started_at,
+                )
+                .await?;
+            }
         }
     }
     if is_completed_terminal_event
@@ -3864,6 +3931,49 @@ mod websocket_tests {
                 usage: ParsedUsage::default(),
                 contains_encrypted_content: false,
             }),
+            None
+        );
+    }
+
+    #[test]
+    fn websocket_terminal_failure_classifies_only_temporary_upstream_errors() {
+        assert_eq!(
+            ws_terminal_temporary_classification(
+                r#"{"type":"response.failed","response":{"error":{"code":"server_error"}}}"#,
+            ),
+            Some((
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+                StatusCode::BAD_GATEWAY
+            ))
+        );
+        assert_eq!(
+            ws_terminal_temporary_classification(
+                r#"{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}"#,
+            ),
+            Some((
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+                StatusCode::BAD_GATEWAY
+            ))
+        );
+        assert_eq!(
+            ws_terminal_temporary_classification(
+                r#"{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded"}}}"#,
+            ),
+            Some((
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        );
+        assert_eq!(
+            ws_terminal_temporary_classification(
+                r#"{"type":"response.failed","response":{"status":"incomplete"},"error":"downstream closed"}"#,
+            ),
+            None
+        );
+        assert_eq!(
+            ws_terminal_temporary_classification(
+                r#"{"type":"response.failed","response":{"error":{"code":"invalid_request_error"}}}"#,
+            ),
             None
         );
     }

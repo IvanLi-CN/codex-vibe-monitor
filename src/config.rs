@@ -42,11 +42,12 @@ impl FromStr for ForwardProxyAlgo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RawCompressionCodec {
     None,
     Gzip,
+    Zstd,
 }
 
 impl FromStr for RawCompressionCodec {
@@ -56,6 +57,7 @@ impl FromStr for RawCompressionCodec {
         match raw.trim().to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
             "gzip" => Ok(Self::Gzip),
+            "zstd" => Ok(Self::Zstd),
             _ => bail!("invalid {ENV_PROXY_RAW_COMPRESSION} value: {raw}"),
         }
     }
@@ -764,8 +766,8 @@ impl AppConfig {
         resolve_path_from_database_parent(&self.database_path, &self.proxy_raw_dir)
     }
 
-    pub(crate) fn proxy_raw_immediate_gzip_threshold(&self) -> Option<usize> {
-        (self.proxy_raw_compression == RawCompressionCodec::Gzip)
+    pub(crate) fn proxy_raw_immediate_compression_threshold(&self) -> Option<usize> {
+        (self.proxy_raw_compression != RawCompressionCodec::None)
             .then_some(self.proxy_raw_immediate_gzip_bytes)
             .flatten()
     }

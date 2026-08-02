@@ -2329,13 +2329,38 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS parallel_work_rollup_coverage_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            full_detail_start_epoch INTEGER NOT NULL
+            full_detail_start_epoch INTEGER NOT NULL,
+            latest_unrecoverable_detail_epoch INTEGER
         )
         "#,
     )
     .execute(pool)
     .await
     .context("failed to ensure parallel_work_rollup_coverage_state table existence")?;
+
+    ensure_column_with_definition(
+        pool,
+        "parallel_work_rollup_coverage_state",
+        "latest_unrecoverable_detail_epoch",
+        "INTEGER",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_records (
+            minute_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL,
+            upstream_account_key INTEGER NOT NULL,
+            records_json TEXT NOT NULL,
+            max_row_id INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (minute_start_epoch, source_scope, upstream_account_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_records table existence")?;
 
     sqlx::query(
         r#"

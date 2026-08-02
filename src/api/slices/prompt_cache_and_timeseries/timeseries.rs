@@ -4,6 +4,193 @@ use anyhow::anyhow;
 use std::collections::HashMap;
 use tracing::debug;
 
+#[derive(sqlx::FromRow)]
+struct TimeseriesMinuteProjectionRow {
+    minute_start_epoch: i64,
+    records_json: String,
+    max_row_id: i64,
+}
+
+fn timeseries_projection_scope(source_scope: InvocationSourceScope) -> &'static str {
+    match source_scope {
+        InvocationSourceScope::All => "all",
+        InvocationSourceScope::ProxyOnly => "proxy_only",
+    }
+}
+
+fn complete_minute_bounds(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64) {
+    let start_epoch = (start.timestamp() + 59).div_euclid(60) * 60;
+    let end_epoch = end.timestamp().div_euclid(60) * 60;
+    (start_epoch, end_epoch.max(start_epoch))
+}
+
+async fn load_timeseries_minute_projection_records(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<Option<(Vec<InvocationAggregateRecord>, i64)>, ApiError> {
+    let (minute_start, minute_end) = complete_minute_bounds(start, end);
+    let expected = (minute_end - minute_start).div_euclid(60);
+    if expected <= 0 {
+        return Ok(None);
+    }
+    let rows = sqlx::query_as::<_, TimeseriesMinuteProjectionRow>(
+        "SELECT minute_start_epoch, records_json, max_row_id FROM timeseries_minute_projection_records WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2 AND source_scope = ?3 AND upstream_account_key = ?4 ORDER BY minute_start_epoch",
+    )
+    .bind(minute_start)
+    .bind(minute_end)
+    .bind(timeseries_projection_scope(source_scope))
+    .bind(upstream_account_id.unwrap_or(-1))
+    .fetch_all(pool)
+    .await?;
+    if rows.len() as i64 != expected {
+        return Ok(None);
+    }
+    let mut records = Vec::new();
+    let mut cursor = 0;
+    for row in rows {
+        cursor = cursor.max(row.max_row_id);
+        records.extend(
+            serde_json::from_str::<Vec<InvocationAggregateRecord>>(&row.records_json).map_err(
+                |err| ApiError::from(anyhow!("invalid minute projection record: {err}")),
+            )?,
+        );
+    }
+    Ok(Some((records, cursor)))
+}
+
+async fn store_timeseries_minute_projection_records(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    records: &[InvocationAggregateRecord],
+) -> Result<(), ApiError> {
+    let (minute_start, minute_end) = complete_minute_bounds(start, end);
+    if minute_end <= minute_start {
+        return Ok(());
+    }
+    let mut by_minute: HashMap<i64, Vec<InvocationAggregateRecord>> = HashMap::new();
+    for record in records {
+        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        let minute = occurred.timestamp().div_euclid(60) * 60;
+        if minute >= minute_start && minute < minute_end {
+            by_minute.entry(minute).or_default().push(record.clone());
+        }
+    }
+    let mut tx = pool.begin().await?;
+    let mut projected_rows = Vec::new();
+    for minute in (minute_start..minute_end).step_by(60_usize) {
+        let minute_records = by_minute.remove(&minute).unwrap_or_default();
+        let max_row_id = minute_records
+            .iter()
+            .map(|record| record.id)
+            .max()
+            .unwrap_or(0);
+        projected_rows.push((
+            minute,
+            serde_json::to_string(&minute_records).map_err(ApiError::from)?,
+            max_row_id,
+        ));
+    }
+    for chunk in projected_rows.chunks(128) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO timeseries_minute_projection_records (minute_start_epoch, source_scope, upstream_account_key, records_json, max_row_id) ",
+        );
+        query.push_values(chunk, |mut values, (minute, records_json, max_row_id)| {
+            values
+                .push_bind(*minute)
+                .push_bind(timeseries_projection_scope(source_scope))
+                .push_bind(upstream_account_id.unwrap_or(-1))
+                .push_bind(records_json)
+                .push_bind(*max_row_id);
+        });
+        query.push(
+            " ON CONFLICT(minute_start_epoch, source_scope, upstream_account_key) DO UPDATE SET records_json = excluded.records_json, max_row_id = excluded.max_row_id",
+        );
+        query.build().execute(tx.as_mut()).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod minute_projection_tests {
+    use super::*;
+
+    fn record(id: i64, occurred_at: &str) -> InvocationAggregateRecord {
+        InvocationAggregateRecord {
+            id,
+            invoke_id: format!("invoke-{id}"),
+            occurred_at: occurred_at.to_string(),
+            status: Some("success".to_string()),
+            total_tokens: Some(3),
+            cache_input_tokens: Some(1),
+            cost: Some(0.25),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: Some(0),
+            live_phase: None,
+            t_total_ms: Some(10.0),
+            t_req_read_ms: Some(1.0),
+            t_req_parse_ms: Some(1.0),
+            t_upstream_connect_ms: Some(2.0),
+            t_upstream_ttfb_ms: Some(3.0),
+            first_token_ms: Some(4.0),
+            t_upstream_stream_ms: Some(5.0),
+            t_resp_parse_ms: Some(1.0),
+            t_persist_ms: Some(1.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn minute_projection_returns_exact_records_and_cursor_for_covered_minutes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_records (minute_start_epoch INTEGER NOT NULL, source_scope TEXT NOT NULL, upstream_account_key INTEGER NOT NULL, records_json TEXT NOT NULL, max_row_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (minute_start_epoch, source_scope, upstream_account_key))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create projection table");
+        let start = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).single().unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 8, 1, 0, 3, 0).single().unwrap();
+        store_timeseries_minute_projection_records(
+            &pool,
+            start,
+            end,
+            InvocationSourceScope::All,
+            None,
+            &[record(17, "2026-08-01 08:01:12")],
+        )
+        .await
+        .expect("store projection");
+
+        let (records, cursor) = load_timeseries_minute_projection_records(
+            &pool,
+            start,
+            end,
+            InvocationSourceScope::All,
+            None,
+        )
+        .await
+        .expect("load projection")
+        .expect("complete minute coverage");
+        assert_eq!(cursor, 17);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].invoke_id, "invoke-17");
+    }
+}
+
 pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
@@ -56,18 +243,99 @@ pub(crate) async fn fetch_timeseries(
     let end_dt = range_window.end;
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
+    let use_minute_projection = range_window.duration <= ChronoDuration::days(1);
 
-    let records = query_invocation_aggregate_records_from_live_range(
-        &state.pool,
-        ExactUtcRange {
-            start: start_dt,
-            end: end_dt,
+    let (records, response_source) = if use_minute_projection {
+        match load_timeseries_minute_projection_records(
+            &state.pool,
+            start_dt,
+            end_dt,
+            source_scope,
+            None,
+        )
+        .await?
+        {
+            Some((mut cached, cursor)) => {
+                let tail = query_invocation_aggregate_records_from_live_range(
+                    &state.pool,
+                    ExactUtcRange {
+                        start: start_dt,
+                        end: end_dt,
+                    },
+                    source_scope,
+                    Some(cursor),
+                    Some(snapshot_id),
+                )
+                .await?;
+                cached.extend(tail);
+                (cached, "minute_projection")
+            }
+            None => {
+                let records = query_invocation_aggregate_records_from_live_range(
+                    &state.pool,
+                    ExactUtcRange {
+                        start: start_dt,
+                        end: end_dt,
+                    },
+                    source_scope,
+                    None,
+                    Some(snapshot_id),
+                )
+                .await?;
+                // Projection persistence is P2 work. Never make a read request wait for a
+                // SQLite writer when the exact fallback already produced a valid response.
+                let projection_pool = state.pool.clone();
+                let projection_records = records.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = store_timeseries_minute_projection_records(
+                        &projection_pool,
+                        start_dt,
+                        end_dt,
+                        source_scope,
+                        None,
+                        &projection_records,
+                    )
+                    .await
+                    {
+                        debug!(
+                            route = "timeseries_projection",
+                            projection_store_outcome = "deferred_failed",
+                            ?error,
+                            "minute projection warm write failed"
+                        );
+                    }
+                });
+                (records, "exact_fallback")
+            }
+        }
+    } else {
+        (
+            query_invocation_aggregate_records_from_live_range(
+                &state.pool,
+                ExactUtcRange {
+                    start: start_dt,
+                    end: end_dt,
+                },
+                source_scope,
+                None,
+                Some(snapshot_id),
+            )
+            .await?,
+            "exact_range",
+        )
+    };
+    debug!(
+        route = "timeseries_http_or_topic",
+        builder = "minute_projection_records",
+        response_source,
+        raw_row_count = records.len(),
+        coverage_state = if response_source == "minute_projection" {
+            "covered"
+        } else {
+            "warming"
         },
-        source_scope,
-        None,
-        Some(snapshot_id),
-    )
-    .await?;
+        "built open-window timeseries"
+    );
     let db_runtime_records = collect_in_flight_aggregate_records(&records);
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();

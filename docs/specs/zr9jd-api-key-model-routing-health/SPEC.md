@@ -34,7 +34,9 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 - OAuth 模型级探测或状态表。
 - 近七天以前的历史模型回填。
-- 账号级认证、网络、通用 5xx、配额故障的既有分类调整。
+- 账号级认证、付费硬错误的既有分类调整。
+- 修改当前请求的 retry/failover 预算或静态模型规则。
+- 迁移既有账号临时失败状态或删除历史事件。
 
 ## 需求（Requirements）
 
@@ -42,8 +44,10 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 - 状态主键为 `account_id + exact_model`，仅由真实请求建立或更新，模型记录最后一次真实调用超过七天后清理。
 - 状态为 `available/degraded/cooling_down`，优先级为 `normal/demoted/excluded`。
-- 明确模型不可用/不支持/模型专属限额：前四次降权，第五次或连续失败窗口达到 30 秒后进入冷却；冷却从 15 秒指数增长，最长 60 秒。
-- 认证、网络、通用 5xx 等错误继续走账号级逻辑；静态模型规则优先。
+- 明确模型错误，以及具备精确请求模型的 API Key 5xx、429、逻辑过载和 transport/handshake/stream 临时失败：前四次降权，第五次或连续失败窗口达到 30 秒后进入冷却；冷却从 15 秒指数增长，最长 60 秒。
+- API Key 临时失败不得写账号 `cooldown_until`、账号连续临时失败计数或账号级临时 action，也不得删除 sticky route。401/403/402 等明确认证或付费硬错误继续走账号级逻辑；OAuth 账号级健康语义与静态模型规则保持不变。
+- API Key 调用缺少精确模型、HTTP 413、其他未列明非硬错误或后台同步临时失败时，只保留调用、尝试或同步诊断，不修改账号或模型健康，也不创建 `unknown` 模型。
+- 继承后的 `statusChangeReasons` 开关继续控制同原因是否改变健康状态：对 API Key 可归属临时失败控制模型状态，对 OAuth 和明确账号硬错误控制账号状态；关闭时仅保留中性诊断事件。
 - 仅状态、优先级、冷却、恢复或手动 reset 变化时写结构化事件。
 
 ### SHOULD
@@ -54,11 +58,12 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 ## 功能与行为规格（Functional/Behavior Spec）
 
 - 请求开始时记录精确模型的 `last_seen_at`；成功观察清除该模型动态失败状态。
-- 模型级失败更新该模型的失败计数、失败原因和路由状态，不修改账号级 `cooldown_until`。
+- 模型级失败更新该模型的失败计数、失败原因和路由状态，不修改账号级 `cooldown_until`、账号连续失败计数或 sticky route。
+- 临时失败模型事件保留原始 HTTP 状态、reason code、failure kind、attempt 关联和精确模型；现有 JSON 字段与数据库 schema 保持兼容。
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
-- 健康事件不展示请求模型。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：模型级事件只展示“影响范围=模型、受影响模型=<模型名>”；认证、网络、通用 5xx 等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
+- 健康事件不展示独立的请求模型标签。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：API Key 模型路由事件只展示“影响范围=模型、受影响模型=<模型名>”；OAuth 临时失败与认证/付费等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -73,9 +78,13 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 ## 验收标准（Acceptance Criteria）
 
 - Given one API Key has model A and B, When A reaches cooldown, Then B remains eligible and the account is not globally cooled down by A's model error.
-- Given a generic authentication, transport, or 5xx failure, When it is recorded, Then existing account-level health behavior remains unchanged.
+- Given an API Key request with an exact model receives a 5xx, 429, logical overload, or transport-shaped failure, When it is recorded, Then only that exact model is degraded or cooled down and the account health fields and sticky route remain unchanged.
+- Given the same API Key failure lacks an exact model, is HTTP 413, is another non-hard error, or comes from background sync, When it is recorded, Then diagnostics remain available without account/model health mutation or an `unknown` model row.
+- Given a 401/403/402 hard failure or an OAuth failure, When it is recorded, Then the existing account-level behavior remains unchanged.
+- Given the effective status-change reason toggle is disabled, When the matching temporary API Key failure occurs, Then the model state remains unchanged and only a neutral diagnostic event is recorded.
 - Given an account event is linked to an attempt or invocation with a known request model, When event detail or the global event list is read, Then the event exposes that request model even if the event row itself has no model.
-- Given a generic account-level event has a request model, When the health tab renders it, Then the UI exposes structured impact fields `scope=account` and `affected models=all` without displaying the request model or an empty model-route transition.
+- Given an OAuth or hard account-level event has a request model, When the health tab renders it, Then the UI exposes structured impact fields `scope=account` and `affected models=all` without displaying a separate request-model label or an empty model-route transition.
+- Given an API Key 502 model-routing event is rendered, Then the UI exposes `scope=model`, the exact affected model and the original HTTP/failure evidence without claiming all models are affected.
 - Given a model-routing event has an affected model, When the health tab renders it, Then the UI exposes only the structured impact fields `scope=model` and `affected model=<name>` without a natural-language impact sentence or any claim about other models.
 - Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI identifies the affected model through the structured impact fields and shows the concrete route transition.
 - Given a recent account event contains known action, source, reason, route-state, or priority protocol values, When the health tab renders it, Then every value uses the active locale dictionary and the raw protocol value is never displayed; unknown values render as the localized unknown label, and raw backend reason messages do not duplicate localized reason chips.
@@ -116,8 +125,8 @@ Storybook覆盖=通过（组件级）；页面级使用 ui_demo
 空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）
 聊天回图=已展示
 证据落盘=已落盘
-证据绑定sha=9ca110d6
-requested_viewport=desktop 1440x1000; mobile 390x844
+证据绑定sha=本次变更提交（提交后回填）
+requested_viewport=desktop 1440x1100; mobile 393x852
 viewport_strategy=ui-demo-source（Chrome viewport override）
 capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 
@@ -128,8 +137,8 @@ capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 页面级视觉证据目标源=mock-only ui_demo
 页面级视觉证据=存在
 页面级聊天回图=已展示
-页面级 requested_viewport=desktop 1440x1000; mobile 390x844
-页面级 capture_scope=API Key 账号详情“健康与事件”，账号级与模型级影响均使用结构化字段，不使用自然语言影响句；不展示请求模型
+页面级 requested_viewport=desktop 1440x1100; mobile 393x852
+页面级 capture_scope=API Key 账号详情“健康与事件”，HTTP 502 事件显示影响范围为模型、受影响模型为 gpt-5.6-terra，不声明账号或全部模型受影响
 
 PR: include
 ![桌面账号事件模型影响](./assets/account-event-impact-desktop.png)

@@ -61,7 +61,10 @@ Status-change side effects are now gated by the resolved per-reason policy.
 - the root default for every listed reason is `true`, so unchanged deployments preserve existing behavior
 - group and account storage persist one nullable override column per listed reason; system tags and conversation overrides do not write this family
 - legacy `upstream_rejected` reads through the `upstream_http_402` toggle and is not exposed as a separate operator control
-- when a reason is disabled, runtime preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
+- API-key live temporary failures (`5xx`, `429`, logical overload, and transport/handshake/stream failures) use the same reason toggle to control exact-model degradation/cooldown; they never mutate account status, account cooldown, account temporary counters, or sticky ownership
+- when an API-key temporary failure has no exact model, or when its reason toggle is disabled, runtime preserves invocation / attempt evidence and writes a neutral diagnostic event without creating an `unknown` model
+- API-key background sync temporary failures remain diagnostic-only regardless of the toggle; hard `401`/`403`/`402` account failures and OAuth account-health behavior keep their existing contracts
+- for account-scoped failure families, disabling a reason preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
 - suppressed sync failures still advance the non-health sync timestamp so maintenance cadence does not collapse into immediate retries
 
 Endpoint capability routing is now endpoint-aware instead of response-family wide.
@@ -171,7 +174,7 @@ Validation covers:
 - direct image endpoints resolve the inherited image first-byte timeout independently from Responses/Compact; the default is 300 seconds
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
-- backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
+- backend regressions proving API-key live temporary reasons target exact-model health, disabled reasons and missing models stay diagnostic-only, background sync remains non-punitive, and OAuth/hard account failures retain their prior behavior
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads

@@ -2418,6 +2418,22 @@ pub(crate) async fn record_classified_account_sync_failure_with_proxy_snapshot(
 ) -> Result<()> {
     let (disposition, reason_code, next_status, http_status, failure_kind) =
         classify_sync_failure(&row.kind, error_message);
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && disposition != UpstreamAccountFailureDisposition::HardUnavailable
+    {
+        return record_suppressed_sync_status_change_with_proxy_snapshot(
+            pool,
+            row.id,
+            restored_status,
+            source,
+            reason_code,
+            error_message,
+            http_status,
+            Some(failure_kind),
+            proxy_snapshot,
+        )
+        .await;
+    }
     let next_status = match disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
             next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)

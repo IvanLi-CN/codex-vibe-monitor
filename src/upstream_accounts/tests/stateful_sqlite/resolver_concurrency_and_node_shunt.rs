@@ -2439,7 +2439,7 @@ async fn route_triggered_402_summary_and_detail_export_as_upstream_rejected() {
 }
 
 #[tokio::test]
-async fn record_pool_route_http_failure_marks_quota_429_as_rate_limited_and_records_reason() {
+async fn record_pool_route_http_failure_keeps_unattributed_api_key_quota_429_diagnostic_only() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Quota Exhausted Key").await;
     upsert_sticky_route(
@@ -2469,16 +2469,12 @@ async fn record_pool_route_http_failure_marks_quota_429_as_rate_limited_and_reco
         .expect("load account row")
         .expect("account should exist");
     assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(
-        row.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
-    assert_eq!(row.last_action_http_status, Some(429));
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
+    assert!(row.last_action.is_none());
+    assert!(row.last_action_reason_code.is_none());
+    assert!(row.last_action_http_status.is_none());
+    assert!(row.last_route_failure_kind.is_none());
     assert!(row.cooldown_until.is_none());
+    assert_eq!(row.consecutive_route_failures, 0);
     assert_eq!(
         load_sticky_route(&pool, "sticky-429-quota")
             .await
@@ -2489,7 +2485,7 @@ async fn record_pool_route_http_failure_marks_quota_429_as_rate_limited_and_reco
 }
 
 #[tokio::test]
-async fn record_pool_route_http_failure_exports_first_plain_429_as_degraded_without_cooldown() {
+async fn record_pool_route_http_failure_keeps_unattributed_api_key_plain_429_diagnostic_only() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Degraded Plain 429").await;
     upsert_sticky_route(
@@ -2519,21 +2515,12 @@ async fn record_pool_route_http_failure_exports_first_plain_429_as_degraded_with
         .expect("load degraded row")
         .expect("degraded row exists");
     assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(
-        row.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE)
-    );
-    assert_eq!(
-        row.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
-    );
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    );
+    assert!(row.last_action.is_none());
+    assert!(row.last_action_reason_code.is_none());
+    assert!(row.last_route_failure_kind.is_none());
     assert!(row.cooldown_until.is_none());
-    assert_eq!(row.consecutive_route_failures, 1);
-    assert!(row.temporary_route_failure_streak_started_at.is_some());
+    assert_eq!(row.consecutive_route_failures, 0);
+    assert!(row.temporary_route_failure_streak_started_at.is_none());
     assert_eq!(
         load_sticky_route(&pool, "sticky-degraded-first-hit")
             .await
@@ -2553,11 +2540,11 @@ async fn record_pool_route_http_failure_exports_first_plain_429_as_degraded_with
     );
     assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
 }
 
 #[tokio::test]
-async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_without_cooldown() {
+async fn record_pool_route_http_failure_keeps_unattributed_api_key_overload_diagnostic_only() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Overloaded Key").await;
 
@@ -2579,22 +2566,13 @@ async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_wit
         .expect("load overloaded row")
         .expect("overloaded row exists");
     assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(
-        row.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE)
-    );
-    assert_eq!(
-        row.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
-    );
-    assert_eq!(row.last_action_http_status, Some(200));
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-    );
+    assert!(row.last_action.is_none());
+    assert!(row.last_action_reason_code.is_none());
+    assert!(row.last_action_http_status.is_none());
+    assert!(row.last_route_failure_kind.is_none());
     assert!(row.cooldown_until.is_none());
-    assert_eq!(row.consecutive_route_failures, 1);
-    assert!(row.temporary_route_failure_streak_started_at.is_some());
+    assert_eq!(row.consecutive_route_failures, 0);
+    assert!(row.temporary_route_failure_streak_started_at.is_none());
 
     let summary = build_summary_from_row(
         &row,
@@ -2606,14 +2584,14 @@ async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_wit
         Utc::now(),
     );
     assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
 }
 
 #[tokio::test]
 async fn record_pool_route_transport_failure_starts_temporary_cooldown_after_streak_window_expires()
 {
     let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Cooldown Escalation").await;
+    let account_id = insert_oauth_account(&pool, "Cooldown Escalation").await;
     upsert_sticky_route(
         &pool,
         "sticky-degraded-cooldown",
@@ -2767,7 +2745,7 @@ async fn route_success_event_records_the_exact_upstream_attempt_id() {
 #[tokio::test]
 async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_seconds() {
     let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Cooldown Cap").await;
+    let account_id = insert_oauth_account(&pool, "Cooldown Cap").await;
     let baseline_now = Utc::now();
     let baseline_now_iso = format_utc_iso(baseline_now);
     let stale_started_at = format_utc_iso(
