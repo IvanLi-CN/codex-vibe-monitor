@@ -583,20 +583,35 @@ pub(crate) async fn upsert_sticky_route_and_bump_generation_if_changed(
     account_id: i64,
     now_iso: &str,
 ) -> Result<bool> {
-    let mut tx = pool.begin().await?;
-    let previous_account_id = sqlx::query_scalar::<_, i64>(
-        "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
-    )
-    .bind(sticky_key)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let target_changed = previous_account_id != Some(account_id);
-    upsert_sticky_route_executor(&mut *tx, sticky_key, account_id, now_iso).await?;
-    if target_changed {
-        bump_sticky_affinity_generation_executor(&mut *tx, sticky_key, now_iso).await?;
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await?;
+    let outcome: Result<bool> = async {
+        let previous_account_id = sqlx::query_scalar::<_, i64>(
+            "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(conn.as_mut())
+        .await?;
+        let target_changed = previous_account_id != Some(account_id);
+        upsert_sticky_route_executor(conn.as_mut(), sticky_key, account_id, now_iso).await?;
+        if target_changed {
+            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+        }
+        Ok(target_changed)
     }
-    tx.commit().await?;
-    Ok(target_changed)
+    .await;
+    match outcome {
+        Ok(target_changed) => {
+            sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+            Ok(target_changed)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            Err(error)
+        }
+    }
 }
 
 pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
@@ -654,14 +669,27 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
         {
             return Ok(false);
         }
-        let deleted =
-            sqlx::query("DELETE FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2")
-                .bind(sticky_key)
-                .bind(account_id)
-                .execute(conn.as_mut())
-                .await?
-                .rows_affected()
-                > 0;
+        let deleted = sqlx::query(
+            r#"
+                DELETE FROM pool_sticky_routes
+                WHERE sticky_key = ?1
+                  AND account_id = ?2
+                  AND (
+                      ?3 IS NULL
+                      OR updated_at <= COALESCE(
+                          (SELECT occurred_at FROM pool_upstream_request_attempts WHERE id = ?3),
+                          updated_at
+                      )
+                  )
+                "#,
+        )
+        .bind(sticky_key)
+        .bind(account_id)
+        .bind(cause_attempt_id)
+        .execute(conn.as_mut())
+        .await?
+        .rows_affected()
+            > 0;
         if deleted {
             bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
             let cause_attempt_public_id = if let Some(cause_attempt_id) = cause_attempt_id {
