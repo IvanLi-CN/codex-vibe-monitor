@@ -451,6 +451,7 @@ pub(crate) async fn send_pool_request_with_failover(
         sticky_key,
         None,
         None,
+        None,
         preferred_account,
         failover_progress,
         same_account_attempts,
@@ -470,6 +471,7 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
     trace_context: Option<PoolUpstreamAttemptTraceContext>,
     runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
     sticky_key: Option<&'a str>,
+    sticky_event_prompt_cache_key: Option<&'a str>,
     binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     conversation_override: Option<ConversationRoutingOverride>,
     preferred_account: Option<PoolResolvedAccount>,
@@ -495,6 +497,7 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
             trace_context,
             runtime_snapshot_context,
             sticky_key,
+            sticky_event_prompt_cache_key,
             binding_constraint,
             conversation_override,
             preferred_account,
@@ -741,6 +744,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
     trace_context: Option<PoolUpstreamAttemptTraceContext>,
     runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
     sticky_key: Option<&str>,
+    sticky_event_prompt_cache_key: Option<&str>,
     binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     conversation_override: Option<ConversationRoutingOverride>,
     preferred_account: Option<PoolResolvedAccount>,
@@ -3434,7 +3438,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
-                        prompt_cache_key,
+                        prompt_cache_key.or(sticky_event_prompt_cache_key),
                     )
                     .await
                 };

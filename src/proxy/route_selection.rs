@@ -1027,6 +1027,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     headers: &HeaderMap,
     body: Body,
     prompt_cache_key: Option<&str>,
+    sticky_event_prompt_cache_key: Option<&str>,
     request_image_intent: crate::ImageIntent,
     handshake_timeout: Duration,
     responses_total_timeout: Option<Duration>,
@@ -1746,7 +1747,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
                 account.sticky_affinity_generation,
-                prompt_cache_key,
+                prompt_cache_key.or(sticky_event_prompt_cache_key),
             )
             .await
         };
@@ -2393,6 +2394,7 @@ async fn continue_or_retry_pool_live_request_inner(
                     t_req_parse_ms: 0.0,
                 }),
                 replay_sticky_key.as_deref(),
+                replay_sticky_key.as_deref(),
                 replay_prompt_cache_binding_constraint,
                 replay_conversation_override,
                 preferred_account,
@@ -2677,6 +2679,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 t_req_read_ms: 0.0,
                                 t_req_parse_ms: 0.0,
                             }),
+                            body_sticky_key.as_deref(),
                             body_sticky_key.as_deref(),
                             prompt_cache_binding_constraint,
                             conversation_override,
@@ -3570,6 +3573,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     &headers,
                                     replayable_body.body,
                                     live_prompt_cache_key.as_deref(),
+                                    live_body_sticky_key.as_deref(),
                                     request_image_intent,
                                     handshake_timeout,
                                     responses_total_timeout,
@@ -3767,7 +3771,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
                                             account.sticky_affinity_generation,
-                                            live_prompt_cache_key.as_deref(),
+                                            live_prompt_cache_key
+                                                .as_deref()
+                                                .or(live_body_sticky_key.as_deref()),
                                         )
                                         .await
                                     {
@@ -4057,7 +4063,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
                                             account.sticky_affinity_generation,
-                                            prompt_cache_key_for_record.as_deref(),
+                                            prompt_cache_key_for_record
+                                                .as_deref()
+                                                .or(sticky_key_for_record.as_deref()),
                                         )
                                         .await
                                     {
@@ -4258,6 +4266,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 t_req_parse_ms: 0.0,
                             }),
                             body_sticky_key.as_deref(),
+                            body_sticky_key.as_deref(),
                             prompt_cache_binding_constraint,
                             conversation_override,
                             Some(initial_account),
@@ -4320,6 +4329,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             t_req_parse_ms: 0.0,
                         }),
                         header_sticky_key.as_deref(),
+                        None,
                         prompt_cache_binding_constraint,
                         conversation_override,
                         None,
