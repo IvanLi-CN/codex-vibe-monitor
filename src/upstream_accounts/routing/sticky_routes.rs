@@ -670,20 +670,20 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
             return Ok(false);
         }
         let cause_occurred_at_utc = if let Some(cause_attempt_id) = cause_attempt_id {
-            let occurred_at = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT occurred_at FROM pool_upstream_request_attempts WHERE id = ?1",
+            let (started_at, occurred_at) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT started_at, occurred_at FROM pool_upstream_request_attempts WHERE id = ?1",
             )
             .bind(cause_attempt_id)
             .fetch_optional(conn.as_mut())
             .await?
-            .flatten();
-            let Some(occurred_at) = occurred_at else {
+            .unwrap_or((None, None));
+            let Some(occurred_at) = started_at.or(occurred_at) else {
                 return Ok(false);
             };
             let Some(occurred_at_utc) = parse_to_utc_datetime(&occurred_at) else {
                 return Ok(false);
             };
-            Some(format_utc_iso(occurred_at_utc))
+            Some(format_utc_iso_precise(occurred_at_utc))
         } else {
             None
         };

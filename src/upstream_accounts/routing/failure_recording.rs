@@ -128,6 +128,7 @@ async fn record_pool_route_success_inner(
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let sticky_now_iso = format_utc_iso_precise(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
     let model_request_started_at_iso = format_naive_precise(
         request_started_at_utc
@@ -181,7 +182,7 @@ async fn record_pool_route_success_inner(
             sticky_key,
             prompt_cache_key,
             account_id,
-            &now_iso,
+            &sticky_now_iso,
             invoke_id,
             attempt_id,
             sticky_affinity_generation,
