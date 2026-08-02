@@ -1094,8 +1094,9 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
     .await
     .expect("load account route state after 4xx");
     assert_eq!(account_route_state.0, "active");
-    assert!(account_route_state.1.is_some());
-    assert_eq!(account_route_state.3, 1);
+    assert!(account_route_state.1.is_none());
+    assert!(account_route_state.2.is_none());
+    assert_eq!(account_route_state.3, 0);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));

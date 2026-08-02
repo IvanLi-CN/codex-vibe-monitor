@@ -328,7 +328,12 @@ describe("demo MSW handlers", () => {
     expect(response.ok).toBe(true);
     expect(account.recentActions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ action: "route_cooldown_started", source: "call" }),
+        expect.objectContaining({
+          action: "model_route_degraded",
+          source: "call",
+          httpStatus: 502,
+          model: "gpt-5.6-terra",
+        }),
         expect.objectContaining({ action: "model_route_cooldown", source: "call" }),
       ]),
     );

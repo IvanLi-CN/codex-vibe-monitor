@@ -1715,12 +1715,16 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             );
         }
         let route_failure_result = if oauth_transport_failure_kind.is_some() {
-            record_pool_route_transport_failure(
+            record_pool_route_transport_failure_for_attempt_with_kind(
                 &state.pool,
                 account.account_id,
                 sticky_key,
                 normalized_failure.canonical_error_message.as_str(),
+                failure_kind,
                 None,
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
             )
             .await
         } else {
@@ -1826,12 +1830,16 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .await;
                 }
                 let message = format!("upstream stream error before first chunk: {err}");
-                if let Err(route_err) = record_pool_route_transport_failure(
+                if let Err(route_err) = record_pool_route_transport_failure_for_attempt_with_kind(
                     &state.pool,
                     account.account_id,
                     sticky_key,
                     &message,
+                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                     None,
+                    pending_attempt_record
+                        .as_ref()
+                        .and_then(|pending| pending.attempt_id),
                 )
                 .await
                 {
@@ -3931,11 +3939,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &reservation_key_for_record,
                                         );
                                         if let Err(route_err) =
-                                            record_pool_route_transport_failure_for_attempt(
+                                            record_pool_route_transport_failure_for_attempt_with_kind(
                                                 &state_for_record.pool,
                                                 account.account_id,
                                                 sticky_key_for_record.as_deref(),
                                                 message,
+                                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                                                 invoke_id_for_record.as_deref(),
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
@@ -4642,11 +4651,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );
-                if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
+                if let Err(route_err) = record_pool_route_transport_failure_for_attempt_with_kind(
                     &state_for_record.pool,
                     account.account_id,
                     sticky_key_for_record.as_deref(),
                     message,
+                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                     invoke_id_for_record.as_deref(),
                     pending_pool_attempt_record_for_task
                         .as_ref()

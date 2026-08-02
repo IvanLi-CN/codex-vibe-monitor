@@ -108,6 +108,8 @@ Status-change reason toggles follow the same `group -> system -> account` resolu
 
 `conversation` overrides do not participate in this policy family.
 
+The resolved toggle controls the health scope owned by the classified failure. For API Key live requests, enabled 5xx, 429, logical overload, and transport-shaped reasons may change only the exact model route state; they must not create account cooldown or remove the sticky route. For OAuth requests and explicit account-level authentication/payment failures, the same toggles retain their account-health behavior. A disabled reason remains evidence-only at either scope. API Key background sync failures without an exact model are always evidence-only for temporary reasons.
+
 Request-path timeouts are resolved per field through a separate inheritance chain:
 
 1. Start with the global/root pool timeout defaults.
@@ -372,7 +374,6 @@ Visual evidence is captured from stable Storybook scenarios for:
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 - upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
 
-PR: none
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
 PR: include
