@@ -29,7 +29,7 @@
 - Targeted model routing state/reset and concurrent failure tests: passed.
 - `cargo fmt --check`: passed.
 - `cargo check`: passed.
-- `RUST_MIN_STACK=33554432 cargo test`: 1888 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
+- `RUST_MIN_STACK=33554432 cargo test`: 1893 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
 - `cd web && bun run test --run`: 137 files passed, 1317 passed, 6 skipped.
 - `cd web && bun run test-storybook --run`: 13 files passed, 23 passed.
 - `cd web && bun run build`: passed.
