@@ -669,6 +669,24 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
         {
             return Ok(false);
         }
+        let cause_occurred_at_utc = if let Some(cause_attempt_id) = cause_attempt_id {
+            let occurred_at = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT occurred_at FROM pool_upstream_request_attempts WHERE id = ?1",
+            )
+            .bind(cause_attempt_id)
+            .fetch_optional(conn.as_mut())
+            .await?
+            .flatten();
+            let Some(occurred_at) = occurred_at else {
+                return Ok(false);
+            };
+            let Some(occurred_at_utc) = parse_to_utc_datetime(&occurred_at) else {
+                return Ok(false);
+            };
+            Some(format_utc_iso(occurred_at_utc))
+        } else {
+            None
+        };
         let deleted = sqlx::query(
             r#"
                 DELETE FROM pool_sticky_routes
@@ -676,16 +694,13 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                   AND account_id = ?2
                   AND (
                       ?3 IS NULL
-                      OR updated_at <= COALESCE(
-                          (SELECT occurred_at FROM pool_upstream_request_attempts WHERE id = ?3),
-                          updated_at
-                      )
+                      OR updated_at <= ?3
                   )
                 "#,
         )
         .bind(sticky_key)
         .bind(account_id)
-        .bind(cause_attempt_id)
+        .bind(cause_occurred_at_utc.as_deref())
         .execute(conn.as_mut())
         .await?
         .rows_affected()
