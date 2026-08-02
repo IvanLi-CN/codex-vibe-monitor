@@ -899,6 +899,44 @@ pub(crate) async fn record_pool_route_transport_failure(
     .await
 }
 
+pub(crate) async fn record_pool_route_transport_failure_for_model(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    let account = load_upstream_account_row(pool, account_id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        record_api_key_temporary_model_failure_or_diagnostic_with_model(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            StatusCode::BAD_GATEWAY,
+            invoke_id,
+            None,
+            model,
+        )
+        .await?;
+        return Ok(());
+    }
+    record_pool_route_transport_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        None,
+    )
+    .await
+}
+
 async fn record_pool_route_transport_failure_inner(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1123,6 +1161,37 @@ pub(crate) async fn record_api_key_temporary_model_failure_or_diagnostic(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_api_key_temporary_model_failure_or_diagnostic_with_model(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        failure_kind,
+        reason_code,
+        http_status,
+        invoke_id,
+        attempt_id,
+        None,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporary model health records retain the complete upstream evidence contract."
+)]
+async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    reason_code: &str,
+    http_status: StatusCode,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    exact_model: Option<&str>,
+) -> Result<()> {
     let status_change_enabled =
         account_status_change_reason_is_enabled(pool, account_id, reason_code).await?;
     let model_failure_recorded = if status_change_enabled {
@@ -1139,7 +1208,21 @@ pub(crate) async fn record_api_key_temporary_model_failure_or_diagnostic(
                 )
                 .await?
             }
-            None => false,
+            None => match exact_model {
+                Some(model) => {
+                    record_temporary_model_route_failure_for_model(
+                        pool,
+                        account_id,
+                        model,
+                        http_status,
+                        Some(error_message),
+                        Some(failure_kind),
+                        reason_code,
+                    )
+                    .await?
+                }
+                None => false,
+            },
         }
     } else {
         false

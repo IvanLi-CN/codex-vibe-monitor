@@ -281,6 +281,70 @@ async fn api_key_transport_failure_preserves_kind_and_changes_only_the_exact_mod
 }
 
 #[tokio::test]
+async fn api_key_pre_attempt_transport_failure_uses_the_exact_request_model() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Pre-attempt transport model scope",
+        "pre-attempt-transport-model-key",
+        None,
+        Some("https://pre-attempt-transport-model.example.com/backend-api/codex"),
+    )
+    .await;
+
+    record_pool_route_transport_failure_for_model(
+        &state.pool,
+        account_id,
+        None,
+        "no selectable forward proxy node",
+        Some("pre-attempt-transport-model"),
+        Some("gpt-5.6-terra"),
+    )
+    .await
+    .expect("record API key pre-attempt transport failure");
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load API key account")
+        .expect("API key account exists");
+    assert!(account.last_route_failure_kind.is_none());
+    assert!(account.cooldown_until.is_none());
+    assert_eq!(account.consecutive_route_failures, 0);
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load pre-attempt transport model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-5.6-terra")
+        .expect("pre-attempt transport model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(route.failure_count, 1);
+    assert_eq!(
+        route.last_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+    );
+
+    let event = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT attempt_id, reason_code, failure_kind, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load pre-attempt transport model event");
+    assert_eq!(event.0, None);
+    assert_eq!(
+        event.1.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE),
+    );
+    assert_eq!(
+        event.2.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+    );
+    assert_eq!(event.3.as_deref(), Some("gpt-5.6-terra"));
+}
+
+#[tokio::test]
 async fn api_key_explicit_model_429_honors_toggle_and_preserves_reason() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(

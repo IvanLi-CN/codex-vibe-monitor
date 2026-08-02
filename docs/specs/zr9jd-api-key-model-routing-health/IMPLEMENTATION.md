@@ -42,7 +42,7 @@
 - The mock-only demo includes an API Key HTTP 502 model degradation event for `gpt-5.6-terra`; desktop and mobile evidence show model scope without claiming the account or all models are affected.
 - Invocation fallback correlation tolerates different production timestamp formats and reused invocation IDs by selecting the nearest matching invocation instead of requiring exact timestamp equality.
 - Mock-only `ui_demo` desktop 1440x1100 and mobile 393x852 captures: the HTTP 502 model impact and route transition are visible without request-model labels, account-wide impact, or horizontal overflow.
-- API Key HTTP, transport/stream, missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
+- API Key HTTP, transport/stream (including exact-model failures before attempt creation), missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.

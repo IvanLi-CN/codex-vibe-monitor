@@ -725,6 +725,37 @@ pub(crate) async fn record_temporary_model_route_failure_from_attempt(
     .await
 }
 
+pub(crate) async fn record_temporary_model_route_failure_for_model(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    model: &str,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    reason_code: &str,
+) -> Result<bool> {
+    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+        return Ok(false);
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(false);
+    }
+    record_model_route_failure_inner(
+        pool,
+        account_id,
+        None,
+        model,
+        status,
+        error_message,
+        failure_kind,
+        Some(Utc::now()),
+        false,
+        Some(reason_code),
+    )
+    .await
+}
+
 pub(crate) async fn attempt_has_explicit_model_failure(
     pool: &Pool<Sqlite>,
     attempt_id: i64,
@@ -805,6 +836,42 @@ async fn record_model_route_failure_from_attempt_inner(
                 .as_deref()
                 .and_then(parse_to_utc_datetime)
         });
+    record_model_route_failure_inner(
+        pool,
+        account_id,
+        Some(attempt_id),
+        &model,
+        status,
+        error_message,
+        failure_kind,
+        attempt_started_at,
+        require_explicit_model_failure,
+        reason_code,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Model failure evidence and concurrency fencing are one state transition."
+)]
+async fn record_model_route_failure_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: Option<i64>,
+    model: &str,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    attempt_started_at: Option<DateTime<Utc>>,
+    require_explicit_model_failure: bool,
+    reason_code: Option<&str>,
+) -> Result<bool> {
+    if require_explicit_model_failure
+        && !is_explicit_model_failure_for_model(status, error_message, Some(model))
+    {
+        return Ok(false);
+    }
     let now = now_string();
     let sanitized_error_message = error_message.and_then(sanitize_account_action_message);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -812,7 +879,7 @@ async fn record_model_route_failure_from_attempt_inner(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
-    .bind(&model)
+    .bind(model)
     .fetch_optional(&mut *tx)
     .await?;
     let (before_state, before_priority, before_cooldown, previous_failures, streak_started) =
@@ -847,7 +914,7 @@ async fn record_model_route_failure_from_attempt_inner(
                 "SELECT id, started_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 AND request_model = ?2 COLLATE NOCASE AND status = 'success' ORDER BY id DESC LIMIT 1",
             )
             .bind(account_id)
-            .bind(&model)
+            .bind(model)
             .fetch_optional(&mut *tx)
             .await?;
             let newer_success_exists = latest_successful_attempt
@@ -859,7 +926,8 @@ async fn record_model_route_failure_from_attempt_inner(
                 })
                 .is_some_and(|(id, started_at)| {
                     started_at > attempt_started_at
-                        || (started_at == attempt_started_at && id > attempt_id)
+                        || (started_at == attempt_started_at
+                            && attempt_id.is_some_and(|attempt_id| id > attempt_id))
                 });
             if newer_success_exists {
                 tx.commit().await?;
@@ -927,7 +995,7 @@ async fn record_model_route_failure_from_attempt_inner(
         "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7, ?8, ?9, ?10) ON CONFLICT(account_id, model) DO UPDATE SET state = excluded.state, priority = excluded.priority, consecutive_failures = excluded.consecutive_failures, streak_started_at = excluded.streak_started_at, changed_at = CASE WHEN ?11 = 1 THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_failure_at = excluded.last_failure_at, last_failure_kind = excluded.last_failure_kind, last_failure_message = excluded.last_failure_message, cooldown_until = excluded.cooldown_until",
     )
     .bind(account_id)
-    .bind(&model)
+    .bind(model)
     .bind(state)
     .bind(priority)
     .bind(failures)
@@ -944,8 +1012,8 @@ async fn record_model_route_failure_from_attempt_inner(
         persist_model_event(
             pool,
             account_id,
-            Some(attempt_id),
-            &model,
+            attempt_id,
+            model,
             if cooling {
                 UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_COOLDOWN
             } else {

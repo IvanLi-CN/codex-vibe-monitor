@@ -1749,12 +1749,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
-                        if let Err(route_err) = record_pool_route_transport_failure(
+                        if let Err(route_err) = record_pool_route_transport_failure_for_model(
                             &state.pool,
                             account.account_id,
                             sticky_key,
                             &message,
                             trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                            requested_model.as_deref(),
                         )
                         .await
                         {
