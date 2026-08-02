@@ -617,6 +617,16 @@ async fn upsert_timeseries_minute_projection_v2_key_tx(
     Ok(())
 }
 
+fn timeseries_projection_requires_exact_rebuild(
+    deltas: &[(i64, TimeseriesTerminalDelta)],
+    existing_max_row_id: i64,
+) -> bool {
+    let mut seen_row_ids = HashSet::with_capacity(deltas.len());
+    deltas
+        .iter()
+        .any(|(row_id, _)| *row_id <= existing_max_row_id || !seen_row_ids.insert(*row_id))
+}
+
 pub(crate) async fn flush_timeseries_minute_projection(
     state: &AppState,
     trigger: &'static str,
@@ -668,12 +678,10 @@ pub(crate) async fn flush_timeseries_minute_projection(
         let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
             load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
         {
-            if deltas
-                .iter()
-                .any(|(row_id, _)| *row_id <= existing_max_row_id)
-            {
+            if timeseries_projection_requires_exact_rebuild(&deltas, existing_max_row_id) {
                 // A terminal record can update an older running row. Its row ID is not a
-                // change cursor, so an incremental merge would silently omit that terminal.
+                // change cursor, and repeated pending events can share the same row ID.
+                // Either case needs an exact rebuild rather than another incremental add.
                 exact_fallback_minute_count += 1;
                 rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
             } else {
@@ -814,6 +822,66 @@ mod minute_projection_tests {
             t_resp_parse_ms: Some(1.0),
             t_persist_ms: Some(1.0),
         }
+    }
+
+    #[test]
+    fn minute_projection_rebuilds_when_a_flush_batch_repeats_a_row_id() {
+        let delta = TimeseriesTerminalDelta {
+            occurred_at: "2026-08-01T00:00:12Z".to_string(),
+            source: SOURCE_PROXY.to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: Some(3),
+            cache_input_tokens: None,
+            cost: Some(0.25),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+        };
+
+        assert!(timeseries_projection_requires_exact_rebuild(
+            &[(42, delta.clone()), (42, delta)],
+            41,
+        ));
+    }
+
+    #[test]
+    fn minute_projection_incrementally_merges_distinct_new_row_ids() {
+        let delta = TimeseriesTerminalDelta {
+            occurred_at: "2026-08-01T00:00:12Z".to_string(),
+            source: SOURCE_PROXY.to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: Some(3),
+            cache_input_tokens: None,
+            cost: Some(0.25),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+        };
+
+        assert!(!timeseries_projection_requires_exact_rebuild(
+            &[(42, delta.clone()), (43, delta.clone())],
+            41,
+        ));
+        assert!(timeseries_projection_requires_exact_rebuild(
+            &[(41, delta)],
+            41,
+        ));
     }
 
     #[tokio::test]
