@@ -2338,9 +2338,8 @@ pub(crate) async fn delete_upstream_account_inner(
             .execute(tx.as_mut())
             .await
             .map_err(internal_error_tuple)?;
-        sqlx::query("DELETE FROM pool_sticky_routes WHERE account_id = ?1")
-            .bind(id)
-            .execute(tx.as_mut())
+        let sticky_clear_now = format_utc_iso_precise(Utc::now());
+        delete_sticky_routes_for_account_executor(tx.as_mut(), id, &sticky_clear_now)
             .await
             .map_err(internal_error_tuple)?;
         sqlx::query("DELETE FROM pool_upstream_account_model_routes WHERE account_id = ?1")

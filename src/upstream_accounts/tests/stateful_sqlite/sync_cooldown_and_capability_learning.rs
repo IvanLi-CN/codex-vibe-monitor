@@ -158,6 +158,7 @@ async fn api_key_temporary_http_failure_changes_only_the_exact_model_route() {
         "/v1/responses",
         ImageIntent::Unknown,
         Some(attempt_id),
+        None,
     )
     .await
     .expect("record API key temporary HTTP failure");
@@ -375,6 +376,7 @@ async fn api_key_explicit_model_429_honors_toggle_and_preserves_reason() {
         "/v1/responses",
         ImageIntent::Unknown,
         Some(enabled_attempt),
+        None,
     )
     .await
     .expect("record enabled explicit model 429");
@@ -419,6 +421,7 @@ async fn api_key_explicit_model_429_honors_toggle_and_preserves_reason() {
         "/v1/responses",
         ImageIntent::Unknown,
         Some(disabled_attempt),
+        None,
     )
     .await
     .expect("record disabled explicit model 429");
@@ -476,6 +479,7 @@ async fn api_key_unattributed_disabled_and_payload_failures_are_evidence_only() 
         "/v1/responses",
         ImageIntent::Unknown,
         Some(payload_attempt),
+        None,
     )
     .await
     .expect("record payload failure");
@@ -506,6 +510,7 @@ async fn api_key_unattributed_disabled_and_payload_failures_are_evidence_only() 
         "/v1/responses",
         ImageIntent::Unknown,
         Some(disabled_attempt),
+        None,
     )
     .await
     .expect("record disabled model status change");

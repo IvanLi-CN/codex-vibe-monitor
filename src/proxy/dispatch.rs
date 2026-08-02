@@ -1274,6 +1274,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pool_attempt_trace_context.clone(),
             pool_attempt_runtime_snapshot.clone(),
             sticky_key.as_deref(),
+            request_info.sticky_key.as_deref(),
             prompt_cache_binding_constraint.clone(),
             prompt_cache_conversation_override.clone(),
             None,
@@ -3019,7 +3020,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -3033,6 +3034,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pending_pool_attempt_record_for_task
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            account.sticky_affinity_generation,
+                            prompt_cache_key_for_task
+                                .as_deref()
+                                .or(request_info_for_task.sticky_key.as_deref()),
                         )
                         .await
                     }

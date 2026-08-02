@@ -439,6 +439,38 @@ pub(crate) async fn load_sticky_route(
     .map_err(Into::into)
 }
 
+pub(crate) async fn load_sticky_route_with_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<(Option<PoolStickyRouteRow>, i64)> {
+    let mut tx = pool.begin().await?;
+    let route = sqlx::query_as::<_, PoolStickyRouteRow>(
+        r#"
+        SELECT sticky_key, account_id, created_at, updated_at, last_seen_at
+        FROM pool_sticky_routes
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let generation = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT generation
+        FROM pool_sticky_route_generations
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or_default();
+    tx.commit().await?;
+    Ok((route, generation))
+}
+
 pub(crate) async fn load_sticky_affinity_generation_executor<'e, E>(
     executor: E,
     sticky_key: &str,
@@ -479,10 +511,16 @@ where
     sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_sticky_route_generations (
-            sticky_key, generation, updated_at
-        ) VALUES (?1, 1, ?2)
+            sticky_key,
+            generation,
+            last_clear_cause_attempt_public_id,
+            last_clear_cause_http_status,
+            updated_at
+        ) VALUES (?1, 1, NULL, NULL, ?2)
         ON CONFLICT(sticky_key) DO UPDATE SET
             generation = pool_sticky_route_generations.generation + 1,
+            last_clear_cause_attempt_public_id = NULL,
+            last_clear_cause_http_status = NULL,
             updated_at = excluded.updated_at
         RETURNING generation
         "#,
@@ -539,6 +577,43 @@ pub(crate) async fn upsert_sticky_route(
     upsert_sticky_route_executor(pool, sticky_key, account_id, now_iso).await
 }
 
+pub(crate) async fn upsert_sticky_route_and_bump_generation_if_changed(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<bool> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await?;
+    let outcome: Result<bool> = async {
+        let previous_account_id = sqlx::query_scalar::<_, i64>(
+            "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(conn.as_mut())
+        .await?;
+        let target_changed = previous_account_id != Some(account_id);
+        upsert_sticky_route_executor(conn.as_mut(), sticky_key, account_id, now_iso).await?;
+        if target_changed {
+            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+        }
+        Ok(target_changed)
+    }
+    .await;
+    match outcome {
+        Ok(target_changed) => {
+            sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+            Ok(target_changed)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            Err(error)
+        }
+    }
+}
+
 pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -552,4 +627,199 @@ where
 
 pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
     delete_sticky_route_executor(pool, sticky_key).await
+}
+
+pub(crate) async fn delete_sticky_routes_for_account_executor(
+    conn: &mut SqliteConnection,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    let sticky_keys = sqlx::query_scalar::<_, String>(
+        "SELECT sticky_key FROM pool_sticky_routes WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for sticky_key in sticky_keys {
+        bump_sticky_affinity_generation_executor(&mut *conn, &sticky_key, now_iso).await?;
+    }
+    sqlx::query("DELETE FROM pool_sticky_routes WHERE account_id = ?1")
+        .bind(account_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_sticky_route_if_matches(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    expected_generation: Option<i64>,
+    now_iso: &str,
+) -> Result<bool> {
+    delete_sticky_route_if_matches_with_cause(
+        pool,
+        sticky_key,
+        account_id,
+        expected_generation,
+        None,
+        None,
+        None,
+        None,
+        now_iso,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Sticky clear fencing carries the route identity, generation, and causal attempt metadata."
+)]
+pub(crate) async fn delete_sticky_route_if_matches_with_cause(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    expected_generation: Option<i64>,
+    cause_attempt_id: Option<i64>,
+    cause_http_status: Option<i64>,
+    cause_reason_code: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    now_iso: &str,
+) -> Result<bool> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await?;
+    let outcome: Result<bool> = async {
+        let current_generation =
+            load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
+        if let Some(expected_generation) = expected_generation
+            && current_generation != expected_generation
+        {
+            return Ok(false);
+        }
+        let attempt_context = if let Some(cause_attempt_id) = cause_attempt_id {
+            let attempt = sqlx::query_as::<_, (
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>(
+                "SELECT started_at, occurred_at, attempt_public_id, invoke_id, routing_source FROM pool_upstream_request_attempts WHERE id = ?1",
+            )
+            .bind(cause_attempt_id)
+            .fetch_optional(conn.as_mut())
+            .await?
+            .unwrap_or((None, None, None, None, None));
+            let Some(occurred_at) = attempt.0.clone().or(attempt.1.clone()) else {
+                return Ok(false);
+            };
+            let Some(occurred_at_utc) = parse_to_utc_datetime(&occurred_at) else {
+                return Ok(false);
+            };
+            Some((occurred_at_utc, attempt.2, attempt.3, attempt.4))
+        } else {
+            None
+        };
+        let route_updated_at = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT updated_at FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .bind(account_id)
+        .fetch_optional(conn.as_mut())
+        .await?
+        .flatten();
+        let Some(route_updated_at) = route_updated_at else {
+            return Ok(false);
+        };
+        if let Some((cause_occurred_at_utc, _, _, _)) = attempt_context.as_ref() {
+            let Some(route_updated_at) = parse_to_utc_datetime(&route_updated_at) else {
+                return Ok(false);
+            };
+            if route_updated_at > *cause_occurred_at_utc {
+                return Ok(false);
+            }
+        }
+        let deleted = sqlx::query(
+            "DELETE FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2",
+        )
+        .bind(sticky_key)
+        .bind(account_id)
+        .execute(conn.as_mut())
+        .await?
+        .rows_affected()
+            > 0;
+        if deleted {
+            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+            let cause_attempt_public_id = attempt_context
+                .as_ref()
+                .and_then(|(_, attempt_public_id, _, _)| attempt_public_id.clone());
+            sqlx::query(
+                r#"
+                UPDATE pool_sticky_route_generations
+                SET last_clear_cause_attempt_public_id = ?2,
+                    last_clear_cause_http_status = ?3,
+                    updated_at = ?4
+                WHERE sticky_key = ?1
+                "#,
+            )
+            .bind(sticky_key)
+            .bind(cause_attempt_public_id)
+            .bind(cause_http_status)
+            .bind(now_iso)
+            .execute(conn.as_mut())
+            .await?;
+            let account_name = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT display_name FROM pool_upstream_accounts WHERE id = ?1",
+            )
+            .bind(account_id)
+            .fetch_optional(conn.as_mut())
+            .await?
+            .flatten();
+            let (trigger_attempt_id, invoke_id, routing_source) = attempt_context
+                .as_ref()
+                .map(|(_, attempt_public_id, invoke_id, routing_source)| {
+                    (
+                        attempt_public_id.clone(),
+                        invoke_id.clone(),
+                        routing_source.clone(),
+                    )
+                })
+                .unwrap_or((None, None, None));
+            if prompt_cache_key == Some(sticky_key) {
+                crate::api::append_runtime_sticky_target_cleared_event_executor(
+                    conn.as_mut(),
+                    sticky_key,
+                    account_id,
+                    account_name,
+                    now_iso,
+                    invoke_id,
+                    crate::api::PromptCacheConversationOperationRoutingContext {
+                        reason_code: cause_reason_code
+                            .unwrap_or("automaticStickyClear")
+                            .to_string(),
+                        routing_source,
+                        http_status: cause_http_status.and_then(|value| u16::try_from(value).ok()),
+                        trigger_attempt_id,
+                        causing_attempt_id: None,
+                        causing_http_status: None,
+                    },
+                )
+                .await?;
+            }
+        }
+        Ok(deleted)
+    }
+    .await;
+    match outcome {
+        Ok(deleted) => {
+            sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+            Ok(deleted)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            Err(error)
+        }
+    }
 }

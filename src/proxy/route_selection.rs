@@ -1027,6 +1027,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     headers: &HeaderMap,
     body: Body,
     prompt_cache_key: Option<&str>,
+    sticky_event_prompt_cache_key: Option<&str>,
     request_image_intent: crate::ImageIntent,
     handshake_timeout: Duration,
     responses_total_timeout: Option<Duration>,
@@ -1730,7 +1731,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         } else {
             // Live-first records the initial failure before the replay/failover path can spend
             // the group 429 retry budget. Keep sticky intact until failover records the final 429.
-            record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                 &state.pool,
                 account.account_id,
                 &account.kind,
@@ -1745,6 +1746,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 pending_attempt_record
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
+                account.sticky_affinity_generation,
+                prompt_cache_key.or(sticky_event_prompt_cache_key),
             )
             .await
         };
@@ -2391,6 +2394,7 @@ async fn continue_or_retry_pool_live_request_inner(
                     t_req_parse_ms: 0.0,
                 }),
                 replay_sticky_key.as_deref(),
+                replay_sticky_key.as_deref(),
                 replay_prompt_cache_binding_constraint,
                 replay_conversation_override,
                 preferred_account,
@@ -2675,6 +2679,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 t_req_read_ms: 0.0,
                                 t_req_parse_ms: 0.0,
                             }),
+                            body_sticky_key.as_deref(),
                             body_sticky_key.as_deref(),
                             prompt_cache_binding_constraint,
                             conversation_override,
@@ -3568,6 +3573,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     &headers,
                                     replayable_body.body,
                                     live_prompt_cache_key.as_deref(),
+                                    live_body_sticky_key.as_deref(),
                                     request_image_intent,
                                     handshake_timeout,
                                     responses_total_timeout,
@@ -3746,7 +3752,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &pool_routing_reservation_key,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                                             &state.pool,
                                             account.account_id,
                                             &account.kind,
@@ -3764,6 +3770,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             pending_pool_attempt_record
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
+                                            account.sticky_affinity_generation,
+                                            live_prompt_cache_key
+                                                .as_deref()
+                                                .or(live_body_sticky_key.as_deref()),
                                         )
                                         .await
                                     {
@@ -4036,7 +4046,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &reservation_key_for_record,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                                             &state_for_record.pool,
                                             account.account_id,
                                             &account.kind,
@@ -4052,6 +4062,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             pending_pool_attempt_record_for_task
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
+                                            account.sticky_affinity_generation,
+                                            prompt_cache_key_for_record
+                                                .as_deref()
+                                                .or(sticky_key_for_record.as_deref()),
                                         )
                                         .await
                                     {
@@ -4252,6 +4266,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 t_req_parse_ms: 0.0,
                             }),
                             body_sticky_key.as_deref(),
+                            body_sticky_key.as_deref(),
                             prompt_cache_binding_constraint,
                             conversation_override,
                             Some(initial_account),
@@ -4314,6 +4329,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             t_req_parse_ms: 0.0,
                         }),
                         header_sticky_key.as_deref(),
+                        None,
                         prompt_cache_binding_constraint,
                         conversation_override,
                         None,
@@ -4489,7 +4505,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             } else {
                 release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -4506,6 +4522,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
+                        prompt_cache_key.as_deref(),
                     )
                     .await
                 {
@@ -4742,7 +4760,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                         &state_for_record.pool,
                         account.account_id,
                         &account.kind,
@@ -4757,6 +4775,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
+                        prompt_cache_key_for_record.as_deref(),
                     )
                     .await
                 {

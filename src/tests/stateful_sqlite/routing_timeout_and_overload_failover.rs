@@ -2513,6 +2513,27 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
             .is_none(),
         "permission failures should detach the sticky binding",
     );
+    let clear_event = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+        SELECT action, routing_context_json, sticky_before_json
+        FROM prompt_cache_conversation_operation_events
+        WHERE prompt_cache_key = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("sticky-scope-001")
+    .fetch_one(&state.pool)
+    .await
+    .expect("automatic sticky clear event should be persisted");
+    assert_eq!(clear_event.0, "stickyTargetCleared");
+    assert!(
+        clear_event
+            .1
+            .as_deref()
+            .is_some_and(|value| value.contains("upstream_http_401"))
+    );
+    assert!(clear_event.2.is_some());
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let row = sqlx::query_as::<_, PersistedRow>(

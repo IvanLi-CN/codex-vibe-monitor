@@ -696,7 +696,8 @@ pub(crate) fn prompt_cache_conversation_operation_events_create_sql(table_name: 
             binding_after_json TEXT,
             sticky_before_json TEXT,
             sticky_after_json TEXT,
-            invoke_id TEXT
+            invoke_id TEXT,
+            routing_context_json TEXT
         )
         "#
     )
@@ -3608,6 +3609,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure prompt_cache_conversation_operation_events table existence")?;
+
+    let existing_prompt_cache_operation_event_columns =
+        load_sqlite_table_columns(pool, "prompt_cache_conversation_operation_events").await?;
+    if !existing_prompt_cache_operation_event_columns.contains("routing_context_json") {
+        sqlx::query(
+            "ALTER TABLE prompt_cache_conversation_operation_events ADD COLUMN routing_context_json TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add prompt-cache operation routing context column")?;
+    }
 
     sqlx::query(
         r#"

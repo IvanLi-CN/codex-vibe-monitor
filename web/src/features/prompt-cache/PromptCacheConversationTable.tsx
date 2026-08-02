@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 import {
   Bar,
   CartesianGrid,
@@ -447,6 +448,31 @@ function conversationOperationOriginLabel(
   const key = `live.conversations.drawer.operations.origins.${origin}`;
   const translated = t(key);
   return translated === key ? origin : translated;
+}
+
+function conversationOperationRoutingReasonLabel(
+  event: PromptCacheConversationOperationEvent,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const context = event.routingContext;
+  if (!context) return t("live.conversations.drawer.operations.routingContext.legacy");
+  const key = `live.conversations.drawer.operations.routingContext.reasons.${context.reasonCode}`;
+  const translated = t(key, {
+    status: context.causingHttpStatus ?? context.httpStatus ?? "-",
+  });
+  return translated === key
+    ? t("live.conversations.drawer.operations.routingContext.reasons.unknown")
+    : translated;
+}
+
+function conversationOperationShowsRoutingReason(event: PromptCacheConversationOperationEvent) {
+  return (
+    event.routingContext != null ||
+    (event.origin === "systemAuto" &&
+      (event.action === "stickyTargetChanged" ||
+        event.action === "stickyTargetCleared" ||
+        event.action === "stickyMutationSuppressed"))
+  );
 }
 
 function conversationOperationBindingSnapshotLabel(
@@ -3257,6 +3283,40 @@ export function PromptCacheConversationHistoryDrawer({
                 to: conversationOperationStickySnapshotLabel(event.stickyAfter, t),
               })}
             </p>
+          ) : null}
+          {event.infoTypes.includes("routing") && conversationOperationShowsRoutingReason(event) ? (
+            <div className="space-y-1 text-xs text-base-content/70">
+              <p>{conversationOperationRoutingReasonLabel(event, t)}</p>
+              {event.routingContext?.routingSource ? (
+                <p>
+                  {t("live.conversations.drawer.operations.routingContext.source", {
+                    source: t(
+                      `live.conversations.drawer.operations.routingContext.sources.${event.routingContext.routingSource}`,
+                    ),
+                  })}
+                </p>
+              ) : null}
+              {event.routingContext?.causingAttemptId ? (
+                <Link
+                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                  to={`/records?attemptId=${encodeURIComponent(event.routingContext.causingAttemptId)}`}
+                >
+                  {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
+                    attemptId: event.routingContext.causingAttemptId,
+                  })}
+                </Link>
+              ) : null}
+              {event.routingContext?.triggerAttemptId ? (
+                <Link
+                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                  to={`/records?attemptId=${encodeURIComponent(event.routingContext.triggerAttemptId)}`}
+                >
+                  {t("live.conversations.drawer.operations.routingContext.triggerAttempt", {
+                    attemptId: event.routingContext.triggerAttemptId,
+                  })}
+                </Link>
+              ) : null}
+            </div>
           ) : null}
           {event.invokeId ? (
             <p className="break-all font-mono text-[11px] text-base-content/58">

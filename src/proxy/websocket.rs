@@ -1036,13 +1036,16 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    if let Err(err) = record_pool_route_success_with_affinity_generation(
+    if let Err(err) = record_pool_route_success_with_affinity_generation_for_attempt(
         &state.pool,
         account.account_id,
         Utc::now(),
         trace.sticky_key.as_deref(),
         websocket_effective_prompt_cache_key(prompt_cache_key),
         Some(trace.invoke_id.as_str()),
+        pending_attempt_record
+            .as_ref()
+            .and_then(|pending| pending.attempt_id),
         account.sticky_affinity_generation,
     )
     .await

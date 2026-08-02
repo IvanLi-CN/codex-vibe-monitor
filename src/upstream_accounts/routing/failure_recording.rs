@@ -81,7 +81,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
     invoke_id: Option<&str>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    record_pool_route_success_inner(
+    record_pool_route_success_with_affinity_generation_for_attempt(
         pool,
         account_id,
         request_started_at_utc,
@@ -89,6 +89,29 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
         prompt_cache_key,
         invoke_id,
         None,
+        sticky_affinity_generation,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        attempt_id,
         sticky_affinity_generation,
     )
     .await
@@ -105,6 +128,7 @@ async fn record_pool_route_success_inner(
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let sticky_now_iso = format_utc_iso_precise(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
     let model_request_started_at_iso = format_naive_precise(
         request_started_at_utc
@@ -158,8 +182,9 @@ async fn record_pool_route_success_inner(
             sticky_key,
             prompt_cache_key,
             account_id,
-            &now_iso,
+            &sticky_now_iso,
             invoke_id,
+            attempt_id,
             sticky_affinity_generation,
         )
         .await?;
@@ -506,6 +531,8 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         "",
         image_intent,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -534,6 +561,8 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         endpoint,
         image_intent,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -550,6 +579,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     endpoint: &str,
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+    prompt_cache_key: Option<&str>,
 ) -> Result<()> {
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
@@ -732,7 +763,18 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             if is_scope_permission_error_message(error_message)
                 && let Some(sticky_key) = sticky_key
             {
-                delete_sticky_route(pool, sticky_key).await?;
+                delete_sticky_route_if_matches_with_cause(
+                    pool,
+                    sticky_key,
+                    account_id,
+                    sticky_affinity_generation,
+                    attempt_id,
+                    Some(i64::from(status.as_u16())),
+                    Some(classification.reason_code),
+                    prompt_cache_key,
+                    &now_iso,
+                )
+                .await?;
             }
             sqlx::query(
                 r#"
@@ -813,7 +855,19 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 && status == StatusCode::TOO_MANY_REQUESTS
                 && let Some(sticky_key) = sticky_key
             {
-                delete_sticky_route(pool, sticky_key).await?;
+                let now_iso = format_utc_iso(Utc::now());
+                delete_sticky_route_if_matches_with_cause(
+                    pool,
+                    sticky_key,
+                    account_id,
+                    sticky_affinity_generation,
+                    attempt_id,
+                    Some(i64::from(status.as_u16())),
+                    Some(classification.reason_code),
+                    prompt_cache_key,
+                    &now_iso,
+                )
+                .await?;
             }
             Ok(())
         }
@@ -1081,6 +1135,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent_for_attempt
         "",
         image_intent,
         attempt_id,
+        None,
     )
     .await
 }
@@ -1097,6 +1152,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     endpoint: &str,
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
     record_pool_route_http_failure_with_image_intent_inner(
         pool,
@@ -1110,6 +1166,41 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         endpoint,
         image_intent,
         attempt_id,
+        sticky_affinity_generation,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+    prompt_cache_key: Option<&str>,
+) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent_inner(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        endpoint,
+        image_intent,
+        attempt_id,
+        sticky_affinity_generation,
+        prompt_cache_key,
     )
     .await
 }

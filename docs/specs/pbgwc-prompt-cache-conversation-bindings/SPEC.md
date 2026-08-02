@@ -68,11 +68,13 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - The events tab keeps one event stream and one lightweight filter row; it does not split into nested subtabs.
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
 - Conversation event records are append-only per `promptCacheKey`.
-- Each operation record includes `action`, `origin`, `infoTypes[]`, `occurredAt`, `headline`, `changedFields[]`, and optional `bindingBefore/After`, `stickyBefore/After`, and `invokeId`.
+- Each operation record includes `action`, `origin`, `infoTypes[]`, `occurredAt`, `headline`, `changedFields[]`, and optional `bindingBefore/After`, `stickyBefore/After`, `invokeId`, and `routingContext`.
+- New automatic routing contexts contain only a safe reason code, selection source, HTTP status, and public attempt references; raw upstream messages remain available only through existing attempt detail access.
 - `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
 - `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
 - Binding/sticky events remain split: if one action changes both the manual binding target and sticky target, the timeline records separate events.
 - Sticky keepalive renewals to the same target, no-diff PATCH requests, and pure reads do not emit event records.
+- A request captures the Sticky affinity generation at route selection. Any actual Sticky target create, replacement, or removal atomically advances that generation. The first successful fresh/failover completion for a generation establishes the target; later completions remain normal request outcomes but cannot overwrite or clear it.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Runtime routing treats an observed conversation proxy override as a hard bound forward-proxy scope. The current node remains sticky for the prompt cache key, and runtime switches within the explicit list only after the existing consecutive network-failure threshold. If every node in that list is unavailable, routing fails through the existing proxy/account readiness path rather than silently choosing another proxy or falling back to the account/group scope.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
@@ -121,6 +123,7 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `binding_after_json TEXT NULL`
 - `sticky_before_json TEXT NULL`
 - `sticky_after_json TEXT NULL`
+- `routing_context_json TEXT NULL`
 - `invoke_id TEXT NULL`
 
 ### HTTP API
@@ -145,7 +148,8 @@ The row is deleted only when there is no binding target, all four timeout overri
   - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
   - Returns `{ items, total, page, pageSize }`.
-  - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId }`.
+  - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext? }`.
+  - `routingContext` contains `{ reasonCode, routingSource?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
   - Results are ordered by `occurredAt DESC, id DESC`.
   - `infoType` filters by any matching entry inside `infoTypes[]`.
 
@@ -192,7 +196,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Single-conversation detail PATCH writes `origin='detailDrawer'`.
 - Dashboard bulk bind, manual binding clear, clear/reset affinity, and FAST mode writes `origin='dashboardBulk'`.
 - Automatic group-to-account promotion after routing success writes `origin='systemAuto'`.
-- `manualBindingUpdated`, `bindingCleared`, `affinityReset`, `stickyTargetChanged`, `stickyTargetCleared`, and `groupBindingPromoted` always carry `infoTypes=['routing']`.
+- `manualBindingUpdated`, `bindingCleared`, `affinityReset`, `stickyTargetChanged`, `stickyTargetCleared`, `stickyMutationSuppressed`, and `groupBindingPromoted` always carry `infoTypes=['routing']`.
 - `conversationPolicyUpdated` derives `infoTypes[]` from the actual changed fields:
   - `allowSwitchUpstream` plus all timeout fields map to `routing`
   - `forwardProxyKey` / `forwardProxyKeys` map to `forwardProxy`
@@ -243,6 +247,9 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given only `allowSwitchUpstream` or timeout fields change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['routing']`.
 - Given automatic group promotion succeeds, one `groupBindingPromoted` event is recorded with `origin='systemAuto'`; if sticky target also changes, a separate `stickyTargetChanged` event is recorded.
 - Given sticky keepalive refreshes the same target or a PATCH produces no actual state difference, the events stream does not add noise events.
+- Given two fresh selections share the same affinity generation and different accounts succeed out of order, the first success remains the Sticky target and the later success emits `stickyMutationSuppressed` without changing the client response.
+- Given an automatic scope-permission or single-account 429 clear completes after the Sticky target has changed, it requires both the captured generation and failed account to still match, and does not remove the newer target.
+- Given a new automatic Sticky event, the events tab shows its localized safe reason, routing source, and available cause/trigger attempt links; historical rows without context state that the reason was not recorded.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
@@ -260,6 +267,37 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.
 
 ## Visual Evidence
+
+### Sticky Causality (UI Demo)
+
+PR: include
+![Desktop event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-desktop.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: desktop default
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: a failed 429 attempt leads to fresh assignment; a later concurrent success is visibly suppressed and links to its attempt.
+- evidence_note: the third historical event intentionally has no context and displays `历史原因未记录`.
+
+PR: include
+![Mobile event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-mobile.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: 393x852
+- viewport_strategy: devtools-emulate
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: the same causal chain is readable at the required mobile viewport without overlap or truncation.
 
 ### Dashboard Bulk Actions (Web Demo)
 
