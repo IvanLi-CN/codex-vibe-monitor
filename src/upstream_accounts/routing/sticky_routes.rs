@@ -629,6 +629,27 @@ pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -
     delete_sticky_route_executor(pool, sticky_key).await
 }
 
+pub(crate) async fn delete_sticky_routes_for_account_executor(
+    conn: &mut SqliteConnection,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    let sticky_keys = sqlx::query_scalar::<_, String>(
+        "SELECT sticky_key FROM pool_sticky_routes WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for sticky_key in sticky_keys {
+        bump_sticky_affinity_generation_executor(&mut *conn, &sticky_key, now_iso).await?;
+    }
+    sqlx::query("DELETE FROM pool_sticky_routes WHERE account_id = ?1")
+        .bind(account_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn delete_sticky_route_if_matches(
     pool: &Pool<Sqlite>,
     sticky_key: &str,

@@ -2903,6 +2903,13 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
     )
     .await;
     let now_iso = format_utc_iso(Utc::now());
+    let sticky_key = "delete-target-sticky-key";
+    upsert_sticky_route(&state.pool, sticky_key, account_id, &now_iso)
+        .await
+        .expect("insert sticky route");
+    let stale_generation = load_sticky_affinity_generation(&state.pool, sticky_key)
+        .await
+        .expect("load sticky generation before account deletion");
     let tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
@@ -3030,6 +3037,34 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
     .await
     .expect("delete upstream account");
     assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        load_sticky_route(&state.pool, sticky_key)
+            .await
+            .expect("load deleted account sticky route")
+            .is_none()
+    );
+    let deleted_generation = load_sticky_affinity_generation(&state.pool, sticky_key)
+        .await
+        .expect("load sticky generation after account deletion");
+    assert_eq!(deleted_generation, stale_generation + 1);
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some(sticky_key),
+        Some(sticky_key),
+        Some("late-after-account-delete"),
+        Some(stale_generation),
+    )
+    .await
+    .expect("late completion should remain a successful route outcome");
+    assert!(
+        load_sticky_route(&state.pool, sticky_key)
+            .await
+            .expect("load sticky route after stale completion")
+            .is_none()
+    );
 
     let remaining_accounts: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_accounts WHERE id = ?1")
