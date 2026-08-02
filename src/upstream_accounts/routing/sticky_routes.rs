@@ -643,11 +643,16 @@ pub(crate) async fn delete_sticky_route_if_matches(
         expected_generation,
         None,
         None,
+        None,
         now_iso,
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Sticky clear fencing carries the route identity, generation, and causal attempt metadata."
+)]
 pub(crate) async fn delete_sticky_route_if_matches_with_cause(
     pool: &Pool<Sqlite>,
     sticky_key: &str,
@@ -655,6 +660,7 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
     expected_generation: Option<i64>,
     cause_attempt_id: Option<i64>,
     cause_http_status: Option<i64>,
+    cause_reason_code: Option<&str>,
     now_iso: &str,
 ) -> Result<bool> {
     let mut conn = pool.acquire().await?;
@@ -669,55 +675,63 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
         {
             return Ok(false);
         }
-        let cause_occurred_at_utc = if let Some(cause_attempt_id) = cause_attempt_id {
-            let (started_at, occurred_at) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-                "SELECT started_at, occurred_at FROM pool_upstream_request_attempts WHERE id = ?1",
+        let attempt_context = if let Some(cause_attempt_id) = cause_attempt_id {
+            let attempt = sqlx::query_as::<_, (
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>(
+                "SELECT started_at, occurred_at, attempt_public_id, invoke_id, routing_source FROM pool_upstream_request_attempts WHERE id = ?1",
             )
             .bind(cause_attempt_id)
             .fetch_optional(conn.as_mut())
             .await?
-            .unwrap_or((None, None));
-            let Some(occurred_at) = started_at.or(occurred_at) else {
+            .unwrap_or((None, None, None, None, None));
+            let Some(occurred_at) = attempt.0.clone().or(attempt.1.clone()) else {
                 return Ok(false);
             };
             let Some(occurred_at_utc) = parse_to_utc_datetime(&occurred_at) else {
                 return Ok(false);
             };
-            Some(format_utc_iso_precise(occurred_at_utc))
+            Some((occurred_at_utc, attempt.2, attempt.3, attempt.4))
         } else {
             None
         };
-        let deleted = sqlx::query(
-            r#"
-                DELETE FROM pool_sticky_routes
-                WHERE sticky_key = ?1
-                  AND account_id = ?2
-                  AND (
-                      ?3 IS NULL
-                      OR updated_at <= ?3
-                  )
-                "#,
+        let route_updated_at = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT updated_at FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2 LIMIT 1",
         )
         .bind(sticky_key)
         .bind(account_id)
-        .bind(cause_occurred_at_utc.as_deref())
+        .fetch_optional(conn.as_mut())
+        .await?
+        .flatten();
+        let Some(route_updated_at) = route_updated_at else {
+            return Ok(false);
+        };
+        if let Some((cause_occurred_at_utc, _, _, _)) = attempt_context.as_ref() {
+            let Some(route_updated_at) = parse_to_utc_datetime(&route_updated_at) else {
+                return Ok(false);
+            };
+            if route_updated_at > *cause_occurred_at_utc {
+                return Ok(false);
+            }
+        }
+        let deleted = sqlx::query(
+            "DELETE FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2",
+        )
+        .bind(sticky_key)
+        .bind(account_id)
         .execute(conn.as_mut())
         .await?
         .rows_affected()
             > 0;
         if deleted {
             bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
-            let cause_attempt_public_id = if let Some(cause_attempt_id) = cause_attempt_id {
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT attempt_public_id FROM pool_upstream_request_attempts WHERE id = ?1",
-                )
-                .bind(cause_attempt_id)
-                .fetch_optional(conn.as_mut())
-                .await?
-                .flatten()
-            } else {
-                None
-            };
+            let cause_attempt_public_id = attempt_context
+                .as_ref()
+                .and_then(|(_, attempt_public_id, _, _)| attempt_public_id.clone());
             sqlx::query(
                 r#"
                 UPDATE pool_sticky_route_generations
@@ -732,6 +746,42 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
             .bind(cause_http_status)
             .bind(now_iso)
             .execute(conn.as_mut())
+            .await?;
+            let account_name = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT display_name FROM pool_upstream_accounts WHERE id = ?1",
+            )
+            .bind(account_id)
+            .fetch_optional(conn.as_mut())
+            .await?
+            .flatten();
+            let (trigger_attempt_id, invoke_id, routing_source) = attempt_context
+                .as_ref()
+                .map(|(_, attempt_public_id, invoke_id, routing_source)| {
+                    (
+                        attempt_public_id.clone(),
+                        invoke_id.clone(),
+                        routing_source.clone(),
+                    )
+                })
+                .unwrap_or((None, None, None));
+            crate::api::append_runtime_sticky_target_cleared_event_executor(
+                conn.as_mut(),
+                sticky_key,
+                account_id,
+                account_name,
+                now_iso,
+                invoke_id,
+                crate::api::PromptCacheConversationOperationRoutingContext {
+                    reason_code: cause_reason_code
+                        .unwrap_or("automaticStickyClear")
+                        .to_string(),
+                    routing_source,
+                    http_status: cause_http_status.and_then(|value| u16::try_from(value).ok()),
+                    trigger_attempt_id,
+                    causing_attempt_id: None,
+                    causing_http_status: None,
+                },
+            )
             .await?;
         }
         Ok(deleted)

@@ -1005,6 +1005,50 @@ where
     Ok(())
 }
 
+pub(crate) async fn append_runtime_sticky_target_cleared_event_executor<'e, E>(
+    executor: E,
+    prompt_cache_key: &str,
+    account_id: i64,
+    account_name: Option<String>,
+    occurred_at: &str,
+    invoke_id: Option<String>,
+    routing_context: PromptCacheConversationOperationRoutingContext,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let sticky_before = PromptCacheConversationOperationStickySnapshot {
+        upstream_account_id: account_id,
+        upstream_account_name: account_name,
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_operation_events (
+            prompt_cache_key,
+            action,
+            origin,
+            info_types_json,
+            occurred_at,
+            headline,
+            changed_fields_json,
+            sticky_before_json,
+            invoke_id,
+            routing_context_json
+        )
+        VALUES (?1, 'stickyTargetCleared', 'systemAuto', '["routing"]', ?2,
+                'Sticky target cleared', '["stickyTarget"]', ?3, ?4, ?5)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(occurred_at)
+    .bind(serde_json::to_string(&sticky_before)?)
+    .bind(invoke_id)
+    .bind(serde_json::to_string(&routing_context)?)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 async fn load_runtime_attempt_routing_context_executor<'e, E>(
     executor: E,
     attempt_id: Option<i64>,

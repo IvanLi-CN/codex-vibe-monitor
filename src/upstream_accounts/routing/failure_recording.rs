@@ -715,6 +715,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     sticky_affinity_generation,
                     attempt_id,
                     Some(i64::from(status.as_u16())),
+                    Some(classification.reason_code),
                     &now_iso,
                 )
                 .await?;
@@ -806,6 +807,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     sticky_affinity_generation,
                     attempt_id,
                     Some(i64::from(status.as_u16())),
+                    Some(classification.reason_code),
                     &now_iso,
                 )
                 .await?;
