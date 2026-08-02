@@ -532,6 +532,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         image_intent,
         None,
         None,
+        None,
     )
     .await
 }
@@ -561,6 +562,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         image_intent,
         None,
         None,
+        None,
     )
     .await
 }
@@ -578,6 +580,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
+    prompt_cache_key: Option<&str>,
 ) -> Result<()> {
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
@@ -768,6 +771,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     attempt_id,
                     Some(i64::from(status.as_u16())),
                     Some(classification.reason_code),
+                    prompt_cache_key,
                     &now_iso,
                 )
                 .await?;
@@ -860,6 +864,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     attempt_id,
                     Some(i64::from(status.as_u16())),
                     Some(classification.reason_code),
+                    prompt_cache_key,
                     &now_iso,
                 )
                 .await?;
@@ -1162,6 +1167,40 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         image_intent,
         attempt_id,
         sticky_affinity_generation,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+    prompt_cache_key: Option<&str>,
+) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent_inner(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        endpoint,
+        image_intent,
+        attempt_id,
+        sticky_affinity_generation,
+        prompt_cache_key,
     )
     .await
 }

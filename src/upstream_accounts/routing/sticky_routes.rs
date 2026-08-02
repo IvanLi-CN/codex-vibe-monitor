@@ -665,6 +665,7 @@ pub(crate) async fn delete_sticky_route_if_matches(
         None,
         None,
         None,
+        None,
         now_iso,
     )
     .await
@@ -682,6 +683,7 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
     cause_attempt_id: Option<i64>,
     cause_http_status: Option<i64>,
     cause_reason_code: Option<&str>,
+    prompt_cache_key: Option<&str>,
     now_iso: &str,
 ) -> Result<bool> {
     let mut conn = pool.acquire().await?;
@@ -785,25 +787,27 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                     )
                 })
                 .unwrap_or((None, None, None));
-            crate::api::append_runtime_sticky_target_cleared_event_executor(
-                conn.as_mut(),
-                sticky_key,
-                account_id,
-                account_name,
-                now_iso,
-                invoke_id,
-                crate::api::PromptCacheConversationOperationRoutingContext {
-                    reason_code: cause_reason_code
-                        .unwrap_or("automaticStickyClear")
-                        .to_string(),
-                    routing_source,
-                    http_status: cause_http_status.and_then(|value| u16::try_from(value).ok()),
-                    trigger_attempt_id,
-                    causing_attempt_id: None,
-                    causing_http_status: None,
-                },
-            )
-            .await?;
+            if prompt_cache_key == Some(sticky_key) {
+                crate::api::append_runtime_sticky_target_cleared_event_executor(
+                    conn.as_mut(),
+                    sticky_key,
+                    account_id,
+                    account_name,
+                    now_iso,
+                    invoke_id,
+                    crate::api::PromptCacheConversationOperationRoutingContext {
+                        reason_code: cause_reason_code
+                            .unwrap_or("automaticStickyClear")
+                            .to_string(),
+                        routing_source,
+                        http_status: cause_http_status.and_then(|value| u16::try_from(value).ok()),
+                        trigger_attempt_id,
+                        causing_attempt_id: None,
+                        causing_http_status: None,
+                    },
+                )
+                .await?;
+            }
         }
         Ok(deleted)
     }

@@ -3019,7 +3019,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -3034,6 +3034,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
                             account.sticky_affinity_generation,
+                            prompt_cache_key_for_task.as_deref(),
                         )
                         .await
                     }

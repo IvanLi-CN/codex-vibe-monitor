@@ -3419,7 +3419,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     )
                     .await
                 } else {
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -3434,6 +3434,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
+                        prompt_cache_key,
                     )
                     .await
                 };
