@@ -4647,10 +4647,28 @@ impl RawOverflowSpool {
         }
         if self.exceeded_payload_limit {
             meta.truncated = true;
-            meta.truncated_reason
-                .get_or_insert_with(|| "spool_capacity_exceeded".to_string());
+            meta.truncated_reason.get_or_insert_with(|| {
+                raw_overflow_payload_limit_reason(
+                    self.config.proxy_raw_max_bytes,
+                    self.payload_limit_bytes,
+                )
+                .to_string()
+            });
         }
         meta
+    }
+}
+
+fn raw_overflow_payload_limit_reason(
+    configured_max_bytes: Option<usize>,
+    payload_limit_bytes: u64,
+) -> &'static str {
+    if configured_max_bytes
+        .is_some_and(|limit| u64::try_from(limit).unwrap_or(u64::MAX) <= payload_limit_bytes)
+    {
+        "max_bytes_exceeded"
+    } else {
+        "spool_capacity_exceeded"
     }
 }
 
@@ -5721,6 +5739,18 @@ mod raw_overflow_memory_tests {
         assert_eq!(
             RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
             before
+        );
+    }
+
+    #[test]
+    fn overflow_spool_preserves_configured_max_bytes_reason() {
+        assert_eq!(
+            raw_overflow_payload_limit_reason(Some(1024), 1024),
+            "max_bytes_exceeded"
+        );
+        assert_eq!(
+            raw_overflow_payload_limit_reason(Some(2048), 1024),
+            "spool_capacity_exceeded"
         );
     }
 }

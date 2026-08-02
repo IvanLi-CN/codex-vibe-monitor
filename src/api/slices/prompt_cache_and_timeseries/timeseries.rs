@@ -890,6 +890,63 @@ mod minute_projection_tests {
     }
 
     #[tokio::test]
+    async fn minute_projection_v2_warms_account_scope_with_empty_minutes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_v2 (minute_start_epoch INTEGER NOT NULL, source_scope TEXT NOT NULL, upstream_account_key INTEGER NOT NULL, aggregate_json TEXT NOT NULL, total_latency_samples_json TEXT NOT NULL, first_byte_samples_json TEXT NOT NULL, first_response_byte_total_samples_json TEXT NOT NULL, first_token_samples_json TEXT NOT NULL, max_row_id INTEGER NOT NULL DEFAULT 0, coverage_state TEXT NOT NULL DEFAULT 'warming', updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (minute_start_epoch, source_scope, upstream_account_key))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 projection table");
+        sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_v2_state (consumer TEXT PRIMARY KEY, cursor_row_id INTEGER NOT NULL DEFAULT 0, last_flush_at TEXT, last_error TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 projection state table");
+        sqlx::query(
+            "INSERT INTO timeseries_minute_projection_v2_state (consumer, last_error) VALUES ('timeseries_minute_v2', 'ready')",
+        )
+        .execute(&pool)
+        .await
+        .expect("mark v2 projection ready");
+        let start = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).single().unwrap();
+        let end = start + ChronoDuration::minutes(2);
+
+        store_timeseries_minute_projection_v2(
+            &pool,
+            start,
+            end,
+            InvocationSourceScope::All,
+            Some(42),
+            &[record(17, "2026-08-01 08:00:12")],
+        )
+        .await
+        .expect("warm account projection");
+
+        let (aggregates, cursor) = load_timeseries_minute_projection_v2(
+            &pool,
+            start,
+            end,
+            InvocationSourceScope::All,
+            Some(42),
+        )
+        .await
+        .expect("load account projection")
+        .expect("complete account minute coverage");
+        assert_eq!(cursor, 17);
+        assert_eq!(aggregates.len(), 2);
+        assert_eq!(
+            aggregates[&(start + ChronoDuration::minutes(1)).timestamp()].total_count,
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn minute_projection_warm_snapshot_does_not_replace_a_newer_cursor() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1560,6 +1617,48 @@ pub(crate) async fn fetch_timeseries_for_account(
     }
 
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    if bucket_seconds < 3_600 && range_window.duration <= ChronoDuration::days(1) {
+        // Account projections include empty minutes, so a first exact fallback must warm
+        // the complete selection instead of relying on future terminal events to fill gaps.
+        let projection_pool = state.pool.clone();
+        tokio::spawn(async move {
+            let records = query_invocation_aggregate_records_from_live_range_for_account(
+                &projection_pool,
+                ExactUtcRange {
+                    start: start_dt,
+                    end: end_dt,
+                },
+                source_scope,
+                None,
+                Some(snapshot_id),
+                upstream_account_id,
+            )
+            .await;
+            let result = match records {
+                Ok(records) => {
+                    store_timeseries_minute_projection_v2(
+                        &projection_pool,
+                        start_dt,
+                        end_dt,
+                        source_scope,
+                        Some(upstream_account_id),
+                        &records,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                debug!(
+                    route = "timeseries_projection",
+                    upstream_account_id,
+                    projection_store_outcome = "deferred_failed",
+                    ?error,
+                    "account v2 minute projection warm write failed"
+                );
+            }
+        });
+    }
     let mut db_runtime_records = HashMap::new();
     let range_plan = if bucket_seconds >= 3_600 {
         build_hourly_rollup_exact_range_plan(
