@@ -4710,10 +4710,13 @@ fn raw_overflow_spool_directory_bytes(directory: &Path) -> io::Result<u64> {
 }
 
 fn reserve_raw_overflow_spool_bytes(directory: &Path, bytes: u64) -> io::Result<()> {
-    let on_disk_bytes = raw_overflow_spool_directory_bytes(directory)?;
     let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Keep the disk sample and the in-process reservation in one critical section. A
+    // concurrent writer may otherwise observe a stale directory size after another
+    // writer commits and releases its temporary reservation.
+    let on_disk_bytes = raw_overflow_spool_directory_bytes(directory)?;
     let reserved_bytes = reservations.get(directory).copied().unwrap_or_default();
     if on_disk_bytes
         .saturating_add(reserved_bytes)
