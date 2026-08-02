@@ -335,14 +335,16 @@ fn add_pending_timeseries_deltas(
     snapshot_id: i64,
 ) -> Result<usize, ApiError> {
     let mut applied = 0;
+    let selection = TimeseriesProjectionSelection {
+        source_scope: timeseries_projection_scope(source_scope),
+        upstream_account_id,
+    };
     for (_, row_id, delta) in state
         .terminal_projection_hub
-        .pending_timeseries_deltas(10_000)
+        .pending_timeseries_deltas_for_selection(selection, 10_000)
     {
-        if max_row_id.is_some() {
-            // The minute projection contains persisted terminal rows through its cursor;
-            // the cursor-filtered SQL tail contains later rows. Never add a pending delta
-            // on top of either source, or a warm projection can count it twice.
+        if max_row_id.is_some_and(|cursor| row_id > cursor) {
+            // Rows above the projection cursor are already represented by the SQL tail.
             continue;
         }
         if row_id > snapshot_id {
@@ -371,6 +373,35 @@ fn add_pending_timeseries_deltas(
         applied += 1;
     }
     Ok(applied)
+}
+
+fn timeseries_projection_snapshot_record(
+    record: &InvocationAggregateRecord,
+) -> TimeseriesProjectionSnapshotRecord {
+    TimeseriesProjectionSnapshotRecord {
+        row_id: record.id,
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: record.occurred_at.clone(),
+        delta: TimeseriesTerminalDelta {
+            occurred_at: record.occurred_at.clone(),
+            source: String::new(),
+            upstream_account_id: None,
+            status: record.status.clone(),
+            error_message: record.error_message.clone(),
+            failure_kind: record.failure_kind.clone(),
+            failure_class: record.failure_class.clone(),
+            is_actionable: record.is_actionable.map(|value| value != 0),
+            total_tokens: record.total_tokens,
+            cache_input_tokens: record.cache_input_tokens,
+            cost: record.cost,
+            t_total_ms: record.t_total_ms,
+            t_req_read_ms: record.t_req_read_ms,
+            t_req_parse_ms: record.t_req_parse_ms,
+            t_upstream_connect_ms: record.t_upstream_connect_ms,
+            t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+            first_token_ms: record.first_token_ms,
+        },
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -1286,6 +1317,18 @@ pub(crate) async fn fetch_timeseries(
         // writer when a first-time exact fallback already produced a valid response.
         let projection_pool = state.pool.clone();
         let projection_records = records.clone();
+        let projection_snapshot_records = projection_records
+            .iter()
+            .filter(|record| {
+                !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+            })
+            .map(timeseries_projection_snapshot_record)
+            .collect::<Vec<_>>();
+        let terminal_projection_hub = state.terminal_projection_hub.clone();
+        let projection_selection = TimeseriesProjectionSelection {
+            source_scope: timeseries_projection_scope(source_scope),
+            upstream_account_id: None,
+        };
         tokio::spawn(async move {
             if let Err(error) = store_timeseries_minute_projection_v2(
                 &projection_pool,
@@ -1302,6 +1345,11 @@ pub(crate) async fn fetch_timeseries(
                     projection_store_outcome = "deferred_failed",
                     ?error,
                     "v2 minute projection warm write failed"
+                );
+            } else {
+                terminal_projection_hub.mark_timeseries_warm_coverage(
+                    projection_selection,
+                    &projection_snapshot_records,
                 );
             }
         });
@@ -1655,6 +1703,11 @@ pub(crate) async fn fetch_timeseries_for_account(
         // Account projections include empty minutes, so a first exact fallback must warm
         // the complete selection instead of relying on future terminal events to fill gaps.
         let projection_pool = state.pool.clone();
+        let terminal_projection_hub = state.terminal_projection_hub.clone();
+        let projection_selection = TimeseriesProjectionSelection {
+            source_scope: timeseries_projection_scope(source_scope),
+            upstream_account_id: Some(upstream_account_id),
+        };
         tokio::spawn(async move {
             let records = query_invocation_aggregate_records_from_live_range_for_account(
                 &projection_pool,
@@ -1670,6 +1723,13 @@ pub(crate) async fn fetch_timeseries_for_account(
             .await;
             let result = match records {
                 Ok(records) => {
+                    let projection_snapshot_records = records
+                        .iter()
+                        .filter(|record| {
+                            !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+                        })
+                        .map(timeseries_projection_snapshot_record)
+                        .collect::<Vec<_>>();
                     store_timeseries_minute_projection_v2(
                         &projection_pool,
                         start_dt,
@@ -1679,17 +1739,26 @@ pub(crate) async fn fetch_timeseries_for_account(
                         &records,
                     )
                     .await
+                    .map(|()| projection_snapshot_records)
                 }
                 Err(error) => Err(error),
             };
-            if let Err(error) = result {
-                debug!(
-                    route = "timeseries_projection",
-                    upstream_account_id,
-                    projection_store_outcome = "deferred_failed",
-                    ?error,
-                    "account v2 minute projection warm write failed"
-                );
+            match result {
+                Ok(projection_snapshot_records) => {
+                    terminal_projection_hub.mark_timeseries_warm_coverage(
+                        projection_selection,
+                        &projection_snapshot_records,
+                    );
+                }
+                Err(error) => {
+                    debug!(
+                        route = "timeseries_projection",
+                        upstream_account_id,
+                        projection_store_outcome = "deferred_failed",
+                        ?error,
+                        "account v2 minute projection warm write failed"
+                    );
+                }
             }
         });
     }

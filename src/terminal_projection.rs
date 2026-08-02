@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -10,7 +10,7 @@ use std::{
 use tokio::sync::Notify;
 
 use crate::{
-    ApiInvocation, AppState, DashboardActivityTerminalDeltaOutcome,
+    ApiInvocation, AppState, DashboardActivityTerminalDeltaOutcome, SOURCE_PROXY,
     apply_dashboard_activity_terminal_record, rollback_dashboard_activity_terminal_record,
 };
 
@@ -43,9 +43,10 @@ struct TerminalProjectionEvent {
     persisted_row_id: Option<i64>,
     timeseries: Option<TimeseriesTerminalDelta>,
     timeseries_flushed: bool,
+    timeseries_warm_coverage: HashSet<TimeseriesProjectionSelection>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TimeseriesTerminalDelta {
     pub(crate) occurred_at: String,
     pub(crate) source: String,
@@ -64,6 +65,20 @@ pub(crate) struct TimeseriesTerminalDelta {
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
     pub(crate) first_token_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub(crate) struct TimeseriesProjectionSelection {
+    pub(crate) source_scope: &'static str,
+    pub(crate) upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TimeseriesProjectionSnapshotRecord {
+    pub(crate) row_id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) delta: TimeseriesTerminalDelta,
 }
 
 impl From<&ApiInvocation> for TimeseriesTerminalDelta {
@@ -99,6 +114,24 @@ impl TimeseriesTerminalDelta {
             + self.failure_kind.as_deref().map_or(0, str::len)
             + self.failure_class.as_deref().map_or(0, str::len)
             + std::mem::size_of::<Self>()
+    }
+
+    fn matches_projection_snapshot(&self, snapshot: &TimeseriesTerminalDelta) -> bool {
+        self.occurred_at == snapshot.occurred_at
+            && self.status == snapshot.status
+            && self.error_message == snapshot.error_message
+            && self.failure_kind == snapshot.failure_kind
+            && self.failure_class == snapshot.failure_class
+            && self.is_actionable == snapshot.is_actionable
+            && self.total_tokens == snapshot.total_tokens
+            && self.cache_input_tokens == snapshot.cache_input_tokens
+            && self.cost == snapshot.cost
+            && self.t_total_ms == snapshot.t_total_ms
+            && self.t_req_read_ms == snapshot.t_req_read_ms
+            && self.t_req_parse_ms == snapshot.t_req_parse_ms
+            && self.t_upstream_connect_ms == snapshot.t_upstream_connect_ms
+            && self.t_upstream_ttfb_ms == snapshot.t_upstream_ttfb_ms
+            && self.first_token_ms == snapshot.first_token_ms
     }
 }
 
@@ -206,6 +239,7 @@ impl TerminalProjectionHub {
             persisted_row_id: None,
             timeseries,
             timeseries_flushed,
+            timeseries_warm_coverage: HashSet::new(),
         });
         state.registered_event_count = state.registered_event_count.saturating_add(1);
         Some(id)
@@ -304,6 +338,74 @@ impl TerminalProjectionHub {
         deltas.sort_by_key(|(event_id, row_id, _)| (*row_id, *event_id));
         deltas.truncate(limit);
         deltas
+    }
+
+    pub(crate) fn pending_timeseries_deltas_for_selection(
+        &self,
+        selection: TimeseriesProjectionSelection,
+        limit: usize,
+    ) -> Vec<(u64, i64, TimeseriesTerminalDelta)> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut deltas = state
+            .pending
+            .iter()
+            .filter_map(|event| {
+                let row_id = event.persisted_row_id?;
+                let delta = event.timeseries.as_ref()?;
+                (!event.timeseries_flushed
+                    && !event.timeseries_warm_coverage.contains(&selection)
+                    && (selection.source_scope != "proxy_only" || delta.source == SOURCE_PROXY)
+                    && selection
+                        .upstream_account_id
+                        .is_none_or(|account_id| delta.upstream_account_id == Some(account_id)))
+                .then(|| (event.id, row_id, delta.clone()))
+            })
+            .collect::<Vec<_>>();
+        deltas.sort_by_key(|(event_id, row_id, _)| (*row_id, *event_id));
+        deltas.truncate(limit);
+        deltas
+    }
+
+    pub(crate) fn mark_timeseries_warm_coverage(
+        &self,
+        selection: TimeseriesProjectionSelection,
+        records: &[TimeseriesProjectionSnapshotRecord],
+    ) -> usize {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut covered = 0;
+        for event in &mut state.pending {
+            let Some(row_id) = event.persisted_row_id else {
+                continue;
+            };
+            let Some(delta) = event.timeseries.as_ref() else {
+                continue;
+            };
+            if event.timeseries_flushed
+                || event.timeseries_warm_coverage.contains(&selection)
+                || (selection.source_scope == "proxy_only" && delta.source != SOURCE_PROXY)
+                || selection
+                    .upstream_account_id
+                    .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            {
+                continue;
+            }
+            if records.iter().any(|record| {
+                record.row_id == row_id
+                    && record.invoke_id == event.invoke_id
+                    && record.occurred_at == event.occurred_at
+                    && delta.matches_projection_snapshot(&record.delta)
+            }) {
+                event.timeseries_warm_coverage.insert(selection);
+                covered += 1;
+            }
+        }
+        covered
     }
 
     pub(crate) fn mark_timeseries_deltas_flushed(&self, event_ids: &[u64]) {
@@ -525,6 +627,57 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, second);
         assert_eq!(pending[0].1, 17);
+    }
+
+    #[test]
+    fn warm_coverage_skips_only_the_terminal_snapshot_it_contains() {
+        let hub = TerminalProjectionHub::default();
+        let selection = TimeseriesProjectionSelection {
+            source_scope: "all",
+            upstream_account_id: None,
+        };
+        let delta = timeseries_delta();
+        let first = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &delta.occurred_at,
+                128,
+                Some(delta.clone()),
+            )
+            .expect("first event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(first), "invoke", &delta.occurred_at, 17);
+        assert_eq!(
+            hub.mark_timeseries_warm_coverage(
+                selection,
+                &[TimeseriesProjectionSnapshotRecord {
+                    row_id: 17,
+                    invoke_id: "invoke".to_string(),
+                    occurred_at: delta.occurred_at.clone(),
+                    delta: delta.clone(),
+                }],
+            ),
+            1
+        );
+        assert!(
+            hub.pending_timeseries_deltas_for_selection(selection, 10)
+                .is_empty()
+        );
+
+        let mut updated_delta = delta;
+        updated_delta.status = Some("failure".to_string());
+        let updated_occurred_at = updated_delta.occurred_at.clone();
+        let second = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &updated_occurred_at,
+                128,
+                Some(updated_delta),
+            )
+            .expect("updated event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(second), "invoke", "2026-07-30 10:00:00", 17);
+        let pending = hub.pending_timeseries_deltas_for_selection(selection, 10);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, second);
     }
 
     #[test]
