@@ -1025,27 +1025,22 @@ where
     .map_err(Into::into)
 }
 
-async fn load_latest_sticky_failure_context_executor<'e, E>(
+async fn load_pending_sticky_clear_cause_executor<'e, E>(
     executor: E,
     sticky_key: &str,
-    trigger_attempt_id: Option<i64>,
 ) -> Result<(Option<String>, Option<u16>)>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
         r#"
-        SELECT attempt_public_id, http_status
-        FROM pool_upstream_request_attempts
+        SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+        FROM pool_sticky_route_generations
         WHERE sticky_key = ?1
-          AND (?2 IS NULL OR id != ?2)
-          AND (failure_kind IS NOT NULL OR COALESCE(http_status, 0) >= 400)
-        ORDER BY COALESCE(finished_at, occurred_at) DESC, id DESC
         LIMIT 1
         "#,
     )
     .bind(sticky_key)
-    .bind(trigger_attempt_id)
     .fetch_optional(executor)
     .await?;
     Ok(row
@@ -1085,6 +1080,8 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     let write_outcome: Result<bool> = async {
         let (trigger_attempt_id, routing_source) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
+        let pending_clear_cause =
+            load_pending_sticky_clear_cause_executor(conn.as_mut(), sticky_key).await?;
         let current_generation =
             load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
         let sticky_before = if event_prompt_cache_key.is_some() {
@@ -1153,12 +1150,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 && let Some(sticky_after) = sticky_after
             {
                 let (causing_attempt_id, causing_http_status) = if previous_account_id.is_none() {
-                    load_latest_sticky_failure_context_executor(
-                        conn.as_mut(),
-                        sticky_key,
-                        attempt_id,
-                    )
-                    .await?
+                    pending_clear_cause
                 } else {
                     (None, None)
                 };
