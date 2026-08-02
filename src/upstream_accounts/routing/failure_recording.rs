@@ -81,7 +81,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
     invoke_id: Option<&str>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    record_pool_route_success_inner(
+    record_pool_route_success_with_affinity_generation_for_attempt(
         pool,
         account_id,
         request_started_at_utc,
@@ -89,6 +89,29 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
         prompt_cache_key,
         invoke_id,
         None,
+        sticky_affinity_generation,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        attempt_id,
         sticky_affinity_generation,
     )
     .await
