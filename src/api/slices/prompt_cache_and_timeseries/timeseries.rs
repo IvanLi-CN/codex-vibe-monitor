@@ -282,15 +282,29 @@ pub(crate) async fn fetch_timeseries(
                     Some(snapshot_id),
                 )
                 .await?;
-                store_timeseries_minute_projection_records(
-                    &state.pool,
-                    start_dt,
-                    end_dt,
-                    source_scope,
-                    None,
-                    &records,
-                )
-                .await?;
+                // Projection persistence is P2 work. Never make a read request wait for a
+                // SQLite writer when the exact fallback already produced a valid response.
+                let projection_pool = state.pool.clone();
+                let projection_records = records.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = store_timeseries_minute_projection_records(
+                        &projection_pool,
+                        start_dt,
+                        end_dt,
+                        source_scope,
+                        None,
+                        &projection_records,
+                    )
+                    .await
+                    {
+                        debug!(
+                            route = "timeseries_projection",
+                            projection_store_outcome = "deferred_failed",
+                            ?error,
+                            "minute projection warm write failed"
+                        );
+                    }
+                });
                 (records, "exact_fallback")
             }
         }

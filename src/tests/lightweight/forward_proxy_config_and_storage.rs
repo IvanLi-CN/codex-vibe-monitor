@@ -2444,7 +2444,7 @@ fn search_raw_script_reports_missing_root_as_configuration_error() {
 }
 
 #[tokio::test]
-async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated() {
+async fn spawn_raw_payload_file_write_spools_when_async_writer_pool_is_saturated() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2457,31 +2457,39 @@ async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated(
         .await
         .expect("saturate async raw writer permits");
 
-    let meta = spawn_raw_payload_file_write(
+    let pending = spawn_raw_payload_file_write(
         state.as_ref(),
         "proxy-test",
         "request",
         Bytes::from_static(br#"{"ok":true}"#),
         true,
-    )
-    .finish()
-    .await;
+    );
 
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
     assert!(
-        meta.path.is_none(),
-        "dropped raw payload should not have a file"
-    );
-    assert_eq!(meta.size_bytes, br#"{"ok":true}"#.len() as i64);
-    assert!(
-        meta.truncated,
-        "dropped raw payload should be marked truncated"
-    );
-    assert_eq!(
-        meta.truncated_reason.as_deref(),
-        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+        fs::read_dir(&spool_dir)
+            .expect("raw spool directory should exist")
+            .next()
+            .is_some(),
+        "saturated capture should be persisted in the overflow spool"
     );
 
     drop(permit);
+    let meta = pending.finish().await;
+
+    assert!(
+        meta.path.is_some(),
+        "spooled raw payload should be stored after the writer becomes available"
+    );
+    assert_eq!(meta.size_bytes, br#"{"ok":true}"#.len() as i64);
+    assert!(
+        !meta.truncated,
+        "spooled raw payload should retain its full contents"
+    );
+    assert!(
+        meta.truncated_reason.is_none(),
+        "successful spool replay should not report a truncation reason"
+    );
 }
 
 #[test]
