@@ -39,6 +39,7 @@ export function PolicyInlineOptionGroup<T extends string | number>({
     >
       <span className="policy-inline-radio-indicator" aria-hidden />
       {options.map((option) => (
+        // biome-ignore lint/a11y/useSemanticElements: buttons preserve the existing segmented-control keyboard and styling contract.
         <button
           key={String(option.value)}
           type="button"

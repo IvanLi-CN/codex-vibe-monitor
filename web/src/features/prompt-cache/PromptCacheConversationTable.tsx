@@ -465,6 +465,16 @@ function conversationOperationRoutingReasonLabel(
     : translated;
 }
 
+function conversationOperationShowsRoutingReason(event: PromptCacheConversationOperationEvent) {
+  return (
+    event.routingContext != null ||
+    (event.origin === "systemAuto" &&
+      (event.action === "stickyTargetChanged" ||
+        event.action === "stickyTargetCleared" ||
+        event.action === "stickyMutationSuppressed"))
+  );
+}
+
 function conversationOperationBindingSnapshotLabel(
   snapshot:
     | PromptCacheConversationOperationEvent["bindingBefore"]
@@ -3274,7 +3284,7 @@ export function PromptCacheConversationHistoryDrawer({
               })}
             </p>
           ) : null}
-          {event.infoTypes.includes("routing") ? (
+          {event.infoTypes.includes("routing") && conversationOperationShowsRoutingReason(event) ? (
             <div className="space-y-1 text-xs text-base-content/70">
               <p>{conversationOperationRoutingReasonLabel(event, t)}</p>
               {event.routingContext?.routingSource ? (
