@@ -2107,6 +2107,9 @@ async fn record_pool_route_http_failure_clears_sticky_route_on_single_account_ro
     )
     .await
     .expect("seed sticky route");
+    let generation_before = load_sticky_affinity_generation(&pool, "sticky-single-rotation")
+        .await
+        .expect("load sticky generation before 429");
 
     record_pool_route_http_failure(
         &pool,
@@ -2127,6 +2130,51 @@ async fn record_pool_route_http_failure_clears_sticky_route_on_single_account_ro
             .expect("load sticky route")
             .is_none(),
         "the conversation should be unbound so the next attempt can pick the next candidate",
+    );
+    assert_eq!(
+        load_sticky_affinity_generation(&pool, "sticky-single-rotation")
+            .await
+            .expect("load sticky generation after 429"),
+        generation_before + 1,
+        "automatic 429 clear must fence stale completions",
+    );
+}
+
+#[tokio::test]
+async fn stale_failure_does_not_clear_rebound_sticky_target_for_same_account() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Rebound Sticky Account").await;
+    let sticky_key = "sticky-stale-failure-rebound";
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_sticky_route(&pool, sticky_key, account_id, &now_iso)
+        .await
+        .expect("seed original sticky route");
+    let stale_generation = load_sticky_affinity_generation(&pool, sticky_key)
+        .await
+        .expect("load original sticky generation");
+    bump_sticky_affinity_generation(&pool, sticky_key, &now_iso)
+        .await
+        .expect("simulate a newer rebound generation");
+
+    assert!(
+        !delete_sticky_route_if_matches(
+            &pool,
+            sticky_key,
+            account_id,
+            Some(stale_generation),
+            &now_iso,
+        )
+        .await
+        .expect("stale clear should be suppressed"),
+        "an old failure must not clear the same account after a newer sticky generation",
+    );
+    assert_eq!(
+        load_sticky_route(&pool, sticky_key)
+            .await
+            .expect("load rebound sticky route")
+            .map(|route| route.account_id),
+        Some(account_id),
     );
 }
 

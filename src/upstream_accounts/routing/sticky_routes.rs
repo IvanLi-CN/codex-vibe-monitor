@@ -553,3 +553,48 @@ where
 pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
     delete_sticky_route_executor(pool, sticky_key).await
 }
+
+pub(crate) async fn delete_sticky_route_if_matches(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    expected_generation: Option<i64>,
+    now_iso: &str,
+) -> Result<bool> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await?;
+    let outcome: Result<bool> = async {
+        let current_generation =
+            load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
+        if let Some(expected_generation) = expected_generation
+            && current_generation != expected_generation
+        {
+            return Ok(false);
+        }
+        let deleted =
+            sqlx::query("DELETE FROM pool_sticky_routes WHERE sticky_key = ?1 AND account_id = ?2")
+                .bind(sticky_key)
+                .bind(account_id)
+                .execute(conn.as_mut())
+                .await?
+                .rows_affected()
+                > 0;
+        if deleted {
+            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+        }
+        Ok(deleted)
+    }
+    .await;
+    match outcome {
+        Ok(deleted) => {
+            sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+            Ok(deleted)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            Err(error)
+        }
+    }
+}

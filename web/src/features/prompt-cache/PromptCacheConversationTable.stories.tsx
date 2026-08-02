@@ -391,6 +391,35 @@ const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationO
     CONVERSATION_SHORT_KEY,
     [
       {
+        id: 304,
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        action: "stickyMutationSuppressed",
+        origin: "systemAuto",
+        infoTypes: ["routing"],
+        occurredAt: "2026-05-13T23:47:39.000Z",
+        headline: "Sticky mutation suppressed",
+        changedFields: [],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "mia.7rmmq@support.example",
+        },
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "mia.7rmmq@support.example",
+        },
+        invokeId: "invoke-short-33",
+        routingContext: {
+          reasonCode: "staleConcurrentCompletion",
+          routingSource: "freshAssignment",
+          httpStatus: null,
+          triggerAttemptId: "LATE33",
+          causingAttemptId: null,
+          causingHttpStatus: null,
+        },
+      },
+      {
         id: 303,
         promptCacheKey: CONVERSATION_SHORT_KEY,
         action: "stickyTargetChanged",
@@ -407,6 +436,14 @@ const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationO
           upstreamAccountName: "mia.7rmmq@support.example",
         },
         invokeId: "invoke-short-32",
+        routingContext: {
+          reasonCode: "freshAssignmentAfterFailure",
+          routingSource: "freshAssignment",
+          httpStatus: null,
+          triggerAttemptId: "SUCCESS32",
+          causingAttemptId: "FAILED31",
+          causingHttpStatus: 502,
+        },
       },
       {
         id: 302,
@@ -2313,7 +2350,9 @@ export const DrawerOperations: Story = {
     await expect(
       documentScope.getByText(/Sticky 目标已切换|Sticky target changed/i),
     ).toBeInTheDocument();
-    await expect(documentScope.getByText(/系统自动|System auto/i)).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/系统自动|System auto/i).length).toBeGreaterThanOrEqual(
+      2,
+    );
     await expect(documentScope.getByText(/invokeId: invoke-short-32/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(

@@ -1838,6 +1838,7 @@ export type PromptCacheConversationOperationAction =
   | "affinityReset"
   | "stickyTargetChanged"
   | "stickyTargetCleared"
+  | "stickyMutationSuppressed"
   | "groupBindingPromoted"
   | "conversationPolicyUpdated";
 
@@ -1851,6 +1852,15 @@ export interface PromptCacheConversationOperationBindingSnapshot {
 export interface PromptCacheConversationOperationStickySnapshot {
   upstreamAccountId: number;
   upstreamAccountName: string | null;
+}
+
+export interface PromptCacheConversationOperationRoutingContext {
+  reasonCode: string;
+  routingSource: "stickyReuse" | "freshAssignment" | string | null;
+  httpStatus: number | null;
+  triggerAttemptId: string | null;
+  causingAttemptId: string | null;
+  causingHttpStatus: number | null;
 }
 
 export interface PromptCacheConversationOperationEvent {
@@ -1867,6 +1877,7 @@ export interface PromptCacheConversationOperationEvent {
   stickyBefore: PromptCacheConversationOperationStickySnapshot | null;
   stickyAfter: PromptCacheConversationOperationStickySnapshot | null;
   invokeId: string | null;
+  routingContext?: PromptCacheConversationOperationRoutingContext | null;
 }
 
 export interface PromptCacheConversationOperationEventListResponse {
@@ -3343,6 +3354,24 @@ function normalizePromptCacheConversationOperationStickySnapshot(
   };
 }
 
+function normalizePromptCacheConversationOperationRoutingContext(
+  raw: unknown,
+): PromptCacheConversationOperationRoutingContext | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const reasonCode = typeof payload.reasonCode === "string" ? payload.reasonCode.trim() : "";
+  if (!reasonCode) return null;
+  const attemptId = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value.trim() : null;
+  return {
+    reasonCode,
+    routingSource: attemptId(payload.routingSource),
+    httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
+    triggerAttemptId: attemptId(payload.triggerAttemptId),
+    causingAttemptId: attemptId(payload.causingAttemptId),
+    causingHttpStatus: normalizeFiniteNumber(payload.causingHttpStatus) ?? null,
+  };
+}
+
 function normalizePromptCacheConversationOperationEvent(
   raw: unknown,
 ): PromptCacheConversationOperationEvent | null {
@@ -3357,6 +3386,7 @@ function normalizePromptCacheConversationOperationEvent(
     payload.action === "affinityReset" ||
     payload.action === "stickyTargetChanged" ||
     payload.action === "stickyTargetCleared" ||
+    payload.action === "stickyMutationSuppressed" ||
     payload.action === "groupBindingPromoted" ||
     payload.action === "conversationPolicyUpdated"
       ? payload.action
@@ -3395,6 +3425,7 @@ function normalizePromptCacheConversationOperationEvent(
     stickyAfter: normalizePromptCacheConversationOperationStickySnapshot(payload.stickyAfter),
     invokeId:
       typeof payload.invokeId === "string" && payload.invokeId.trim() ? payload.invokeId : null,
+    routingContext: normalizePromptCacheConversationOperationRoutingContext(payload.routingContext),
   };
 }
 

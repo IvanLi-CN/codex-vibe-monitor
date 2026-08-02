@@ -3422,6 +3422,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 };

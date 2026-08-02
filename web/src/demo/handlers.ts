@@ -2334,6 +2334,75 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
+  if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
+    const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
+    const items = [
+      {
+        id: 9303,
+        promptCacheKey,
+        action: "stickyMutationSuppressed",
+        origin: "systemAuto",
+        infoTypes: ["routing"],
+        occurredAt: "2026-08-02T09:41:08.000Z",
+        headline: "Sticky mutation suppressed",
+        changedFields: [],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        invokeId: "demo-concurrent-late",
+        routingContext: {
+          reasonCode: "staleConcurrentCompletion",
+          routingSource: "freshAssignment",
+          httpStatus: null,
+          triggerAttemptId: "DEMO-LATE-2",
+          causingAttemptId: null,
+          causingHttpStatus: null,
+        },
+      },
+      {
+        id: 9302,
+        promptCacheKey,
+        action: "stickyTargetChanged",
+        origin: "systemAuto",
+        infoTypes: ["routing"],
+        occurredAt: "2026-08-02T09:41:05.000Z",
+        headline: "Sticky target changed",
+        changedFields: ["stickyTarget"],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: null,
+        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+        invokeId: "demo-fresh-success",
+        routingContext: {
+          reasonCode: "freshAssignmentAfterFailure",
+          routingSource: "freshAssignment",
+          httpStatus: null,
+          triggerAttemptId: "DEMO-SUCCESS-1",
+          causingAttemptId: "DEMO-FAILED-0",
+          causingHttpStatus: 429,
+        },
+      },
+      {
+        id: 9301,
+        promptCacheKey,
+        action: "stickyTargetCleared",
+        origin: "systemAuto",
+        infoTypes: ["routing"],
+        occurredAt: "2026-08-02T09:41:01.000Z",
+        headline: "Sticky target cleared",
+        changedFields: ["stickyTarget"],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
+        stickyAfter: null,
+        invokeId: null,
+      },
+    ];
+    const infoType = url.searchParams.get("infoType");
+    const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
+    return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
+  }
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
     const conversation = promptCacheConversations().conversations.find(

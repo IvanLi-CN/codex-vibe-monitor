@@ -769,6 +769,11 @@ async fn ensure_schema_creates_prompt_cache_conversation_operation_events_table(
     assert!(columns.iter().any(|column| column == "info_types_json"));
     assert!(columns.iter().any(|column| column == "binding_before_json"));
     assert!(columns.iter().any(|column| column == "sticky_after_json"));
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "routing_context_json")
+    );
 }
 
 #[tokio::test]
@@ -5583,6 +5588,10 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         .expect("load sticky route after fresh success")
         .expect("fresh success should rebuild sticky route");
     assert_eq!(sticky_row.account_id, rebound_account_id);
+    let keepalive_generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load affinity generation after fresh success");
+    assert_eq!(keepalive_generation, fresh_generation + 1);
 
     record_pool_route_success_with_affinity_generation(
         &state.pool,
@@ -5591,7 +5600,7 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some(keepalive_invoke_id),
-        Some(fresh_generation),
+        Some(keepalive_generation),
     )
     .await
     .expect("same-account keepalive should refresh without a new event");
@@ -5655,6 +5664,83 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
 }
 
 #[tokio::test]
+async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_completion() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let first_account_id =
+        insert_test_pool_api_key_account(&state, "First Sticky Winner", "upstream-first").await;
+    let late_account_id =
+        insert_test_pool_api_key_account(&state, "Late Sticky Loser", "upstream-late").await;
+    let prompt_cache_key = "prompt-cache-first-success-lock-key";
+    let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load empty sticky generation");
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        first_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some("first-success"),
+        Some(generation),
+    )
+    .await
+    .expect("first success should establish sticky target");
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        late_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some("late-success"),
+        Some(generation),
+    )
+    .await
+    .expect("late success remains a successful route outcome");
+
+    let sticky = load_sticky_route(&state.pool, prompt_cache_key)
+        .await
+        .expect("load sticky route")
+        .expect("first success should leave sticky route");
+    assert_eq!(sticky.account_id, first_account_id);
+    let Json(events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list runtime sticky events");
+    assert_eq!(
+        events
+            .items
+            .iter()
+            .filter(|event| event.action == "stickyTargetChanged")
+            .count(),
+        1
+    );
+    let suppressed = events
+        .items
+        .iter()
+        .find(|event| event.action == "stickyMutationSuppressed")
+        .expect("late completion should be audited");
+    assert_eq!(suppressed.invoke_id.as_deref(), Some("late-success"));
+    assert_eq!(
+        suppressed
+            .routing_context
+            .as_ref()
+            .map(|context| context.reason_code.as_str()),
+        Some("staleConcurrentCompletion")
+    );
+}
+
+#[tokio::test]
 async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -5701,6 +5787,7 @@ async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock(
             stale_account_id,
             &format_utc_iso(Utc::now()),
             Some("locked-stale-invoke"),
+            None,
             Some(stale_generation),
         )
         .await

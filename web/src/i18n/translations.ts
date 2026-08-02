@@ -2302,6 +2302,26 @@ const baseTranslations = {
     "live.conversations.drawer.operations.bindingTransition": "Binding: {{from}} -> {{to}}",
     "live.conversations.drawer.operations.stickyTransition": "Sticky target: {{from}} -> {{to}}",
     "live.conversations.drawer.operations.invokeId": "invokeId: {{invokeId}}",
+    "live.conversations.drawer.operations.routingContext.legacy":
+      "Historical reason was not recorded.",
+    "live.conversations.drawer.operations.routingContext.source": "Routing source: {{source}}",
+    "live.conversations.drawer.operations.routingContext.sources.freshAssignment":
+      "Fresh assignment",
+    "live.conversations.drawer.operations.routingContext.sources.stickyReuse": "Sticky reuse",
+    "live.conversations.drawer.operations.routingContext.causeAttempt":
+      "Cause attempt: {{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.triggerAttempt":
+      "Trigger attempt: {{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
+      "First successful request established this Sticky target.",
+    "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
+      "Fresh assignment followed an upstream failure (HTTP {{status}}).",
+    "live.conversations.drawer.operations.routingContext.reasons.stickyTargetChanged":
+      "A successful routing result changed the Sticky target.",
+    "live.conversations.drawer.operations.routingContext.reasons.staleConcurrentCompletion":
+      "A later concurrent completion was ignored because Sticky was already locked.",
+    "live.conversations.drawer.operations.routingContext.reasons.unknown":
+      "Routing changed automatically.",
     "live.conversations.drawer.operations.filters.all": "All",
     "live.conversations.drawer.operations.filters.routing": "Routing",
     "live.conversations.drawer.operations.filters.forwardProxy": "Forward proxy",
@@ -2314,6 +2334,8 @@ const baseTranslations = {
     "live.conversations.drawer.operations.actions.affinityReset": "Affinity reset",
     "live.conversations.drawer.operations.actions.stickyTargetChanged": "Sticky target changed",
     "live.conversations.drawer.operations.actions.stickyTargetCleared": "Sticky target cleared",
+    "live.conversations.drawer.operations.actions.stickyMutationSuppressed":
+      "Sticky mutation suppressed",
     "live.conversations.drawer.operations.actions.groupBindingPromoted": "Group binding promoted",
     "live.conversations.drawer.operations.actions.conversationPolicyUpdated": "Policy updated",
     "live.conversations.drawer.operations.binding.none": "No manual binding",
@@ -5017,6 +5039,21 @@ const baseTranslations = {
     "live.conversations.drawer.operations.bindingTransition": "绑定目标：{{from}} -> {{to}}",
     "live.conversations.drawer.operations.stickyTransition": "Sticky 目标：{{from}} -> {{to}}",
     "live.conversations.drawer.operations.invokeId": "invokeId: {{invokeId}}",
+    "live.conversations.drawer.operations.routingContext.legacy": "历史原因未记录。",
+    "live.conversations.drawer.operations.routingContext.source": "路由来源：{{source}}",
+    "live.conversations.drawer.operations.routingContext.sources.freshAssignment": "重新分配",
+    "live.conversations.drawer.operations.routingContext.sources.stickyReuse": "Sticky 复用",
+    "live.conversations.drawer.operations.routingContext.causeAttempt": "起因尝试：{{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.triggerAttempt": "触发尝试：{{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
+      "首个成功请求已建立此 Sticky 目标。",
+    "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
+      "重新分配源于上游失败（HTTP {{status}}）。",
+    "live.conversations.drawer.operations.routingContext.reasons.stickyTargetChanged":
+      "一次成功路由结果切换了 Sticky 目标。",
+    "live.conversations.drawer.operations.routingContext.reasons.staleConcurrentCompletion":
+      "较晚完成的并发请求已被忽略，Sticky 已由更早的成功锁定。",
+    "live.conversations.drawer.operations.routingContext.reasons.unknown": "系统自动调整了路由。",
     "live.conversations.drawer.operations.filters.all": "全部",
     "live.conversations.drawer.operations.filters.routing": "路由相关",
     "live.conversations.drawer.operations.filters.forwardProxy": "正向代理相关",
@@ -5029,6 +5066,7 @@ const baseTranslations = {
     "live.conversations.drawer.operations.actions.affinityReset": "会话亲和性已重置",
     "live.conversations.drawer.operations.actions.stickyTargetChanged": "Sticky 目标已切换",
     "live.conversations.drawer.operations.actions.stickyTargetCleared": "Sticky 目标已清空",
+    "live.conversations.drawer.operations.actions.stickyMutationSuppressed": "Sticky 变更已抑制",
     "live.conversations.drawer.operations.actions.groupBindingPromoted": "分组绑定已提升为账号",
     "live.conversations.drawer.operations.actions.conversationPolicyUpdated": "策略更新",
     "live.conversations.drawer.operations.binding.none": "无手工绑定",

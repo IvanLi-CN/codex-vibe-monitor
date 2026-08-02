@@ -107,6 +107,7 @@ pub(crate) struct PromptCacheConversationOperationEventRow {
     pub(crate) sticky_before_json: Option<String>,
     pub(crate) sticky_after_json: Option<String>,
     pub(crate) invoke_id: Option<String>,
+    pub(crate) routing_context_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,6 +126,17 @@ pub(crate) struct PromptCacheConversationOperationStickySnapshot {
     pub(crate) upstream_account_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationRoutingContext {
+    pub(crate) reason_code: String,
+    pub(crate) routing_source: Option<String>,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) trigger_attempt_id: Option<String>,
+    pub(crate) causing_attempt_id: Option<String>,
+    pub(crate) causing_http_status: Option<u16>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationOperationEventResponse {
@@ -141,6 +153,7 @@ pub(crate) struct PromptCacheConversationOperationEventResponse {
     pub(crate) sticky_before: Option<PromptCacheConversationOperationStickySnapshot>,
     pub(crate) sticky_after: Option<PromptCacheConversationOperationStickySnapshot>,
     pub(crate) invoke_id: Option<String>,
+    pub(crate) routing_context: Option<PromptCacheConversationOperationRoutingContext>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -866,6 +879,7 @@ fn prompt_cache_conversation_operation_headline(action: &str) -> String {
         "affinityReset" => "Conversation affinity reset",
         "stickyTargetChanged" => "Sticky target changed",
         "stickyTargetCleared" => "Sticky target cleared",
+        "stickyMutationSuppressed" => "Sticky mutation suppressed",
         "groupBindingPromoted" => "Group binding promoted",
         "conversationPolicyUpdated" => "Conversation policy updated",
         _ => "Conversation operation updated",
@@ -911,6 +925,20 @@ async fn append_prompt_cache_conversation_operation_event_executor<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
+    append_prompt_cache_conversation_operation_event_with_routing_context_executor(
+        executor, input, None,
+    )
+    .await
+}
+
+async fn append_prompt_cache_conversation_operation_event_with_routing_context_executor<'e, E>(
+    executor: E,
+    input: AppendPromptCacheConversationOperationEventInput,
+    routing_context: Option<PromptCacheConversationOperationRoutingContext>,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         r#"
         INSERT INTO prompt_cache_conversation_operation_events (
@@ -925,9 +953,10 @@ where
             binding_after_json,
             sticky_before_json,
             sticky_after_json,
-            invoke_id
+            invoke_id,
+            routing_context_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         "#,
     )
     .bind(input.prompt_cache_key)
@@ -966,9 +995,67 @@ where
             .transpose()?,
     )
     .bind(input.invoke_id)
+    .bind(
+        routing_context
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
     .execute(executor)
     .await?;
     Ok(())
+}
+
+async fn load_runtime_attempt_routing_context_executor<'e, E>(
+    executor: E,
+    attempt_id: Option<i64>,
+) -> Result<(Option<String>, Option<String>)>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let Some(attempt_id) = attempt_id else {
+        return Ok((None, None));
+    };
+    sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT attempt_public_id, routing_source FROM pool_upstream_request_attempts WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(executor)
+    .await
+    .map(|value| value.unwrap_or((None, None)))
+    .map_err(Into::into)
+}
+
+async fn load_latest_sticky_failure_context_executor<'e, E>(
+    executor: E,
+    sticky_key: &str,
+    trigger_attempt_id: Option<i64>,
+) -> Result<(Option<String>, Option<u16>)>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+        r#"
+        SELECT attempt_public_id, http_status
+        FROM pool_upstream_request_attempts
+        WHERE sticky_key = ?1
+          AND (?2 IS NULL OR id != ?2)
+          AND (failure_kind IS NOT NULL OR COALESCE(http_status, 0) >= 400)
+        ORDER BY COALESCE(finished_at, occurred_at) DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(trigger_attempt_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row
+        .map(|(attempt_id, status)| {
+            (
+                attempt_id,
+                status.and_then(|value| u16::try_from(value).ok()),
+            )
+        })
+        .unwrap_or((None, None)))
 }
 
 async fn append_prompt_cache_conversation_operation_event(
@@ -985,6 +1072,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     upstream_account_id: i64,
     now_iso: &str,
     invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<bool> {
     let event_prompt_cache_key = prompt_cache_key.filter(|key| *key == sticky_key);
@@ -995,22 +1083,66 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .context("failed to acquire runtime sticky event write lock")?;
 
     let write_outcome: Result<bool> = async {
+        let (trigger_attempt_id, routing_source) =
+            load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
         let current_generation =
             load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
-        if let Some(expected_generation) = sticky_affinity_generation
-            && current_generation != expected_generation
-        {
-            return Ok(false);
-        }
-
         let sticky_before = if event_prompt_cache_key.is_some() {
             load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
                 .await?
         } else {
             None
         };
+        if let Some(expected_generation) = sticky_affinity_generation
+            && current_generation != expected_generation
+        {
+            if let Some(prompt_cache_key) = event_prompt_cache_key {
+                append_prompt_cache_conversation_operation_event_with_routing_context_executor(
+                    conn.as_mut(),
+                    AppendPromptCacheConversationOperationEventInput {
+                        prompt_cache_key: prompt_cache_key.to_string(),
+                        action: "stickyMutationSuppressed".to_string(),
+                        origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
+                        info_types: vec![
+                            PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string(),
+                        ],
+                        occurred_at: now_iso.to_string(),
+                        headline: prompt_cache_conversation_operation_headline(
+                            "stickyMutationSuppressed",
+                        ),
+                        changed_fields: Vec::new(),
+                        binding_before: None,
+                        binding_after: None,
+                        sticky_before: sticky_before.clone(),
+                        sticky_after: sticky_before,
+                        invoke_id: invoke_id.map(ToOwned::to_owned),
+                    },
+                    Some(PromptCacheConversationOperationRoutingContext {
+                        reason_code: "staleConcurrentCompletion".to_string(),
+                        routing_source,
+                        http_status: None,
+                        trigger_attempt_id,
+                        causing_attempt_id: None,
+                        causing_http_status: None,
+                    }),
+                )
+                .await?;
+            }
+            return Ok(false);
+        }
+
+        let previous_account_id = sqlx::query_scalar::<_, i64>(
+            "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+        )
+        .bind(sticky_key)
+        .fetch_optional(conn.as_mut())
+        .await?;
+        let target_changed = previous_account_id != Some(upstream_account_id);
         upsert_sticky_route_executor(conn.as_mut(), sticky_key, upstream_account_id, now_iso)
             .await?;
+        if target_changed {
+            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+        }
 
         if let Some(prompt_cache_key) = event_prompt_cache_key {
             let sticky_after =
@@ -1020,7 +1152,17 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
             if sticky_before != sticky_after
                 && let Some(sticky_after) = sticky_after
             {
-                append_prompt_cache_conversation_operation_event_executor(
+                let (causing_attempt_id, causing_http_status) = if previous_account_id.is_none() {
+                    load_latest_sticky_failure_context_executor(
+                        conn.as_mut(),
+                        sticky_key,
+                        attempt_id,
+                    )
+                    .await?
+                } else {
+                    (None, None)
+                };
+                append_prompt_cache_conversation_operation_event_with_routing_context_executor(
                     conn.as_mut(),
                     AppendPromptCacheConversationOperationEventInput {
                         prompt_cache_key: prompt_cache_key.to_string(),
@@ -1040,6 +1182,20 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                         sticky_after: Some(sticky_after),
                         invoke_id: invoke_id.map(ToOwned::to_owned),
                     },
+                    Some(PromptCacheConversationOperationRoutingContext {
+                        reason_code: if causing_attempt_id.is_some() {
+                            "freshAssignmentAfterFailure".to_string()
+                        } else if previous_account_id.is_some() {
+                            "stickyTargetChanged".to_string()
+                        } else {
+                            "firstSuccessfulAssignment".to_string()
+                        },
+                        routing_source,
+                        http_status: None,
+                        trigger_attempt_id,
+                        causing_attempt_id,
+                        causing_http_status,
+                    }),
                 )
                 .await?;
             }
@@ -1097,6 +1253,9 @@ fn prompt_cache_conversation_operation_event_response_from_row(
         sticky_before: deserialize_sticky(row.sticky_before_json),
         sticky_after: deserialize_sticky(row.sticky_after_json),
         invoke_id: row.invoke_id,
+        routing_context: row.routing_context_json.and_then(|value| {
+            serde_json::from_str::<PromptCacheConversationOperationRoutingContext>(&value).ok()
+        }),
     }
 }
 
@@ -2777,7 +2936,8 @@ pub(crate) async fn list_prompt_cache_conversation_operation_events(
                 binding_after_json,
                 sticky_before_json,
                 sticky_after_json,
-                invoke_id
+                invoke_id,
+                routing_context_json
             FROM prompt_cache_conversation_operation_events
             WHERE prompt_cache_key = ?1
               AND EXISTS (
@@ -2811,7 +2971,8 @@ pub(crate) async fn list_prompt_cache_conversation_operation_events(
                 binding_after_json,
                 sticky_before_json,
                 sticky_after_json,
-                invoke_id
+                invoke_id,
+                routing_context_json
             FROM prompt_cache_conversation_operation_events
             WHERE prompt_cache_key = ?1
             ORDER BY occurred_at DESC, id DESC

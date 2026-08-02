@@ -1532,6 +1532,14 @@ describe("PromptCacheConversationTable", () => {
               upstreamAccountName: "Pool Alpha",
             },
             invokeId: "inv-op-42",
+            routingContext: {
+              reasonCode: "freshAssignmentAfterFailure",
+              routingSource: "freshAssignment",
+              httpStatus: null,
+              triggerAttemptId: "SUCCESS42",
+              causingAttemptId: "FAILED41",
+              causingHttpStatus: 502,
+            },
           },
           {
             id: 11,
@@ -1605,6 +1613,13 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("手工绑定已更新");
     expect(document.body.textContent).toContain("绑定目标：无手工绑定 -> 账号 Pool Alpha");
     expect(document.body.textContent).toContain("invokeId: inv-op-42");
+    expect(document.body.textContent).toContain("重新分配源于上游失败（HTTP 502）");
+    expect(document.body.textContent).toContain("起因尝试：FAILED41");
+    expect(document.body.textContent).toContain("触发尝试：SUCCESS42");
+    const causeAttemptLink = Array.from(document.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("起因尝试：FAILED41"),
+    );
+    expect(causeAttemptLink?.getAttribute("href")).toContain("attemptId=FAILED41");
     expect(document.body.textContent).toContain("正向代理相关");
 
     const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>

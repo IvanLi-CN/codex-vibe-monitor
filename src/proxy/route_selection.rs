@@ -1741,6 +1741,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 pending_attempt_record
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
+                account.sticky_affinity_generation,
             )
             .await
         };
@@ -3756,6 +3757,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             pending_pool_attempt_record
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
+                                            account.sticky_affinity_generation,
                                         )
                                         .await
                                     {
@@ -4043,6 +4045,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             pending_pool_attempt_record_for_task
                                                 .as_ref()
                                                 .and_then(|pending| pending.attempt_id),
+                                            account.sticky_affinity_generation,
                                         )
                                         .await
                                     {
@@ -4497,6 +4500,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 {
@@ -4747,6 +4751,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 {
