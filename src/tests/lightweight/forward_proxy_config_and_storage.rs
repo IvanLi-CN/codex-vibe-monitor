@@ -418,6 +418,45 @@ async fn raw_overflow_spool_recovery_retains_a_capture_when_a_later_segment_is_c
 }
 
 #[tokio::test]
+async fn non_proxy_terminal_transition_invalidates_all_timeseries_projection_coverage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let minute = Utc::now().timestamp().div_euclid(60) * 60;
+    sqlx::query(
+        "INSERT INTO timeseries_minute_projection_v2 (minute_start_epoch, source_scope, upstream_account_key, aggregate_json, total_latency_samples_json, first_byte_samples_json, first_response_byte_total_samples_json, first_token_samples_json, max_row_id, coverage_state) VALUES (?1, 'all', -1, '{}', '[]', '[]', '[]', '[]', 1, 'ready')",
+    )
+    .bind(minute)
+    .execute(&state.pool)
+    .await
+    .expect("seed all projection coverage");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload) VALUES ('non-proxy-running', ?1, 'xy', 'running', '{}')",
+    )
+    .bind(format_utc_iso(Utc.timestamp_opt(minute, 0).single().expect("valid minute")))
+    .execute(&state.pool)
+    .await
+    .expect("seed non-proxy in-flight invocation");
+
+    sqlx::query(
+        "UPDATE codex_invocations SET status = 'success' WHERE invoke_id = 'non-proxy-running'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("terminalize non-proxy invocation");
+
+    let coverage_state = sqlx::query_scalar::<_, String>(
+        "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(minute)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load all projection coverage");
+    assert_eq!(coverage_state, "warming");
+}
+
+#[tokio::test]
 async fn streaming_raw_capture_preserves_precompressed_wire_bytes_without_recompression() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -328,6 +328,18 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
     let update_new_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
         &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
     );
+    // Proxy terminal writes are registered with the in-process projection hub before
+    // persistence. Other sources can update an existing in-flight row directly, so
+    // invalidate only their `all` projection coverage and let the existing exact warm
+    // path rebuild the affected selections.
+    let non_proxy_terminal_projection_invalidation_sql = r#"
+        UPDATE timeseries_minute_projection_v2
+        SET coverage_state = 'warming'
+        WHERE source_scope = 'all'
+          AND COALESCE(OLD.source, '') <> 'proxy'
+          AND LOWER(TRIM(COALESCE(OLD.status, ''))) IN ('running', 'pending')
+          AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
+    "#;
     let update_trigger_sql = format!(
         r#"
         CREATE TRIGGER trg_codex_invocations_live_update
@@ -338,11 +350,14 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
             {upsert_sql};
             {refresh_old_sql};
             {refresh_new_sql};
+            {non_proxy_terminal_projection_invalidation_sql};
         END
         "#,
         upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
         refresh_old_sql = update_old_refresh_sql,
         refresh_new_sql = update_new_refresh_sql,
+        non_proxy_terminal_projection_invalidation_sql =
+            non_proxy_terminal_projection_invalidation_sql,
     );
     sqlx::query(&update_trigger_sql)
         .execute(tx.as_mut())
