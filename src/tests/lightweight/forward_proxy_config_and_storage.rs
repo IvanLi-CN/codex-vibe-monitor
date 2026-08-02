@@ -2089,7 +2089,7 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
         "request",
         Bytes::from_static(b"{\"ok\":true}"),
     ));
-    let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
+    let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin.zst");
 
     assert_eq!(
         meta.path.as_deref(),
@@ -2100,7 +2100,7 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
         "raw payload should be written beside the database"
     );
     assert!(
-        !cwd.join("proxy_raw_payloads/proxy-test-request.bin")
+        !cwd.join("proxy_raw_payloads/proxy-test-request.bin.zst")
             .exists(),
         "raw payload should not follow the current working directory"
     );
