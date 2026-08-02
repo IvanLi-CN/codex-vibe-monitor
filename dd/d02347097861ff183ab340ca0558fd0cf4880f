@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.54.3",
+  "base_stable_version": "2.54.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-02T15:40:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.54.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6869b71a89376f3d6dfd1ad62ac9f37b2e3b2c5a",
+  "pr_number": 725,
+  "pr_title": "fix(routing): scope API key temporary failures to models",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.54.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.54.3",
+  "target_sha": "ddd02347097861ff183ab340ca0558fd0cf4880f",
+  "type_label": "type:patch"
+}
