@@ -339,8 +339,10 @@ fn add_pending_timeseries_deltas(
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000)
     {
-        if max_row_id.is_some_and(|cursor| row_id > cursor) {
-            // Rows above the projection cursor are already represented by the SQL tail.
+        if max_row_id.is_some() {
+            // The minute projection contains persisted terminal rows through its cursor;
+            // the cursor-filtered SQL tail contains later rows. Never add a pending delta
+            // on top of either source, or a warm projection can count it twice.
             continue;
         }
         if row_id > snapshot_id {
