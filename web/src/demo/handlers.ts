@@ -2513,6 +2513,8 @@ export async function handleDemoRequest(request: Request) {
     const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
     const attemptId = url.searchParams.get("attemptId");
     const upstreamAccountId = Number(url.searchParams.get("upstreamAccountId"));
+    const promptCacheKey = url.searchParams.get("promptCacheKey");
+    const stickyKey = url.searchParams.get("stickyKey");
     const keyword = url.searchParams.get("keyword")?.toLowerCase();
     if (model) records = records.filter((record) => record.model === model);
     if (status) records = records.filter((record) => record.status === status);
@@ -2525,6 +2527,9 @@ export async function handleDemoRequest(request: Request) {
     }
     if (Number.isFinite(upstreamAccountId) && upstreamAccountId > 0)
       records = records.filter((record) => record.upstreamAccountId === upstreamAccountId);
+    if (promptCacheKey)
+      records = records.filter((record) => record.promptCacheKey === promptCacheKey);
+    if (stickyKey) records = records.filter((record) => record.stickyKey === stickyKey);
     if (keyword)
       records = records.filter((record) => JSON.stringify(record).toLowerCase().includes(keyword));
     const pageSize = Number(

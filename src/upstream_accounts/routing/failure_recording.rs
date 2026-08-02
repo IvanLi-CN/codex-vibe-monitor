@@ -1,5 +1,8 @@
 use super::*;
-use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
+use crate::api::{
+    broadcast_prompt_cache_conversation_changed,
+    upsert_runtime_prompt_cache_conversation_sticky_route,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UpstreamCapabilityAxis {
@@ -70,6 +73,7 @@ pub(crate) async fn record_pool_route_success(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 pub(crate) async fn record_pool_route_success_with_affinity_generation(
@@ -92,6 +96,36 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
         sticky_affinity_generation,
     )
     .await
+    .map(|_| ())
+}
+
+pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    let sticky_updated = record_pool_route_success_inner(
+        &state.pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        attempt_id,
+        sticky_affinity_generation,
+    )
+    .await?;
+    if sticky_updated
+        && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
+    {
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    }
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
@@ -115,6 +149,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
         sticky_affinity_generation,
     )
     .await
+    .map(|_| ())
 }
 
 async fn record_pool_route_success_inner(
@@ -126,7 +161,7 @@ async fn record_pool_route_success_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<()> {
+) -> Result<bool> {
     let now_iso = format_utc_iso(Utc::now());
     let sticky_now_iso = format_utc_iso_precise(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
@@ -174,10 +209,11 @@ async fn record_pool_route_success_inner(
     .execute(pool)
     .await?;
     if update_result.rows_affected() == 0 {
-        return Ok(());
+        return Ok(false);
     }
+    let mut sticky_updated = false;
     if let Some(sticky_key) = sticky_key {
-        let sticky_updated = upsert_runtime_prompt_cache_conversation_sticky_route(
+        sticky_updated = upsert_runtime_prompt_cache_conversation_sticky_route(
             pool,
             sticky_key,
             prompt_cache_key,
@@ -188,13 +224,13 @@ async fn record_pool_route_success_inner(
             sticky_affinity_generation,
         )
         .await?;
-        if !sticky_updated {
+        if !sticky_updated && prompt_cache_key.is_some_and(|key| key == sticky_key) {
             debug!(
                 sticky_key,
                 account_id,
                 invoke_id,
                 expected_generation = sticky_affinity_generation,
-                "skipped stale sticky route success after affinity reset"
+                "pool route success did not change the scoped sticky target"
             );
         }
     }
@@ -215,7 +251,7 @@ async fn record_pool_route_success_inner(
         attempt_id,
     )
     .await?;
-    Ok(())
+    Ok(sticky_updated)
 }
 
 pub(crate) async fn record_pool_route_success_with_image_intent(
@@ -295,7 +331,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    record_pool_route_success_inner(
+    let _ = record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,
@@ -316,6 +352,45 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     .await
 }
 
+pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    let sticky_updated = record_pool_route_success_inner(
+        &state.pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        attempt_id,
+        sticky_affinity_generation,
+    )
+    .await?;
+    if sticky_updated
+        && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
+    {
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    }
+    record_pool_route_success_capability_observations(
+        &state.pool,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    )
+    .await
+}
+
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -326,7 +401,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    record_pool_route_success_inner(
+    let _ = record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,

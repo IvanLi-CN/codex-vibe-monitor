@@ -38,6 +38,10 @@
   - `invocations.window`
   - `prompt-cache.window`
   - `prompt-cache.sticky.window`
+  - `invocation-history.window`
+  - `invocation-history.overview`
+  - `prompt-cache.conversation-binding.current`
+  - `prompt-cache.conversation-operations.window`
   - `stats.summary.current`（仅 open-range owner-facing 当前态；`yesterday` / `previous7d` 保持 HTTP exact）
   - `stats.timeseries.open-window`
   - `stats.parallel-work.current`
@@ -148,6 +152,10 @@
 - `invocations.window`
 - `prompt-cache.window`
 - `prompt-cache.sticky.window`
+- `invocation-history.window`
+- `invocation-history.overview`
+- `prompt-cache.conversation-binding.current`
+- `prompt-cache.conversation-operations.window`
 - `stats.summary.current`（open-range only）
 - `stats.timeseries.open-window`
 
@@ -165,6 +173,8 @@
   - 闭合历史窗口
   - 非订阅页面
   - 调试与手动读取
+- Detail drawer history is intentionally hybrid: `invocation-history.window` owns only the latest 50-record head while HTTP deep pages stay bound to their first `snapshotId` and are never replayed through the topic stream.
+- Detail drawers subscribe only to the visible tab. `Records` invalidates scope-matching calls/overview topics; committed conversation configuration changes invalidate only scope-matching binding/operations topics.
 - owner-facing summary 的边界固定为：`today / 1d / 7d` 等 open-range 继续走 topic，`yesterday / previous7d` 通过 `fetchSummary(...)` 走 exact HTTP。
 - closed-range Summary topic 即使保留兼容请求，也不因 Records 或 live 广播触发重建；后端保留 `summary_delivery_mode` 与 closed-window misuse telemetry 以识别遗留消费者。
 - 但主应用订阅类 UI 在健康态与恢复态都不能再依赖这些 HTTP 端点完成“当前态校准”。
@@ -179,6 +189,7 @@
 - Given 页面仍响应且 owner 点击“立即重连”，When 前端发起新的 `/events` 连接，Then 该连接带新的 `attempt`、`reason=manual`，且 active topics 不再携带 `resume`，页面无需整页刷新即可等待 fresh snapshot 恢复。
 - Given `/events` 连续失败，When 前端进入自动恢复，Then 新的 SSE 尝试必须按退避节奏出现，而不是在数秒内打出成百上千个 `attempt`。
 - Given 关闭历史窗口或非订阅页面仍使用 HTTP，When 本轮纯 SSE 改造完成，Then 它们现有语义保持不变。
+- Given a conversation detail topic cannot resume, When the client reconnects, Then the active tab adopts a fresh snapshot while its existing HTTP deep pages remain frozen and deduplicated.
 
 ## 验收清单（Acceptance checklist）
 

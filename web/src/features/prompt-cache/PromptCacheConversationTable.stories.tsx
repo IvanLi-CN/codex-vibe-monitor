@@ -91,6 +91,7 @@ class MockEventSource implements EventTarget {
   static CONNECTING = 0;
   static OPEN = 1;
   static CLOSED = 2;
+  static instances = new Set<MockEventSource>();
 
   readonly url: string;
   readonly withCredentials = false;
@@ -103,6 +104,7 @@ class MockEventSource implements EventTarget {
 
   constructor(url: string | URL) {
     this.url = typeof url === "string" ? url : url.toString();
+    MockEventSource.instances.add(this);
     window.setTimeout(() => {
       if (this.readyState === MockEventSource.CLOSED) return;
       this.readyState = MockEventSource.OPEN;
@@ -129,6 +131,14 @@ class MockEventSource implements EventTarget {
 
   close() {
     this.readyState = MockEventSource.CLOSED;
+    MockEventSource.instances.delete(this);
+  }
+
+  static emitMessage(payload: unknown) {
+    for (const instance of MockEventSource.instances) {
+      if (instance.readyState !== MockEventSource.OPEN) continue;
+      instance.#emit("message", new MessageEvent("message", { data: JSON.stringify(payload) }));
+    }
   }
 
   #emit(type: string, event: Event) {
@@ -965,6 +975,26 @@ const historyRecordsByKey = new Map<string, ApiInvocation[]>([
   [CONVERSATION_SHORT_KEY, shortSameDayHistory],
   [CONVERSATION_LARGE_HISTORY_KEY, largeHistory],
 ]);
+
+const queuedLargeHistoryRecord = buildInvocationRecord({
+  id: 30_001,
+  invokeId: "invoke-large-history-live-queued",
+  promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
+  occurredAt: "2026-05-28T04:10:30.000Z",
+  upstreamAccountId: 11,
+  upstreamAccountName: "growth.6vv4@relay.example",
+  proxyDisplayName: "tokyo-edge-large-01",
+  model: "gpt-5.6-sol",
+  totalTokens: 183_400,
+  inputTokens: 176_000,
+  cacheInputTokens: 169_400,
+  outputTokens: 7_400,
+  reasoningTokens: 512,
+  reasoningEffort: "high",
+  cost: 0.121,
+  responseContentEncoding: "gzip",
+  tTotalMs: 8_420,
+});
 
 function buildInvocationSummary(records: ApiInvocation[]) {
   const totalCost = records.reduce((sum, record) => sum + (record.cost ?? 0), 0);
@@ -2438,6 +2468,158 @@ export const LargeHistoryVirtualizedDrawer: Story = {
       await documentScope.findByText(
         /已加载 100 \/ 15,?000 条保留调用记录|Loaded 100 \/ 15,?000 retained record\(s\)/i,
       ),
+    ).toBeInTheDocument();
+  },
+};
+
+export const DrawerQueuedRealtimeCalls: Story = {
+  tags: ["test"],
+  args: {
+    stats: largeHistoryStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Conversation calls preserve the reader's position away from the top and expose a deterministic new-record prompt instead of inserting the live row immediately.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await userEvent.click(await documentScope.findByRole("tab", { name: /调用|Calls/i }));
+    await waitFor(() => {
+      expect(
+        Array.from(MockEventSource.instances).some(
+          (instance) => instance.readyState === MockEventSource.OPEN,
+        ),
+      ).toBe(true);
+    });
+
+    const descriptor = {
+      topic: "invocation-history.window",
+      params: { promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY },
+    };
+    const initialRecords = largeHistory.slice(0, 50);
+    MockEventSource.emitMessage({
+      type: "snapshot",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "invocation-history.window/v1",
+      cursor: 1,
+      payload: {
+        snapshotId: 8401,
+        total: largeHistory.length,
+        page: 1,
+        pageSize: 50,
+        records: initialRecords,
+      },
+    });
+    const drawerBody = canvasElement.ownerDocument.body.querySelector(".drawer-body");
+    if (!(drawerBody instanceof HTMLElement)) {
+      throw new Error("missing drawer body");
+    }
+    drawerBody.scrollTop = 144;
+    fireEvent.scroll(drawerBody);
+    MockEventSource.emitMessage({
+      type: "live",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "invocation-history.window/v1",
+      cursor: 2,
+      payload: {
+        snapshotId: 8402,
+        total: largeHistory.length + 1,
+        page: 1,
+        pageSize: 50,
+        records: [queuedLargeHistoryRecord, ...initialRecords],
+      },
+    });
+
+    await expect(
+      await documentScope.findByRole("button", { name: /查看 1 条新记录|Show 1 new record/i }),
+    ).toBeInTheDocument();
+  },
+};
+
+export const DrawerBindingRemoteConflict: Story = {
+  tags: ["test"],
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "An external binding topic update does not overwrite a local draft; it presents explicit adopt-latest and last-write-wins choices.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    const kindSelect = await documentScope.findByRole("combobox", {
+      name: /绑定类型|Binding type/i,
+    });
+    await userEvent.click(kindSelect);
+    await userEvent.click(await documentScope.findByRole("option", { name: /分组|Group/i }));
+    await waitFor(() => {
+      expect(
+        Array.from(MockEventSource.instances).some(
+          (instance) => instance.readyState === MockEventSource.OPEN,
+        ),
+      ).toBe(true);
+    });
+
+    const descriptor = {
+      topic: "prompt-cache.conversation-binding.current",
+      params: { promptCacheKey: CONVERSATION_SHORT_KEY },
+    };
+    MockEventSource.emitMessage({
+      type: "live",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "prompt-cache.conversation-binding.current/v1",
+      cursor: 3,
+      payload: buildBindingResponse({
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        bindingKind: "none",
+        updatedAt: "2026-05-13T23:43:00.000Z",
+      }),
+    });
+
+    await expect(
+      await documentScope.findByText(
+        /编辑期间，此对话的路由绑定已在其他位置更新。|changed elsewhere while you were editing/i,
+      ),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByRole("button", { name: /采用最新配置|Use latest/i }),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByRole("button", { name: /仍然保存|Save mine/i }),
     ).toBeInTheDocument();
   },
 };

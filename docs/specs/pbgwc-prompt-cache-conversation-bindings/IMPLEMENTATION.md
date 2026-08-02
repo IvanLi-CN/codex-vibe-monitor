@@ -32,6 +32,14 @@
 - [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
 - [x] Unit, integration, Storybook, and visual evidence coverage.
 
+## Realtime Detail Drawer Update
+
+- Four tab-scoped topic descriptors now cover the shared conversation drawer: `invocation-history.window`, `invocation-history.overview`, `prompt-cache.conversation-binding.current`, and `prompt-cache.conversation-operations.window`.
+- Calls merges the current 50-row topic window over frozen HTTP deep pages by stable invocation key. Running rows update in place; deferred new rows preserve the reading anchor and surface a counted reveal action.
+- Overview applies the current summary plus bounded chart samples, coalesces record-driven rebuilds for two seconds, and keeps last-good data on refresh failure.
+- Binding and operations topics receive committed conversation-configuration broadcasts from detail saves, bulk changes, affinity resets, automatic sticky changes, and group promotions. Settings holds a dirty local draft until the operator explicitly adopts the external snapshot or saves last-write-wins.
+- Storybook covers deferred-call insertion and Settings conflict actions; the mock-only web demo verifies the Calls drawer at desktop and `393x852` mobile viewports.
+
 ## Dashboard Bulk Actions Update
 
 - Dashboard conversation cards now support two selection entry points: explicit `选择模式` and temporary `Cmd`/`Ctrl` modifier selection that does not flip the page into persistent selection mode.
@@ -104,6 +112,10 @@
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
+- `cargo test subscriptions -- --nocapture`
+- `cd web && bun run test -- src/features/prompt-cache/PromptCacheConversationTable.test.tsx src/hooks/useConversationDetailTopics.test.tsx`
+- `cd web && bun run test-storybook -- PromptCacheConversationTable.stories.tsx`
+- `cd web && bun run test -- src/demo/event-handlers.test.ts src/demo/handlers.test.ts src/demo/runtime.test.ts`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
 - `cd web && bunx vitest run src/features/invocations/InvocationTable.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
@@ -121,6 +133,7 @@
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also captures the widened detail drawer and account-style conversation routing form at `./assets/conversation-settings-wide-drawer-story.png`, including hidden account-only rows, expanded conversation-owned policy/timeouts, and the separate route-binding block.
 - Storybook `DrawerOperations` mock evidence now shows the affinity-reset recovery sequence itself: `affinityReset`, `stickyTargetCleared`, and exactly one later `systemAuto stickyTargetChanged` event with `invokeId`, so the visual contract proves stale in-flight success does not resurrect sticky after reset.
 - Storybook `build-storybook` now succeeds after the Storybook-local Vite plugin merge deduplicates repeated React plugins, so the `DrawerOperations` evidence path remains usable for future UI reviews.
+- Web demo `/#/live` evidence: `./assets/conversation-detail-realtime-desktop.png` and `./assets/conversation-detail-realtime-mobile-393x852.png` show the Calls topic hydrated with a responding row and terminal rows at desktop and exact mobile viewport sizes.
 
 ## 101 Read-only Follow-up
 

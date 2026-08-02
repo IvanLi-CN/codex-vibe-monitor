@@ -2636,6 +2636,9 @@ pub(crate) enum BroadcastPayload {
     Records {
         records: Vec<ApiInvocation>,
     },
+    PromptCacheConversationChanged {
+        prompt_cache_key: String,
+    },
     DashboardActivityLive {
         snapshot: Box<DashboardActivityLiveSnapshot>,
     },

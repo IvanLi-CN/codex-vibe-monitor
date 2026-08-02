@@ -5,7 +5,7 @@ export type DemoScene =
   | "progressive-loading"
   | "network-failure";
 export type DemoTheme = "light" | "dark";
-export type DemoViewport = "default" | "mobile390";
+export type DemoViewport = "default" | "mobile390" | "mobile393";
 
 const RUNTIME_VALUES = new Set(["live", "demo"]);
 const SCENE_VALUES = new Set<DemoScene>([
@@ -16,7 +16,7 @@ const SCENE_VALUES = new Set<DemoScene>([
   "network-failure",
 ]);
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
-const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390"]);
+const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390", "mobile393"]);
 
 function hashSearchFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
@@ -81,16 +81,19 @@ export async function initializeDemoRuntime(): Promise<void> {
     { demoModel },
     { worker },
     { installDemoFetchFallback },
+    { installDemoEventSource },
     { handleDemoRequest },
   ] = await Promise.all([
     import("msw"),
     import("./model"),
     import("./browser"),
     import("./fallback"),
+    import("./event-source"),
     import("./handlers"),
   ]);
   demoModel.setScene(sceneFromLocation());
   installDemoFetchFallback(handleDemoRequest);
+  installDemoEventSource();
   await worker.start({
     serviceWorker: {
       url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,

@@ -1435,12 +1435,13 @@ export function EffectiveRoutingRuleCard({
                         <div className="min-w-0 sm:col-span-3">
                           <Input
                             name={row.key}
+                            aria-label={row.label}
                             type="number"
                             min="1"
                             step="1"
                             defaultValue={String(timeoutValues[row.key])}
                             disabled={busy}
-                            className="h-11 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                            className="h-11 rounded-xl border-base-300/90 bg-base-100 px-4 text-sm font-mono"
                             onBlur={(event: React.FocusEvent<HTMLInputElement>) => {
                               const parsed = event.currentTarget.value.trim();
                               if (!parsed || !editablePolicy) return;
@@ -1676,7 +1677,7 @@ function ConcurrencyInlineEditor({
         onChange={(event) => onChange(sliderConcurrencyLimitToApiValue(Number(event.target.value)))}
         className="h-2 w-full cursor-pointer appearance-none rounded-full bg-base-300 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
       />
-      <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
+      <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.12em] text-base-content/45">
         <span>{CONCURRENCY_LIMIT_MIN}</span>
         <span>{CONCURRENCY_LIMIT_MAX}</span>
         <span title={unlimitedLabel}>∞</span>

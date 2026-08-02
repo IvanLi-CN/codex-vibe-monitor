@@ -13,6 +13,9 @@ const SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT: i64 = 16;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES: i64 = 5;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE: i64 = 20;
 const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
+const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
+const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
+const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
 #[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(test)]
@@ -23,6 +26,10 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(50);
 
 fn subscription_calendar_anchor(topic: &SubscriptionTopic) -> Option<String> {
     let SubscriptionTopic::SummaryCurrent {
@@ -319,6 +326,19 @@ enum SubscriptionTopic {
         model: Option<String>,
         status: Option<String>,
     },
+    InvocationHistoryWindow {
+        scope: ConversationSubscriptionScope,
+    },
+    InvocationHistoryOverview {
+        scope: ConversationSubscriptionScope,
+    },
+    PromptCacheConversationBindingCurrent {
+        scope: ConversationSubscriptionScope,
+    },
+    PromptCacheConversationOperationsWindow {
+        scope: ConversationSubscriptionScope,
+        info_type: Option<String>,
+    },
     PromptCacheWindow {
         selection: PromptCacheConversationSelection,
         detail_level: PromptCacheConversationDetailLevel,
@@ -351,6 +371,95 @@ enum SubscriptionTopic {
     InvocationPoolAttempts {
         invoke_id: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConversationSubscriptionScope {
+    PromptCacheKey(String),
+    StickyKey {
+        sticky_key: String,
+        upstream_account_id: i64,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InvocationHistoryOverviewTopicPayload {
+    summary: InvocationSummaryResponse,
+    records: Vec<ApiInvocation>,
+    chart_total: i64,
+    chart_is_sampled: bool,
+}
+
+impl ConversationSubscriptionScope {
+    fn binding_key(&self) -> &str {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => prompt_cache_key,
+            Self::StickyKey { sticky_key, .. } => sticky_key,
+        }
+    }
+
+    fn matches_record(&self, record: &ApiInvocation) -> bool {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => record
+                .prompt_cache_key
+                .as_deref()
+                .is_some_and(|value| value.trim() == prompt_cache_key),
+            Self::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            } => {
+                record
+                    .sticky_key
+                    .as_deref()
+                    .or(record.prompt_cache_key.as_deref())
+                    .is_some_and(|value| value.trim() == sticky_key)
+                    && record.upstream_account_id == Some(*upstream_account_id)
+            }
+        }
+    }
+
+    fn descriptor_params(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => {
+                BTreeMap::from([("promptCacheKey".to_string(), prompt_cache_key.clone())])
+            }
+            Self::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            } => BTreeMap::from([
+                ("stickyKey".to_string(), sticky_key.clone()),
+                (
+                    "upstreamAccountId".to_string(),
+                    upstream_account_id.to_string(),
+                ),
+            ]),
+        }
+    }
+
+    fn list_query(&self, page: i64, page_size: i64, snapshot_id: Option<i64>) -> ListQuery {
+        let mut query = ListQuery {
+            page: Some(page),
+            page_size: Some(page_size),
+            snapshot_id,
+            sort_by: Some("occurredAt".to_string()),
+            sort_order: Some("desc".to_string()),
+            ..Default::default()
+        };
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => {
+                query.prompt_cache_key = Some(prompt_cache_key.clone());
+            }
+            Self::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            } => {
+                query.sticky_key = Some(sticky_key.clone());
+                query.upstream_account_id = Some(*upstream_account_id);
+            }
+        }
+        query
+    }
 }
 
 impl SubscriptionHub {
@@ -1067,6 +1176,25 @@ impl SubscriptionHub {
                 continue;
             }
 
+            if cached.topic.uses_conversation_overview_refresh()
+                && matches!(payload, BroadcastPayload::Records { .. })
+            {
+                if let Err(err) = self
+                    .schedule_conversation_overview_topic_refresh(
+                        state.clone(),
+                        cached.topic.clone(),
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to schedule conversation overview topic refresh"
+                    );
+                }
+                continue;
+            }
+
             if cached.topic.uses_dashboard_activity_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
@@ -1134,6 +1262,64 @@ impl Default for SubscriptionHub {
 }
 
 impl SubscriptionHub {
+    async fn clear_topic_refresh_flag(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.refresh_scheduled = false;
+        }
+    }
+
+    async fn schedule_conversation_overview_topic_refresh(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let delay = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            if active == 0 {
+                cached.dirty = true;
+                return Ok(());
+            }
+            if cached.refresh_scheduled {
+                return Ok(());
+            }
+            cached.refresh_scheduled = true;
+            CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE
+        };
+        let hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            match hub
+                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                .await
+            {
+                Ok(Some(_)) | Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        topic = %topic.name(),
+                        refresh_outcome = "retained_last_good",
+                        "conversation overview topic refresh failed"
+                    );
+                    hub.clear_topic_refresh_flag(&topic).await;
+                }
+            }
+        });
+        Ok(())
+    }
+
     async fn clear_dashboard_activity_topic_refresh_flag(&self, topic: &SubscriptionTopic) {
         let Ok(topic_key) = topic.cache_key() else {
             return;
@@ -2102,6 +2288,10 @@ impl SubscriptionTopic {
         self.uses_summary_live_overlay()
     }
 
+    fn uses_conversation_overview_refresh(&self) -> bool {
+        matches!(self, Self::InvocationHistoryOverview { .. })
+    }
+
     fn uses_dashboard_network_live_snapshot(&self) -> bool {
         matches!(self, Self::DashboardNetworkTimeseriesWindow { .. })
     }
@@ -2161,6 +2351,23 @@ impl SubscriptionTopic {
                 model: parse_optional_text_param(params, "model"),
                 status: parse_optional_text_param(params, "status"),
             }),
+            "invocation-history.window" => Ok(Self::InvocationHistoryWindow {
+                scope: parse_conversation_subscription_scope(params)?,
+            }),
+            "invocation-history.overview" => Ok(Self::InvocationHistoryOverview {
+                scope: parse_conversation_subscription_scope(params)?,
+            }),
+            "prompt-cache.conversation-binding.current" => {
+                Ok(Self::PromptCacheConversationBindingCurrent {
+                    scope: parse_conversation_subscription_scope(params)?,
+                })
+            }
+            "prompt-cache.conversation-operations.window" => {
+                Ok(Self::PromptCacheConversationOperationsWindow {
+                    scope: parse_conversation_subscription_scope(params)?,
+                    info_type: parse_optional_conversation_operation_info_type(params)?,
+                })
+            }
             "prompt-cache.window" => {
                 let selection = parse_prompt_cache_selection(params)?;
                 Ok(Self::PromptCacheWindow {
@@ -2302,6 +2509,22 @@ impl SubscriptionTopic {
                     params,
                 }
             }
+            Self::InvocationHistoryWindow { scope }
+            | Self::InvocationHistoryOverview { scope }
+            | Self::PromptCacheConversationBindingCurrent { scope } => {
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params: scope.descriptor_params(),
+                }
+            }
+            Self::PromptCacheConversationOperationsWindow { scope, info_type } => {
+                let mut params = scope.descriptor_params();
+                insert_optional_param(&mut params, "infoType", info_type.clone());
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params,
+                }
+            }
             Self::PromptCacheWindow {
                 selection,
                 detail_level,
@@ -2433,6 +2656,14 @@ impl SubscriptionTopic {
                 "dashboard.working-conversations.current"
             }
             Self::InvocationWindow { .. } => "invocations.window",
+            Self::InvocationHistoryWindow { .. } => "invocation-history.window",
+            Self::InvocationHistoryOverview { .. } => "invocation-history.overview",
+            Self::PromptCacheConversationBindingCurrent { .. } => {
+                "prompt-cache.conversation-binding.current"
+            }
+            Self::PromptCacheConversationOperationsWindow { .. } => {
+                "prompt-cache.conversation-operations.window"
+            }
             Self::PromptCacheWindow { .. } => "prompt-cache.window",
             Self::PromptCacheStickyWindow { .. } => "prompt-cache.sticky.window",
             Self::SummaryCurrent { .. } => "stats.summary.current",
@@ -2458,6 +2689,14 @@ impl SubscriptionTopic {
                 "dashboard.working-conversations.current/v1".to_string()
             }
             Self::InvocationWindow { .. } => "invocations.window/v1".to_string(),
+            Self::InvocationHistoryWindow { .. } => "invocation-history.window/v1".to_string(),
+            Self::InvocationHistoryOverview { .. } => "invocation-history.overview/v1".to_string(),
+            Self::PromptCacheConversationBindingCurrent { .. } => {
+                "prompt-cache.conversation-binding.current/v1".to_string()
+            }
+            Self::PromptCacheConversationOperationsWindow { .. } => {
+                "prompt-cache.conversation-operations.window/v1".to_string()
+            }
             Self::PromptCacheWindow { .. } => "prompt-cache.window/v1".to_string(),
             Self::PromptCacheStickyWindow { .. } => "prompt-cache.sticky.window/v1".to_string(),
             Self::SummaryCurrent { .. } => "stats.summary.current/v1".to_string(),
@@ -2491,20 +2730,31 @@ impl SubscriptionTopic {
         }
 
         match payload {
-            BroadcastPayload::Records { .. } => matches!(
-                self,
+            BroadcastPayload::Records { records } => match self {
+                Self::InvocationHistoryWindow { scope }
+                | Self::InvocationHistoryOverview { scope } => {
+                    records.iter().any(|record| scope.matches_record(record))
+                }
                 Self::DashboardActivityCurrent { .. }
-                    | Self::DashboardNetworkTimeseriesWindow { .. }
-                    | Self::DashboardNetworkRecentCurrent
-                    | Self::DashboardWorkingConversationsCurrent { .. }
-                    | Self::InvocationWindow { .. }
-                    | Self::PromptCacheWindow { .. }
-                    | Self::PromptCacheStickyWindow { .. }
-                    | Self::SummaryCurrent { .. }
-                    | Self::TimeseriesOpenWindow { .. }
-                    | Self::ParallelWorkCurrent { .. }
-                    | Self::ForwardProxyLive
-            ),
+                | Self::DashboardNetworkTimeseriesWindow { .. }
+                | Self::DashboardNetworkRecentCurrent
+                | Self::DashboardWorkingConversationsCurrent { .. }
+                | Self::InvocationWindow { .. }
+                | Self::PromptCacheWindow { .. }
+                | Self::PromptCacheStickyWindow { .. }
+                | Self::SummaryCurrent { .. }
+                | Self::TimeseriesOpenWindow { .. }
+                | Self::ParallelWorkCurrent { .. }
+                | Self::ForwardProxyLive => true,
+                _ => false,
+            },
+            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => match self {
+                Self::PromptCacheConversationBindingCurrent { scope }
+                | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
+                    scope.binding_key() == prompt_cache_key
+                }
+                _ => false,
+            },
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
@@ -2642,6 +2892,71 @@ impl SubscriptionTopic {
                         upstream_scope: None,
                         upstream_account_id: None,
                         ..Default::default()
+                    }),
+                )
+                .await?;
+                Ok(serde_json::to_value(response)?)
+            }
+            Self::InvocationHistoryWindow { scope } => {
+                let Json(response) = list_invocations(
+                    State(state),
+                    Query(scope.list_query(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT, None)),
+                )
+                .await?;
+                Ok(serde_json::to_value(response)?)
+            }
+            Self::InvocationHistoryOverview { scope } => {
+                let Json(summary) = fetch_invocation_summary(
+                    State(state.clone()),
+                    Query(scope.list_query(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT, None)),
+                )
+                .await?;
+                let mut records = Vec::new();
+                let mut page = 1_i64;
+                let mut chart_total = summary.total_count;
+                while records.len() < SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS {
+                    let page_size = (SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS - records.len())
+                        .min(SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT as usize)
+                        as i64;
+                    let Json(response) = list_invocations(
+                        State(state.clone()),
+                        Query(scope.list_query(page, page_size, Some(summary.snapshot_id))),
+                    )
+                    .await?;
+                    chart_total = response.total;
+                    if response.records.is_empty() {
+                        break;
+                    }
+                    records.extend(response.records);
+                    if records.len() >= chart_total as usize || page_size <= 0 {
+                        break;
+                    }
+                    page += 1;
+                }
+                Ok(serde_json::to_value(
+                    InvocationHistoryOverviewTopicPayload {
+                        summary,
+                        chart_is_sampled: chart_total as usize > records.len(),
+                        records,
+                        chart_total,
+                    },
+                )?)
+            }
+            Self::PromptCacheConversationBindingCurrent { scope } => Ok(serde_json::to_value(
+                load_prompt_cache_conversation_binding_response_for_key(
+                    state.as_ref(),
+                    scope.binding_key().to_string(),
+                )
+                .await?,
+            )?),
+            Self::PromptCacheConversationOperationsWindow { scope, info_type } => {
+                let Json(response) = list_prompt_cache_conversation_operation_events(
+                    State(state),
+                    AxumPath(scope.binding_key().to_string()),
+                    Query(ListPromptCacheConversationOperationEventsQuery {
+                        page: Some(1),
+                        page_size: Some(SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT),
+                        info_type: info_type.clone(),
                     }),
                 )
                 .await?;
@@ -2949,6 +3264,52 @@ fn parse_bool_param(
         "false" => Ok(false),
         _ => Err(ApiError::bad_request(anyhow!(
             "invalid boolean for `{key}`: {value}"
+        ))),
+    }
+}
+
+fn parse_conversation_subscription_scope(
+    params: &BTreeMap<String, String>,
+) -> Result<ConversationSubscriptionScope, ApiError> {
+    let prompt_cache_key = parse_optional_text_param(params, "promptCacheKey");
+    let sticky_key = parse_optional_text_param(params, "stickyKey");
+    match (prompt_cache_key, sticky_key) {
+        (Some(prompt_cache_key), None) => Ok(ConversationSubscriptionScope::PromptCacheKey(
+            prompt_cache_key,
+        )),
+        (None, Some(sticky_key)) => {
+            let upstream_account_id = parse_required_i64_param(params, "upstreamAccountId")?;
+            if upstream_account_id <= 0 {
+                return Err(ApiError::bad_request(anyhow!(
+                    "upstreamAccountId must be positive for stickyKey subscription scope"
+                )));
+            }
+            Ok(ConversationSubscriptionScope::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            })
+        }
+        (Some(_), Some(_)) => Err(ApiError::bad_request(anyhow!(
+            "promptCacheKey and stickyKey are mutually exclusive subscription scope params"
+        ))),
+        (None, None) => Err(ApiError::bad_request(anyhow!(
+            "promptCacheKey or stickyKey + upstreamAccountId is required for conversation subscription"
+        ))),
+    }
+}
+
+fn parse_optional_conversation_operation_info_type(
+    params: &BTreeMap<String, String>,
+) -> Result<Option<String>, ApiError> {
+    let Some(info_type) = parse_optional_text_param(params, "infoType") else {
+        return Ok(None);
+    };
+    match info_type.as_str() {
+        PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING
+        | PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_FORWARD_PROXY
+        | PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE => Ok(Some(info_type)),
+        _ => Err(ApiError::bad_request(anyhow!(
+            "infoType must be one of: routing, forwardProxy, requestRewrite"
         ))),
     }
 }
@@ -3352,6 +3713,92 @@ mod tests {
                 }),
             })
         );
+    }
+
+    #[test]
+    fn conversation_detail_topics_require_an_unambiguous_scope() {
+        let prompt_cache_descriptor = SubscriptionTopicDescriptor {
+            topic: "invocation-history.window".to_string(),
+            params: BTreeMap::from([("promptCacheKey".to_string(), "pck-1".to_string())]),
+        };
+        let sticky_descriptor = SubscriptionTopicDescriptor {
+            topic: "prompt-cache.conversation-operations.window".to_string(),
+            params: BTreeMap::from([
+                ("stickyKey".to_string(), "sticky-1".to_string()),
+                ("upstreamAccountId".to_string(), "42".to_string()),
+                ("infoType".to_string(), "routing".to_string()),
+            ]),
+        };
+
+        let prompt_cache_topic = SubscriptionTopic::from_descriptor(&prompt_cache_descriptor)
+            .expect("prompt cache scope should parse");
+        let sticky_topic = SubscriptionTopic::from_descriptor(&sticky_descriptor)
+            .expect("sticky scope should parse");
+
+        assert_eq!(prompt_cache_topic.descriptor(), prompt_cache_descriptor);
+        assert_eq!(sticky_topic.descriptor(), sticky_descriptor);
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "invocation-history.overview".to_string(),
+                params: BTreeMap::new(),
+            })
+            .is_err()
+        );
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "invocation-history.overview".to_string(),
+                params: BTreeMap::from([
+                    ("promptCacheKey".to_string(), "pck-1".to_string()),
+                    ("stickyKey".to_string(), "sticky-1".to_string()),
+                    ("upstreamAccountId".to_string(), "42".to_string()),
+                ]),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conversation_configuration_events_only_refresh_binding_and_operations_topics() {
+        let scope_params = BTreeMap::from([("promptCacheKey".to_string(), "pck-1".to_string())]);
+        let calls = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+            topic: "invocation-history.window".to_string(),
+            params: scope_params.clone(),
+        })
+        .expect("calls topic should parse");
+        let overview = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+            topic: "invocation-history.overview".to_string(),
+            params: scope_params.clone(),
+        })
+        .expect("overview topic should parse");
+        let binding = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+            topic: "prompt-cache.conversation-binding.current".to_string(),
+            params: scope_params.clone(),
+        })
+        .expect("binding topic should parse");
+        let operations = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+            topic: "prompt-cache.conversation-operations.window".to_string(),
+            params: scope_params,
+        })
+        .expect("operations topic should parse");
+        let event = BroadcastPayload::PromptCacheConversationChanged {
+            prompt_cache_key: "pck-1".to_string(),
+        };
+
+        assert!(!calls.is_affected_by(&event));
+        assert!(!overview.is_affected_by(&event));
+        assert!(binding.is_affected_by(&event));
+        assert!(operations.is_affected_by(&event));
+        assert!(
+            !binding.is_affected_by(&BroadcastPayload::PromptCacheConversationChanged {
+                prompt_cache_key: "pck-2".to_string(),
+            })
+        );
+        assert!(!binding.is_affected_by(&BroadcastPayload::Records {
+            records: Vec::new(),
+        }));
+        assert!(!operations.is_affected_by(&BroadcastPayload::Records {
+            records: Vec::new(),
+        }));
     }
 
     #[tokio::test]

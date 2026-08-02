@@ -1037,8 +1037,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    if let Err(err) = record_pool_route_success_with_affinity_generation_for_attempt(
-        &state.pool,
+    if let Err(err) = record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         account.account_id,
         Utc::now(),
         trace.sticky_key.as_deref(),
@@ -2685,8 +2685,8 @@ pub(crate) async fn persist_ws_usage_event(
         )
         .await?
     {
-        promote_prompt_cache_group_binding_to_upstream_account(
-            &state.pool,
+        promote_prompt_cache_group_binding_to_upstream_account_and_broadcast(
+            state,
             prompt_cache_key,
             account.account_id,
         )

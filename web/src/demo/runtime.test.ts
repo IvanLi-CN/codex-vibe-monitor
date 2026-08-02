@@ -50,4 +50,12 @@ describe("demo runtime selection", () => {
     expect(viewportFromLocation(embeddedLocation)).toBe("default");
     expect(isEmbeddedDemoViewport(embeddedLocation)).toBe(true);
   });
+
+  it("accepts the 393 by 852 evidence viewport", () => {
+    const location = new URL(
+      "https://demo.invalid/#/live?demoViewport=mobile393",
+    ) as unknown as Location;
+
+    expect(viewportFromLocation(location)).toBe("mobile393");
+  });
 });
