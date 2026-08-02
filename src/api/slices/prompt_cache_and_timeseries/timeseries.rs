@@ -591,7 +591,10 @@ pub(crate) async fn flush_timeseries_minute_projection(
     let pending = state
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000);
-    if pending.is_empty() {
+    let coverage_invalidation_generation = state
+        .terminal_projection_hub
+        .timeseries_coverage_invalidation_pending();
+    if pending.is_empty() && coverage_invalidation_generation.is_none() {
         return Ok(());
     }
     let gate = crate::db_pressure::global_db_pressure_gate();
@@ -618,6 +621,13 @@ pub(crate) async fn flush_timeseries_minute_projection(
         add_timeseries_delta_projection_keys(&mut grouped, row_id, delta);
     }
     let mut tx = state.pool.begin().await?;
+    if coverage_invalidation_generation.is_some() {
+        // A Hub admission rejection may have omitted a terminal update for an existing
+        // row. Never keep any minute marked ready until exact fallback has rebuilt it.
+        sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
+            .execute(tx.as_mut())
+            .await?;
+    }
     let mut written_key_count = 0usize;
     let mut exact_fallback_minute_count = 0usize;
     for (key, mut deltas) in grouped {
@@ -654,6 +664,11 @@ pub(crate) async fn flush_timeseries_minute_projection(
         written_key_count += 1;
     }
     tx.commit().await?;
+    if let Some(generation) = coverage_invalidation_generation {
+        state
+            .terminal_projection_hub
+            .complete_timeseries_coverage_invalidation(generation);
+    }
     state
         .terminal_projection_hub
         .mark_timeseries_deltas_flushed(&flushed_row_ids);
@@ -665,6 +680,7 @@ pub(crate) async fn flush_timeseries_minute_projection(
         event_count = flushed_row_ids.len(),
         minute_rollup_count = written_key_count,
         exact_fallback_minute_count,
+        coverage_invalidation_pending = coverage_invalidation_generation.is_some(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         "flushed terminal deltas into minute projection"
     );
@@ -1060,7 +1076,12 @@ pub(crate) async fn fetch_timeseries(
     let start_str_iso = format_utc_iso(start_dt);
     let use_minute_projection = range_window.duration <= ChronoDuration::days(1);
 
+    let coverage_invalidation_pending = state
+        .terminal_projection_hub
+        .timeseries_coverage_invalidation_pending()
+        .is_some();
     if use_minute_projection
+        && !coverage_invalidation_pending
         && let Some((minute_aggregates, projection_cursor)) =
             load_timeseries_minute_projection_v2(&state.pool, start_dt, end_dt, source_scope, None)
                 .await?
@@ -1210,7 +1231,14 @@ pub(crate) async fn fetch_timeseries(
                 );
             }
         });
-        (records, "exact_fallback")
+        (
+            records,
+            if coverage_invalidation_pending {
+                "exact_fallback_projection_invalidated"
+            } else {
+                "exact_fallback"
+            },
+        )
     } else {
         (
             query_invocation_aggregate_records_from_live_range(
@@ -1393,8 +1421,13 @@ pub(crate) async fn fetch_timeseries_for_account(
         }
     }
 
+    let coverage_invalidation_pending = state
+        .terminal_projection_hub
+        .timeseries_coverage_invalidation_pending()
+        .is_some();
     if bucket_seconds < 3_600
         && range_window.duration <= ChronoDuration::days(1)
+        && !coverage_invalidation_pending
         && let Some((minute_aggregates, projection_cursor)) = load_timeseries_minute_projection_v2(
             &state.pool,
             start_dt,

@@ -25,6 +25,7 @@ pub(crate) struct TerminalProjectionHealth {
     pub(crate) long_term_cursor_row_id: i64,
     pub(crate) timeseries_cursor_row_id: i64,
     pub(crate) timeseries_consumer_active: bool,
+    pub(crate) timeseries_coverage_invalidation_pending: bool,
     pub(crate) dirty_last_good: bool,
     pub(crate) hard_limit_reason: Option<&'static str>,
     pub(crate) registered_event_count: u64,
@@ -109,6 +110,8 @@ struct TerminalProjectionHubState {
     long_term_cursor_row_id: i64,
     timeseries_cursor_row_id: i64,
     timeseries_consumer_active: bool,
+    timeseries_coverage_invalidation_generation: u64,
+    timeseries_coverage_completed_generation: u64,
     dirty_last_good: bool,
     hard_limit_reason: Option<&'static str>,
     registered_event_count: u64,
@@ -170,6 +173,11 @@ impl TerminalProjectionHub {
         if state.pending.len() >= TERMINAL_PROJECTION_MAX_PENDING_EVENTS {
             state.dirty_last_good = true;
             state.hard_limit_reason = Some("pending_event_count");
+            if timeseries.is_some() {
+                state.timeseries_coverage_invalidation_generation = state
+                    .timeseries_coverage_invalidation_generation
+                    .saturating_add(1);
+            }
             return None;
         }
         if state.pending_bytes.saturating_add(estimated_bytes)
@@ -177,6 +185,11 @@ impl TerminalProjectionHub {
         {
             state.dirty_last_good = true;
             state.hard_limit_reason = Some("pending_event_bytes");
+            if timeseries.is_some() {
+                state.timeseries_coverage_invalidation_generation = state
+                    .timeseries_coverage_invalidation_generation
+                    .saturating_add(1);
+            }
             return None;
         }
         let id = self
@@ -314,6 +327,28 @@ impl TerminalProjectionHub {
         Self::prune_acknowledged_locked(&mut state);
     }
 
+    // A rejected terminal event can update a row at or behind the durable cursor. Mark
+    // all minute coverage warming before projection reads may trust it again.
+    pub(crate) fn timeseries_coverage_invalidation_pending(&self) -> Option<u64> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (state.timeseries_coverage_invalidation_generation
+            > state.timeseries_coverage_completed_generation)
+            .then_some(state.timeseries_coverage_invalidation_generation)
+    }
+
+    pub(crate) fn complete_timeseries_coverage_invalidation(&self, generation: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.timeseries_coverage_invalidation_generation == generation {
+            state.timeseries_coverage_completed_generation = generation;
+        }
+    }
+
     fn prune_acknowledged_locked(state: &mut TerminalProjectionHubState) {
         // SQLite ACKs can arrive out of ingress order. Remove every event whose
         // durable row is behind every active projection consumer cursor instead
@@ -363,6 +398,9 @@ impl TerminalProjectionHub {
             long_term_cursor_row_id: state.long_term_cursor_row_id,
             timeseries_cursor_row_id: state.timeseries_cursor_row_id,
             timeseries_consumer_active: state.timeseries_consumer_active,
+            timeseries_coverage_invalidation_pending: state
+                .timeseries_coverage_invalidation_generation
+                > state.timeseries_coverage_completed_generation,
             dirty_last_good: state.dirty_last_good,
             hard_limit_reason: state.hard_limit_reason,
             registered_event_count: state.registered_event_count,
@@ -379,6 +417,28 @@ impl TerminalProjectionHub {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    fn timeseries_delta() -> TimeseriesTerminalDelta {
+        TimeseriesTerminalDelta {
+            occurred_at: "2026-07-30 10:00:00".to_string(),
+            source: "proxy".to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: None,
+            cache_input_tokens: None,
+            cost: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+        }
+    }
 
     #[test]
     fn long_term_cursor_prunes_out_of_order_persisted_events() {
@@ -404,25 +464,7 @@ mod tests {
             "invoke",
             "2026-07-30 10:00:00",
             128,
-            Some(TimeseriesTerminalDelta {
-                occurred_at: "2026-07-30 10:00:00".to_string(),
-                source: "proxy".to_string(),
-                upstream_account_id: None,
-                status: Some("success".to_string()),
-                error_message: None,
-                failure_kind: None,
-                failure_class: None,
-                is_actionable: None,
-                total_tokens: None,
-                cache_input_tokens: None,
-                cost: None,
-                t_total_ms: None,
-                t_req_read_ms: None,
-                t_req_parse_ms: None,
-                t_upstream_connect_ms: None,
-                t_upstream_ttfb_ms: None,
-                first_token_ms: None,
-            }),
+            Some(timeseries_delta()),
         );
 
         hub.activate_timeseries_consumer(0);
@@ -460,6 +502,33 @@ mod tests {
             health.pending_event_count,
             TERMINAL_PROJECTION_MAX_PENDING_EVENTS
         );
+    }
+
+    #[test]
+    fn rejected_timeseries_delta_invalidates_minute_projection_coverage() {
+        let hub = TerminalProjectionHub::default();
+        for index in 0..TERMINAL_PROJECTION_MAX_PENDING_EVENTS {
+            assert!(
+                hub.register_pending_parts(&format!("invoke-{index}"), "2026-07-30 10:00:00")
+                    .is_some()
+            );
+        }
+
+        assert!(
+            hub.register_pending_parts_with_delta(
+                "terminal-update",
+                "2026-07-30 10:00:01",
+                128,
+                Some(timeseries_delta()),
+            )
+            .is_none()
+        );
+        let generation = hub
+            .timeseries_coverage_invalidation_pending()
+            .expect("rejection must invalidate minute coverage");
+
+        hub.complete_timeseries_coverage_invalidation(generation);
+        assert!(hub.timeseries_coverage_invalidation_pending().is_none());
     }
 }
 

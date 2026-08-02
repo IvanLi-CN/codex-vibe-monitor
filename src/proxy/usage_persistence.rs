@@ -4440,6 +4440,49 @@ fn release_raw_overflow_memory(bytes: usize) {
     RAW_OVERFLOW_MEMORY_QUEUE_BYTES.fetch_sub(bytes as u64, std::sync::atomic::Ordering::AcqRel);
 }
 
+// The global overflow reservation belongs to the queued payload, not its producer. A
+// canceled proxy capture can drop its sender while the async writer is still draining.
+struct RawOverflowMemoryReservation {
+    bytes: usize,
+}
+
+impl Drop for RawOverflowMemoryReservation {
+    fn drop(&mut self) {
+        release_raw_overflow_memory(self.bytes);
+    }
+}
+
+struct StreamingRawPayloadChunk {
+    bytes: Bytes,
+    _overflow_reservation: Option<RawOverflowMemoryReservation>,
+}
+
+impl StreamingRawPayloadChunk {
+    fn unreserved(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            _overflow_reservation: None,
+        }
+    }
+
+    fn reserved(bytes: Bytes, reservation_bytes: usize) -> Self {
+        Self {
+            bytes,
+            _overflow_reservation: Some(RawOverflowMemoryReservation {
+                bytes: reservation_bytes,
+            }),
+        }
+    }
+}
+
+impl std::ops::Deref for StreamingRawPayloadChunk {
+    type Target = Bytes;
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RawOverflowSpoolHeader {
     invoke_id: String,
@@ -4990,14 +5033,13 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
 }
 
 pub(crate) struct AsyncStreamingRawPayloadWriter {
-    tx: Option<mpsc::UnboundedSender<Bytes>>,
+    tx: Option<mpsc::UnboundedSender<StreamingRawPayloadChunk>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
     observed_size_bytes: i64,
     local_truncated_reason: Option<String>,
     local_truncated: bool,
     memory_overflow_max_bytes: Option<usize>,
     memory_overflow_queued_bytes: usize,
-    memory_overflow_reserved_bytes: usize,
     spool: Option<RawOverflowSpool>,
 }
 
@@ -5018,7 +5060,6 @@ impl AsyncStreamingRawPayloadWriter {
                 local_truncated: false,
                 memory_overflow_max_bytes: None,
                 memory_overflow_queued_bytes: 0,
-                memory_overflow_reserved_bytes: 0,
                 spool: None,
             };
         }
@@ -5062,12 +5103,11 @@ impl AsyncStreamingRawPayloadWriter {
                         local_truncated: false,
                         memory_overflow_max_bytes: None,
                         memory_overflow_queued_bytes: 0,
-                        memory_overflow_reserved_bytes: 0,
                         spool: Some(spool),
                     }
                 }
                 Err(err) => {
-                    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+                    let (tx, mut rx) = mpsc::unbounded_channel::<StreamingRawPayloadChunk>();
                     let (meta_tx, meta_rx) = oneshot::channel();
                     let config = state.config.clone();
                     let invoke_id = invoke_id.to_string();
@@ -5085,7 +5125,7 @@ impl AsyncStreamingRawPayloadWriter {
                             .acquire_owned()
                             .await
                             .expect("raw writer semaphore is live");
-                        let meta = write_streaming_raw_payload_to_file(
+                        let meta = write_reserved_streaming_raw_payload_to_file(
                             path,
                             config.proxy_raw_max_bytes,
                             config.proxy_raw_immediate_compression_threshold(),
@@ -5110,14 +5150,13 @@ impl AsyncStreamingRawPayloadWriter {
                                 .min(RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES),
                         ),
                         memory_overflow_queued_bytes: 0,
-                        memory_overflow_reserved_bytes: 0,
                         spool: None,
                     }
                 }
             };
         }
         let permit = permit.expect("checked above");
-        let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<StreamingRawPayloadChunk>();
         let (meta_tx, meta_rx) = oneshot::channel();
         debug!(
             capture_path = "direct_writer",
@@ -5128,7 +5167,7 @@ impl AsyncStreamingRawPayloadWriter {
         );
         tokio::spawn(async move {
             let _permit = permit;
-            let meta = write_streaming_raw_payload_to_file(
+            let meta = write_reserved_streaming_raw_payload_to_file(
                 path,
                 max_bytes,
                 immediate_gzip_bytes,
@@ -5147,7 +5186,6 @@ impl AsyncStreamingRawPayloadWriter {
             local_truncated: false,
             memory_overflow_max_bytes: None,
             memory_overflow_queued_bytes: 0,
-            memory_overflow_reserved_bytes: 0,
             spool: None,
         }
     }
@@ -5174,43 +5212,43 @@ impl AsyncStreamingRawPayloadWriter {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        let queued_bytes = if let Some(limit) = self.memory_overflow_max_bytes {
-            let remaining = limit.saturating_sub(self.memory_overflow_queued_bytes);
-            if remaining == 0 {
-                self.local_truncated = true;
-                self.local_truncated_reason
-                    .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-                return;
-            }
-            let queued = remaining.min(bytes.len());
-            if !try_reserve_raw_overflow_memory(queued) {
-                self.local_truncated = true;
-                self.local_truncated_reason
-                    .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-                return;
-            }
-            self.memory_overflow_queued_bytes =
-                self.memory_overflow_queued_bytes.saturating_add(queued);
-            self.memory_overflow_reserved_bytes =
-                self.memory_overflow_reserved_bytes.saturating_add(queued);
-            if queued < bytes.len() {
-                self.local_truncated = true;
-                self.local_truncated_reason
-                    .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-            }
-            &bytes[..queued]
-        } else {
-            bytes
+        let (queued_bytes, overflow_reservation_bytes) =
+            if let Some(limit) = self.memory_overflow_max_bytes {
+                let remaining = limit.saturating_sub(self.memory_overflow_queued_bytes);
+                if remaining == 0 {
+                    self.local_truncated = true;
+                    self.local_truncated_reason
+                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
+                    return;
+                }
+                let queued = remaining.min(bytes.len());
+                if !try_reserve_raw_overflow_memory(queued) {
+                    self.local_truncated = true;
+                    self.local_truncated_reason
+                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
+                    return;
+                }
+                self.memory_overflow_queued_bytes =
+                    self.memory_overflow_queued_bytes.saturating_add(queued);
+                if queued < bytes.len() {
+                    self.local_truncated = true;
+                    self.local_truncated_reason
+                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
+                }
+                (&bytes[..queued], Some(queued))
+            } else {
+                (bytes, None)
+            };
+        let chunk = match overflow_reservation_bytes {
+            Some(reservation_bytes) => StreamingRawPayloadChunk::reserved(
+                Bytes::copy_from_slice(queued_bytes),
+                reservation_bytes,
+            ),
+            None => StreamingRawPayloadChunk::unreserved(Bytes::copy_from_slice(queued_bytes)),
         };
-        match tx.send(Bytes::copy_from_slice(queued_bytes)) {
+        match tx.send(chunk) {
             Ok(()) => {}
             Err(_) => {
-                if self.memory_overflow_max_bytes.is_some() {
-                    self.memory_overflow_reserved_bytes = self
-                        .memory_overflow_reserved_bytes
-                        .saturating_sub(queued_bytes.len());
-                    release_raw_overflow_memory(queued_bytes.len());
-                }
                 self.mark_writer_closed("async raw writer channel closed".to_string());
             }
         }
@@ -5241,16 +5279,7 @@ impl AsyncStreamingRawPayloadWriter {
                 meta.truncated_reason = self.local_truncated_reason.clone();
             }
         }
-        release_raw_overflow_memory(self.memory_overflow_reserved_bytes);
-        self.memory_overflow_reserved_bytes = 0;
         meta
-    }
-}
-
-impl Drop for AsyncStreamingRawPayloadWriter {
-    fn drop(&mut self) {
-        release_raw_overflow_memory(self.memory_overflow_reserved_bytes);
-        self.memory_overflow_reserved_bytes = 0;
     }
 }
 
@@ -5267,6 +5296,23 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
         immediate_gzip_bytes,
         codec,
         StreamingRawPayloadReceiver::Unbounded(rx),
+    )
+    .await
+}
+
+async fn write_reserved_streaming_raw_payload_to_file(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    immediate_gzip_bytes: Option<usize>,
+    codec: RawCompressionCodec,
+    rx: &mut mpsc::UnboundedReceiver<StreamingRawPayloadChunk>,
+) -> RawPayloadMeta {
+    write_streaming_raw_payload_to_file_from_receiver(
+        path,
+        max_bytes,
+        immediate_gzip_bytes,
+        codec,
+        StreamingRawPayloadReceiver::ReservedUnbounded(rx),
     )
     .await
 }
@@ -5291,13 +5337,21 @@ async fn write_bounded_streaming_raw_payload_to_file(
 enum StreamingRawPayloadReceiver<'a> {
     Bounded(&'a mut mpsc::Receiver<Bytes>),
     Unbounded(&'a mut mpsc::UnboundedReceiver<Bytes>),
+    ReservedUnbounded(&'a mut mpsc::UnboundedReceiver<StreamingRawPayloadChunk>),
 }
 
 impl StreamingRawPayloadReceiver<'_> {
-    async fn recv(&mut self) -> Option<Bytes> {
+    async fn recv(&mut self) -> Option<StreamingRawPayloadChunk> {
         match self {
-            Self::Bounded(receiver) => receiver.recv().await,
-            Self::Unbounded(receiver) => receiver.recv().await,
+            Self::Bounded(receiver) => receiver
+                .recv()
+                .await
+                .map(StreamingRawPayloadChunk::unreserved),
+            Self::Unbounded(receiver) => receiver
+                .recv()
+                .await
+                .map(StreamingRawPayloadChunk::unreserved),
+            Self::ReservedUnbounded(receiver) => receiver.recv().await,
         }
     }
 }
@@ -5634,4 +5688,39 @@ pub(crate) fn merge_response_capture_reason(
         reason
     };
     response_info.usage_missing_reason = Some(combined_reason);
+}
+
+#[cfg(test)]
+mod raw_overflow_memory_tests {
+    use super::*;
+
+    #[test]
+    fn queued_overflow_memory_remains_reserved_after_capture_sender_drops() {
+        let before = RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut writer = AsyncStreamingRawPayloadWriter {
+            tx: Some(tx),
+            meta_rx: None,
+            observed_size_bytes: 0,
+            local_truncated_reason: None,
+            local_truncated: false,
+            memory_overflow_max_bytes: Some(16),
+            memory_overflow_queued_bytes: 0,
+            spool: None,
+        };
+
+        writer.append(b"queued");
+        drop(writer);
+        assert_eq!(
+            RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
+            before + 6
+        );
+
+        let chunk = rx.try_recv().expect("queued capture chunk");
+        drop(chunk);
+        assert_eq!(
+            RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
+            before
+        );
+    }
 }
