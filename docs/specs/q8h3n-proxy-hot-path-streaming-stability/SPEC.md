@@ -51,7 +51,7 @@
 
 - `/v1/*` 不允许再存在任何整机级 whole-proxy admission gate；观测可以保留，准入拒绝不允许保留。
 - response raw 必须“先转发 chunk，再异步落盘”；request raw 必须“先发上游/继续流程，再异步收尾写盘”。
-- raw 异步旁路必须有明确截断原因，至少覆盖 `max_bytes_exceeded`、`write_failed:*`、`async_backpressure_dropped`。
+- raw 异步旁路必须有明确截断原因，至少覆盖 `max_bytes_exceeded`、`write_failed:*`、`memory_overflow_queue_full`；容量耗尽不得伪装成普通异步背压丢弃。
 - 大 body sticky 探测只允许读取固定前缀窗口；超过窗口仍未识别时，直接回落到“无 body sticky 优化”的 replay 路径。
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `proxy capture follow-up` 必须先看 `receiver_count()`，无 SSE 订阅者且非 shutdown flush 时直接跳过，不消耗 follow-up seq，也不触发 summary/quota 查询或 rollup refresh。

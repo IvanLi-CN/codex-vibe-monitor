@@ -317,6 +317,51 @@ async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid
 }
 
 #[tokio::test]
+async fn raw_overflow_spool_rotates_segments_and_recovers_the_capture_in_order() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-spool-segments",
+        "response",
+        true,
+        None,
+    );
+    let first_segment = vec![b'a'; RAW_OVERFLOW_SPOOL_SEGMENT_BYTES as usize];
+    writer.append(&first_segment);
+    writer.append(b"tail");
+    drop(writer);
+
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    let segment_count = fs::read_dir(&spool_dir)
+        .expect("read spool directory")
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("frames"))
+        .count();
+    assert_eq!(segment_count, 2, "overflow capture should rotate at 16 MiB");
+
+    drop(permits);
+    recover_raw_overflow_spools(&state.config).await;
+
+    let recovered = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("invoke-spool-segments-response.bin.zst");
+    let payload = read_proxy_raw_bytes(recovered.to_string_lossy().as_ref(), None)
+        .expect("recover segmented raw payload");
+    assert_eq!(payload.len(), first_segment.len() + 4);
+    assert_eq!(&payload[..4], b"aaaa");
+    assert_eq!(&payload[payload.len() - 4..], b"tail");
+    let _ = fs::remove_file(recovered);
+}
+
+#[tokio::test]
 async fn streaming_raw_capture_preserves_precompressed_wire_bytes_without_recompression() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

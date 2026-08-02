@@ -268,7 +268,7 @@ pub(crate) fn approx_histogram_percentile_ms(counts: &[i64], percentile: f64) ->
     APPROX_HISTOGRAM_BUCKETS_MS.last().copied()
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct BucketAggregate {
     pub(crate) total_count: i64,
     pub(crate) success_count: i64,

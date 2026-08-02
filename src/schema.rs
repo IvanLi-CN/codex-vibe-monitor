@@ -2364,6 +2364,53 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2 (
+            minute_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL CHECK(source_scope IN ('all', 'proxy_only')),
+            upstream_account_key INTEGER NOT NULL,
+            aggregate_json TEXT NOT NULL,
+            total_latency_samples_json TEXT NOT NULL,
+            first_byte_samples_json TEXT NOT NULL,
+            first_response_byte_total_samples_json TEXT NOT NULL,
+            first_token_samples_json TEXT NOT NULL,
+            max_row_id INTEGER NOT NULL DEFAULT 0,
+            coverage_state TEXT NOT NULL DEFAULT 'warming',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (minute_start_epoch, source_scope, upstream_account_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_timeseries_minute_projection_v2_scope_range
+        ON timeseries_minute_projection_v2 (source_scope, upstream_account_key, minute_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 scope range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_state (
+            consumer TEXT PRIMARY KEY,
+            cursor_row_id INTEGER NOT NULL DEFAULT 0,
+            last_flush_at TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 state table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS parallel_work_rollup_maintenance_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             next_hour_epoch INTEGER NOT NULL

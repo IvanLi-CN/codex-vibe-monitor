@@ -31,7 +31,7 @@
 - 已实现：proxy terminal follow-up 不再构建或广播五个 legacy Summary 窗口；只在存在真实 `quota.current` owner subscriber 时保留 quota follow-up，避免无消费者的请求尾部重算 SQLite。
 - 已实现：summary `non_success_tokens` 的 live 部分复用账号活动 hourly v2 coverage，完整小时读 rollup、边界与 coverage hole 走 scalar exact tail；健康路径不再调用整窗账号活动 raw aggregate。
 - 已实现：Dashboard open-range terminal totals 在 persistence enqueue 成功后同步 fan-out 到共享内存 baseline；固定 5 秒 deadline 只发布内存 snapshot。compact delta、persistence ACK/cursor 回收、`64 MiB / 10,000` 双硬限、rolling expiry delta 与 60 秒 cursor-consistent reconcile 已形成完整生命周期；reconcile 失败时保留 last-good totals 与 live overlay。
-- 已实现：open-window timeseries 为完整分钟保存精确 projection record，并在 covered range 只读取分钟 projection 与 post-cursor tail；缺覆盖时才执行一次精确 warm fallback。投影保留原始延迟 sample，P95 口径不变。
+- 已实现：open-window timeseries 为完整分钟保存 v2 聚合与精确延迟 sample；covered range 只读 minute projection、内存 terminal overlay 与首尾 minute exact tail，不再反序列化整窗 `InvocationAggregateRecord`。terminal P1 ACK 后由独立 60 秒 P2 deadline 合并写入 projection；缺覆盖时才执行一次精确 warm fallback。
 
 ## Migrated consumers
 

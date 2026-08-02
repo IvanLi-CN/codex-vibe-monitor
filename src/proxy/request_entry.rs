@@ -764,8 +764,6 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
-pub(crate) const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
-    "async_backpressure_dropped";
 pub(crate) const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
 
 pub(crate) fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {

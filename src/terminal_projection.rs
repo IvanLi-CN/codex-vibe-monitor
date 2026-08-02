@@ -23,6 +23,8 @@ pub(crate) struct TerminalProjectionHealth {
     pub(crate) pending_event_bytes: usize,
     pub(crate) last_persisted_row_id: i64,
     pub(crate) long_term_cursor_row_id: i64,
+    pub(crate) timeseries_cursor_row_id: i64,
+    pub(crate) timeseries_consumer_active: bool,
     pub(crate) dirty_last_good: bool,
     pub(crate) hard_limit_reason: Option<&'static str>,
     pub(crate) registered_event_count: u64,
@@ -38,6 +40,65 @@ struct TerminalProjectionEvent {
     occurred_at: String,
     estimated_bytes: usize,
     persisted_row_id: Option<i64>,
+    timeseries: Option<TimeseriesTerminalDelta>,
+    timeseries_flushed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TimeseriesTerminalDelta {
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) status: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) is_actionable: Option<bool>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
+}
+
+impl From<&ApiInvocation> for TimeseriesTerminalDelta {
+    fn from(record: &ApiInvocation) -> Self {
+        Self {
+            occurred_at: record.occurred_at.clone(),
+            source: record.source.clone(),
+            upstream_account_id: record.upstream_account_id,
+            status: record.status.clone(),
+            error_message: record.error_message.clone(),
+            failure_kind: record.failure_kind.clone(),
+            failure_class: record.failure_class.clone(),
+            is_actionable: record.is_actionable,
+            total_tokens: record.total_tokens,
+            cache_input_tokens: record.cache_input_tokens,
+            cost: record.cost,
+            t_total_ms: record.t_total_ms,
+            t_req_read_ms: record.t_req_read_ms,
+            t_req_parse_ms: record.t_req_parse_ms,
+            t_upstream_connect_ms: record.t_upstream_connect_ms,
+            t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+            first_token_ms: record.first_token_ms,
+        }
+    }
+}
+
+impl TimeseriesTerminalDelta {
+    fn estimated_bytes(&self) -> usize {
+        self.occurred_at.len()
+            + self.source.len()
+            + self.status.as_deref().map_or(0, str::len)
+            + self.error_message.as_deref().map_or(0, str::len)
+            + self.failure_kind.as_deref().map_or(0, str::len)
+            + self.failure_class.as_deref().map_or(0, str::len)
+            + std::mem::size_of::<Self>()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -46,6 +107,8 @@ struct TerminalProjectionHubState {
     pending_bytes: usize,
     last_persisted_row_id: i64,
     long_term_cursor_row_id: i64,
+    timeseries_cursor_row_id: i64,
+    timeseries_consumer_active: bool,
     dirty_last_good: bool,
     hard_limit_reason: Option<&'static str>,
     registered_event_count: u64,
@@ -73,11 +136,33 @@ impl TerminalProjectionHub {
         record: &ApiInvocation,
         _dashboard_terminal_sequence: Option<u64>,
     ) -> Option<u64> {
-        self.register_pending_parts(&record.invoke_id, &record.occurred_at)
+        let timeseries = TimeseriesTerminalDelta::from(record);
+        let estimated_bytes =
+            record.invoke_id.len() + record.occurred_at.len() + timeseries.estimated_bytes() + 64;
+        self.register_pending_parts_with_delta(
+            &record.invoke_id,
+            &record.occurred_at,
+            estimated_bytes,
+            Some(timeseries),
+        )
     }
 
     fn register_pending_parts(&self, invoke_id: &str, occurred_at: &str) -> Option<u64> {
-        let estimated_bytes = invoke_id.len() + occurred_at.len() + 64;
+        self.register_pending_parts_with_delta(
+            invoke_id,
+            occurred_at,
+            invoke_id.len() + occurred_at.len() + 64,
+            None,
+        )
+    }
+
+    fn register_pending_parts_with_delta(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        estimated_bytes: usize,
+        timeseries: Option<TimeseriesTerminalDelta>,
+    ) -> Option<u64> {
         let mut state = self
             .state
             .lock()
@@ -98,6 +183,7 @@ impl TerminalProjectionHub {
             .next_event_id
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        let timeseries_flushed = timeseries.is_none();
         state.pending_bytes = state.pending_bytes.saturating_add(estimated_bytes);
         state.pending.push_back(TerminalProjectionEvent {
             id,
@@ -105,6 +191,8 @@ impl TerminalProjectionHub {
             occurred_at: occurred_at.to_string(),
             estimated_bytes,
             persisted_row_id: None,
+            timeseries,
+            timeseries_flushed,
         });
         state.registered_event_count = state.registered_event_count.saturating_add(1);
         Some(id)
@@ -164,15 +252,78 @@ impl TerminalProjectionHub {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.long_term_cursor_row_id = state.long_term_cursor_row_id.max(cursor_row_id);
-        // SQLite ACKs can arrive out of ingress order. Remove every event whose
-        // durable row is already behind the long-term cursor instead of allowing
-        // one delayed head event to retain an otherwise acknowledged tail.
-        let mut retained = VecDeque::with_capacity(state.pending.len());
-        while let Some(event) = state.pending.pop_front() {
+        Self::prune_acknowledged_locked(&mut state);
+    }
+
+    pub(crate) fn activate_timeseries_consumer(&self, cursor_row_id: i64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.timeseries_consumer_active = true;
+        state.timeseries_cursor_row_id = state.timeseries_cursor_row_id.max(cursor_row_id);
+        Self::prune_acknowledged_locked(&mut state);
+    }
+
+    pub(crate) fn pending_timeseries_deltas(
+        &self,
+        limit: usize,
+    ) -> Vec<(i64, TimeseriesTerminalDelta)> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut deltas = state
+            .pending
+            .iter()
+            .filter_map(|event| {
+                let row_id = event.persisted_row_id?;
+                (!event.timeseries_flushed)
+                    .then(|| event.timeseries.clone().map(|delta| (row_id, delta)))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        deltas.sort_by_key(|(row_id, _)| *row_id);
+        deltas.truncate(limit);
+        deltas
+    }
+
+    pub(crate) fn mark_timeseries_deltas_flushed(&self, row_ids: &[i64]) {
+        if row_ids.is_empty() {
+            return;
+        }
+        let flushed = row_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for event in &mut state.pending {
             if event
                 .persisted_row_id
-                .is_some_and(|row_id| row_id <= state.long_term_cursor_row_id)
+                .is_some_and(|row_id| flushed.contains(&row_id))
             {
+                event.timeseries_flushed = true;
+            }
+        }
+        if let Some(cursor) = row_ids.iter().copied().max() {
+            state.timeseries_cursor_row_id = state.timeseries_cursor_row_id.max(cursor);
+        }
+        Self::prune_acknowledged_locked(&mut state);
+    }
+
+    fn prune_acknowledged_locked(state: &mut TerminalProjectionHubState) {
+        // SQLite ACKs can arrive out of ingress order. Remove every event whose
+        // durable row is behind every active projection consumer cursor instead
+        // of allowing one delayed head event to retain an otherwise acknowledged tail.
+        let mut retained = VecDeque::with_capacity(state.pending.len());
+        while let Some(event) = state.pending.pop_front() {
+            if event.persisted_row_id.is_some_and(|row_id| {
+                row_id <= state.long_term_cursor_row_id
+                    && (!state.timeseries_consumer_active || event.timeseries_flushed)
+            }) {
                 state.pending_bytes = state.pending_bytes.saturating_sub(event.estimated_bytes);
                 state.pruned_event_count = state.pruned_event_count.saturating_add(1);
             } else {
@@ -210,6 +361,8 @@ impl TerminalProjectionHub {
             pending_event_bytes: state.pending_bytes,
             last_persisted_row_id: state.last_persisted_row_id,
             long_term_cursor_row_id: state.long_term_cursor_row_id,
+            timeseries_cursor_row_id: state.timeseries_cursor_row_id,
+            timeseries_consumer_active: state.timeseries_consumer_active,
             dirty_last_good: state.dirty_last_good,
             hard_limit_reason: state.hard_limit_reason,
             registered_event_count: state.registered_event_count,
@@ -242,6 +395,48 @@ mod tests {
         let health = hub.health();
         assert_eq!(health.pending_event_count, 0);
         assert_eq!(health.pruned_event_count, 2);
+    }
+
+    #[test]
+    fn active_timeseries_consumer_prevents_early_long_term_pruning() {
+        let hub = TerminalProjectionHub::default();
+        let event = hub.register_pending_parts_with_delta(
+            "invoke",
+            "2026-07-30 10:00:00",
+            128,
+            Some(TimeseriesTerminalDelta {
+                occurred_at: "2026-07-30 10:00:00".to_string(),
+                source: "proxy".to_string(),
+                upstream_account_id: None,
+                status: Some("success".to_string()),
+                error_message: None,
+                failure_kind: None,
+                failure_class: None,
+                is_actionable: None,
+                total_tokens: None,
+                cache_input_tokens: None,
+                cost: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                first_token_ms: None,
+            }),
+        );
+
+        hub.activate_timeseries_consumer(0);
+        hub.acknowledge_persisted(event, "invoke", "2026-07-30 10:00:00", 17);
+        hub.advance_long_term_cursor(17);
+        assert_eq!(hub.health().pending_event_count, 1);
+        assert_eq!(hub.pending_timeseries_deltas(10).len(), 1);
+
+        hub.mark_timeseries_deltas_flushed(&[17]);
+        let health = hub.health();
+        assert_eq!(health.pending_event_count, 0);
+        assert_eq!(health.timeseries_cursor_row_id, 17);
+        assert!(health.timeseries_consumer_active);
+        assert!(hub.pending_timeseries_deltas(10).is_empty());
     }
 
     #[test]
