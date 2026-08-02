@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.54.4",
+  "base_stable_version": "2.54.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-02T19:23:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.54.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "966388506ae4e47bd5f5a3be5c4f5f270e5a9503",
+  "pr_number": 724,
+  "pr_title": "fix(sticky): fence concurrent route mutations",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.54.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.54.4",
+  "target_sha": "4670b42c9e8d5edce078b38407c63abbc1881cb9",
+  "type_label": "type:patch"
+}
