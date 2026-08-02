@@ -374,7 +374,6 @@ Visual evidence is captured from stable Storybook scenarios for:
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 - upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
 
-PR: none
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
 PR: include
