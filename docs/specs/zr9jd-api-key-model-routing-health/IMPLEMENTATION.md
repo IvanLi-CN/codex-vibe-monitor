@@ -11,7 +11,7 @@
 ## Coverage / rollout summary
 
 - `pool_upstream_account_model_routes` stores exact `account_id + model` state with seven-day retention, failure windows, cooldown ETA, last success/failure and last-seen timestamps.
-- API Key model-specific errors are isolated in `failure_recording.rs`; OAuth, authentication, transport and generic upstream failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
+- API Key model-specific errors and exact-model 5xx, 429, logical overload, transport, handshake, and stream failures are isolated in `failure_recording.rs` and use the same model state machine without account cooldown or sticky deletion. Missing-model, 413, other non-hard, and background-sync failures remain diagnostic-only. OAuth and explicit authentication/payment hard failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
 - `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA. Event projections recover a missing request model from the linked upstream attempt or invocation for both account detail and global event-list reads.
 - The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent event impact scope and a single-model reset action. Recent events omit request-model labels: route-transition events affect only that model, while generic account failures affect the entire account and omit empty route transitions. Direct health-tab routes wait for the selected account before hydrating recent actions.
 - Storybook covers available, degraded, cooling, empty, read-only, error, reset interaction and impact-scope states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides component evidence and mock-only `ui_demo` provides page-level desktop/mobile evidence.
@@ -29,9 +29,9 @@
 - Targeted model routing state/reset and concurrent failure tests: passed.
 - `cargo fmt --check`: passed.
 - `cargo check`: passed.
-- `RUST_MIN_STACK=33554432 cargo test`: 1683 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
-- `cd web && bun run test --run`: 131 files passed, 1285 passed, 6 skipped.
-- `cd web && bun run test-storybook --run`: 8 files passed, 17 passed.
+- `RUST_MIN_STACK=33554432 cargo test`: 1888 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
+- `cd web && bun run test --run`: 137 files passed, 1317 passed, 6 skipped.
+- `cd web && bun run test-storybook --run`: 13 files passed, 23 passed.
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
 - Mobile hardening checks: reset actions render at 44px touch height below `lg`, desktop remains 32px, and the panel exposes `dl/dt/dd` field semantics without changing grid tracks.
@@ -39,16 +39,17 @@
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
 - Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
 - Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent, informational events do not claim a failure impact, and recovery transitions name their model without claiming an active impact.
-- The mock-only demo marks model cooldown fixtures as failed model events so visual evidence exercises the same impact contract as production data.
+- The mock-only demo includes an API Key HTTP 502 model degradation event for `gpt-5.6-terra`; desktop and mobile evidence show model scope without claiming the account or all models are affected.
 - Invocation fallback correlation tolerates different production timestamp formats and reused invocation IDs by selecting the nearest matching invocation instead of requiring exact timestamp equality.
-- Mock-only `ui_demo` desktop 1440x1000 capture and mobile 390x844 browser viewport (375x812 page capture): account/model impact scopes and route transition are visible without request-model labels or horizontal overflow.
+- Mock-only `ui_demo` desktop 1440x1100 and mobile 393x852 captures: the HTTP 502 model impact and route transition are visible without request-model labels, account-wide impact, or horizontal overflow.
+- API Key HTTP, transport/stream, missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.
 
 ## Delivery Status
 
-- The implementation and its quality gates are complete. Delivery references are recorded in the specification when applicable.
+- The explicit-model implementation and API Key temporary-failure scope update are complete. Final quality-gate results and delivery references are refreshed at merge-ready handoff.
 
 ## Related Changes
 

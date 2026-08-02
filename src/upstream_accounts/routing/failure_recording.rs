@@ -606,6 +606,21 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         .await?;
     }
     if route_http_failure_is_retryable_responses_overload(status, error_message) {
+        if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+            record_api_key_temporary_model_failure_or_diagnostic(
+                pool,
+                account_id,
+                sticky_key,
+                error_message,
+                PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+                status,
+                invoke_id,
+                attempt_id,
+            )
+            .await?;
+            return Ok(());
+        }
         return record_pool_route_retryable_overload_failure_inner(
             pool,
             account_id,
@@ -628,30 +643,67 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     } else {
         false
     };
+    let classification = classify_pool_account_http_failure(account_kind, status, error_message);
+    let api_key_temporary_http_failure = account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && classification.disposition != UpstreamAccountFailureDisposition::HardUnavailable
+        && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
     if account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && let Some(model) = extract_unsupported_model_from_route_error(status, error_message)
     {
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
     }
-    if let Some(attempt_id) = attempt_id {
+    if !api_key_temporary_http_failure && let Some(attempt_id) = attempt_id {
         record_model_route_failure_from_attempt(
             pool,
             account_id,
             attempt_id,
             status,
             Some(error_message),
-            Some(
-                classify_pool_account_http_failure(account_kind, status, error_message)
-                    .failure_kind,
-            ),
+            Some(classification.failure_kind),
         )
         .await?;
     }
-    if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX && explicit_model_failure {
+    if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && explicit_model_failure
+        && !api_key_temporary_http_failure
+    {
         return Ok(());
     }
 
-    let classification = classify_pool_account_http_failure(account_kind, status, error_message);
+    if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && classification.disposition != UpstreamAccountFailureDisposition::HardUnavailable
+    {
+        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            record_api_key_temporary_model_failure_or_diagnostic(
+                pool,
+                account_id,
+                sticky_key,
+                error_message,
+                classification.failure_kind,
+                classification.reason_code,
+                status,
+                invoke_id,
+                attempt_id,
+            )
+            .await?;
+        } else {
+            let now_iso = format_utc_iso(Utc::now());
+            record_suppressed_pool_route_status_change(
+                pool,
+                account_id,
+                error_message,
+                sticky_key,
+                classification.failure_kind,
+                classification.reason_code,
+                status,
+                invoke_id,
+                &now_iso,
+                attempt_id,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
             let now_iso = format_utc_iso(Utc::now());
@@ -794,6 +846,24 @@ async fn record_pool_route_retryable_overload_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    let account = load_upstream_account_row(pool, account_id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        record_api_key_temporary_model_failure_or_diagnostic(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+            StatusCode::OK,
+            invoke_id,
+            attempt_id,
+        )
+        .await?;
+        return Ok(());
+    }
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
@@ -837,6 +907,24 @@ async fn record_pool_route_transport_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    let account = load_upstream_account_row(pool, account_id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        record_api_key_temporary_model_failure_or_diagnostic(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            StatusCode::BAD_GATEWAY,
+            invoke_id,
+            attempt_id,
+        )
+        .await?;
+        return Ok(());
+    }
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
@@ -862,6 +950,45 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_pool_route_transport_failure_for_attempt_with_kind(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        invoke_id,
+        attempt_id,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    let account = load_upstream_account_row(pool, account_id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        record_api_key_temporary_model_failure_or_diagnostic(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            failure_kind,
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            StatusCode::BAD_GATEWAY,
+            invoke_id,
+            attempt_id,
+        )
+        .await?;
+        return Ok(());
+    }
     record_pool_route_transport_failure_inner(
         pool,
         account_id,
@@ -977,6 +1104,62 @@ pub(crate) async fn record_suppressed_pool_route_status_change(
         },
         attempt_id,
         false,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporary model health records retain the complete upstream evidence contract."
+)]
+pub(crate) async fn record_api_key_temporary_model_failure_or_diagnostic(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    reason_code: &str,
+    http_status: StatusCode,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    let status_change_enabled =
+        account_status_change_reason_is_enabled(pool, account_id, reason_code).await?;
+    let model_failure_recorded = if status_change_enabled {
+        match attempt_id {
+            Some(attempt_id) => {
+                record_temporary_model_route_failure_from_attempt(
+                    pool,
+                    account_id,
+                    attempt_id,
+                    http_status,
+                    Some(error_message),
+                    Some(failure_kind),
+                    reason_code,
+                )
+                .await?
+            }
+            None => false,
+        }
+    } else {
+        false
+    };
+    if model_failure_recorded {
+        return Ok(());
+    }
+
+    let now_iso = format_utc_iso(Utc::now());
+    record_suppressed_pool_route_status_change(
+        pool,
+        account_id,
+        error_message,
+        sticky_key,
+        failure_kind,
+        reason_code,
+        http_status,
+        invoke_id,
+        &now_iso,
+        attempt_id,
     )
     .await
 }

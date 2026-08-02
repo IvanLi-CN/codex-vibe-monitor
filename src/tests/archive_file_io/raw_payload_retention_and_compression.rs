@@ -4495,17 +4495,9 @@ async fn recover_guard_dropped_pool_early_phase_orphan_clears_pool_routing_reser
     .await
     .expect("load account route state after guard recovery");
 
-    assert_eq!(
-        route_state.0.as_deref(),
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
-    );
-    assert_eq!(route_state.2, 1);
-    assert!(
-        route_state
-            .1
-            .as_deref()
-            .is_some_and(|value| value.contains("drop_guard"))
-    );
+    assert!(route_state.0.is_none());
+    assert_eq!(route_state.2, 0);
+    assert!(route_state.1.is_none());
 }
 
 #[tokio::test]
@@ -6243,17 +6235,9 @@ async fn recover_stale_pool_early_phase_orphans_runtime_clears_pool_routing_rese
     .await
     .expect("load account route state after stale sweeper");
 
-    assert_eq!(
-        route_state.0.as_deref(),
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
-    );
-    assert_eq!(route_state.2, 1);
-    assert!(
-        route_state
-            .1
-            .as_deref()
-            .is_some_and(|value| value.contains("runtime_sweeper"))
-    );
+    assert!(route_state.0.is_none());
+    assert_eq!(route_state.2, 0);
+    assert!(route_state.1.is_none());
 }
 
 #[tokio::test]
@@ -6394,17 +6378,9 @@ async fn recover_stale_pool_early_phase_orphans_runtime_records_route_failures_f
     .expect("load second account route state after stale recovery");
 
     for route_state in [&first_route_state, &second_route_state] {
-        assert_eq!(
-            route_state.0.as_deref(),
-            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
-        );
-        assert_eq!(route_state.2, 1);
-        assert!(
-            route_state
-                .1
-                .as_deref()
-                .is_some_and(|value| value.contains("runtime_sweeper"))
-        );
+        assert!(route_state.0.is_none());
+        assert_eq!(route_state.2, 0);
+        assert!(route_state.1.is_none());
     }
 }
 

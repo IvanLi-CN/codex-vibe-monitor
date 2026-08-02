@@ -1515,7 +1515,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
 }
 
 #[tokio::test]
-async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure() {
+async fn capture_target_pool_route_keeps_unclassified_response_failed_stream_diagnostic_only() {
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         status: String,
@@ -1581,13 +1581,35 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
     .await
     .expect("load route state");
     assert_eq!(route_state.status, "active");
-    assert_eq!(route_state.consecutive_route_failures, 1);
-    assert!(
-        route_state
-            .last_error
-            .as_deref()
-            .is_some_and(|value| value.contains("upstream_response_failed"))
+    assert_eq!(route_state.consecutive_route_failures, 0);
+    assert!(route_state.last_error.is_none());
+    let model_route = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
+        "SELECT state, priority, consecutive_failures, last_failure_kind FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-5.4'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load logical failure model route");
+    let latest_event = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT action, reason_code, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load logical failure event");
+    assert_eq!(model_route.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(model_route.1, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(model_route.2, 0);
+    assert!(model_route.3.is_none());
+    assert_eq!(
+        latest_event.0,
+        UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED
     );
+    assert_eq!(
+        latest_event.1.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
+    );
+    assert!(latest_event.2.is_none());
     assert!(
         load_test_sticky_route_account_id(&state.pool, "sticky-cap-logical")
             .await
@@ -2073,19 +2095,24 @@ async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retr
     .await
     .expect("load late overloaded route state");
     assert_eq!(route_state.status, "active");
-    assert_eq!(
-        route_state.last_action.as_deref(),
-        Some("route_retryable_failure")
-    );
-    assert_eq!(
-        route_state.last_action_reason_code.as_deref(),
-        Some("upstream_server_overloaded")
-    );
-    assert_eq!(route_state.last_action_http_status, Some(200));
+    assert_eq!(route_state.last_action.as_deref(), Some("route_recovered"));
+    assert!(route_state.last_action_reason_code.is_none());
+    assert!(route_state.last_action_http_status.is_none());
     assert!(route_state.cooldown_until.is_none());
+    assert!(route_state.last_route_failure_kind.is_none());
+    let model_route = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
+        "SELECT state, priority, consecutive_failures, last_failure_kind FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-5.4'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load overloaded model route");
+    assert_eq!(model_route.0, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(model_route.1, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(model_route.2, 1);
     assert_eq!(
-        route_state.last_route_failure_kind.as_deref(),
-        Some("upstream_response_failed")
+        model_route.3.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
     );
     assert_eq!(
         load_test_sticky_route_account_id(&state.pool, "sticky-cap-overloaded-late").await,

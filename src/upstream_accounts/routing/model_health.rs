@@ -536,6 +536,9 @@ async fn persist_model_event(
     failure_count: i64,
     cooldown_until: Option<&str>,
     reason_message: Option<&str>,
+    reason_code: Option<&str>,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
 ) -> Result<()> {
     let now = now_string();
     let sanitized_reason_message = reason_message.and_then(sanitize_account_action_message);
@@ -543,11 +546,11 @@ async fn persist_model_event(
         r#"
         INSERT INTO pool_upstream_account_events (
             account_id, occurred_at, action, source, result, result_description,
-            reason_code, reason_message, failure_kind, attempt_id, model,
+            reason_code, reason_message, http_status, failure_kind, attempt_id, model,
             model_route_state_before, model_route_state_after,
             model_route_priority_before, model_route_priority_after,
             model_route_failure_count, model_route_cooldown_until, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?2)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?2)
         "#,
     )
     .bind(account_id)
@@ -556,13 +559,10 @@ async fn persist_model_event(
     .bind(source)
     .bind(result)
     .bind(sanitized_reason_message.as_deref())
-    .bind("model_route")
+    .bind(reason_code.unwrap_or("model_route"))
     .bind(sanitized_reason_message.as_deref())
-    .bind(if result == "failed" {
-        Some("model")
-    } else {
-        None::<&str>
-    })
+    .bind(http_status.map(|status| i64::from(status.as_u16())))
+    .bind(failure_kind)
     .bind(attempt_id)
     .bind(model)
     .bind(state_before)
@@ -593,6 +593,12 @@ pub(crate) async fn record_model_route_success_from_attempt(
     };
     let now = now_string();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    // Publish the successful terminal fence atomically with model recovery so an
+    // older concurrent failure cannot slip through before the outer finalizer.
+    sqlx::query("UPDATE pool_upstream_request_attempts SET status = 'success' WHERE id = ?1")
+        .bind(attempt_id)
+        .execute(&mut *tx)
+        .await?;
     let row = sqlx::query_as::<_, ModelRouteRow>(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
@@ -667,6 +673,9 @@ pub(crate) async fn record_model_route_success_from_attempt(
             0,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await?;
     }
@@ -689,6 +698,29 @@ pub(crate) async fn record_model_route_failure_from_attempt(
         error_message,
         failure_kind,
         None,
+    )
+    .await
+}
+
+pub(crate) async fn record_temporary_model_route_failure_from_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: i64,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    reason_code: &str,
+) -> Result<bool> {
+    record_model_route_failure_from_attempt_inner(
+        pool,
+        account_id,
+        attempt_id,
+        status,
+        error_message,
+        failure_kind,
+        None,
+        false,
+        Some(reason_code),
     )
     .await
 }
@@ -721,17 +753,49 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
     failure_kind: Option<&str>,
     request_started_at: Option<&str>,
 ) -> Result<()> {
+    record_model_route_failure_from_attempt_inner(
+        pool,
+        account_id,
+        attempt_id,
+        status,
+        error_message,
+        failure_kind,
+        request_started_at,
+        true,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Model failure evidence and concurrency fencing are one state transition."
+)]
+async fn record_model_route_failure_from_attempt_inner(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: i64,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    request_started_at: Option<&str>,
+    require_explicit_model_failure: bool,
+    reason_code: Option<&str>,
+) -> Result<bool> {
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
-        return Ok(());
+        return Ok(false);
     }
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(model) = attempt_context.request_model else {
-        return Ok(());
+        return Ok(false);
     };
-    if !is_explicit_model_failure_for_model(status, error_message, Some(&model)) {
-        return Ok(());
+    if require_explicit_model_failure
+        && !is_explicit_model_failure_for_model(status, error_message, Some(&model))
+    {
+        return Ok(false);
     }
     let attempt_started_at = request_started_at
         .and_then(parse_to_utc_datetime)
@@ -779,8 +843,28 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
             .and_then(|row| row.last_success_at.as_deref())
             .and_then(parse_to_utc_datetime);
         if latest_success.is_some_and(|observed_at| attempt_started_at <= observed_at) {
-            tx.commit().await?;
-            return Ok(());
+            let latest_successful_attempt = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT id, started_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 AND request_model = ?2 COLLATE NOCASE AND status = 'success' ORDER BY id DESC LIMIT 1",
+            )
+            .bind(account_id)
+            .bind(&model)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let newer_success_exists = latest_successful_attempt
+                .and_then(|(id, started_at)| {
+                    started_at
+                        .as_deref()
+                        .and_then(parse_to_utc_datetime)
+                        .map(|started_at| (id, started_at))
+                })
+                .is_some_and(|(id, started_at)| {
+                    started_at > attempt_started_at
+                        || (started_at == attempt_started_at && id > attempt_id)
+                });
+            if newer_success_exists {
+                tx.commit().await?;
+                return Ok(false);
+            }
         }
     }
     if attempt_started_at
@@ -793,7 +877,7 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
         .is_some_and(|(request, reset)| request <= reset)
     {
         tx.commit().await?;
-        return Ok(());
+        return Ok(false);
     }
     let within_window = existing
         .as_ref()
@@ -876,10 +960,13 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
             failures,
             cooldown_until.as_deref(),
             sanitized_error_message.as_deref(),
+            reason_code,
+            Some(status),
+            failure_kind,
         )
         .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn reset_model_route(
@@ -928,6 +1015,9 @@ pub(crate) async fn reset_model_route(
         0,
         None,
         Some("model route manually reset"),
+        None,
+        None,
+        None,
     )
     .await?;
     let updated = sqlx::query_as::<_, ModelRouteRow>(

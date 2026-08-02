@@ -2231,14 +2231,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) = record_pool_route_transport_failure(
-                                &state.pool,
-                                account.account_id,
-                                sticky_key,
-                                &message,
-                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                            )
-                            .await
+                            if let Err(route_err) =
+                                record_pool_route_transport_failure_for_attempt_with_kind(
+                                    &state.pool,
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    failure_kind,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                )
+                                .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
                             }
@@ -2474,14 +2479,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) = record_pool_route_transport_failure(
-                                &state.pool,
-                                account.account_id,
-                                sticky_key,
-                                &message,
-                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                            )
-                            .await
+                            if let Err(route_err) =
+                                record_pool_route_transport_failure_for_attempt_with_kind(
+                                    &state.pool,
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                )
+                                .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
                             }
@@ -3680,17 +3690,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             sleep(retry_delay).await;
                             continue;
                         }
-                        if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
-                            &state.pool,
-                            account.account_id,
-                            sticky_key,
-                            &message,
-                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                            pending_attempt_record
-                                .as_ref()
-                                .and_then(|pending| pending.attempt_id),
-                        )
-                        .await
+                        if let Err(route_err) =
+                            record_pool_route_transport_failure_for_attempt_with_kind(
+                                &state.pool,
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                            )
+                            .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
                         }
@@ -3975,17 +3987,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to broadcast first-event gate failure snapshot"
                             );
                         }
-                        if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
-                            &state.pool,
-                            account.account_id,
-                            sticky_key,
-                            &message,
-                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                            pending_attempt_record
-                                .as_ref()
-                                .and_then(|pending| pending.attempt_id),
-                        )
-                        .await
+                        if let Err(route_err) =
+                            record_pool_route_transport_failure_for_attempt_with_kind(
+                                &state.pool,
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                            )
+                            .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
                         }
