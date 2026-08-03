@@ -1210,13 +1210,19 @@ mod in_flight_query_tests {
             .await
             .expect("in-memory sqlite");
         sqlx::query(
-            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, status TEXT, total_tokens INTEGER, cache_input_tokens INTEGER, cost REAL, error_message TEXT, payload TEXT, failure_kind TEXT, source TEXT, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, t_upstream_stream_ms REAL, t_resp_parse_ms REAL, t_persist_ms REAL)",
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, status TEXT, total_tokens INTEGER, cache_input_tokens INTEGER, cost REAL, error_message TEXT, payload TEXT, failure_kind TEXT, failure_class TEXT, source TEXT, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, t_upstream_stream_ms REAL, t_resp_parse_ms REAL, t_persist_ms REAL)",
         )
         .execute(&pool)
         .await
         .expect("create invocations");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, source) VALUES (1, 'running', '2026-08-03 00:00:10', 'running', '{\"upstreamAccountId\":7}', 'proxy'), (2, 'terminal', '2026-08-03 00:00:20', 'success', '{\"upstreamAccountId\":7}', 'proxy')",
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, phase TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create pool attempts");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, source) VALUES (1, 'running', '2026-08-03 08:00:10', 'running', '{\"upstreamAccountId\":7}', 'proxy'), (2, 'terminal', '2026-08-03 08:00:20', 'success', '{\"upstreamAccountId\":7}', 'proxy')",
         )
         .execute(&pool)
         .await

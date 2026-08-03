@@ -488,7 +488,7 @@ async fn non_proxy_terminal_transition_invalidates_all_timeseries_projection_cov
     .await
     .expect("seed all projection coverage");
     sqlx::query(
-        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload) VALUES ('non-proxy-running', ?1, 'xy', 'running', '{}')",
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response) VALUES ('non-proxy-running', ?1, 'xy', 'running', '{}', '')",
     )
     .bind(format_utc_iso(Utc.timestamp_opt(minute, 0).single().expect("valid minute")))
     .execute(&state.pool)
