@@ -2941,7 +2941,7 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
         .fetch_one(&state.pool)
         .await
         .expect("load websocket terminal attempt");
-        if attempt_row.0 != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING {
+        if attempt_row.0 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
