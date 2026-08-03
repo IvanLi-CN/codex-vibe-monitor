@@ -1937,12 +1937,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .host_str()
                             .and_then(normalize_upstream_base_url_host_value);
                         Some(
-                            begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+                            begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
                                 &state.pool,
                                 &attempt_trace,
                                 group_name_snapshot.as_deref(),
                                 proxy_binding_key_snapshot.as_deref(),
                                 Some(account.routing_source),
+                                account.routing_selection_audit.as_ref(),
                                 account.account_id,
                                 upstream_route_key.as_str(),
                                 attempt_index,
@@ -2754,12 +2755,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .host_str()
                             .and_then(normalize_upstream_base_url_host_value);
                         Some(
-                            begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+                            begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
                                 &state.pool,
                                 &attempt_trace,
                                 group_name_snapshot.as_deref(),
                                 proxy_binding_key_snapshot.as_deref(),
                                 Some(account.routing_source),
+                                account.routing_selection_audit.as_ref(),
                                 account.account_id,
                                 upstream_route_key.as_str(),
                                 attempt_index,

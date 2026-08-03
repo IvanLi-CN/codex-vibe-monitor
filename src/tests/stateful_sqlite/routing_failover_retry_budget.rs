@@ -143,6 +143,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::StickyReuse,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::PinnedProxyKey(

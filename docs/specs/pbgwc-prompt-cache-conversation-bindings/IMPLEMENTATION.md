@@ -51,6 +51,7 @@
 - Binding changes and sticky-target changes remain separate records; policy-field PATCHes stay collapsed into one `conversationPolicyUpdated` summary event whose categories derive from the actual changed fields.
 - Runtime Sticky writes now use the persisted affinity generation as an optimistic concurrency token. Target creation, replacement, and conditional automatic removal advance it under the SQLite writer lock; automatic removal also requires the original failed account. The first successful concurrent completion wins and later completions are audited without overwriting the target.
 - New automatic routing events persist a structured, safe `routingContext` with reason code, routing source, HTTP status, and public cause/trigger attempt IDs. Existing rows remain unchanged and are identified by the UI as historical events without a recorded reason.
+- Fresh assignment now persists a `routing_selection_audit_json` snapshot on the request attempt before dispatch. The snapshot is copied into the resulting Sticky operation event and rendered both in the Events tab and Records attempt card, so the selected account, decisive comparator, and normalized excluded-candidate reasons describe the decision at routing time rather than current account state.
 
 ## Multi-Proxy Binding Update
 

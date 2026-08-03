@@ -800,6 +800,7 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                             .unwrap_or("automaticStickyClear")
                             .to_string(),
                         routing_source,
+                        routing_selection_audit: None,
                         http_status: cause_http_status.and_then(|value| u16::try_from(value).ok()),
                         trigger_attempt_id,
                         causing_attempt_id: None,

@@ -69,7 +69,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
 - Conversation event records are append-only per `promptCacheKey`.
 - Each operation record includes `action`, `origin`, `infoTypes[]`, `occurredAt`, `headline`, `changedFields[]`, and optional `bindingBefore/After`, `stickyBefore/After`, `invokeId`, and `routingContext`.
-- New automatic routing contexts contain only a safe reason code, selection source, HTTP status, and public attempt references; raw upstream messages remain available only through existing attempt detail access.
+- New automatic routing contexts contain only a safe reason code, selection source, HTTP status, public attempt references, and an optional immutable fresh-selection audit. The audit records the selected account, eligible-candidate count, decisive comparator, and a bounded list of safely normalized exclusions; raw upstream messages remain available only through existing attempt detail access.
 - `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
 - `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
 - Binding/sticky events remain split: if one action changes both the manual binding target and sticky target, the timeline records separate events.
@@ -149,7 +149,7 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
   - Returns `{ items, total, page, pageSize }`.
   - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext? }`.
-  - `routingContext` contains `{ reasonCode, routingSource?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
+  - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, excludedCandidates[] }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
   - Results are ordered by `occurredAt DESC, id DESC`.
   - `infoType` filters by any matching entry inside `infoTypes[]`.
 
@@ -250,6 +250,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given two fresh selections share the same affinity generation and different accounts succeed out of order, the first success remains the Sticky target and the later success emits `stickyMutationSuppressed` without changing the client response.
 - Given an automatic scope-permission or single-account 429 clear completes after the Sticky target has changed, it requires both the captured generation and failed account to still match, and does not remove the newer target.
 - Given a new automatic Sticky event, the events tab shows its localized safe reason, routing source, and available cause/trigger attempt links; historical rows without context state that the reason was not recorded.
+- Given a fresh assignment establishes or attempts to establish a Sticky target, the selected attempt persists its immutable candidate-selection audit before dispatch; the event repeats that audit and its Records link opens the same snapshot, including the decisive winner rule and bounded excluded-account reasons.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
@@ -298,6 +299,36 @@ PR: include
 - sensitive_exclusion: fixture-only conversation and attempt identifiers
 - submission_gate: approved
 - state: the same causal chain is readable at the required mobile viewport without overlap or truncation.
+
+### Selection Audit (UI Demo)
+
+PR: include
+![Desktop event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-desktop.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: desktop default
+- viewport_strategy: Chrome default viewport
+- margin_policy: trim_only (no trim applied: ambiguous border)
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: the Sticky event names the selected account, decisive rule, bounded rejected candidate, cause attempt, and selected attempt whose Records detail contains the same immutable audit.
+
+PR: include
+![Mobile event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-mobile.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: 393x852
+- viewport_strategy: Chrome viewport override
+- margin_policy: trim_only (no trim applied: ambiguous border)
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: the audit summary and Records deep link remain readable without overlap or truncation.
 
 ### Dashboard Bulk Actions (Web Demo)
 

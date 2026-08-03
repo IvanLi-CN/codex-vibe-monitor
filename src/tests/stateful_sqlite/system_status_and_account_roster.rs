@@ -1343,6 +1343,7 @@ pub(crate) async fn reserve_test_pool_routing_account(
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

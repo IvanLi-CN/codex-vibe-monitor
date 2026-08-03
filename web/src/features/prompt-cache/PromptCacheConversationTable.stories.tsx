@@ -439,6 +439,21 @@ const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationO
         routingContext: {
           reasonCode: "freshAssignmentAfterFailure",
           routingSource: "freshAssignment",
+          routingSelectionAudit: {
+            selectedAccountId: 22,
+            selectedAccountName: "mia.7rmmq@support.example",
+            eligibleCandidateCount: 1,
+            winnerReasonCode: "onlyEligibleCandidate",
+            comparedAccountId: null,
+            comparedAccountName: null,
+            excludedCandidates: [
+              {
+                accountId: 21,
+                accountName: "growth.6vv4@relay.example",
+                reasonCode: "modelNotAllowed",
+              },
+            ],
+          },
           httpStatus: null,
           triggerAttemptId: "SUCCESS32",
           causingAttemptId: "FAILED31",
@@ -2359,6 +2374,14 @@ export const DrawerOperations: Story = {
         /Sticky 目标：无 Sticky 目标 -> mia\.7rmmq@support\.example|Sticky target: No sticky target -> mia\.7rmmq@support\.example/i,
       ),
     ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(
+        /mia\.7rmmq@support\.example 是唯一合格候选|mia\.7rmmq@support\.example was the only eligible candidate/i,
+      ),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByRole("link", { name: /查看选路决策|View routing decision/i }),
+    ).toHaveAttribute("href", "/records?attemptId=SUCCESS32");
     await expect(
       documentScope.getAllByText(/Sticky 目标已切换|Sticky target changed/i).length,
     ).toBe(1);

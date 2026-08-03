@@ -1807,13 +1807,34 @@ function poolAttempts(invokeId: string) {
     {
       ...first,
       id: record.id * 10 + 2,
-      attemptId: formatDemoAttemptId(record.id * 100 + 2),
-      upstreamAccountId: fallback,
+      attemptId: record.id === 9002 ? "DEMO-SUCCESS-1" : formatDemoAttemptId(record.id * 100 + 2),
+      upstreamAccountId: record.id === 9002 ? 2890 : fallback,
       upstreamAccountName:
-        demoAccounts().find((account) => account.id === fallback)?.displayName ?? null,
+        record.id === 9002
+          ? "dzw"
+          : (demoAccounts().find((account) => account.id === fallback)?.displayName ?? null),
       attemptIndex: 2,
       distinctAccountIndex: 2,
       sameAccountRetryIndex: 0,
+      routingSource: "freshAssignment",
+      routingSelectionAudit:
+        record.id === 9002
+          ? {
+              selectedAccountId: 2890,
+              selectedAccountName: "dzw",
+              eligibleCandidateCount: 1,
+              winnerReasonCode: "onlyEligibleCandidate",
+              comparedAccountId: null,
+              comparedAccountName: null,
+              excludedCandidates: [
+                {
+                  accountId: 2805,
+                  accountName: "CIII",
+                  reasonCode: "modelNotAllowed",
+                },
+              ],
+            }
+          : null,
       proxyBindingKeySnapshot: "demo-frankfurt",
       status: record.status === "http_502" ? "failed" : "success",
       httpStatus: record.status === "http_502" ? 502 : 200,
@@ -2354,6 +2375,17 @@ export async function handleDemoRequest(request: Request) {
         routingContext: {
           reasonCode: "staleConcurrentCompletion",
           routingSource: "freshAssignment",
+          routingSelectionAudit: {
+            selectedAccountId: 2890,
+            selectedAccountName: "dzw",
+            eligibleCandidateCount: 1,
+            winnerReasonCode: "onlyEligibleCandidate",
+            comparedAccountId: null,
+            comparedAccountName: null,
+            excludedCandidates: [
+              { accountId: 2805, accountName: "CIII", reasonCode: "modelNotAllowed" },
+            ],
+          },
           httpStatus: null,
           triggerAttemptId: "DEMO-LATE-2",
           causingAttemptId: null,
@@ -2377,6 +2409,17 @@ export async function handleDemoRequest(request: Request) {
         routingContext: {
           reasonCode: "freshAssignmentAfterFailure",
           routingSource: "freshAssignment",
+          routingSelectionAudit: {
+            selectedAccountId: 2890,
+            selectedAccountName: "dzw",
+            eligibleCandidateCount: 1,
+            winnerReasonCode: "onlyEligibleCandidate",
+            comparedAccountId: null,
+            comparedAccountName: null,
+            excludedCandidates: [
+              { accountId: 2805, accountName: "CIII", reasonCode: "modelNotAllowed" },
+            ],
+          },
           httpStatus: null,
           triggerAttemptId: "DEMO-SUCCESS-1",
           causingAttemptId: "DEMO-FAILED-0",
