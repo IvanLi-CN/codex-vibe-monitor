@@ -895,6 +895,9 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePoolOptions::new()
+        // A shared in-memory database is destroyed when its final connection closes.
+        // Keep its schema alive while concurrent test tasks acquire and release connections.
+        .min_connections(1)
         .max_connections(4)
         .connect(&db_url)
         .await
