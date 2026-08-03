@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.54.5",
+  "base_stable_version": "2.54.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-03T02:36:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.54.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8dbbb22837cc52fd61ce4f5764cf684959563e04",
+  "pr_number": 726,
+  "pr_title": "feat(perf): materialize open-window timeseries",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.54.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.54.5",
+  "target_sha": "fb77de1fcbb48a33afe17a2c0d80430e4ab7936c",
+  "type_label": "type:patch"
+}
