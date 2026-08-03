@@ -1737,8 +1737,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         } else {
             // Live-first records the initial failure before the replay/failover path can spend
             // the group 429 retry budget. Keep sticky intact until failover records the final 429.
-            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                &state.pool,
+            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                state.as_ref(),
                 account.account_id,
                 &account.kind,
                 account.single_account_rotation_enabled
@@ -3758,8 +3758,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &pool_routing_reservation_key,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                                            &state.pool,
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                                            state.as_ref(),
                                             account.account_id,
                                             &account.kind,
                                             account.single_account_rotation_enabled
@@ -4052,8 +4052,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &reservation_key_for_record,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                                            &state_for_record.pool,
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                                            state_for_record.as_ref(),
                                             account.account_id,
                                             &account.kind,
                                             account.single_account_rotation_enabled
@@ -4511,8 +4511,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
             } else {
                 release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                        &state.pool,
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                        state.as_ref(),
                         account.account_id,
                         &account.kind,
                         account.single_account_rotation_enabled
@@ -4766,8 +4766,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                        &state_for_record.pool,
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                        state_for_record.as_ref(),
                         account.account_id,
                         &account.kind,
                         account.single_account_rotation_enabled

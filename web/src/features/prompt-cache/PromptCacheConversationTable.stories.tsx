@@ -2526,6 +2526,11 @@ export const DrawerQueuedRealtimeCalls: Story = {
         records: initialRecords,
       },
     });
+    await expect(
+      await documentScope.findByText(
+        /已加载 50 \/ 15,?000 条保留调用记录|Loaded 50 \/ 15,?000 retained record\(s\)/i,
+      ),
+    ).toBeInTheDocument();
     const drawerBody = canvasElement.ownerDocument.body.querySelector(".drawer-body");
     if (!(drawerBody instanceof HTMLElement)) {
       throw new Error("missing drawer body");

@@ -3425,8 +3425,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     )
                     .await
                 } else {
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                        &state.pool,
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                        state.as_ref(),
                         account.account_id,
                         &account.kind,
                         account.single_account_rotation_enabled,

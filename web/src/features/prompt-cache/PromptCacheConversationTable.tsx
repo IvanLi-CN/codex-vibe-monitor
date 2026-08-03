@@ -66,7 +66,6 @@ import type {
 } from "../../lib/api";
 import {
   fetchInvocationRecords,
-  fetchInvocationRecordsSummary,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversationOperationEvents,
   fetchUpstreamAccounts,
@@ -109,8 +108,6 @@ const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE = 20;
-const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
-const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX = 96;
 const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
 const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
@@ -746,12 +743,6 @@ function PromptCacheConversationInvocationTable({
   );
 }
 
-function startOfLocalDay(value: Date) {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
 function resolveConversationActivityRange(range: ConversationActivityRange) {
   if (range === "history") return {};
 
@@ -778,25 +769,10 @@ function resolveConversationActivityRange(range: ConversationActivityRange) {
   };
 }
 
-function buildConversationActivityQuery(
-  conversationKey: string,
-  range: ConversationActivityRange,
-  historyQueryForConversationKey?: ConversationHistoryQueryBuilder,
-): Partial<InvocationRecordsQuery> {
-  const base = historyQueryForConversationKey?.(conversationKey) ?? {
-    promptCacheKey: conversationKey,
-  };
-  const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = base;
-  void page;
-  void pageSize;
-  void snapshotId;
-  void sortBy;
-  void sortOrder;
-  void signal;
-  return {
-    ...filters,
-    ...resolveConversationActivityRange(range),
-  };
+function startOfLocalDay(value: Date) {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
 }
 
 function formatCompactNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
@@ -1790,14 +1766,14 @@ function ConversationActivityChart({
 function PromptCacheConversationActivityOverview({
   open,
   conversationKey,
-  historyQueryForConversationKey,
   realtimePayload,
+  isRealtimeLoading,
   t,
 }: {
   open: boolean;
   conversationKey: string | null;
-  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
   realtimePayload: InvocationHistoryOverviewTopicPayload | null;
+  isRealtimeLoading: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const { locale } = useTranslation();
@@ -1812,9 +1788,6 @@ function PromptCacheConversationActivityOverview({
   const [chartIsSampled, setChartIsSampled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestSeqRef = useRef(0);
-  const activeLoadControllerRef = useRef<AbortController | null>(null);
-  const isLoadingRef = useRef(false);
 
   const numberFormatter = useMemo(
     () =>
@@ -1839,121 +1812,7 @@ function PromptCacheConversationActivityOverview({
     [localeTag],
   );
 
-  const load = useCallback(
-    async ({ silent = false }: { silent?: boolean } = {}) => {
-      if (!open || !conversationKey) return;
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      activeLoadControllerRef.current?.abort();
-      const controller = new AbortController();
-      activeLoadControllerRef.current = controller;
-      const filters = buildConversationActivityQuery(
-        conversationKey,
-        activeRange,
-        historyQueryForConversationKey,
-      );
-      const shouldManageLoading = !silent || isLoadingRef.current;
-      if (shouldManageLoading) {
-        isLoadingRef.current = true;
-        setIsLoading(true);
-      }
-      try {
-        const summaryResponse = await fetchInvocationRecordsSummary({
-          ...filters,
-          signal: controller.signal,
-        });
-        if (requestSeq !== requestSeqRef.current) return;
-        setSummary(summaryResponse);
-
-        let page = 1;
-        let snapshotId: number | undefined;
-        let loaded: ApiInvocation[] = [];
-        let totalRecords = 0;
-        while (true) {
-          const response = await fetchInvocationRecords({
-            ...filters,
-            page,
-            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            ...(snapshotId != null ? { snapshotId } : {}),
-            signal: controller.signal,
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-          snapshotId = response.snapshotId;
-          totalRecords = response.total;
-          loaded = [...loaded, ...response.records].slice(
-            0,
-            PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-          );
-          if (
-            loaded.length >= response.total ||
-            loaded.length >= PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS ||
-            response.records.length === 0
-          ) {
-            break;
-          }
-          page += 1;
-        }
-        if (requestSeq !== requestSeqRef.current) return;
-        let startBoundaryMs = Number.POSITIVE_INFINITY;
-        let endBoundaryMs = Number.NEGATIVE_INFINITY;
-        for (const record of loaded) {
-          const occurredAt = Date.parse(record.occurredAt);
-          if (!Number.isFinite(occurredAt)) continue;
-          startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
-          endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
-        }
-        if (totalRecords > loaded.length && snapshotId != null) {
-          const oldestPage = await fetchInvocationRecords({
-            ...filters,
-            page: Math.max(1, Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE)),
-            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            snapshotId,
-            signal: controller.signal,
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-          for (const record of oldestPage.records) {
-            const occurredAt = Date.parse(record.occurredAt);
-            if (!Number.isFinite(occurredAt)) continue;
-            startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
-            endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
-          }
-        }
-        setRecords(loaded);
-        setChartRangeStartMs(Number.isFinite(startBoundaryMs) ? startBoundaryMs : null);
-        setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
-        setChartTotal(totalRecords);
-        setChartIsSampled(loaded.length < totalRecords);
-        setError(null);
-      } catch (err) {
-        if (requestSeq !== requestSeqRef.current) return;
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          (err instanceof Error && err.name === "AbortError")
-        ) {
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (requestSeq === requestSeqRef.current && shouldManageLoading) {
-          isLoadingRef.current = false;
-          setIsLoading(false);
-        }
-        if (activeLoadControllerRef.current === controller) {
-          activeLoadControllerRef.current = null;
-        }
-      }
-    },
-    [conversationKey, historyQueryForConversationKey, open],
-  );
-
   useEffect(() => {
-    requestSeqRef.current += 1;
-    activeLoadControllerRef.current?.abort();
-    activeLoadControllerRef.current = null;
     if (!open || !conversationKey) {
       setSummary(null);
       setRecords([]);
@@ -1961,7 +1820,6 @@ function PromptCacheConversationActivityOverview({
       setChartRangeEndMs(null);
       setChartTotal(0);
       setChartIsSampled(false);
-      isLoadingRef.current = false;
       setIsLoading(false);
       setError(null);
       return;
@@ -1972,43 +1830,25 @@ function PromptCacheConversationActivityOverview({
     setChartRangeEndMs(null);
     setChartTotal(0);
     setChartIsSampled(false);
-    isLoadingRef.current = false;
     setError(null);
-    void load();
-  }, [conversationKey, load, open]);
+    setIsLoading(isRealtimeLoading);
+  }, [conversationKey, isRealtimeLoading, open]);
 
   useEffect(() => {
     if (!realtimePayload) return;
-    requestSeqRef.current += 1;
-    activeLoadControllerRef.current?.abort();
-    activeLoadControllerRef.current = null;
-    let startBoundaryMs = Number.POSITIVE_INFINITY;
-    let endBoundaryMs = Number.NEGATIVE_INFINITY;
-    for (const record of realtimePayload.records) {
-      const occurredAt = Date.parse(record.occurredAt);
-      if (!Number.isFinite(occurredAt)) continue;
-      startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
-      endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
-    }
     setSummary(realtimePayload.summary);
     setRecords(realtimePayload.records);
-    setChartRangeStartMs(Number.isFinite(startBoundaryMs) ? startBoundaryMs : null);
-    setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
+    setChartRangeStartMs(
+      realtimePayload.chartRangeStart ? Date.parse(realtimePayload.chartRangeStart) : null,
+    );
+    setChartRangeEndMs(
+      realtimePayload.chartRangeEnd ? Date.parse(realtimePayload.chartRangeEnd) : null,
+    );
     setChartTotal(realtimePayload.chartTotal);
     setChartIsSampled(realtimePayload.chartIsSampled);
-    isLoadingRef.current = false;
     setIsLoading(false);
     setError(null);
   }, [realtimePayload]);
-
-  useEffect(
-    () => () => {
-      requestSeqRef.current += 1;
-      activeLoadControllerRef.current?.abort();
-      activeLoadControllerRef.current = null;
-    },
-    [],
-  );
 
   const bucketSet = useMemo(
     () =>
@@ -2197,6 +2037,8 @@ export function PromptCacheConversationHistoryDrawer({
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [bindingRemoteConflict, setBindingRemoteConflict] =
     useState<PromptCacheConversationBindingResponse | null>(null);
+  const [bindingOwnerConfirmAllowsRemoteOverwrite, setBindingOwnerConfirmAllowsRemoteOverwrite] =
+    useState(false);
   const [activeTab, setActiveTab] = useState<PromptCacheConversationDrawerTab>(initialTab);
   const [operationEvents, setOperationEvents] = useState<PromptCacheConversationOperationEvent[]>(
     [],
@@ -2275,7 +2117,11 @@ export function PromptCacheConversationHistoryDrawer({
 
   useEffect(() => {
     const response = callsTopic.data;
-    if (!response || !open || activeTab !== "calls") return;
+    if (!open || activeTab !== "calls") return;
+    if (!response) {
+      setIsLoading(callsTopic.isLoading);
+      return;
+    }
     const current = recordsRef.current;
     const incomingByKey = new Map(
       response.records.map((record) => [invocationStableKey(record), record]),
@@ -2310,13 +2156,17 @@ export function PromptCacheConversationHistoryDrawer({
     callTopicInitializedRef.current = true;
     pendingCallRecordsRef.current = nextPending;
     recordsRef.current = nextRecords;
+    historySnapshotIdRef.current = response.snapshotId;
+    historyNextPageRef.current = response.page + 1;
+    historyHasMoreRef.current = nextRecords.length < response.total;
     liveHistoryTotalRef.current = response.total;
     setRecords(nextRecords);
     setLiveRecords(nextPending);
     setTotal(response.total);
+    hasHydratedRef.current = true;
     setIsLoading(false);
     setError(null);
-  }, [activeTab, callsTopic.data, drawerBodyElement, open]);
+  }, [activeTab, callsTopic.data, callsTopic.isLoading, drawerBodyElement, open]);
 
   useEffect(() => {
     const response = operationsTopic.data;
@@ -2544,8 +2394,7 @@ export function PromptCacheConversationHistoryDrawer({
     setIsLoading(false);
     setIsLoadingMore(false);
     setError(null);
-    void load();
-  }, [clearPendingRefreshTimer, conversationKey, load, open]);
+  }, [clearPendingRefreshTimer, conversationKey, open]);
 
   useEffect(() => {
     if (!open || !conversationKey) {
@@ -2559,6 +2408,7 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingProxyNodes([]);
       setBindingLoading(false);
       setBindingSaving(false);
+      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
       setBindingError(null);
       setAllowSwitchUpstreamDraft("inherit");
       setFastModeDraft("keep_original");
@@ -2586,6 +2436,7 @@ export function PromptCacheConversationHistoryDrawer({
     const controller = new AbortController();
     bindingDraftDirtyRef.current = false;
     setBindingRemoteConflict(null);
+    setBindingOwnerConfirmAllowsRemoteOverwrite(false);
     setBindingLoading(true);
     setBindingError(null);
     setInlinePolicyBusyField(null);
@@ -3622,6 +3473,7 @@ export function PromptCacheConversationHistoryDrawer({
           bindingAccountId,
         )
       ) {
+        setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
         setBindingOwnerConfirmOpen(true);
         return;
       }
@@ -3791,8 +3643,8 @@ export function PromptCacheConversationHistoryDrawer({
             <PromptCacheConversationActivityOverview
               open={open}
               conversationKey={conversationKey}
-              historyQueryForConversationKey={historyQueryForConversationKey}
               realtimePayload={overviewTopic.data}
+              isRealtimeLoading={overviewTopic.isLoading}
               t={t}
             />
           </div>
@@ -3851,7 +3703,10 @@ export function PromptCacheConversationHistoryDrawer({
       <Dialog
         open={open && bindingOwnerConfirmOpen}
         onOpenChange={(nextOpen) => {
-          if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
+          if (!bindingSaving) {
+            setBindingOwnerConfirmOpen(nextOpen);
+            if (!nextOpen) setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+          }
         }}
       >
         <DialogContent
@@ -3889,8 +3744,10 @@ export function PromptCacheConversationHistoryDrawer({
               disabled={bindingSaving}
               onClick={() => {
                 setBindingOwnerConfirmOpen(false);
-                setBindingRemoteConflict(null);
-                void saveBinding({ skipOwnerWarning: true });
+                void saveBinding({
+                  skipOwnerWarning: true,
+                  allowRemoteOverwrite: bindingOwnerConfirmAllowsRemoteOverwrite,
+                });
               }}
             >
               {bindingSaving

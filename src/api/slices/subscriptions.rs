@@ -389,6 +389,8 @@ struct InvocationHistoryOverviewTopicPayload {
     records: Vec<ApiInvocation>,
     chart_total: i64,
     chart_is_sampled: bool,
+    chart_range_start: Option<String>,
+    chart_range_end: Option<String>,
 }
 
 impl ConversationSubscriptionScope {
@@ -2935,12 +2937,47 @@ impl SubscriptionTopic {
                     }
                     page += 1;
                 }
+                let mut chart_range_start = records
+                    .iter()
+                    .map(|record| record.occurred_at.clone())
+                    .min();
+                let mut chart_range_end = records
+                    .iter()
+                    .map(|record| record.occurred_at.clone())
+                    .max();
+                if chart_total as usize > records.len() {
+                    let oldest_page = (chart_total + SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT - 1)
+                        / SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT;
+                    let Json(oldest_response) = list_invocations(
+                        State(state.clone()),
+                        Query(scope.list_query(
+                            oldest_page.max(1),
+                            SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT,
+                            None,
+                        )),
+                    )
+                    .await?;
+                    for record in oldest_response.records {
+                        chart_range_start = Some(
+                            chart_range_start.map_or(record.occurred_at.clone(), |current| {
+                                current.min(record.occurred_at.clone())
+                            }),
+                        );
+                        chart_range_end = Some(
+                            chart_range_end.map_or(record.occurred_at.clone(), |current| {
+                                current.max(record.occurred_at.clone())
+                            }),
+                        );
+                    }
+                }
                 Ok(serde_json::to_value(
                     InvocationHistoryOverviewTopicPayload {
                         summary,
                         chart_is_sampled: chart_total as usize > records.len(),
                         records,
                         chart_total,
+                        chart_range_start,
+                        chart_range_end,
                     },
                 )?)
             }

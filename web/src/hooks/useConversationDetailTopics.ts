@@ -18,6 +18,8 @@ export interface InvocationHistoryOverviewTopicPayload {
   records: ApiInvocation[];
   chartTotal: number;
   chartIsSampled: boolean;
+  chartRangeStart: string | null;
+  chartRangeEnd: string | null;
 }
 
 export function resolveConversationDetailScope(

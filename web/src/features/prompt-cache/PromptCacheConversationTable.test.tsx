@@ -1093,6 +1093,12 @@ describe("PromptCacheConversationTable", () => {
         throw new Error("page 2 failed");
       },
     );
+    const initialTopicResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 50 });
+    apiMocks.fetchInvocationRecords.mockClear();
+    detailTopicMocks.current.calls.data = {
+      ...initialTopicResponse,
+      pageSize: 50,
+    };
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -1124,29 +1130,9 @@ describe("PromptCacheConversationTable", () => {
 
     expect(document.body.textContent).toContain("对话详情");
     expect(document.body.textContent).toContain("对话调用总览");
-    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptCacheKey: "pck-history",
-      }),
-    );
-
     await clickDrawerTab("调用");
 
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      promptCacheKey: "pck-history",
-      page: 1,
-      pageSize: 50,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      signal: expect.any(AbortSignal),
-    });
-    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptCacheKey: "pck-history",
-        page: 2,
-        pageSize: 50,
-      }),
-    );
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
 
     const drawerBody = document.querySelector(".drawer-body");
     expect(drawerBody).toBeTruthy();
@@ -1289,7 +1275,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("查看 1 条新记录");
   });
 
-  it("keeps the live calls head when the initial HTTP page resolves later", async () => {
+  it("hydrates the calls head from its topic without an initial HTTP request", async () => {
     const initialRecord = {
       id: 71,
       invokeId: "history-71",
@@ -1331,30 +1317,6 @@ describe("PromptCacheConversationTable", () => {
         }),
       ],
     };
-    let resolveInitialPage:
-      | ((value: {
-          snapshotId: number;
-          total: number;
-          page: number;
-          pageSize: number;
-          records: (typeof initialRecord)[];
-        }) => void)
-      | undefined;
-    apiMocks.fetchInvocationRecords
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveInitialPage = resolve;
-          }),
-      )
-      .mockResolvedValue({
-        snapshotId: 901,
-        total: 1,
-        page: 1,
-        pageSize: 50,
-        records: [initialRecord],
-      });
-
     renderInteractive(stats);
     await act(async () => {
       findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
@@ -1374,20 +1336,7 @@ describe("PromptCacheConversationTable", () => {
     renderInteractive(stats);
     await flushInteractive();
     expect(document.body.textContent).toContain("live-before-http");
-
-    await act(async () => {
-      resolveInitialPage?.({
-        snapshotId: 901,
-        total: 1,
-        page: 1,
-        pageSize: 50,
-        records: [initialRecord],
-      });
-    });
-    await flushInteractive();
-    await flushInteractive();
-
-    expect(document.body.textContent).toContain("live-before-http");
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("共 2 条保留调用记录");
   });
 
@@ -1463,7 +1412,6 @@ describe("PromptCacheConversationTable", () => {
         }),
       ],
     });
-
     const historyButton = findButtonByAriaLabel("打开全部调用记录");
     await act(async () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1538,6 +1486,10 @@ describe("PromptCacheConversationTable", () => {
       groupName: "prod",
       upstreamAccountId: null,
       upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
       updatedAt: "2026-03-02T12:00:00Z",
     });
     apiMocks.fetchUpstreamAccounts.mockResolvedValue({
@@ -1602,6 +1554,10 @@ describe("PromptCacheConversationTable", () => {
       groupName: "backup",
       upstreamAccountId: null,
       upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
       updatedAt: "2026-03-02T12:01:00Z",
     };
     renderInteractive(stats);
@@ -1643,6 +1599,17 @@ describe("PromptCacheConversationTable", () => {
     await flushInteractive();
     await act(async () => {
       findButtonByAriaLabel("仍然保存")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const ownerConfirmDialog = document.body.querySelector('[role="alertdialog"]');
+    expect(ownerConfirmDialog?.textContent).toContain("Pool Alpha · prod");
+    expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+    const continueButton = Array.from(ownerConfirmDialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.includes("继续更改"),
+    );
+    await act(async () => {
+      continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
 
@@ -1825,7 +1792,6 @@ describe("PromptCacheConversationTable", () => {
         }),
       ],
     });
-
     const historyButton = findButtonByAriaLabel("打开全部调用记录");
     await act(async () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1935,7 +1901,6 @@ describe("PromptCacheConversationTable", () => {
         }),
       ],
     });
-
     const historyButton = findButtonByAriaLabel("打开全部调用记录");
     await act(async () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -2850,6 +2815,21 @@ describe("PromptCacheConversationTable", () => {
         },
       ],
     });
+    const singleHistorySummary = await apiMocks.fetchInvocationRecordsSummary({});
+    const singleHistoryResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+    apiMocks.fetchInvocationRecords.mockClear();
+    detailTopicMocks.current.overview.data = {
+      summary: singleHistorySummary,
+      records: singleHistoryResponse.records,
+      chartTotal: singleHistoryResponse.total,
+      chartIsSampled: false,
+      chartRangeStart: "2026-02-01T12:30:00Z",
+      chartRangeEnd: "2026-02-01T12:30:00Z",
+    };
+    detailTopicMocks.current.calls.data = {
+      ...singleHistoryResponse,
+      pageSize: 50,
+    };
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -3220,6 +3200,17 @@ describe("PromptCacheConversationTable", () => {
         },
       ],
     });
+    const sameDaySummary = await apiMocks.fetchInvocationRecordsSummary({});
+    const sameDayResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+    apiMocks.fetchInvocationRecords.mockClear();
+    detailTopicMocks.current.overview.data = {
+      summary: sameDaySummary,
+      records: sameDayResponse.records,
+      chartTotal: sameDayResponse.total,
+      chartIsSampled: false,
+      chartRangeStart: "2026-05-13T23:26:12.000Z",
+      chartRangeEnd: "2026-05-13T23:40:47.000Z",
+    };
 
     renderInteractive({
       rangeStart: "2026-05-13T16:00:00Z",
@@ -3310,6 +3301,21 @@ describe("PromptCacheConversationTable", () => {
         },
       ],
     });
+    const neutralSummary = await apiMocks.fetchInvocationRecordsSummary({});
+    const neutralResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+    apiMocks.fetchInvocationRecords.mockClear();
+    detailTopicMocks.current.overview.data = {
+      summary: neutralSummary,
+      records: neutralResponse.records,
+      chartTotal: neutralResponse.total,
+      chartIsSampled: false,
+      chartRangeStart: "2026-02-02T12:30:00Z",
+      chartRangeEnd: "2026-02-02T12:30:00Z",
+    };
+    detailTopicMocks.current.calls.data = {
+      ...neutralResponse,
+      pageSize: 50,
+    };
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -3459,6 +3465,21 @@ describe("PromptCacheConversationTable", () => {
         };
       },
     );
+    const sampledSummary = await apiMocks.fetchInvocationRecordsSummary({});
+    const sampledResponse = await apiMocks.fetchInvocationRecords({
+      page: 1,
+      pageSize: 1_000,
+      signal: new AbortController().signal,
+    });
+    apiMocks.fetchInvocationRecords.mockClear();
+    detailTopicMocks.current.overview.data = {
+      summary: sampledSummary,
+      records: sampledResponse.records,
+      chartTotal: 1_001,
+      chartIsSampled: true,
+      chartRangeStart: "2026-01-01T00:00:00Z",
+      chartRangeEnd: "2026-03-03T12:00:00Z",
+    };
 
     renderInteractive({
       rangeStart: "2026-01-01T00:00:00Z",
@@ -3488,16 +3509,7 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptCacheKey: "pck-sampled-history",
-        page: 6,
-        pageSize: 200,
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        snapshotId: 901,
-      }),
-    );
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
     const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
     expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-01-01T00:00:00.000Z");
     expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-03-03T12:00:00.000Z");

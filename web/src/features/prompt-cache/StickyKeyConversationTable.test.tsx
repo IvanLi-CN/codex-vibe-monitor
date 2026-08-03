@@ -20,6 +20,15 @@ const apiMocks = vi.hoisted(() => ({
     >(),
 }));
 
+const detailTopicMocks = vi.hoisted(() => ({
+  current: {
+    calls: { data: null as unknown, isLoading: false },
+    overview: { data: null as unknown, isLoading: false },
+    binding: { data: null as unknown, isLoading: false },
+    operations: { data: null as unknown, isLoading: false },
+  },
+}));
+
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
@@ -27,6 +36,20 @@ vi.mock("../../lib/api", async () => {
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
+
+vi.mock("../../hooks/useConversationDetailTopics", () => ({
+  resolveConversationDetailScope: (
+    conversationKey: string | null,
+    query?: { stickyKey?: string; upstreamAccountId?: number },
+  ) => {
+    if (!conversationKey) return null;
+    if (query?.stickyKey && query.upstreamAccountId != null) {
+      return { stickyKey: query.stickyKey, upstreamAccountId: query.upstreamAccountId };
+    }
+    return { promptCacheKey: conversationKey };
+  },
+  useConversationDetailTopics: () => detailTopicMocks.current,
+}));
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -41,6 +64,10 @@ beforeAll(() => {
 
 beforeEach(() => {
   apiMocks.fetchInvocationRecords.mockReset();
+  detailTopicMocks.current.calls = { data: null, isLoading: false };
+  detailTopicMocks.current.overview = { data: null, isLoading: false };
+  detailTopicMocks.current.binding = { data: null, isLoading: false };
+  detailTopicMocks.current.operations = { data: null, isLoading: false };
 });
 
 afterEach(() => {
@@ -249,7 +276,7 @@ describe("StickyKeyConversationTable", () => {
   });
 
   it("loads sticky history with the shared live drawer and sticky filters", async () => {
-    apiMocks.fetchInvocationRecords.mockResolvedValueOnce({
+    detailTopicMocks.current.calls.data = {
       snapshotId: 1,
       total: 1,
       page: 1,
@@ -269,7 +296,7 @@ describe("StickyKeyConversationTable", () => {
           createdAt: "2026-03-02T12:00:00Z",
         },
       ],
-    });
+    };
 
     renderInteractive(createStats());
 
@@ -281,16 +308,7 @@ describe("StickyKeyConversationTable", () => {
     });
     await flushAsync();
 
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
-      stickyKey: "sticky-chat-001",
-      upstreamAccountId: 101,
-      page: 1,
-      pageSize: 50,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      signal: expect.any(AbortSignal),
-    });
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
 
     expect(document.body.textContent).toContain("sticky-chat-001");
     await clickDrawerTab(["Calls", "调用"]);
