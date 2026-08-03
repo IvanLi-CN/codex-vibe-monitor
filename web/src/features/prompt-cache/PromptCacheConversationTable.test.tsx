@@ -2842,6 +2842,92 @@ describe("PromptCacheConversationTable", () => {
     ).toContain("强制添加");
   });
 
+  it("preserves an unapplied available-models draft when a remote topic arrives", async () => {
+    const initialBinding: PromptCacheConversationBindingResponse = {
+      promptCacheKey: "pck-model-draft",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: "keep_original",
+      imageToolRewriteMode: null,
+      availableModels: null,
+      forwardProxyKey: null,
+      forwardProxyKeys: [],
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "account",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "account",
+        compactStreamTimeoutSecs: "root",
+      },
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
+      updatedAt: "2026-03-02T12:00:00Z",
+    };
+    detailTopicMocks.current.binding.data = initialBinding;
+
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-model-draft",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+        }),
+      ],
+    };
+
+    renderInteractive(stats);
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
+    const availableModelsInput = findInputByAriaLabel("可用模型");
+    expect(availableModelsInput).not.toBeNull();
+    await user.type(availableModelsInput!, "gpt-local-draft");
+
+    detailTopicMocks.current.binding.data = {
+      ...initialBinding,
+      availableModels: ["gpt-remote"],
+      policyFieldSources: {
+        ...initialBinding.policyFieldSources,
+        availableModels: "conversation",
+      },
+      updatedAt: "2026-03-02T12:01:00Z",
+    };
+    renderInteractive(stats);
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+    expect(findInputByAriaLabel("可用模型")?.value).toBe("gpt-local-draft");
+  });
+
   it("shows inline field errors when a conversation override save fails", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-policy-error",

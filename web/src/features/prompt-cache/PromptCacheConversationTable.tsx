@@ -2973,6 +2973,7 @@ export function PromptCacheConversationHistoryDrawer({
             placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
             className="h-9"
             onChange={(event) => {
+              bindingDraftDirtyRef.current = true;
               setAvailableModelsMode("override");
               setAvailableModelsDraft(event.target.value);
             }}
