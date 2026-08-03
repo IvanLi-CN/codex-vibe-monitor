@@ -6150,8 +6150,14 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
     const accountCard = recentRow.closest('[data-testid="dashboard-upstream-account-card"]');
+    const recentList = accountCard?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-list"]',
+    );
     if (!(accountGrid instanceof HTMLElement) || !(accountCard instanceof HTMLElement)) {
       throw new Error("missing account layout shrink chain");
+    }
+    if (!(recentList instanceof HTMLElement)) {
+      throw new Error("missing account recent list");
     }
 
     const errorSummary = recentRow.querySelector('[data-testid="invocation-error-summary"]');
@@ -6176,6 +6182,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountCard.className).toContain("min-w-0");
     expect(accountCard.className).not.toContain("h-full");
     expect(accountCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
+    expect(recentList.className).toContain("content-start");
+    expect(recentList.className).not.toContain("flex-1");
+    expect(recentList.className).not.toContain("auto-rows-fr");
     expect(recentRow.className).toContain("min-w-0");
     expect(errorTrigger.className).toContain("w-full");
     expect(errorTrigger.className).toContain("overflow-hidden");

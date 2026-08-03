@@ -4589,6 +4589,9 @@ export const UpstreamAccountRecentLayout: Story = {
     const recentRow = errorCard.querySelector(
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
+    const recentList = errorCard.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-list"]',
+    );
     const detailsRow = recentRow?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-details-row"]',
     );
@@ -4600,6 +4603,7 @@ export const UpstreamAccountRecentLayout: Story = {
     );
     if (
       !(recentRow instanceof HTMLElement) ||
+      !(recentList instanceof HTMLElement) ||
       !(detailsRow instanceof HTMLElement) ||
       !(metaLine instanceof HTMLElement) ||
       !(summaryLine instanceof HTMLElement)
@@ -4610,6 +4614,9 @@ export const UpstreamAccountRecentLayout: Story = {
     expect(accountGrid.className).toContain("items-start");
     expect(errorCard.className).not.toContain("h-full");
     expect(errorCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
+    expect(recentList.className).toContain("content-start");
+    expect(recentList.className).not.toContain("flex-1");
+    expect(recentList.className).not.toContain("auto-rows-fr");
     expect(detailsRow.className).toContain("grid-cols-1");
     expect(detailsRow.className).toContain("sm:grid-cols-2");
     expect(

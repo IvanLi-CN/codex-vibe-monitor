@@ -3861,7 +3861,11 @@ function DashboardUpstreamAccountActivityCard({
             ) : null}
           </div>
         </div>
-        <div className="grid flex-1 auto-rows-fr gap-1.5" aria-live="polite">
+        <div
+          data-testid="dashboard-upstream-account-recent-list"
+          className="grid content-start gap-1.5"
+          aria-live="polite"
+        >
           {recentLoading && recentInvocations.length === 0
             ? DASHBOARD_RECENT_SKELETON_IDS.slice(0, recentPreviewLimit).map((skeletonId) => (
                 <div
