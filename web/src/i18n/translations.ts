@@ -2805,6 +2805,8 @@ const baseTranslations = {
       "Routing decision: {{account}} was selected from {{count}} eligible candidate(s).",
     "table.poolAttempts.routingDecision.winnerReasons.onlyEligibleCandidate":
       "{{account}} was the only eligible candidate.",
+    "table.poolAttempts.routingDecision.winnerReasons.avoidsRetryOriginalNode":
+      "{{account}} avoided retrying the original unavailable node instead of {{comparedAccount}}.",
     "table.poolAttempts.routingDecision.winnerReasons.lowerCapacityLane":
       "{{account}} had the lower capacity lane than {{comparedAccount}}.",
     "table.poolAttempts.routingDecision.winnerReasons.lowerRouteBindingFailurePenalty":
@@ -5577,6 +5579,8 @@ const baseTranslations = {
       "选路决策：在 {{count}} 个合格候选中选择了 {{account}}。",
     "table.poolAttempts.routingDecision.winnerReasons.onlyEligibleCandidate":
       "{{account}} 是唯一合格候选。",
+    "table.poolAttempts.routingDecision.winnerReasons.avoidsRetryOriginalNode":
+      "{{account}} 避免重试原不可用节点，优于 {{comparedAccount}}。",
     "table.poolAttempts.routingDecision.winnerReasons.lowerCapacityLane":
       "{{account}} 的容量档位优于 {{comparedAccount}}。",
     "table.poolAttempts.routingDecision.winnerReasons.lowerRouteBindingFailurePenalty":

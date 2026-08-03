@@ -33,6 +33,13 @@ fn pool_routing_selection_winner_reason(
     let Some(runner_up) = runner_up else {
         return "onlyEligibleCandidate";
     };
+    let winner_requires_retry_original =
+        winner.dispatch_state == PoolRoutingCandidateDispatchState::RetryOriginalNode;
+    let runner_up_requires_retry_original =
+        runner_up.dispatch_state == PoolRoutingCandidateDispatchState::RetryOriginalNode;
+    if winner_requires_retry_original != runner_up_requires_retry_original {
+        return "avoidsRetryOriginalNode";
+    }
     if winner.capacity_lane != runner_up.capacity_lane {
         return "lowerCapacityLane";
     }
@@ -51,10 +58,24 @@ fn pool_routing_selection_winner_reason(
     if winner.dispatch_state != runner_up.dispatch_state {
         return "preferredDispatchState";
     }
-    if winner.secondary_reset_proximity_secs != runner_up.secondary_reset_proximity_secs {
+    if compare_reset_proximity_for_rotation_candidates(
+        winner.single_account_rotation_enabled,
+        winner.secondary_reset_proximity_secs,
+        runner_up.single_account_rotation_enabled,
+        runner_up.secondary_reset_proximity_secs,
+    )
+    .is_ne()
+    {
         return "secondaryResetProximity";
     }
-    if winner.primary_reset_proximity_secs != runner_up.primary_reset_proximity_secs {
+    if compare_reset_proximity_for_rotation_candidates(
+        winner.single_account_rotation_enabled,
+        winner.primary_reset_proximity_secs,
+        runner_up.single_account_rotation_enabled,
+        runner_up.primary_reset_proximity_secs,
+    )
+    .is_ne()
+    {
         return "primaryResetProximity";
     }
     if winner
@@ -1537,6 +1558,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         .sort_by(|lhs, rhs| compare_pool_routing_candidate_scores(&lhs.score, &rhs.score));
     let selection_audit = resolved_candidates.first().and_then(|winner| {
         let account = winner.resolved_account.as_ref()?;
+        if account.routing_source != PoolRoutingSelectionSource::FreshAssignment {
+            return None;
+        }
         let runner_up = resolved_candidates
             .get(1)
             .and_then(|candidate| candidate.resolved_account.as_ref());
@@ -1556,13 +1580,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     });
     for evaluation in resolved_candidates {
         if let Some(account) = evaluation.resolved_account {
-            return Ok(PoolAccountResolution::Resolved(
+            let account = account.with_sticky_affinity_generation(sticky_affinity_generation);
+            let account = if account.routing_source == PoolRoutingSelectionSource::FreshAssignment {
+                account.with_routing_selection_audit(
+                    selection_audit.expect("resolved fresh assignment should have an audit"),
+                )
+            } else {
                 account
-                    .with_sticky_affinity_generation(sticky_affinity_generation)
-                    .with_routing_selection_audit(
-                        selection_audit.expect("resolved fresh assignment should have an audit"),
-                    ),
-            ));
+            };
+            return Ok(PoolAccountResolution::Resolved(account));
         }
     }
 
@@ -1641,6 +1667,52 @@ pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn routing_score(account_id: i64) -> PoolRoutingCandidateScore {
+        PoolRoutingCandidateScore {
+            eligibility: PoolRoutingCandidateEligibility::Assignable,
+            route_binding_failure_penalty: 0,
+            model_route_penalty: 0,
+            routing_priority_rank: 0,
+            capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+            dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+            single_account_rotation_enabled: false,
+            secondary_reset_proximity_secs: None,
+            primary_reset_proximity_secs: None,
+            scarcity_score: 0.0,
+            effective_load: 0,
+            last_selected_at: None,
+            account_id,
+        }
+    }
+
+    #[test]
+    fn routing_selection_audit_winner_reason_matches_retry_original_precedence() {
+        let mut winner = routing_score(1);
+        winner.capacity_lane = PoolRoutingCandidateCapacityLane::Overflow;
+        let mut runner_up = routing_score(2);
+        runner_up.dispatch_state = PoolRoutingCandidateDispatchState::RetryOriginalNode;
+
+        assert!(compare_pool_routing_candidate_scores(&winner, &runner_up).is_lt());
+        assert_eq!(
+            pool_routing_selection_winner_reason(&winner, Some(&runner_up)),
+            "avoidsRetryOriginalNode"
+        );
+    }
+
+    #[test]
+    fn routing_selection_audit_winner_reason_ignores_reset_proximity_without_rotation() {
+        let mut winner = routing_score(1);
+        winner.secondary_reset_proximity_secs = Some(30);
+        let mut runner_up = routing_score(2);
+        runner_up.secondary_reset_proximity_secs = Some(10);
+
+        assert!(compare_pool_routing_candidate_scores(&winner, &runner_up).is_lt());
+        assert_eq!(
+            pool_routing_selection_winner_reason(&winner, Some(&runner_up)),
+            "stableAccountOrder"
+        );
+    }
 
     fn effective_rule(
         codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
