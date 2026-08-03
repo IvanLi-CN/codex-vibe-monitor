@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.54.6",
+  "base_stable_version": "2.54.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-03T05:19:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.54.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "450e8a3eceb6f37407b45141f91d23dd323cda67",
+  "pr_number": 727,
+  "pr_title": "fix(dashboard): size upstream account recent rows by content",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.54.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.54.6",
+  "target_sha": "a480b5620b68ef7225cd4155f0ce18bd641da6f0",
+  "type_label": "type:patch"
+}
