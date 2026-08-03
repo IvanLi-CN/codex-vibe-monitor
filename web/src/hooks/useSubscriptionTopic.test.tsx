@@ -189,4 +189,43 @@ describe("useSubscriptionTopic", () => {
     expect(unsubscribe).not.toHaveBeenCalled();
     expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
   });
+
+  it("does not expose a cached payload from the previous descriptor while switching topics", () => {
+    const renders: Array<{ data: { total: number } | null }> = [];
+    sseMocks.getTopicDescriptorKey.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        JSON.stringify({ topic: descriptor.topic, params: descriptor.params ?? {} }),
+    );
+    sseMocks.getCachedTopicState.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        descriptor.params?.filter === "routing"
+          ? { payload: { total: 2 } }
+          : { payload: { total: 1 } },
+    );
+    sseMocks.subscribeToTopic.mockReturnValue(() => {});
+
+    renderHookHarness({
+      descriptor: { topic: "conversation.operations", params: { filter: "all" } },
+      onRender: (snapshot) => {
+        renders.push({ data: snapshot.data });
+      },
+    });
+    const renderCountBeforeSwitch = renders.length;
+
+    act(() => {
+      root?.render(
+        <HookHarness
+          descriptor={{ topic: "conversation.operations", params: { filter: "routing" } }}
+          onRender={(snapshot) => {
+            renders.push({ data: snapshot.data });
+          }}
+        />,
+      );
+    });
+
+    expect(renders.at(-1)?.data).toEqual({ total: 2 });
+    expect(renders.slice(renderCountBeforeSwitch).some((render) => render.data?.total === 1)).toBe(
+      false,
+    );
+  });
 });

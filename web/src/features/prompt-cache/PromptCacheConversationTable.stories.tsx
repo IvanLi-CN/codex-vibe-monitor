@@ -2308,6 +2308,25 @@ export const DrawerBindingAndTimeouts: Story = {
 
     await userEvent.click(historyButton);
     await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await waitFor(() => {
+      expect(
+        Array.from(MockEventSource.instances).some(
+          (instance) => instance.readyState === MockEventSource.OPEN,
+        ),
+      ).toBe(true);
+    });
+    const descriptor = {
+      topic: "prompt-cache.conversation-binding.current",
+      params: { promptCacheKey: CONVERSATION_SHORT_KEY },
+    };
+    MockEventSource.emitMessage({
+      type: "snapshot",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "prompt-cache.conversation-binding.current/v1",
+      cursor: 1,
+      payload: bindingByPromptCacheKey.get(CONVERSATION_SHORT_KEY),
+    });
     const drawerShell = canvasElement.ownerDocument.body.querySelector(".drawer-shell");
     await expect(drawerShell).toHaveClass("drawer-shell--detail-wide");
     await expect(drawerShell?.parentElement).toHaveClass("drawer-frame");
@@ -2389,6 +2408,7 @@ export const DrawerOperations: Story = {
         ),
       ).toBe(true);
     });
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const descriptor = {
       topic: "prompt-cache.conversation-operations.window",
       params: { promptCacheKey: CONVERSATION_SHORT_KEY },
@@ -2400,6 +2420,20 @@ export const DrawerOperations: Story = {
       topicKey: JSON.stringify(descriptor),
       schemaEpoch: "prompt-cache.conversation-operations.window/v1",
       cursor: 1,
+      payload: {
+        items,
+        total: items.length,
+        page: 1,
+        pageSize: 20,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    MockEventSource.emitMessage({
+      type: "live",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "prompt-cache.conversation-operations.window/v1",
+      cursor: 2,
       payload: {
         items,
         total: items.length,
@@ -2603,6 +2637,18 @@ export const DrawerBindingRemoteConflict: Story = {
     },
   },
   play: async ({ canvasElement }) => {
+    const initialBinding = buildBindingResponse({
+      promptCacheKey: CONVERSATION_SHORT_KEY,
+      bindingKind: "upstreamAccount",
+      upstreamAccountId: 21,
+      upstreamAccountName: "growth.6vv4@relay.example",
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
+      updatedAt: "2026-05-13T23:42:00.000Z",
+    });
+    bindingByPromptCacheKey.set(CONVERSATION_SHORT_KEY, initialBinding);
     const documentScope = within(canvasElement.ownerDocument.body);
     const historyButton = documentScope.getAllByRole("button", {
       name: /打开全部调用记录|open full call history/i,
@@ -2610,6 +2656,25 @@ export const DrawerBindingRemoteConflict: Story = {
 
     await userEvent.click(historyButton);
     await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await waitFor(() => {
+      expect(
+        Array.from(MockEventSource.instances).some(
+          (instance) => instance.readyState === MockEventSource.OPEN,
+        ),
+      ).toBe(true);
+    });
+    const descriptor = {
+      topic: "prompt-cache.conversation-binding.current",
+      params: { promptCacheKey: CONVERSATION_SHORT_KEY },
+    };
+    MockEventSource.emitMessage({
+      type: "snapshot",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "prompt-cache.conversation-binding.current/v1",
+      cursor: 1,
+      payload: initialBinding,
+    });
     const kindSelect = await documentScope.findByRole("combobox", {
       name: /绑定类型|Binding type/i,
     });
@@ -2623,10 +2688,6 @@ export const DrawerBindingRemoteConflict: Story = {
       ).toBe(true);
     });
 
-    const descriptor = {
-      topic: "prompt-cache.conversation-binding.current",
-      params: { promptCacheKey: CONVERSATION_SHORT_KEY },
-    };
     MockEventSource.emitMessage({
       type: "live",
       topic: descriptor,

@@ -348,6 +348,9 @@ describe("PromptCacheConversationTable", () => {
   }
 
   async function clickDrawerTab(label: string) {
+    if (label === "设置" && detailTopicMocks.current.binding.data == null) {
+      detailTopicMocks.current.isSseUnavailable = true;
+    }
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) =>
       node.textContent?.includes(label),
@@ -1136,6 +1139,32 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
 
+    detailTopicMocks.current.calls.data = {
+      ...initialTopicResponse,
+      snapshotId: 902,
+      pageSize: 50,
+    };
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-history",
+          requestCount: 3,
+          totalTokens: 2400,
+          totalCost: 0.51,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+    await flushInteractive();
+
     const drawerBody = document.querySelector(".drawer-body");
     expect(drawerBody).toBeTruthy();
     Object.defineProperties(drawerBody as HTMLElement, {
@@ -1405,6 +1434,46 @@ describe("PromptCacheConversationTable", () => {
       signal: expect.any(AbortSignal),
     });
     expect(document.body.textContent).toContain("Fallback Proxy");
+  });
+
+  it("hydrates settings from its topic without a binding HTTP bootstrap", async () => {
+    detailTopicMocks.current.binding.data = {
+      promptCacheKey: "pck-binding-topic",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    };
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding-topic",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:00:00Z",
+        }),
+      ],
+    });
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("当前：分组 prod");
   });
 
   it("saves an upstream account binding from the history drawer", async () => {

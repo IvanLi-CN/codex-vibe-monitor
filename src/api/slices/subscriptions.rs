@@ -1274,6 +1274,18 @@ impl SubscriptionHub {
         }
     }
 
+    async fn mark_topic_dirty(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.dirty = true;
+            cached.refresh_scheduled = false;
+            cached.latest_live_snapshot = None;
+        }
+    }
+
     async fn schedule_conversation_overview_topic_refresh(
         &self,
         state: Arc<AppState>,
@@ -1303,6 +1315,15 @@ impl SubscriptionHub {
         let hub = state.subscription_hub.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            if !hub.has_active_topic_key(&topic_key).await {
+                tracing::debug!(
+                    topic = %topic.name(),
+                    refresh_outcome = "marked_dirty",
+                    "skipping deferred conversation overview refresh without owner subscribers"
+                );
+                hub.mark_topic_dirty(&topic).await;
+                return;
+            }
             match hub
                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                 .await

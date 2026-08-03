@@ -2066,6 +2066,7 @@ export function PromptCacheConversationHistoryDrawer({
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
+  const operationsTopicKeyRef = useRef<string | null>(null);
   const operationsPageRef = useRef(1);
   const operationsTotalRef = useRef(0);
   const [drawerBodyElement, setDrawerBodyElement] = useState<HTMLDivElement | null>(null);
@@ -2221,8 +2222,12 @@ export function PromptCacheConversationHistoryDrawer({
     callTopicInitializedRef.current = true;
     pendingCallRecordsRef.current = nextPending;
     recordsRef.current = nextRecords;
-    historySnapshotIdRef.current = response.snapshotId;
-    historyNextPageRef.current = response.page + 1;
+    if (historySnapshotIdRef.current == null) {
+      // History pagination remains pinned to its initial snapshot while live
+      // windows reconcile only the visible head.
+      historySnapshotIdRef.current = response.snapshotId;
+      historyNextPageRef.current = response.page + 1;
+    }
     historyHasMoreRef.current = nextRecords.length < response.total;
     liveHistoryTotalRef.current = response.total;
     setRecords(nextRecords);
@@ -2238,11 +2243,13 @@ export function PromptCacheConversationHistoryDrawer({
     if (!response || !open || activeTab !== "operations") return;
     operationsRequestSeqRef.current += 1;
     operationsLoadControllerRef.current?.abort();
+    const topicKey = operationsTopic.descriptorKey ?? operationsFilter;
+    const previousItems =
+      operationsTopicKeyRef.current === topicKey ? operationEventsRef.current : [];
     const nextItems = Array.from(
-      new Map(
-        [...response.items, ...operationEventsRef.current].map((item) => [item.id, item]),
-      ).values(),
+      new Map([...response.items, ...previousItems].map((item) => [item.id, item])).values(),
     );
+    operationsTopicKeyRef.current = topicKey;
     operationEventsRef.current = nextItems;
     operationsPageRef.current = Math.max(operationsPageRef.current, response.page);
     operationsTotalRef.current = response.total;
@@ -2251,7 +2258,7 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsPage((current) => Math.max(current, response.page));
     setOperationsLoading(false);
     setOperationsError(null);
-  }, [activeTab, open, operationsTopic.data]);
+  }, [activeTab, open, operationsFilter, operationsTopic.data, operationsTopic.descriptorKey]);
 
   const runLoad = useCallback(
     async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
@@ -2478,6 +2485,23 @@ export function PromptCacheConversationHistoryDrawer({
 
   useEffect(() => {
     if (!open || !conversationKey) {
+      bindingDraftDirtyRef.current = false;
+      setBindingRemoteConflict(null);
+      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+      setInlinePolicyBusyField(null);
+      setInlinePolicyErrors({});
+      return;
+    }
+    bindingDraftDirtyRef.current = false;
+    setBindingRemoteConflict(null);
+    setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+    setInlinePolicyBusyField(null);
+    setInlinePolicyErrors({});
+  }, [conversationKey, open]);
+
+  useEffect(() => {
+    if (!open || !conversationKey) {
+      bindingDraftDirtyRef.current = false;
       setActiveTab("overview");
       setBinding(null);
       setBindingKind("none");
@@ -2501,6 +2525,7 @@ export function PromptCacheConversationHistoryDrawer({
       setInlinePolicyErrors({});
       operationsLoadControllerRef.current?.abort();
       operationEventsRef.current = [];
+      operationsTopicKeyRef.current = null;
       operationsPageRef.current = 1;
       operationsTotalRef.current = 0;
       setOperationEvents([]);
@@ -2513,18 +2538,19 @@ export function PromptCacheConversationHistoryDrawer({
       return;
     }
 
+    if (activeTab !== "settings") {
+      return;
+    }
+
     const controller = new AbortController();
     const hydrationSeq = bindingHydrationSeqRef.current + 1;
     bindingHydrationSeqRef.current = hydrationSeq;
-    bindingDraftDirtyRef.current = false;
-    setBindingRemoteConflict(null);
-    setBindingOwnerConfirmAllowsRemoteOverwrite(false);
-    setBindingLoading(true);
+    setBindingLoading(isSseUnavailable || bindingTopic.isLoading);
     setBindingError(null);
-    setInlinePolicyBusyField(null);
-    setInlinePolicyErrors({});
     void Promise.all([
-      fetchPromptCacheConversationBinding(conversationKey, controller.signal),
+      isSseUnavailable
+        ? fetchPromptCacheConversationBinding(conversationKey, controller.signal)
+        : Promise.resolve(null),
       fetchUpstreamAccounts({ includeAll: true, pageSize: 500 }),
     ])
       .then(([nextBinding, accountList]) => {
@@ -2543,7 +2569,7 @@ export function PromptCacheConversationHistoryDrawer({
         setBindingProxyNodes(
           (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
         );
-        if (hydrationSeq !== bindingHydrationSeqRef.current) return;
+        if (!nextBinding || hydrationSeq !== bindingHydrationSeqRef.current) return;
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
         applyBindingPolicyDraft(nextBinding, {
@@ -2570,13 +2596,17 @@ export function PromptCacheConversationHistoryDrawer({
         setBindingError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!controller.signal.aborted && hydrationSeq === bindingHydrationSeqRef.current) {
+        if (
+          isSseUnavailable &&
+          !controller.signal.aborted &&
+          hydrationSeq === bindingHydrationSeqRef.current
+        ) {
           setBindingLoading(false);
         }
       });
 
     return () => controller.abort();
-  }, [conversationKey, open]);
+  }, [activeTab, bindingTopic.isLoading, conversationKey, isSseUnavailable, open]);
 
   useEffect(() => {
     const nextBinding = bindingTopic.data;
@@ -2626,6 +2656,9 @@ export function PromptCacheConversationHistoryDrawer({
     if (operationsTopic.data) {
       return;
     }
+    operationsRequestSeqRef.current += 1;
+    operationsLoadControllerRef.current?.abort();
+    operationsTopicKeyRef.current = operationsTopic.descriptorKey ?? operationsFilter;
     operationEventsRef.current = [];
     operationsPageRef.current = 1;
     operationsTotalRef.current = 0;
@@ -2642,7 +2675,9 @@ export function PromptCacheConversationHistoryDrawer({
     isSseUnavailable,
     loadOperationEvents,
     open,
+    operationsFilter,
     operationsTopic.data,
+    operationsTopic.descriptorKey,
   ]);
 
   useEffect(() => {
