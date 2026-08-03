@@ -2362,8 +2362,8 @@ export function PromptCacheConversationHistoryDrawer({
         const responseRecords = capturedHttpHead
           ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
           : response.records;
-        if (historyHttpSnapshotInitializedRef.current && page > 1) {
-          for (const record of response.records) {
+        if (historyHttpSnapshotInitializedRef.current) {
+          for (const record of responseRecords) {
             frozenHistoryStableKeysRef.current.add(invocationStableKey(record));
           }
         }

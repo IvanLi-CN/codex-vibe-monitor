@@ -1321,6 +1321,7 @@ describe("PromptCacheConversationTable", () => {
         occurredAt,
         status: "completed",
         failureClass: "none",
+        model: "history-model",
         totalTokens: 100,
         cost: 0.01,
         endpoint: "/v1/responses",
@@ -1384,7 +1385,7 @@ describe("PromptCacheConversationTable", () => {
       },
     );
 
-    renderInteractive({
+    const stats: PromptCacheConversationsResponse = {
       rangeStart: "2026-03-02T00:00:00Z",
       rangeEnd: "2026-03-03T00:00:00Z",
       selectionMode: "count",
@@ -1402,7 +1403,8 @@ describe("PromptCacheConversationTable", () => {
           last24hRequests: [],
         }),
       ],
-    });
+    };
+    renderInteractive(stats);
     await act(async () => {
       findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
@@ -1449,6 +1451,20 @@ describe("PromptCacheConversationTable", () => {
       signal: expect.any(AbortSignal),
     });
     expect(document.body.textContent).toContain("共 52 条保留调用记录");
+
+    detailTopicMocks.current.calls.data = {
+      snapshotId: 901,
+      total: 52,
+      page: 1,
+      pageSize: 50,
+      records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+    };
+    detailTopicMocks.current.calls.lastKind = "snapshot";
+    renderInteractive(stats);
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("共 52 条保留调用记录");
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3);
   });
 
   it("hydrates the calls head from its topic without an initial HTTP request", async () => {
