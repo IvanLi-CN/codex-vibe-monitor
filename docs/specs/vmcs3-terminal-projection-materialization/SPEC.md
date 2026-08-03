@@ -44,3 +44,11 @@ PR: include
 
 PR: include
 ![System Status projection health on mobile](./assets/projection-health-mobile.png)
+
+## Memory Attribution
+
+- Terminal projection 的观测必须区分 `db_invocation_row_count`、`runtime_record_count` 与 pending projection event 数量；数据库行数不得被解释为进程内常驻对象数。
+- 进程级诊断每 30 秒读取 `/proc/self/status`、`smaps_rollup` 与可用 cgroup memory 文件，只记录 RSS、匿名内存、文件映射、Swap、峰值 RSS、线程数和已知组件的无克隆估算。
+- 已知组件估算至少覆盖 runtime store、terminal projection、Dashboard snapshot、long-term interval index、timeseries staging、raw writer、prompt cache、network/routing cache 与 SQLite writer queue，并同时记录 `managed_bytes` 与 `unattributed_anon_bytes`。
+- 诊断只能观察和记录，不得触发数据库查询、清理数据、降低并发或改变 projection cursor。`MEMORY_DIAGNOSTICS=allocator_once` 仅在连续三次匿名内存未归因比例达到 35% 时生成一次受限 allocator 摘要；默认不生成。
+- 第一阶段不以 RSS 阈值判定通过，也不因 1 GiB 优化目标而丢弃 terminal、last-good 或可恢复事件。只有连续观测确认主要占用者后，才允许单独进入无损修复阶段。

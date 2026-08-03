@@ -90,3 +90,9 @@
 - 深色 `390px` 移动端模型图例：已识别模型以色标、图标和思考程度纵向排列，表格延续图标优先身份显示；无图标模型与上游账号仍以长名称换行保留身份。
   PR: include
   ![深色移动端长期统计模型系列可辨识性](./assets/long-term-series-identity-dark-mobile-models.png)
+
+## Memory Attribution Boundary
+
+- 长期统计的 interval index、flush staging 和修复操作必须提供无克隆的 retained/peak 观测；观测不得触发额外 raw scan 或改变 60 秒 projection cadence。
+- `managed_bytes` 只表示已知容器的保守估算，不代表 allocator 实际 arena。`unattributed_anon_bytes` 必须保留为独立分类，用于区分 interval index、临时 flush 对象与 SQLite/allocator 的未知占用。
+- 观测窗口结束前不清空长期汇总、不降低统计精度、不减少并发。只有组件 p95 常驻量达到 RSS 的 40% 且连续三个采样存在，或单次操作的 `VmHWM` 增量达到 512 MiB 且 5 分钟后 RSS 未回落至少 25%，才进入单独的无损优化计划。

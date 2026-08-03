@@ -2598,6 +2598,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         long_term_projection_runtime: Arc::new(Mutex::new(
             crate::LongTermProjectionRuntime::default(),
         )),
+        memory_diagnostics: Arc::new(crate::MemoryDiagnosticsRuntime::default()),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

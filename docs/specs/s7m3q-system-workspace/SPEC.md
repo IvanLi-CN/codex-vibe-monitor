@@ -249,3 +249,9 @@
 
 - System Status 通过 additive `projectionHealth` 展示 terminal 与长期统计投影的内存健康、cursor lag、脏桶和 pressure defer；该接口不得为诊断额外查询 SQLite。
 - 页面必须提供紧凑摘要和可展开详情，不暴露 terminal payload、调用 ID 或原始 SQL。
+
+## Memory Diagnostics
+
+- System Status 不新增内存诊断查询；进程 RSS、匿名/文件映射、Swap、峰值 RSS、cgroup 与已知组件估算由后台诊断采样产生，状态接口只复用已有内存快照。
+- 结构化日志必须区分 `db_invocation_row_count` 与 `runtime_record_count`，并提供 `managed_bytes`、`unattributed_anon_bytes`、`pressure_level` 和采样触发原因。页面不展示 allocator 原始输出、请求 payload、调用 ID 或 SQL。
+- `allocator_once` 仅由显式环境变量开启，且要求连续三个采样的匿名内存未归因比例达到 35%；诊断文件限制为 16 MiB，默认生产模式不触发。

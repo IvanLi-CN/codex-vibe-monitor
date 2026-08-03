@@ -66,3 +66,8 @@
   - main-agent => 新增 `scripts/shared-testbox-proxy-parallel-smoke`，在 `codex-testbox` 上用隔离 run dir、唯一 Compose project、LXC caps 兼容 override 跑 100 并行压测 (skill: $shared-testbox-runner)
 - wave: 5
   - main-agent => 完成本地验证、共享测试机压测、fast-track review/PR/merge/release，并在 101 与浏览器侧复验不再出现本地 admission reject (skill: $fast-flow)
+
+## Memory Attribution
+
+- `MemoryDiagnosticsRuntime` 通过 raw writer semaphore occupancy 估算活跃压缩 writer 的 bounded ingress 保留量；不会读取 raw 文件目录，也不会在请求路径执行额外压缩或解压。
+- allocator 诊断默认关闭。即使启用 `MEMORY_DIAGNOSTICS=allocator_once`，也仅在连续高未归因采样后生成一次受限文件，不包含 payload、调用 ID 或 SQL。

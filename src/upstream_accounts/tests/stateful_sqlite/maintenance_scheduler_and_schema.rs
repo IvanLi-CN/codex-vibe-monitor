@@ -205,6 +205,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         long_term_projection_runtime: Arc::new(Mutex::new(
             crate::LongTermProjectionRuntime::default(),
         )),
+        memory_diagnostics: Arc::new(crate::MemoryDiagnosticsRuntime::default()),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

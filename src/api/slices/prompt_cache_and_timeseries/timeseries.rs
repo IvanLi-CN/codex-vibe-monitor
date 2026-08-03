@@ -553,7 +553,7 @@ async fn load_timeseries_minute_projection_v2_key_tx(
 async fn rebuild_timeseries_minute_projection_v2_key_tx(
     tx: &mut SqliteConnection,
     key: &TimeseriesMinuteProjectionKey,
-) -> Result<(BucketAggregate, i64), ApiError> {
+) -> Result<(BucketAggregate, i64, u64), ApiError> {
     let start = Utc
         .timestamp_opt(key.minute_start_epoch, 0)
         .single()
@@ -581,6 +581,7 @@ async fn rebuild_timeseries_minute_projection_v2_key_tx(
     };
     let mut aggregate = BucketAggregate::default();
     let mut max_row_id = 0;
+    let source_row_count = records.len() as u64;
     for record in records {
         if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
             continue;
@@ -588,7 +589,7 @@ async fn rebuild_timeseries_minute_projection_v2_key_tx(
         max_row_id = max_row_id.max(record.id);
         add_exact_record_to_timeseries_aggregate(&mut aggregate, &record);
     }
-    Ok((aggregate, max_row_id))
+    Ok((aggregate, max_row_id, source_row_count))
 }
 
 async fn upsert_timeseries_minute_projection_v2_key_tx(
@@ -640,92 +641,120 @@ pub(crate) async fn flush_timeseries_minute_projection(
     if pending.is_empty() && coverage_invalidation_generation.is_none() {
         return Ok(());
     }
-    let gate = crate::db_pressure::global_db_pressure_gate();
-    let _permit = match gate.try_begin_background("timeseries_minute_projection_flush") {
-        Ok(permit) => permit,
-        Err(reason) => {
-            debug!(
-                route = "timeseries_projection",
-                builder = "minute_projection_v2",
-                trigger,
-                gate_outcome = "deferred",
-                defer_reason = "writer_pressure",
-                %reason,
-                "minute projection flush deferred by database pressure"
-            );
-            return Ok(());
-        }
-    };
-    let started = Instant::now();
-    let mut grouped = HashMap::new();
-    let mut flushed_event_ids = Vec::with_capacity(pending.len());
-    for (event_id, row_id, delta) in pending {
-        flushed_event_ids.push(event_id);
-        add_timeseries_delta_projection_keys(&mut grouped, row_id, delta);
-    }
-    let mut tx = state.pool.begin().await?;
-    if coverage_invalidation_generation.is_some() {
-        // A Hub admission rejection may have omitted a terminal update for an existing
-        // row. Never keep any minute marked ready until exact fallback has rebuilt it.
-        sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
-            .execute(tx.as_mut())
-            .await?;
-    }
-    let mut written_key_count = 0usize;
-    let mut exact_fallback_minute_count = 0usize;
-    for (key, mut deltas) in grouped {
-        deltas.sort_by_key(|(row_id, _)| *row_id);
-        let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
-            load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
-        {
-            if timeseries_projection_requires_exact_rebuild(&deltas, existing_max_row_id) {
-                // A terminal record can update an older running row. Its row ID is not a
-                // change cursor, and repeated pending events can share the same row ID.
-                // Either case needs an exact rebuild rather than another incremental add.
-                exact_fallback_minute_count += 1;
-                rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
-            } else {
-                let mut aggregate = aggregate;
-                let mut max_row_id = existing_max_row_id;
-                for (row_id, delta) in deltas {
-                    add_timeseries_terminal_delta_to_aggregate(&mut aggregate, &delta);
-                    max_row_id = max_row_id.max(row_id);
-                }
-                (aggregate, max_row_id)
+    let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
+    let mut loaded_row_count = 0u64;
+    let result: Result<(), ApiError> = async {
+        let gate = crate::db_pressure::global_db_pressure_gate();
+        let _permit = match gate.try_begin_background("timeseries_minute_projection_flush") {
+            Ok(permit) => permit,
+            Err(reason) => {
+                debug!(
+                    route = "timeseries_projection",
+                    builder = "minute_projection_v2",
+                    trigger,
+                    gate_outcome = "deferred",
+                    defer_reason = "writer_pressure",
+                    %reason,
+                    "minute projection flush deferred by database pressure"
+                );
+                return Ok(());
             }
-        } else {
-            // A delta alone cannot prove that a minute is complete: a process can start
-            // mid-minute or recover after an earlier terminal write. Rebuild only this
-            // minute before publishing it as ready, rather than storing a partial total.
-            exact_fallback_minute_count += 1;
-            rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
         };
-        upsert_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key, &aggregate, max_row_id)
+        let started = Instant::now();
+        let mut grouped = HashMap::new();
+        let mut flushed_event_ids = Vec::with_capacity(pending.len());
+        for (event_id, row_id, delta) in pending {
+            flushed_event_ids.push(event_id);
+            add_timeseries_delta_projection_keys(&mut grouped, row_id, delta);
+        }
+        let mut tx = state.pool.begin().await?;
+        if coverage_invalidation_generation.is_some() {
+            // A Hub admission rejection may have omitted a terminal update for an existing
+            // row. Never keep any minute marked ready until exact fallback has rebuilt it.
+            sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
+                .execute(tx.as_mut())
+                .await?;
+        }
+        let mut written_key_count = 0usize;
+        let mut exact_fallback_minute_count = 0usize;
+        for (key, mut deltas) in grouped {
+            deltas.sort_by_key(|(row_id, _)| *row_id);
+            let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
+                load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
+            {
+                if timeseries_projection_requires_exact_rebuild(&deltas, existing_max_row_id) {
+                    // A terminal record can update an older running row. Its row ID is not a
+                    // change cursor, and repeated pending events can share the same row ID.
+                    // Either case needs an exact rebuild rather than another incremental add.
+                    exact_fallback_minute_count += 1;
+                    let (aggregate, max_row_id, source_row_count) =
+                        rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?;
+                    loaded_row_count = loaded_row_count.saturating_add(source_row_count);
+                    (aggregate, max_row_id)
+                } else {
+                    let mut aggregate = aggregate;
+                    let mut max_row_id = existing_max_row_id;
+                    for (row_id, delta) in deltas {
+                        add_timeseries_terminal_delta_to_aggregate(&mut aggregate, &delta);
+                        max_row_id = max_row_id.max(row_id);
+                    }
+                    (aggregate, max_row_id)
+                }
+            } else {
+                // A delta alone cannot prove that a minute is complete: a process can start
+                // mid-minute or recover after an earlier terminal write. Rebuild only this
+                // minute before publishing it as ready, rather than storing a partial total.
+                exact_fallback_minute_count += 1;
+                let (aggregate, max_row_id, source_row_count) =
+                    rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?;
+                loaded_row_count = loaded_row_count.saturating_add(source_row_count);
+                (aggregate, max_row_id)
+            };
+            upsert_timeseries_minute_projection_v2_key_tx(
+                tx.as_mut(),
+                &key,
+                &aggregate,
+                max_row_id,
+            )
             .await?;
-        written_key_count += 1;
-    }
-    tx.commit().await?;
-    if let Some(generation) = coverage_invalidation_generation {
+            written_key_count += 1;
+        }
+        tx.commit().await?;
+        if let Some(generation) = coverage_invalidation_generation {
+            state
+                .terminal_projection_hub
+                .complete_timeseries_coverage_invalidation(generation);
+        }
         state
             .terminal_projection_hub
-            .complete_timeseries_coverage_invalidation(generation);
+            .mark_timeseries_deltas_flushed(&flushed_event_ids);
+        debug!(
+            route = "timeseries_projection",
+            builder = "minute_projection_v2",
+            trigger,
+            response_source = "memory_overlay_flush",
+            event_count = flushed_event_ids.len(),
+            minute_rollup_count = written_key_count,
+            exact_fallback_minute_count,
+            raw_row_count = loaded_row_count,
+            coverage_invalidation_pending = coverage_invalidation_generation.is_some(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "flushed terminal deltas into minute projection"
+        );
+        Ok(())
     }
+    .await;
     state
-        .terminal_projection_hub
-        .mark_timeseries_deltas_flushed(&flushed_event_ids);
-    debug!(
-        route = "timeseries_projection",
-        builder = "minute_projection_v2",
-        trigger,
-        response_source = "memory_overlay_flush",
-        event_count = flushed_event_ids.len(),
-        minute_rollup_count = written_key_count,
-        exact_fallback_minute_count,
-        coverage_invalidation_pending = coverage_invalidation_generation.is_some(),
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "flushed terminal deltas into minute projection"
-    );
-    Ok(())
+        .memory_diagnostics
+        .observe_operation(
+            state,
+            "timeseries_minute_projection_flush",
+            memory_baseline,
+            loaded_row_count,
+            true,
+        )
+        .await;
+    result
 }
 
 pub(crate) fn spawn_timeseries_minute_projection_supervisor(

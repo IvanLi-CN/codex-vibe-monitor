@@ -15,3 +15,5 @@
 - 2026-07-15: `系统/状态` 中 live invocation 的 success/non-success 计数改为跟随 success-like 口径；未来新写入的 `warning_success` 计入 success，不再落入 non-success。
 - Raw metrics use a persisted, cursor-based snapshot. Blob links cover raw payload paths attached after their invocation row was first observed, keeping status reads independent of full raw-file inventories.
 - Existing attempt-only captures are seeded into blob links once during schema initialization; retention compression invalidates the incremental inventory so renamed files are never double-counted. Pressure-gated inventory deferral is visible without a diagnostic SQLite write.
+
+- System Status 的内存诊断采用后台低频采样而非请求期扫描；`liveInvocationsCount` 继续表示数据库行数，不再作为常驻内存对象计数。未知匿名占用保留为 `unattributed_anon_bytes`，避免过早把 SQLite、allocator 或其他组件归责给 projection。

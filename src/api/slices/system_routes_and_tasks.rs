@@ -422,6 +422,23 @@ async fn record_system_raw_payload_inventory_path(
 }
 
 pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+    let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
+    let result = refresh_system_raw_payload_metrics_inventory_inner(state).await;
+    let load_row_count = result.as_ref().copied().unwrap_or_default();
+    state
+        .memory_diagnostics
+        .observe_operation(
+            state,
+            "system_raw_payload_metrics_inventory",
+            memory_baseline,
+            load_row_count,
+            true,
+        )
+        .await;
+    result.map(|_| ())
+}
+
+async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) -> Result<u64> {
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _permit = match gate.try_begin_background("system_raw_metrics_inventory") {
         Ok(permit) => permit,
@@ -434,7 +451,7 @@ pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppStat
                 reason = %reason,
                 "system raw metrics inventory deferred by database pressure"
             );
-            return Ok(());
+            return Ok(0);
         }
     };
     let snapshot = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
@@ -585,7 +602,7 @@ pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppStat
         discovered_path_count = deltas.0,
         "system raw metrics inventory batch completed"
     );
-    Ok(())
+    Ok(rows.len().saturating_add(link_rows.len()) as u64)
 }
 
 pub(crate) async fn set_system_raw_metrics_health_override(
@@ -712,6 +729,12 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
     let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
     let terminal_health = state.terminal_projection_hub.health();
     let long_term_health = state.long_term_projection_runtime.lock().await.health();
+    let runtime_record_count = state.proxy_runtime_invocations.runtime_record_count() as u64;
+    debug!(
+        db_invocation_row_count = invocation_status.live_invocations_count.unwrap_or(0).max(0),
+        runtime_record_count,
+        "system status invocation counts keep database rows separate from runtime memory records"
+    );
 
     Ok(SystemStatusResponse {
         live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0) as u64,

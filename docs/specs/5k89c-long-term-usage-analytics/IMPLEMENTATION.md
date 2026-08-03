@@ -41,3 +41,8 @@
 - 已通过：前端 `bun run test`（1310 passed / 6 skipped）、目标组件 Vitest、`bun run build` 与 5 个变更文件 Biome 检查；根级 `lint:web` 仍有既有无关文件错误，未扩大范围修复。
 - Storybook interaction/a11y、mock-only `ui_demo` 桌面/移动视觉证据及最终截图 SHA 在本次收口阶段补录到 `SPEC.md` 的 `## Visual Evidence`。
 - 已通过：长期系列视觉解析器 Vitest（7 assertions），专用 Biome 检查，`bun run build`、`bun run demo:build`、`bun run test-storybook` 与 `bun run storybook:build`；全仓 `lint:web` 仍有既有无关诊断，未扩大范围修复。
+
+## Memory Attribution
+
+- 长期 projection flush 在读取现有 runtime/interval 状态前后记录进程 RSS、`VmHWM` 和已知组件估算；日志明确区分 `retained_bytes`、`retained_delta_bytes`、`peak_delta_bytes` 与 `load_row_count`。
+- interval index 的估算只读取现有内存容器的长度、容量和字符串容量，不复制区间或重算数据库数据。该指标用于归因，不作为回收或限流依据。

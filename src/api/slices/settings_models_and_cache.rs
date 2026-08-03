@@ -1284,6 +1284,43 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
     pub(crate) baseline_build_gate: Arc<Mutex<()>>,
 }
 
+pub(crate) async fn dashboard_activity_snapshot_cache_memory_estimate(
+    cache: &Arc<Mutex<DashboardActivitySnapshotCacheState>>,
+) -> MemoryComponentEstimate {
+    let cache = cache.lock().await;
+    let entry_count = cache.entries.len();
+    let in_flight_count = cache.in_flight.len();
+    let pending_delta_bytes = cache.read_model.pending_delta_estimated_bytes;
+    let applied_key_bytes = cache
+        .read_model
+        .applied_terminal_keys
+        .keys()
+        .map(|(invoke_id, occurred_at)| invoke_id.capacity() + occurred_at.capacity())
+        .sum::<usize>();
+    let expiry_bytes = cache
+        .entries
+        .values()
+        .map(|entry| {
+            entry
+                .expiry_delta_estimated_bytes
+                .saturating_add(std::mem::size_of::<DashboardActivitySnapshotCacheEntry>())
+                .saturating_add(dashboard_activity_snapshot_memory_estimate(&entry.response))
+        })
+        .sum::<usize>();
+    MemoryComponentEstimate {
+        entries: entry_count.saturating_add(in_flight_count),
+        bytes: pending_delta_bytes
+            .saturating_add(applied_key_bytes)
+            .saturating_add(expiry_bytes)
+            .saturating_add(
+                entry_count
+                    .saturating_add(in_flight_count)
+                    .saturating_mul(std::mem::size_of::<usize>() * 8),
+            ),
+        detail_items: cache.read_model.pending_terminal_deltas.len(),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct DashboardActivitySnapshotFlightGuard {
     pub(crate) cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
@@ -1474,6 +1511,38 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) req_raw: RawPayloadMeta,
     pub(crate) resp_raw: RawPayloadMeta,
     pub(crate) timings: StageTimings,
+}
+
+impl ProxyCaptureRecord {
+    pub(crate) fn estimated_memory_bytes(&self) -> usize {
+        self.invoke_id.capacity()
+            + self.occurred_at.capacity()
+            + self.model.as_ref().map_or(0, String::capacity)
+            + self.payload.as_ref().map_or(0, String::capacity)
+            + self.raw_response.capacity()
+            + self.price_version.as_ref().map_or(0, String::capacity)
+            + self.status.capacity()
+            + self.error_message.as_ref().map_or(0, String::capacity)
+            + self.failure_kind.as_ref().map_or(0, String::capacity)
+            + self.req_raw.path.as_ref().map_or(0, String::capacity)
+            + self
+                .req_raw
+                .truncated_reason
+                .as_ref()
+                .map_or(0, String::capacity)
+            + self.resp_raw.path.as_ref().map_or(0, String::capacity)
+            + self
+                .resp_raw
+                .truncated_reason
+                .as_ref()
+                .map_or(0, String::capacity)
+            + std::mem::size_of::<ParsedUsage>()
+            + self
+                .cost_breakdown
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<ProxyCostBreakdown>())
+            + std::mem::size_of::<Self>()
+    }
 }
 
 #[derive(Debug, Clone)]

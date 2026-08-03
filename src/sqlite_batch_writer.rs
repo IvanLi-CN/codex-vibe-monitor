@@ -99,6 +99,16 @@ impl BatchedTerminalInvocationWrite {
             self.record.invoke_id, self.record.occurred_at, self.raw_capture
         )
     }
+
+    fn estimated_memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(self.record.estimated_memory_bytes())
+            .saturating_add(
+                self.terminal_projection_event_ids
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<u64>()),
+            )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +158,8 @@ pub(crate) struct PendingBatch {
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
     enqueued_rows: usize,
     coalesced_rows: usize,
+    estimated_bytes: usize,
+    terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
 }
 
@@ -176,6 +188,13 @@ impl PendingBatch {
 
     fn push(&mut self, write: SqliteBatchWrite) {
         let now = Instant::now();
+        let is_terminal = matches!(&write, SqliteBatchWrite::TerminalInvocation(_));
+        let write_bytes = write.estimated_memory_bytes();
+        self.estimated_bytes = self.estimated_bytes.saturating_add(write_bytes);
+        if is_terminal {
+            self.terminal_estimated_bytes =
+                self.terminal_estimated_bytes.saturating_add(write_bytes);
+        }
         self.oldest_at.get_or_insert(now);
         self.enqueued_rows += 1;
         match write {
@@ -254,8 +273,15 @@ impl PendingBatch {
         if terminal_invocations.is_empty() {
             return Self::default();
         }
+        let estimated_bytes = self.terminal_estimated_bytes;
+        self.estimated_bytes = self.estimated_bytes.saturating_sub(estimated_bytes);
+        self.terminal_estimated_bytes = self
+            .terminal_estimated_bytes
+            .saturating_sub(estimated_bytes);
         Self {
             enqueued_rows: terminal_invocations.len(),
+            estimated_bytes,
+            terminal_estimated_bytes: estimated_bytes,
             terminal_invocations,
             oldest_at: self.oldest_at,
             ..Self::default()
@@ -271,6 +297,10 @@ impl PendingBatch {
             .extend(other.system_task_finishes.drain());
         self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
         self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
+        self.estimated_bytes = self.estimated_bytes.saturating_add(other.estimated_bytes);
+        self.terminal_estimated_bytes = self
+            .terminal_estimated_bytes
+            .saturating_add(other.terminal_estimated_bytes);
         self.oldest_at = match (self.oldest_at, other.oldest_at) {
             (Some(current), Some(other)) => Some(current.min(other)),
             (current, other) => current.or(other),
@@ -315,11 +345,56 @@ pub(crate) struct RetainedBatch {
     failed: bool,
 }
 
+fn estimated_option_string_bytes(value: &Option<String>) -> usize {
+    value.as_ref().map_or(0, String::capacity)
+}
+
+impl SqliteBatchWrite {
+    pub(crate) fn estimated_memory_bytes(&self) -> usize {
+        match self {
+            Self::TerminalInvocation(terminal) => terminal.estimated_memory_bytes(),
+            Self::AttemptProgress(progress) => std::mem::size_of::<BatchedAttemptProgress>()
+                .saturating_add(progress.phase.capacity())
+                .saturating_add(estimated_option_string_bytes(
+                    &progress.compact_support_status,
+                ))
+                .saturating_add(estimated_option_string_bytes(
+                    &progress.compact_support_reason,
+                )),
+            Self::InvocationDerived(derived) => {
+                std::mem::size_of::<BatchedInvocationDerivedWrites>()
+                    .saturating_add(derived.occurred_at.capacity())
+                    .saturating_add(estimated_option_string_bytes(&derived.payload))
+                    .saturating_add(derived.terminal_overlay_key.as_ref().map_or(
+                        0,
+                        |(invoke_id, occurred_at)| {
+                            invoke_id.capacity().saturating_add(occurred_at.capacity())
+                        },
+                    ))
+            }
+            Self::AccountSelectedTouch(touch) => std::mem::size_of::<BatchedAccountSelectedTouch>()
+                .saturating_add(touch.selected_at.capacity()),
+            Self::SystemTaskFinish(finish) => std::mem::size_of::<BatchedSystemTaskFinish>()
+                .saturating_add(finish.trigger_kind.capacity())
+                .saturating_add(estimated_option_string_bytes(&finish.summary))
+                .saturating_add(estimated_option_string_bytes(&finish.detail))
+                .saturating_add(finish.finished_at.capacity()),
+        }
+    }
+}
+
+impl PendingBatch {
+    fn estimated_memory_bytes(&self) -> usize {
+        self.estimated_bytes
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
+    pending_bytes: Arc<AtomicUsize>,
     dropped_writes: Arc<AtomicU64>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache:
@@ -348,6 +423,7 @@ impl SqliteBatchWriter {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel(128);
         let pending_depth = Arc::new(AtomicUsize::new(0));
+        let pending_bytes = Arc::new(AtomicUsize::new(0));
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
@@ -379,6 +455,7 @@ impl SqliteBatchWriter {
             write_receiver,
             control_receiver,
             pending_depth.clone(),
+            pending_bytes.clone(),
             Some(cache_for_task),
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
@@ -390,6 +467,7 @@ impl SqliteBatchWriter {
             write_sender,
             control_sender,
             pending_depth,
+            pending_bytes,
             dropped_writes,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
@@ -437,6 +515,7 @@ impl SqliteBatchWriter {
             write_sender,
             control_sender,
             pending_depth: Arc::new(AtomicUsize::new(0)),
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
@@ -492,12 +571,15 @@ impl SqliteBatchWriter {
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
+        let estimated_bytes = write.estimated_memory_bytes();
         #[cfg(test)]
         if let Some(buffered_writes) = &self.buffered_writes {
             match buffered_writes.lock() {
                 Ok(mut guard) => {
                     guard.push(write);
                     self.pending_depth.fetch_add(1, Ordering::Relaxed);
+                    self.pending_bytes
+                        .fetch_add(estimated_bytes, Ordering::Relaxed);
                     return true;
                 }
                 Err(err) => {
@@ -513,10 +595,14 @@ impl SqliteBatchWriter {
         }
 
         self.pending_depth.fetch_add(1, Ordering::Relaxed);
+        self.pending_bytes
+            .fetch_add(estimated_bytes, Ordering::Relaxed);
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(err) => {
                 self.pending_depth.fetch_sub(1, Ordering::Relaxed);
+                self.pending_bytes
+                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     error = %err,
@@ -582,11 +668,16 @@ impl SqliteBatchWriter {
         write: SqliteBatchWrite,
         durability_mode: TerminalJournalDurabilityMode,
     ) -> bool {
+        let estimated_bytes = write.estimated_memory_bytes();
         self.pending_depth.fetch_add(1, Ordering::Relaxed);
+        self.pending_bytes
+            .fetch_add(estimated_bytes, Ordering::Relaxed);
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(write)) => {
                 self.pending_depth.fetch_sub(1, Ordering::Relaxed);
+                self.pending_bytes
+                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
                 let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
                     && self
                         .terminal_journal
@@ -611,6 +702,8 @@ impl SqliteBatchWriter {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.pending_depth.fetch_sub(1, Ordering::Relaxed);
+                self.pending_bytes
+                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!("terminal journal-backed retry could not reach closed sqlite batch writer");
                 false
@@ -624,6 +717,14 @@ impl SqliteBatchWriter {
             .ok()
             .and_then(|journal| journal.as_ref().map(TerminalJournal::stats))
             .unwrap_or_default()
+    }
+
+    pub(crate) fn telemetry_snapshot(&self) -> (usize, usize, u64) {
+        (
+            self.pending_depth.load(Ordering::Relaxed),
+            self.pending_bytes.load(Ordering::Relaxed),
+            self.dropped_writes.load(Ordering::Relaxed),
+        )
     }
 
     pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
@@ -760,6 +861,11 @@ impl SqliteBatchWriter {
                     let writes = guard.drain(..).collect::<Vec<_>>();
                     self.pending_depth
                         .fetch_sub(writes.len(), Ordering::Relaxed);
+                    let bytes = writes
+                        .iter()
+                        .map(SqliteBatchWrite::estimated_memory_bytes)
+                        .sum::<usize>();
+                    self.pending_bytes.fetch_sub(bytes, Ordering::Relaxed);
                     writes
                 })
             })
@@ -785,10 +891,16 @@ impl SqliteBatchWriter {
                 let deferred_writes = deferred.into_writes();
                 if let Some(buffered_writes) = &self.buffered_writes {
                     let retained_count = deferred_writes.len();
+                    let retained_bytes = deferred_writes
+                        .iter()
+                        .map(SqliteBatchWrite::estimated_memory_bytes)
+                        .sum::<usize>();
                     if let Ok(mut guard) = buffered_writes.lock() {
                         guard.extend(deferred_writes);
                         self.pending_depth
                             .fetch_add(retained_count, Ordering::Relaxed);
+                        self.pending_bytes
+                            .fetch_add(retained_bytes, Ordering::Relaxed);
                     }
                 }
             }
@@ -802,6 +914,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     pending_depth: Arc<AtomicUsize>,
+    pending_bytes: Arc<AtomicUsize>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache: Arc<
@@ -837,9 +950,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                         drain_terminal_journal_deferred_writes(
                             &terminal_journal,
                             &mut pending,
+                            &pending_bytes,
                             usize::MAX,
                         );
-                        let result = match flush_pending_batch(
+                        let result = match flush_pending_batch_accounted(
+                            &pending_bytes,
                             &pool,
                             pending.take(),
                             FlushReason::Barrier,
@@ -881,12 +996,14 @@ pub(crate) async fn run_sqlite_batch_writer(
                         drain_terminal_journal_deferred_writes(
                             &terminal_journal,
                             &mut pending,
+                            &pending_bytes,
                             usize::MAX,
                         );
                         let result = if pending.is_empty() {
                             Ok(())
                         } else {
-                            match flush_pending_batch(
+                            match flush_pending_batch_accounted(
+                                &pending_bytes,
                                 &pool,
                                 pending.take(),
                                 FlushReason::Shutdown,
@@ -929,6 +1046,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 drain_terminal_journal_deferred_writes(
                     &terminal_journal,
                     &mut pending,
+                    &pending_bytes,
                     deferred_capacity,
                 );
             }
@@ -937,10 +1055,12 @@ pub(crate) async fn run_sqlite_batch_writer(
                     drain_terminal_journal_deferred_writes(
                         &terminal_journal,
                         &mut pending,
+                        &pending_bytes,
                         usize::MAX,
                     );
                     if !pending.is_empty() {
-                        let _ = flush_pending_batch(
+                        let _ = flush_pending_batch_accounted(
+                            &pending_bytes,
                             &pool,
                             pending.take(),
                             FlushReason::Shutdown,
@@ -959,7 +1079,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                 pending.push(write);
                 if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
                     && let Some(retained) =
-                        flush_pending_batch(
+                        flush_pending_batch_accounted(
+                            &pending_bytes,
                             &pool,
                             pending.take(),
                             FlushReason::RowLimit,
@@ -1002,7 +1123,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                         FlushReason::Interval
                     };
                     if let Some(retained) =
-                        flush_pending_batch(
+                        flush_pending_batch_accounted(
+                            &pending_bytes,
                             &pool,
                             pending.take(),
                             flush_reason,
@@ -1063,6 +1185,7 @@ async fn run_terminal_journal_sync(
 fn drain_terminal_journal_deferred_writes(
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     pending: &mut PendingBatch,
+    pending_bytes: &Arc<AtomicUsize>,
     max_writes: usize,
 ) {
     if max_writes == 0 {
@@ -1072,7 +1195,9 @@ fn drain_terminal_journal_deferred_writes(
         && let Some(journal) = guard.as_mut()
     {
         for terminal in journal.take_deferred_writes(max_writes) {
-            pending.push(SqliteBatchWrite::TerminalInvocation(terminal));
+            let write = SqliteBatchWrite::TerminalInvocation(terminal);
+            pending_bytes.fetch_add(write.estimated_memory_bytes(), Ordering::Relaxed);
+            pending.push(write);
         }
     }
 }
@@ -1094,6 +1219,48 @@ pub(crate) fn drain_queued_batch_writes(
             }
         }
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
+)]
+async fn flush_pending_batch_accounted(
+    pending_bytes: &Arc<AtomicUsize>,
+    pool: &Pool<Sqlite>,
+    batch: PendingBatch,
+    reason: FlushReason,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+) -> Option<RetainedBatch> {
+    let submitted_bytes = batch.estimated_memory_bytes();
+    let result = flush_pending_batch(
+        pool,
+        batch,
+        reason,
+        prompt_cache_conversation_cache,
+        terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        terminal_projection_hub,
+        dashboard_reconcile_gate,
+        terminal_journal,
+    )
+    .await;
+    let retained_bytes = result
+        .as_ref()
+        .map(|retained| retained.batch.estimated_memory_bytes())
+        .unwrap_or_default();
+    pending_bytes.fetch_sub(
+        submitted_bytes.saturating_sub(retained_bytes),
+        Ordering::Relaxed,
+    );
+    result
 }
 
 #[expect(
@@ -2272,7 +2439,8 @@ mod tests {
         let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
         let mut pending = PendingBatch::default();
 
-        drain_terminal_journal_deferred_writes(&journal, &mut pending, usize::MAX);
+        let pending_bytes = Arc::new(AtomicUsize::new(0));
+        drain_terminal_journal_deferred_writes(&journal, &mut pending, &pending_bytes, usize::MAX);
 
         assert_eq!(pending.terminal_invocations.len(), 1);
         assert!(

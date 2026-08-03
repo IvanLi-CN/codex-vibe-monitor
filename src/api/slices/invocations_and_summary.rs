@@ -11511,6 +11511,164 @@ impl DashboardActivitySnapshot {
     }
 }
 
+fn option_string_capacity(value: &Option<String>) -> usize {
+    value.as_ref().map_or(0, String::capacity)
+}
+
+fn usage_breakdown_memory_bytes(value: &UsageBreakdownResponse) -> usize {
+    let model_bytes = value
+        .models
+        .iter()
+        .map(|model| {
+            model.model.capacity()
+                + option_string_capacity(&model.reasoning_effort)
+                + model
+                    .costs
+                    .as_ref()
+                    .map_or(0, |_| std::mem::size_of::<UsageCostBreakdownResponse>())
+        })
+        .sum::<usize>();
+    std::mem::size_of_val(value)
+        .saturating_add(
+            value
+                .models
+                .capacity()
+                .saturating_mul(std::mem::size_of::<UsageBreakdownModelResponse>()),
+        )
+        .saturating_add(model_bytes)
+}
+
+fn model_performance_memory_bytes(value: &ModelPerformanceResponse) -> usize {
+    let model_bytes = value
+        .models
+        .iter()
+        .map(|model| model.model.capacity() + option_string_capacity(&model.reasoning_effort))
+        .sum::<usize>();
+    std::mem::size_of_val(value)
+        .saturating_add(
+            value
+                .models
+                .capacity()
+                .saturating_mul(std::mem::size_of::<ModelPerformanceModelResponse>()),
+        )
+        .saturating_add(model_bytes)
+}
+
+fn prompt_cache_preview_memory_bytes(
+    value: &PromptCacheConversationInvocationPreviewResponse,
+) -> usize {
+    value.prompt_cache_key.as_ref().map_or(0, String::capacity)
+        + value.invoke_id.capacity()
+        + value.occurred_at.capacity()
+        + value.status.capacity()
+        + option_string_capacity(&value.live_phase)
+        + option_string_capacity(&value.failure_class)
+        + option_string_capacity(&value.route_mode)
+        + option_string_capacity(&value.model)
+        + option_string_capacity(&value.request_model)
+        + option_string_capacity(&value.response_model)
+        + option_string_capacity(&value.proxy_display_name)
+        + option_string_capacity(&value.upstream_account_name)
+        + option_string_capacity(&value.upstream_account_plan_type)
+        + option_string_capacity(&value.endpoint)
+        + option_string_capacity(&value.compaction_request_kind)
+        + option_string_capacity(&value.compaction_response_kind)
+        + option_string_capacity(&value.image_intent)
+        + option_string_capacity(&value.source)
+        + option_string_capacity(&value.error_message)
+        + option_string_capacity(&value.downstream_error_message)
+        + option_string_capacity(&value.failure_kind)
+        + option_string_capacity(&value.response_content_encoding)
+        + option_string_capacity(&value.request_compression_algorithm)
+        + option_string_capacity(&value.transport)
+        + option_string_capacity(&value.requested_service_tier)
+        + option_string_capacity(&value.service_tier)
+        + option_string_capacity(&value.billing_service_tier)
+        + std::mem::size_of_val(value)
+}
+
+fn dashboard_activity_account_memory_bytes(value: &DashboardActivityAccountResponse) -> usize {
+    let recent_bytes = value
+        .recent_invocations
+        .iter()
+        .map(prompt_cache_preview_memory_bytes)
+        .sum::<usize>();
+    value.account_key.capacity()
+        + value.display_name.capacity()
+        + option_string_capacity(&value.latest_conversation_created_at)
+        + option_string_capacity(&value.last_invocation_at)
+        + option_string_capacity(&value.group_name)
+        + option_string_capacity(&value.plan_type)
+        + option_string_capacity(&value.display_status)
+        + option_string_capacity(&value.enable_status)
+        + option_string_capacity(&value.work_status)
+        + option_string_capacity(&value.health_status)
+        + option_string_capacity(&value.sync_state)
+        + option_string_capacity(&value.last_error)
+        + option_string_capacity(&value.last_action_reason_message)
+        + value
+            .effective_routing_rule
+            .as_ref()
+            .map_or(0, std::mem::size_of_val)
+        + value
+            .recent_invocations
+            .capacity()
+            .saturating_mul(std::mem::size_of::<
+                PromptCacheConversationInvocationPreviewResponse,
+            >())
+        + recent_bytes
+        + usage_breakdown_memory_bytes(&value.usage_breakdown)
+        + model_performance_memory_bytes(&value.model_performance)
+        + std::mem::size_of_val(value)
+}
+
+pub(crate) fn dashboard_activity_snapshot_memory_estimate(
+    snapshot: &DashboardActivitySnapshot,
+) -> usize {
+    let account_bytes = snapshot
+        .accounts
+        .iter()
+        .map(dashboard_activity_account_memory_bytes)
+        .sum::<usize>();
+    let summary = &snapshot.summary;
+    let summary_usage_bytes = summary
+        .stats
+        .usage_breakdown
+        .as_ref()
+        .map(usage_breakdown_memory_bytes)
+        .unwrap_or_default();
+    let summary_bytes = std::mem::size_of_val(summary)
+        + summary_usage_bytes
+        + model_performance_memory_bytes(&summary.model_performance);
+    std::mem::size_of_val(snapshot)
+        .saturating_add(
+            snapshot
+                .accounts
+                .capacity()
+                .saturating_mul(std::mem::size_of::<DashboardActivityAccountResponse>()),
+        )
+        .saturating_add(account_bytes)
+        .saturating_add(summary_bytes)
+        .saturating_add(
+            snapshot
+                .account_model_performance_accumulators
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(
+                    Option<i64>,
+                    ModelPerformanceAccumulator,
+                )>()),
+        )
+        .saturating_add(
+            snapshot
+                .account_latency_accumulators
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(
+                    Option<i64>,
+                    DashboardActivityAccountLatencyAccumulator,
+                )>()),
+        )
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct DashboardActivityAccountLatencyAccumulator {
     first_response_byte_total_sample_count: i64,

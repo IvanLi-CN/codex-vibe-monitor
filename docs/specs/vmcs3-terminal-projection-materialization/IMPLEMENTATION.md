@@ -16,3 +16,10 @@
 - Projection schema、trigger 与兼容迁移只在启动初始化执行；60 秒 P2 flush 和每日验证只读写投影数据，不执行 DDL。
 - Hourly rollup retention remains enforced by the incremental P2 path: it removes expired hourly rollups and their hourly interval segments in the same low-priority maintenance window while preserving permanent daily history.
 - `wall_time_ms` is a persisted interval-union snapshot rather than an additive counter. After restart, the first new delta hydrates that union before replacing the bucket value, preserving exact overlap semantics.
+
+## Memory Attribution
+
+- `src/memory_diagnostics.rs` runs a startup sample and a 30-second low-frequency sample without cloning business state or querying SQLite. It reads process/cgroup memory files and emits structured attribution fields.
+- Component estimates use capacities and bounded counters from the existing stores. Terminal hub pending bytes and timeseries staging are intentionally not counted twice; operation logs expose `retained_bytes`, `retained_delta_bytes`, `peak_delta_bytes`, `load_row_count` and `clone_avoided`.
+- The operation hooks cover long-term flush, timeseries minute flush and raw inventory maintenance. A raw writer estimate uses the existing semaphore occupancy and the bounded ingress queue size; durable spool bytes remain disk telemetry, not RSS attribution.
+- `peak_delta_bytes` is derived from the process `VmHWM` delta, while `rss_delta_bytes` remains the endpoint RSS delta. This keeps transient allocation peaks separate from retained component estimates.

@@ -5030,12 +5030,59 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
 }
 
 pub(crate) struct AsyncStreamingRawPayloadWriter {
-    tx: Option<std::sync::mpsc::SyncSender<Bytes>>,
+    tx: Option<std::sync::mpsc::SyncSender<TrackedRawPayloadChunk>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
     observed_size_bytes: i64,
     local_truncated_reason: Option<String>,
     local_truncated: bool,
     spool: Option<RawOverflowSpool>,
+}
+
+static RAW_ASYNC_WRITER_QUEUED_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn proxy_raw_async_writer_queued_bytes() -> usize {
+    RAW_ASYNC_WRITER_QUEUED_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+struct TrackedRawPayloadChunk {
+    bytes: Option<Bytes>,
+}
+
+impl TrackedRawPayloadChunk {
+    fn new(bytes: Bytes) -> Self {
+        Self { bytes: Some(bytes) }
+    }
+
+    fn into_bytes(mut self) -> Bytes {
+        let bytes = self.bytes.take().unwrap_or_default();
+        release_raw_async_writer_queued_bytes(bytes.len());
+        bytes
+    }
+}
+
+impl Drop for TrackedRawPayloadChunk {
+    fn drop(&mut self) {
+        if let Some(bytes) = self.bytes.as_ref() {
+            release_raw_async_writer_queued_bytes(bytes.len());
+        }
+    }
+}
+
+trait RawPayloadChunk {
+    fn into_bytes(self) -> Bytes;
+}
+
+impl RawPayloadChunk for Bytes {
+    fn into_bytes(self) -> Bytes {
+        self
+    }
+}
+
+impl RawPayloadChunk for TrackedRawPayloadChunk {
+    fn into_bytes(self) -> Bytes {
+        TrackedRawPayloadChunk::into_bytes(self)
+    }
 }
 
 impl AsyncStreamingRawPayloadWriter {
@@ -5121,7 +5168,7 @@ impl AsyncStreamingRawPayloadWriter {
             };
         }
         let permit = permit.expect("checked above");
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Bytes>(64);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TrackedRawPayloadChunk>(64);
         let (meta_tx, meta_rx) = oneshot::channel();
         debug!(
             capture_path = "direct_writer",
@@ -5132,7 +5179,7 @@ impl AsyncStreamingRawPayloadWriter {
         );
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let meta = write_direct_streaming_raw_payload_to_file(
+            let meta = write_direct_streaming_raw_payload_to_file_tracked(
                 path,
                 max_bytes,
                 immediate_gzip_bytes,
@@ -5184,7 +5231,8 @@ impl AsyncStreamingRawPayloadWriter {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        match tx.try_send(Bytes::copy_from_slice(bytes)) {
+        RAW_ASYNC_WRITER_QUEUED_BYTES.fetch_add(bytes.len(), std::sync::atomic::Ordering::Relaxed);
+        match tx.try_send(TrackedRawPayloadChunk::new(Bytes::copy_from_slice(bytes))) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 self.mark_writer_closed("capture_unavailable:ingress_queue_full".to_string());
@@ -5273,6 +5321,46 @@ pub(crate) fn write_direct_streaming_raw_payload_to_file(
     codec: RawCompressionCodec,
     rx: std::sync::mpsc::Receiver<Bytes>,
 ) -> RawPayloadMeta {
+    write_direct_streaming_raw_payload_to_file_inner(
+        path,
+        max_bytes,
+        immediate_gzip_bytes,
+        codec,
+        rx,
+    )
+}
+
+fn write_direct_streaming_raw_payload_to_file_tracked(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    immediate_gzip_bytes: Option<usize>,
+    codec: RawCompressionCodec,
+    rx: std::sync::mpsc::Receiver<TrackedRawPayloadChunk>,
+) -> RawPayloadMeta {
+    write_direct_streaming_raw_payload_to_file_inner(
+        path,
+        max_bytes,
+        immediate_gzip_bytes,
+        codec,
+        rx,
+    )
+}
+
+fn release_raw_async_writer_queued_bytes(bytes: usize) {
+    let _ = RAW_ASYNC_WRITER_QUEUED_BYTES.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |queued| Some(queued.saturating_sub(bytes)),
+    );
+}
+
+fn write_direct_streaming_raw_payload_to_file_inner(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    immediate_gzip_bytes: Option<usize>,
+    codec: RawCompressionCodec,
+    rx: std::sync::mpsc::Receiver<impl RawPayloadChunk>,
+) -> RawPayloadMeta {
     enum DirectWriter {
         Buffer(Vec<u8>),
         Plain(fs::File),
@@ -5306,7 +5394,8 @@ pub(crate) fn write_direct_streaming_raw_payload_to_file(
         RawCompressionCodec::None => Some(path.clone()),
         RawCompressionCodec::Gzip => None,
     };
-    while let Ok(bytes) = rx.recv() {
+    while let Ok(chunk) = rx.recv() {
+        let bytes = chunk.into_bytes();
         meta.size_bytes = meta.size_bytes.saturating_add(bytes.len() as i64);
         let write_len = max_bytes
             .map(|limit| limit.saturating_sub(written_bytes).min(bytes.len()))
