@@ -7,6 +7,7 @@ import type {
   PromptCacheConversationOperationEventListResponse,
 } from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
+import useSseStatus from "./useSseStatus";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 export type ConversationDetailScope =
@@ -63,6 +64,7 @@ export function useConversationDetailTopics({
   scope: ConversationDetailScope | null;
   operationsInfoType?: string;
 }) {
+  const sseStatus = useSseStatus();
   const params = useMemo(() => scopeParams(scope), [scope]);
   const callsDescriptor = useMemo(
     () => (params ? buildTopicDescriptor("invocation-history.window", params) : null),
@@ -105,5 +107,11 @@ export function useConversationDetailTopics({
     open && activeTab === "operations",
   );
 
-  return { calls, overview, binding, operations };
+  return {
+    calls,
+    overview,
+    binding,
+    operations,
+    isSseUnavailable: sseStatus.phase === "disabled",
+  };
 }

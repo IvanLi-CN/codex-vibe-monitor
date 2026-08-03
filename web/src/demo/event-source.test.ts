@@ -16,7 +16,7 @@ vi.mock("./events", () => ({
   subscribeToDemoRealtime: mocks.subscribeToDemoRealtime,
 }));
 
-import { DemoTopicEventSource } from "./event-source";
+import { DemoTopicEventSource, isDemoTopicEventSourcePath } from "./event-source";
 
 describe("DemoTopicEventSource", () => {
   afterEach(() => {
@@ -45,5 +45,10 @@ describe("DemoTopicEventSource", () => {
 
     expect(mocks.subscribeToDemoRealtime).not.toHaveBeenCalled();
     expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it("matches the topic SSE endpoint beneath a deploy base", () => {
+    expect(isDemoTopicEventSourcePath("/repo/demo/events?topics=abc", "/repo/demo/")).toBe(true);
+    expect(isDemoTopicEventSourcePath("/events?topics=abc", "/repo/demo/")).toBe(false);
   });
 });

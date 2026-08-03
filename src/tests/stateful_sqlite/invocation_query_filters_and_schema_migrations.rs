@@ -1,9 +1,10 @@
 use super::*;
-use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
+use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
     load_sticky_affinity_generation, load_sticky_route,
     record_pool_route_success_with_affinity_generation,
+    record_pool_route_success_with_affinity_generation_and_broadcast,
     record_pool_route_success_with_affinity_generation_for_attempt, upsert_sticky_route,
 };
 use serde_json::json;
@@ -5794,32 +5795,51 @@ async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_co
     let late_account_id =
         insert_test_pool_api_key_account(&state, "Late Sticky Loser", "upstream-late").await;
     let prompt_cache_key = "prompt-cache-first-success-lock-key";
+    let mut broadcast_receiver = state.broadcaster.subscribe();
     let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
         .await
         .expect("load empty sticky generation");
 
-    record_pool_route_success_with_affinity_generation(
-        &state.pool,
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         first_account_id,
         Utc::now(),
         Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some("first-success"),
+        None,
         Some(generation),
     )
     .await
     .expect("first success should establish sticky target");
-    record_pool_route_success_with_affinity_generation(
-        &state.pool,
+    assert!(matches!(
+        broadcast_receiver
+            .recv()
+            .await
+            .expect("first sticky mutation should broadcast"),
+        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+            if key == prompt_cache_key
+    ));
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         late_account_id,
         Utc::now(),
         Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some("late-success"),
+        None,
         Some(generation),
     )
     .await
     .expect("late success remains a successful route outcome");
+    assert!(matches!(
+        broadcast_receiver
+            .recv()
+            .await
+            .expect("suppressed sticky mutation should broadcast"),
+        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+            if key == prompt_cache_key
+    ));
 
     let sticky = load_sticky_route(&state.pool, prompt_cache_key)
         .await
@@ -5924,8 +5944,9 @@ async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock(
         .await
         .expect("join locked stale sticky write task")
         .expect("locked stale sticky write task should return result");
-    assert!(
-        !sticky_updated,
+    assert_eq!(
+        sticky_updated,
+        RuntimeStickyMutation::Suppressed,
         "stale sticky writeback must be rejected after the reset transaction commits"
     );
     assert!(

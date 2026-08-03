@@ -33,6 +33,7 @@ const detailTopicMocks = vi.hoisted(() => ({
     overview: { data: null as unknown },
     binding: { data: null as unknown },
     operations: { data: null as unknown },
+    isSseUnavailable: false,
   },
 }));
 
@@ -222,6 +223,7 @@ describe("PromptCacheConversationTable", () => {
       overview: { data: null as unknown },
       binding: { data: null as unknown },
       operations: { data: null as unknown },
+      isSseUnavailable: false,
     };
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-history",
@@ -1340,6 +1342,71 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("共 2 条保留调用记录");
   });
 
+  it("falls back to the calls snapshot after SSE becomes unavailable", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 903,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 73,
+          invokeId: "fallback-history-73",
+          occurredAt: "2026-03-02T12:32:00Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 900,
+          cost: 0.12,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-fallback-history",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Fallback Proxy",
+          createdAt: "2026-03-02T12:32:00Z",
+        },
+      ],
+    });
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-fallback-history",
+          requestCount: 1,
+          totalTokens: 900,
+          totalCost: 0.12,
+          createdAt: "2026-03-02T12:32:00Z",
+          lastActivityAt: "2026-03-02T12:32:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    };
+
+    renderInteractive(stats);
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("调用");
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+      promptCacheKey: "pck-fallback-history",
+      page: 1,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
+    expect(document.body.textContent).toContain("Fallback Proxy");
+  });
+
   it("saves an upstream account binding from the history drawer", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-binding",
@@ -1943,6 +2010,7 @@ describe("PromptCacheConversationTable", () => {
   });
 
   it("renders conversation events and filters by info type in the operations tab", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     apiMocks.fetchPromptCacheConversationOperationEvents.mockImplementation(
       async (_promptCacheKey, query) => {

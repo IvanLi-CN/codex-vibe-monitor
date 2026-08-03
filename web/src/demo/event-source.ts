@@ -113,6 +113,12 @@ export class DemoTopicEventSource implements EventTarget {
   }
 }
 
+export function isDemoTopicEventSourcePath(requestPath: string, baseUrl: string) {
+  const requestUrl = new URL(requestPath, "http://demo.invalid");
+  const eventsUrl = new URL("events", new URL(baseUrl, "http://demo.invalid"));
+  return requestUrl.pathname === eventsUrl.pathname;
+}
+
 export function installDemoEventSource() {
   if (typeof window === "undefined") return;
   const demoWindow = window as DemoEventSourceWindow;
@@ -121,7 +127,7 @@ export function installDemoEventSource() {
   const NativeEventSource = window.EventSource;
   window.__CVM_DEMO_CREATE_EVENT_SOURCE__ = (path) => {
     const requestUrl = new URL(path, window.location.href);
-    if (requestUrl.pathname === "/events") {
+    if (isDemoTopicEventSourcePath(requestUrl.toString(), import.meta.env.BASE_URL)) {
       return new DemoTopicEventSource(requestUrl) as unknown as EventSource;
     }
     return new NativeEventSource(path);

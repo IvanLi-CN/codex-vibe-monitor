@@ -2382,6 +2382,31 @@ export const DrawerOperations: Story = {
 
     await userEvent.click(historyButton);
     await userEvent.click(await documentScope.findByRole("tab", { name: /事件记录|Events/i }));
+    await waitFor(() => {
+      expect(
+        Array.from(MockEventSource.instances).some(
+          (instance) => instance.readyState === MockEventSource.OPEN,
+        ),
+      ).toBe(true);
+    });
+    const descriptor = {
+      topic: "prompt-cache.conversation-operations.window",
+      params: { promptCacheKey: CONVERSATION_SHORT_KEY },
+    };
+    const items = operationEventsByPromptCacheKey.get(CONVERSATION_SHORT_KEY) ?? [];
+    MockEventSource.emitMessage({
+      type: "snapshot",
+      topic: descriptor,
+      topicKey: JSON.stringify(descriptor),
+      schemaEpoch: "prompt-cache.conversation-operations.window/v1",
+      cursor: 1,
+      payload: {
+        items,
+        total: items.length,
+        page: 1,
+        pageSize: 20,
+      },
+    });
     await expect(
       await documentScope.findByText(
         /查看当前对话的路由、正向代理与请求改写事件。|Review routing, forward-proxy, and request-rewrite events for this conversation\./i,

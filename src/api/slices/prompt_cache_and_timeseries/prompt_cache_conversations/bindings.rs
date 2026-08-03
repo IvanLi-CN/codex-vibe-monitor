@@ -16,6 +16,19 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO: &str = 
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE: usize = 20;
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeStickyMutation {
+    Unchanged,
+    Changed,
+    Suppressed,
+}
+
+impl RuntimeStickyMutation {
+    pub(crate) fn writes_conversation_operation(self) -> bool {
+        matches!(self, Self::Changed | Self::Suppressed)
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) prompt_cache_key: String,
@@ -1151,7 +1164,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<bool> {
+) -> Result<RuntimeStickyMutation> {
     let event_prompt_cache_key = prompt_cache_key.filter(|key| *key == sticky_key);
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
@@ -1159,7 +1172,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .await
         .context("failed to acquire runtime sticky event write lock")?;
 
-    let write_outcome: Result<bool> = async {
+    let write_outcome: Result<RuntimeStickyMutation> = async {
         let (trigger_attempt_id, routing_source, routing_selection_audit) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
         let pending_clear_cause =
@@ -1208,7 +1221,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 )
                 .await?;
             }
-            return Ok(false);
+            return Ok(RuntimeStickyMutation::Suppressed);
         }
 
         let previous_account_id = sqlx::query_scalar::<_, i64>(
@@ -1276,7 +1289,11 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 .await?;
             }
         }
-        Ok(sticky_changed)
+        Ok(if sticky_changed {
+            RuntimeStickyMutation::Changed
+        } else {
+            RuntimeStickyMutation::Unchanged
+        })
     }
     .await;
 

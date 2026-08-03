@@ -66,6 +66,7 @@ import type {
 } from "../../lib/api";
 import {
   fetchInvocationRecords,
+  fetchInvocationRecordsSummary,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversationOperationEvents,
   fetchUpstreamAccounts,
@@ -108,6 +109,7 @@ const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE = 20;
+const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX = 96;
 const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
 const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
@@ -1766,14 +1768,18 @@ function ConversationActivityChart({
 function PromptCacheConversationActivityOverview({
   open,
   conversationKey,
+  historyQueryForConversationKey,
   realtimePayload,
   isRealtimeLoading,
+  allowHttpFallback,
   t,
 }: {
   open: boolean;
   conversationKey: string | null;
+  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
   realtimePayload: InvocationHistoryOverviewTopicPayload | null;
   isRealtimeLoading: boolean;
+  allowHttpFallback: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const { locale } = useTranslation();
@@ -1788,6 +1794,7 @@ function PromptCacheConversationActivityOverview({
   const [chartIsSampled, setChartIsSampled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fallbackRequestSeqRef = useRef(0);
 
   const numberFormatter = useMemo(
     () =>
@@ -1836,6 +1843,7 @@ function PromptCacheConversationActivityOverview({
 
   useEffect(() => {
     if (!realtimePayload) return;
+    fallbackRequestSeqRef.current += 1;
     setSummary(realtimePayload.summary);
     setRecords(realtimePayload.records);
     setChartRangeStartMs(
@@ -1849,6 +1857,61 @@ function PromptCacheConversationActivityOverview({
     setIsLoading(false);
     setError(null);
   }, [realtimePayload]);
+
+  useEffect(() => {
+    if (!open || !conversationKey || realtimePayload || !allowHttpFallback) return;
+    const requestSeq = fallbackRequestSeqRef.current + 1;
+    fallbackRequestSeqRef.current = requestSeq;
+    const controller = new AbortController();
+    const baseQuery = historyQueryForConversationKey?.(conversationKey) ?? {
+      promptCacheKey: conversationKey,
+    };
+    const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = baseQuery;
+    void page;
+    void pageSize;
+    void snapshotId;
+    void sortBy;
+    void sortOrder;
+    void signal;
+    setIsLoading(true);
+    setError(null);
+    void Promise.all([
+      fetchInvocationRecordsSummary({ ...filters, signal: controller.signal }),
+      fetchInvocationRecords({
+        ...filters,
+        page: 1,
+        pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        signal: controller.signal,
+      }),
+    ])
+      .then(([nextSummary, response]) => {
+        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
+        const occurredAt = response.records
+          .map((record) => Date.parse(record.occurredAt))
+          .filter((value) => Number.isFinite(value));
+        setSummary(nextSummary);
+        setRecords(response.records);
+        setChartRangeStartMs(occurredAt.length > 0 ? Math.min(...occurredAt) : null);
+        setChartRangeEndMs(occurredAt.length > 0 ? Math.max(...occurredAt) : null);
+        setChartTotal(response.total);
+        setChartIsSampled(response.records.length < response.total);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+        setIsLoading(false);
+      });
+    return () => controller.abort();
+  }, [allowHttpFallback, conversationKey, historyQueryForConversationKey, open, realtimePayload]);
 
   const bucketSet = useMemo(
     () =>
@@ -1993,6 +2056,7 @@ export function PromptCacheConversationHistoryDrawer({
   const activeLoadControllerRef = useRef<AbortController | null>(null);
   const operationsLoadControllerRef = useRef<AbortController | null>(null);
   const operationsRequestSeqRef = useRef(0);
+  const bindingHydrationSeqRef = useRef(0);
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
   const historyNextPageRef = useRef(1);
   const historyHasMoreRef = useRef(false);
@@ -2063,6 +2127,7 @@ export function PromptCacheConversationHistoryDrawer({
     overview: overviewTopic,
     binding: bindingTopic,
     operations: operationsTopic,
+    isSseUnavailable,
   } = useConversationDetailTopics({
     open,
     activeTab,
@@ -2171,6 +2236,8 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     const response = operationsTopic.data;
     if (!response || !open || activeTab !== "operations") return;
+    operationsRequestSeqRef.current += 1;
+    operationsLoadControllerRef.current?.abort();
     const nextItems = Array.from(
       new Map(
         [...response.items, ...operationEventsRef.current].map((item) => [item.id, item]),
@@ -2308,6 +2375,19 @@ export function PromptCacheConversationHistoryDrawer({
     [runLoad],
   );
 
+  useEffect(() => {
+    if (
+      !open ||
+      !conversationKey ||
+      activeTab !== "calls" ||
+      callsTopic.data ||
+      !isSseUnavailable
+    ) {
+      return;
+    }
+    void load();
+  }, [activeTab, callsTopic.data, conversationKey, isSseUnavailable, load, open]);
+
   const loadOperationEvents = useCallback(
     async ({ append = false }: { append?: boolean } = {}) => {
       if (!open || !conversationKey || activeTab !== "operations") return;
@@ -2434,6 +2514,8 @@ export function PromptCacheConversationHistoryDrawer({
     }
 
     const controller = new AbortController();
+    const hydrationSeq = bindingHydrationSeqRef.current + 1;
+    bindingHydrationSeqRef.current = hydrationSeq;
     bindingDraftDirtyRef.current = false;
     setBindingRemoteConflict(null);
     setBindingOwnerConfirmAllowsRemoteOverwrite(false);
@@ -2456,6 +2538,12 @@ export function PromptCacheConversationHistoryDrawer({
               .filter((groupName) => groupName.length > 0),
           ),
         ).sort((left, right) => left.localeCompare(right));
+        setBindingAccounts(accounts);
+        setBindingGroups(groups);
+        setBindingProxyNodes(
+          (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
+        );
+        if (hydrationSeq !== bindingHydrationSeqRef.current) return;
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
         applyBindingPolicyDraft(nextBinding, {
@@ -2475,19 +2563,16 @@ export function PromptCacheConversationHistoryDrawer({
               ? String(accounts[0].id)
               : "",
         );
-        setBindingAccounts(accounts);
-        setBindingGroups(groups);
-        setBindingProxyNodes(
-          (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
-        );
         setInlinePolicyErrors({});
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || hydrationSeq !== bindingHydrationSeqRef.current) return;
         setBindingError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setBindingLoading(false);
+        if (!controller.signal.aborted && hydrationSeq === bindingHydrationSeqRef.current) {
+          setBindingLoading(false);
+        }
       });
 
     return () => controller.abort();
@@ -2496,6 +2581,7 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     const nextBinding = bindingTopic.data;
     if (!nextBinding || !open || activeTab !== "settings") return;
+    bindingHydrationSeqRef.current += 1;
     if (bindingDraftDirtyRef.current) {
       setBindingRemoteConflict(nextBinding);
       return;
@@ -2537,6 +2623,9 @@ export function PromptCacheConversationHistoryDrawer({
     if (!open || !conversationKey || activeTab !== "operations") {
       return;
     }
+    if (operationsTopic.data) {
+      return;
+    }
     operationEventsRef.current = [];
     operationsPageRef.current = 1;
     operationsTotalRef.current = 0;
@@ -2544,8 +2633,17 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsTotal(0);
     setOperationsPage(1);
     setOperationsError(null);
-    void loadOperationEvents();
-  }, [activeTab, conversationKey, loadOperationEvents, open]);
+    if (!operationsTopic.data && isSseUnavailable) {
+      void loadOperationEvents();
+    }
+  }, [
+    activeTab,
+    conversationKey,
+    isSseUnavailable,
+    loadOperationEvents,
+    open,
+    operationsTopic.data,
+  ]);
 
   useEffect(() => {
     if (!open || activeTab !== "calls" || !drawerBodyElement) return;
@@ -3643,8 +3741,10 @@ export function PromptCacheConversationHistoryDrawer({
             <PromptCacheConversationActivityOverview
               open={open}
               conversationKey={conversationKey}
+              historyQueryForConversationKey={historyQueryForConversationKey}
               realtimePayload={overviewTopic.data}
               isRealtimeLoading={overviewTopic.isLoading}
+              allowHttpFallback={isSseUnavailable}
               t={t}
             />
           </div>
