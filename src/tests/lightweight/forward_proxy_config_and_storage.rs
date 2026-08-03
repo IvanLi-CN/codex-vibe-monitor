@@ -2394,6 +2394,53 @@ async fn write_streaming_raw_payload_to_file_born_gzips_large_streams() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[test]
+fn direct_streaming_raw_payload_writer_respects_gzip_immediate_threshold() {
+    let temp_dir = make_temp_test_dir("proxy-direct-stream-gzip-threshold");
+    let raw_path = temp_dir.join("stream-response.bin");
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Bytes>(2);
+    tx.send(Bytes::from_static(b"small"))
+        .expect("send small chunk");
+    drop(tx);
+
+    let meta = write_direct_streaming_raw_payload_to_file(
+        raw_path.clone(),
+        None,
+        Some(16),
+        RawCompressionCodec::Gzip,
+        rx,
+    );
+    let stored_path = PathBuf::from(meta.path.expect("plaintext direct stream path"));
+    assert_eq!(stored_path, raw_path);
+    assert_eq!(
+        read_proxy_raw_bytes(stored_path.to_string_lossy().as_ref(), None)
+            .expect("read plaintext direct stream"),
+        b"small"
+    );
+
+    let compressed_path = temp_dir.join("stream-response-compressed.bin");
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Bytes>(2);
+    tx.send(Bytes::from_static(b"large"))
+        .expect("send large chunk");
+    drop(tx);
+    let meta = write_direct_streaming_raw_payload_to_file(
+        compressed_path.clone(),
+        None,
+        Some(4),
+        RawCompressionCodec::Gzip,
+        rx,
+    );
+    let stored_path = PathBuf::from(meta.path.expect("gzip direct stream path"));
+    assert!(stored_path.ends_with("stream-response-compressed.bin.gz"));
+    assert_eq!(
+        read_proxy_raw_bytes(stored_path.to_string_lossy().as_ref(), None)
+            .expect("read gzip direct stream"),
+        b"large"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn write_streaming_raw_payload_to_file_removes_plain_path_after_write_failure() {

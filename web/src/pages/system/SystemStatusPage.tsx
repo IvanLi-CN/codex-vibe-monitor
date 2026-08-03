@@ -131,6 +131,15 @@ type OverviewPanelProps = {
 };
 
 function OverviewPanel({ status, t }: OverviewPanelProps) {
+  const rawMetricsState = status.rawMetricsHealth.state;
+  const rawMetricsMessage =
+    rawMetricsState === "ready"
+      ? t("system.status.rawMetrics.ready")
+      : rawMetricsState === "deferred"
+        ? t("system.status.rawMetrics.deferred")
+        : rawMetricsState === "error"
+          ? t("system.status.rawMetrics.error")
+          : t("system.status.rawMetrics.preparing");
   const projectDiskBytes =
     status.archivedBodies.bytes +
     status.rawBodies.bytes +
@@ -229,6 +238,11 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
           </div>
           <div className="mt-3">
             <Alert variant="info">{t("system.status.rawPayloadDefinition")}</Alert>
+          </div>
+          <div className="mt-3" data-testid="system-status-raw-metrics-health">
+            <Alert variant={rawMetricsState === "ready" ? "success" : "info"}>
+              {rawMetricsMessage}
+            </Alert>
           </div>
         </div>
       </div>

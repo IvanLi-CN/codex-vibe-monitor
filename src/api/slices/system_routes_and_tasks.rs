@@ -1,15 +1,16 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
 
-pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 10;
+pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 60;
+const SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE: i64 = 128;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +40,14 @@ pub(crate) struct SystemProjectionHealth {
     pub(crate) long_term: SystemProjectionConsumerHealth,
 }
 
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemRawMetricsHealth {
+    pub(crate) state: String,
+    pub(crate) inventory_cursor: i64,
+    pub(crate) updated_age_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusResponse {
@@ -53,6 +62,7 @@ pub(crate) struct SystemStatusResponse {
     pub(crate) database_bytes: u64,
     pub(crate) other_files_bytes: u64,
     pub(crate) projection_health: SystemProjectionHealth,
+    pub(crate) raw_metrics_health: SystemRawMetricsHealth,
     pub(crate) refreshed_at: String,
 }
 
@@ -137,6 +147,41 @@ pub(crate) struct SystemArchiveAggRow {
 pub(crate) struct SystemRawBodyPathRow {
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
+}
+
+#[derive(Debug, Default, FromRow)]
+struct SystemRawPayloadMetricsRow {
+    inventory_state: String,
+    inventory_cursor: i64,
+    link_inventory_cursor: i64,
+    raw_count: i64,
+    raw_bytes: i64,
+    request_raw_count: i64,
+    request_raw_bytes: i64,
+    response_raw_count: i64,
+    response_raw_bytes: i64,
+    updated_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct SystemRawPayloadInventoryRow {
+    id: i64,
+    request_raw_path: Option<String>,
+    response_raw_path: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct SystemRawPayloadBlobLinkRow {
+    id: i64,
+    raw_path: String,
+    raw_role: String,
+}
+
+#[derive(Debug, FromRow)]
+struct SystemRawPayloadInventoryPathRow {
+    byte_size: i64,
+    request_seen: i64,
+    response_seen: i64,
 }
 
 impl From<SystemTaskRunRow> for SystemTaskRunResponse {
@@ -303,6 +348,308 @@ pub(crate) fn compute_other_files_bytes(
         .sum()
 }
 
+async fn record_system_raw_payload_inventory_path(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    raw_path: &str,
+    byte_size: i64,
+    request_seen: bool,
+    response_seen: bool,
+) -> Result<(i64, i64, i64, i64, i64, i64)> {
+    let existing = sqlx::query_as::<_, SystemRawPayloadInventoryPathRow>(
+        r#"
+        SELECT byte_size, request_seen, response_seen
+        FROM system_raw_payload_inventory_paths
+        WHERE raw_path = ?1
+        "#,
+    )
+    .bind(raw_path)
+    .fetch_optional(tx.as_mut())
+    .await?;
+
+    let Some(existing) = existing else {
+        sqlx::query(
+            r#"
+            INSERT INTO system_raw_payload_inventory_paths (
+                raw_path, byte_size, request_seen, response_seen
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+        )
+        .bind(raw_path)
+        .bind(byte_size)
+        .bind(i64::from(request_seen))
+        .bind(i64::from(response_seen))
+        .execute(tx.as_mut())
+        .await?;
+        return Ok((
+            1,
+            byte_size,
+            i64::from(request_seen),
+            if request_seen { byte_size } else { 0 },
+            i64::from(response_seen),
+            if response_seen { byte_size } else { 0 },
+        ));
+    };
+
+    let request_added = request_seen && existing.request_seen == 0;
+    let response_added = response_seen && existing.response_seen == 0;
+    if request_added || response_added {
+        sqlx::query(
+            r#"
+            UPDATE system_raw_payload_inventory_paths
+            SET request_seen = MAX(request_seen, ?2), response_seen = MAX(response_seen, ?3)
+            WHERE raw_path = ?1
+            "#,
+        )
+        .bind(raw_path)
+        .bind(i64::from(request_seen))
+        .bind(i64::from(response_seen))
+        .execute(tx.as_mut())
+        .await?;
+    }
+    Ok((
+        0,
+        0,
+        i64::from(request_added),
+        if request_added { existing.byte_size } else { 0 },
+        i64::from(response_added),
+        if response_added {
+            existing.byte_size
+        } else {
+            0
+        },
+    ))
+}
+
+pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("system_raw_metrics_inventory") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            set_system_raw_metrics_health_override(state, Some("deferred")).await;
+            debug!(
+                metrics_source = "inventory",
+                gate_outcome = "deferred",
+                defer_reason = "writer_pressure",
+                reason = %reason,
+                "system raw metrics inventory deferred by database pressure"
+            );
+            return Ok(());
+        }
+    };
+    let snapshot = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let rows = sqlx::query_as::<_, SystemRawPayloadInventoryRow>(
+        r#"
+        SELECT id, request_raw_path, response_raw_path
+        FROM codex_invocations
+        WHERE id > ?1
+          AND (request_raw_path IS NOT NULL OR response_raw_path IS NOT NULL)
+        ORDER BY id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind(snapshot.inventory_cursor)
+    .bind(SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE)
+    .fetch_all(&state.pool)
+    .await?;
+    let link_rows = sqlx::query_as::<_, SystemRawPayloadBlobLinkRow>(
+        r#"
+        SELECT id, raw_path, raw_role
+        FROM proxy_raw_payload_blob_links
+        WHERE id > ?1
+        ORDER BY id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind(snapshot.link_inventory_cursor)
+    .bind(SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let fallback_root = state.config.database_path.parent();
+    let mut paths = HashMap::<String, (i64, bool, bool)>::new();
+    for row in &rows {
+        for (raw_path, is_request) in [
+            (row.request_raw_path.as_deref(), true),
+            (row.response_raw_path.as_deref(), false),
+        ] {
+            let Some(raw_path) = raw_path else {
+                continue;
+            };
+            let Some(candidate) = resolved_raw_path_read_candidates(raw_path, fallback_root)
+                .into_iter()
+                .find(|candidate| candidate.exists())
+            else {
+                continue;
+            };
+            let entry = paths
+                .entry(candidate.to_string_lossy().to_string())
+                .or_insert((count_file_size(&candidate) as i64, false, false));
+            if is_request {
+                entry.1 = true;
+            } else {
+                entry.2 = true;
+            }
+        }
+    }
+    for row in &link_rows {
+        let Some(candidate) = resolved_raw_path_read_candidates(&row.raw_path, fallback_root)
+            .into_iter()
+            .find(|candidate| candidate.exists())
+        else {
+            continue;
+        };
+        let entry = paths
+            .entry(candidate.to_string_lossy().to_string())
+            .or_insert((count_file_size(&candidate) as i64, false, false));
+        match row.raw_role.as_str() {
+            "request" => entry.1 = true,
+            "response" => entry.2 = true,
+            _ => {}
+        }
+    }
+
+    let mut deltas = (0_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64);
+    let mut tx = state.pool.begin().await?;
+    for (path, (byte_size, request_seen, response_seen)) in paths {
+        let delta = record_system_raw_payload_inventory_path(
+            &mut tx,
+            &path,
+            byte_size,
+            request_seen,
+            response_seen,
+        )
+        .await?;
+        deltas.0 += delta.0;
+        deltas.1 += delta.1;
+        deltas.2 += delta.2;
+        deltas.3 += delta.3;
+        deltas.4 += delta.4;
+        deltas.5 += delta.5;
+    }
+    let next_cursor = rows
+        .last()
+        .map(|row| row.id)
+        .unwrap_or(snapshot.inventory_cursor);
+    let next_link_cursor = link_rows
+        .last()
+        .map(|row| row.id)
+        .unwrap_or(snapshot.link_inventory_cursor);
+    let state_name = if rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
+        && link_rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
+    {
+        "ready"
+    } else {
+        "preparing"
+    };
+    sqlx::query(
+        r#"
+        UPDATE system_raw_payload_metrics
+        SET inventory_state = ?1,
+            inventory_cursor = ?2,
+            link_inventory_cursor = ?3,
+            raw_count = raw_count + ?4,
+            raw_bytes = raw_bytes + ?5,
+            request_raw_count = request_raw_count + ?6,
+            request_raw_bytes = request_raw_bytes + ?7,
+            response_raw_count = response_raw_count + ?8,
+            response_raw_bytes = response_raw_bytes + ?9,
+            updated_at = datetime('now')
+        WHERE singleton = 1
+        "#,
+    )
+    .bind(state_name)
+    .bind(next_cursor)
+    .bind(next_link_cursor)
+    .bind(deltas.0)
+    .bind(deltas.1)
+    .bind(deltas.2)
+    .bind(deltas.3)
+    .bind(deltas.4)
+    .bind(deltas.5)
+    .execute(tx.as_mut())
+    .await?;
+    tx.commit().await?;
+    set_system_raw_metrics_health_override(state, None).await;
+    debug!(
+        metrics_source = "inventory",
+        inventory_state = state_name,
+        inventory_cursor = next_cursor,
+        link_inventory_cursor = next_link_cursor,
+        legacy_row_count = rows.len(),
+        link_row_count = link_rows.len(),
+        discovered_path_count = deltas.0,
+        "system raw metrics inventory batch completed"
+    );
+    Ok(())
+}
+
+pub(crate) async fn set_system_raw_metrics_health_override(
+    state: &AppState,
+    override_state: Option<&str>,
+) {
+    let override_state = override_state.map(str::to_string);
+    let mut cache = state.system_status_cache.lock().await;
+    if cache.raw_metrics_health_override == override_state {
+        return;
+    }
+    cache.raw_metrics_health_override = override_state;
+    cache.latest = None;
+}
+
+pub(crate) async fn reset_system_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM system_raw_payload_inventory_paths")
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE system_raw_payload_metrics
+        SET inventory_state = 'preparing',
+            inventory_cursor = 0,
+            link_inventory_cursor = 0,
+            raw_count = 0,
+            raw_bytes = 0,
+            request_raw_count = 0,
+            request_raw_bytes = 0,
+            response_raw_count = 0,
+            response_raw_bytes = 0,
+            updated_at = datetime('now')
+        WHERE singleton = 1
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await?;
+    tx.commit().await?;
+    debug!(
+        metrics_source = "inventory",
+        "system raw metrics inventory reset after retention"
+    );
+    Ok(())
+}
+
+pub(crate) fn spawn_system_raw_payload_metrics_inventory(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
+                set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
+                warn!(error = %error, "system raw metrics inventory batch failed");
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+            }
+        }
+    })
+}
+
 pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
@@ -329,24 +676,21 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
     .fetch_one(&state.pool)
     .await?;
 
-    let raw_rows = sqlx::query_as::<_, SystemRawBodyPathRow>(
-        r#"
-        SELECT
-            request_raw_path,
-            response_raw_path
-        FROM codex_invocations
-        WHERE request_raw_path IS NOT NULL
-           OR response_raw_path IS NOT NULL
-        "#,
+    let raw_metrics = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
-    .fetch_all(&state.pool)
+    .fetch_one(&state.pool)
     .await?;
+    let raw_metrics_state = state
+        .system_status_cache
+        .lock()
+        .await
+        .raw_metrics_health_override
+        .clone()
+        .unwrap_or_else(|| raw_metrics.inventory_state.clone());
 
     let archive_dir = resolved_archive_dir(&state.config);
     let raw_dir = state.config.resolved_proxy_raw_dir();
-    let raw_path_fallback_root = state.config.database_path.parent();
-    let (raw_bodies, request_raw_bodies, response_raw_bodies) =
-        collect_existing_raw_payload_metrics(&raw_rows, raw_path_fallback_root);
     let archived_paths = sqlx::query_scalar::<_, String>(
         r#"
         SELECT file_path
@@ -381,9 +725,18 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
             count: archived.archived_count.unwrap_or(0).max(0) as u64,
             bytes: archive_bytes,
         },
-        raw_bodies,
-        request_raw_bodies,
-        response_raw_bodies,
+        raw_bodies: SystemStatusMetric {
+            count: raw_metrics.raw_count.max(0) as u64,
+            bytes: raw_metrics.raw_bytes.max(0) as u64,
+        },
+        request_raw_bodies: SystemStatusMetric {
+            count: raw_metrics.request_raw_count.max(0) as u64,
+            bytes: raw_metrics.request_raw_bytes.max(0) as u64,
+        },
+        response_raw_bodies: SystemStatusMetric {
+            count: raw_metrics.response_raw_count.max(0) as u64,
+            bytes: raw_metrics.response_raw_bytes.max(0) as u64,
+        },
         database_bytes,
         other_files_bytes,
         projection_health: SystemProjectionHealth {
@@ -418,27 +771,60 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
                 last_error_kind: long_term_health.last_error_kind,
             },
         },
+        raw_metrics_health: SystemRawMetricsHealth {
+            state: raw_metrics_state,
+            inventory_cursor: raw_metrics.inventory_cursor,
+            updated_age_ms: None,
+        },
         refreshed_at: format_utc_iso(Utc::now()),
     })
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
-    {
-        let cache = state.system_status_cache.lock().await;
-        if let Some(entry) = cache.latest.as_ref()
-            && entry.cached_at.elapsed() < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-        {
-            return Ok(entry.response.clone());
-        }
-    }
+    loop {
+        let wait_for = {
+            let mut cache = state.system_status_cache.lock().await;
+            if let Some(entry) = cache.latest.as_ref()
+                && entry.cached_at.elapsed() < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+            {
+                return Ok(entry.response.clone());
+            }
+            if let Some(signal) = cache.in_flight.clone() {
+                cache.waiter_count = cache.waiter_count.saturating_add(1);
+                Some(signal.subscribe())
+            } else {
+                let (signal, _) = watch::channel(false);
+                cache.in_flight = Some(signal);
+                None
+            }
+        };
 
-    let response = load_system_status_uncached(state).await?;
-    let mut cache = state.system_status_cache.lock().await;
-    cache.latest = Some(SystemStatusCacheEntry {
-        cached_at: Instant::now(),
-        response: response.clone(),
-    });
-    Ok(response)
+        if let Some(mut signal) = wait_for {
+            let _ = signal.changed().await;
+            continue;
+        }
+
+        let response = load_system_status_uncached(state).await;
+        let mut cache = state.system_status_cache.lock().await;
+        if let Ok(response) = &response {
+            cache.latest = Some(SystemStatusCacheEntry {
+                cached_at: Instant::now(),
+                response: response.clone(),
+            });
+        }
+        let waiter_count = cache.waiter_count;
+        cache.waiter_count = 0;
+        if let Some(signal) = cache.in_flight.take() {
+            let _ = signal.send(true);
+        }
+        debug!(
+            metrics_source = "system_status_cache",
+            cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
+            singleflight_waiter_count = waiter_count,
+            "system status cache refresh completed"
+        );
+        return response;
+    }
 }
 
 pub(crate) async fn invalidate_system_status_cache(state: &AppState) {

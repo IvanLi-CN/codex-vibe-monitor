@@ -80,6 +80,7 @@ describe("SystemStatusPage", () => {
       responseRawBodies: { count: 3, bytes: 2_048 },
       databaseBytes: 2_048,
       otherFilesBytes: 8_192,
+      rawMetricsHealth: { state: "ready", inventoryCursor: 6 },
       projectionHealth: {
         terminal: {
           state: "healthy",
@@ -124,6 +125,8 @@ describe("SystemStatusPage", () => {
     expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-projection-health"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="system-status-raw-metrics-health"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("Raw payload 指标已就绪，并由写侧持续维护。");
     expect(host?.textContent ?? "").toContain("修复中");
     expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull();

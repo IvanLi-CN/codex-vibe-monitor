@@ -15,6 +15,12 @@ related_specs:
 
 # Proxy capture body replay safety
 
+## Shared response raw capture
+
+- A pool invocation and its upstream attempt can describe the same wire response. Capture and compress that byte stream once, then retain independent metadata references. Retention may delete the physical file only after no live invocation or attempt still references it.
+- Cold compression is a shared-path rename: update every invocation and attempt reference atomically before deleting the original file. On upgrades, seed pre-trigger owner links once so attempt-only historical captures remain retained and counted.
+- The raw capture ingress must be bounded. Durable spool saturation is an explicit `capture_unavailable` outcome, not permission to accumulate an unbounded in-memory queue or to delay downstream forwarding.
+
 ## Context
 
 Proxy capture endpoints need to forward requests quickly, but they also own raw payload retention, usage parsing, prompt-cache routing, encrypted-session owner binding, body rewrite, failover replay, terminal overlay, and failure classification.

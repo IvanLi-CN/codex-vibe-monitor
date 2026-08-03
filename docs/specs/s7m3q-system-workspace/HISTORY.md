@@ -13,3 +13,5 @@
 - 2026-06-23: `系统/状态` 的 `raw payload 聚焦` 改成“总量卡 + request 行 + response 行”的纵向结构，避免 request-heavy 场景在窄列中出现四小卡挤压变形。
 - 2026-06-23: `系统/状态` 顶部总览从左右并排重排为顺序流，先展示主读数与项目级 breakdown，再展示 `raw payload 聚焦`，移除大面积无信息留白。
 - 2026-07-15: `系统/状态` 中 live invocation 的 success/non-success 计数改为跟随 success-like 口径；未来新写入的 `warning_success` 计入 success，不再落入 non-success。
+- Raw metrics use a persisted, cursor-based snapshot. Blob links cover raw payload paths attached after their invocation row was first observed, keeping status reads independent of full raw-file inventories.
+- Existing attempt-only captures are seeded into blob links once during schema initialization; retention compression invalidates the incremental inventory so renamed files are never double-counted. Pressure-gated inventory deferral is visible without a diagnostic SQLite write.

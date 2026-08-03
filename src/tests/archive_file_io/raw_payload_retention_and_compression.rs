@@ -2,6 +2,209 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn shared_raw_blob_keeps_file_reference_until_last_owner_is_removed() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("shared-raw-blob-links").await;
+    let shared_path = config.proxy_raw_dir.join("shared-response.zst");
+    let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "shared-raw-invocation",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        Some(&shared_path),
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, attempt_index,
+            distinct_account_index, same_account_retry_index, status,
+            response_raw_path, response_raw_codec, response_raw_size
+        ) VALUES (?1, ?2, '/v1/responses', 'pool', 0, 0, 0, 'success', ?3, 'zstd', 1)
+        "#,
+    )
+    .bind("shared-raw-invocation")
+    .bind(&occurred_at)
+    .bind(shared_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("insert paired attempt raw link");
+
+    let link_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE raw_path = ?1")
+            .bind(shared_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count shared links");
+    assert_eq!(link_count, 2);
+
+    sqlx::query("UPDATE codex_invocations SET response_raw_path = NULL WHERE invoke_id = ?1")
+        .bind("shared-raw-invocation")
+        .execute(&pool)
+        .await
+        .expect("release invocation raw link");
+    let link_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE raw_path = ?1")
+            .bind(shared_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count attempt-only link");
+    assert_eq!(link_count, 1);
+
+    sqlx::query(
+        "UPDATE pool_upstream_request_attempts SET response_raw_path = NULL WHERE invoke_id = ?1",
+    )
+    .bind("shared-raw-invocation")
+    .execute(&pool)
+    .await
+    .expect("release attempt raw link");
+    let blob_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM proxy_raw_payload_blobs WHERE raw_path = ?1")
+            .bind(shared_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count released blob");
+    assert_eq!(blob_count, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn schema_backfill_links_existing_pool_attempt_response_raw() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("legacy-attempt-raw-link").await;
+    let shared_path = config.proxy_raw_dir.join("legacy-attempt-response.zst");
+    let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-attempt-link",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        None,
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, attempt_index,
+            distinct_account_index, same_account_retry_index, status,
+            response_raw_path, response_raw_codec, response_raw_size
+        ) VALUES (?1, ?2, '/v1/responses', 'pool', 0, 0, 0, 'success', ?3, 'zstd', 1)
+        "#,
+    )
+    .bind("legacy-attempt-link")
+    .bind(&occurred_at)
+    .bind(shared_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("insert legacy attempt raw");
+
+    // Simulate an upgrade from before the blob-link triggers existed.
+    sqlx::query("DELETE FROM proxy_raw_payload_blob_links")
+        .execute(&pool)
+        .await
+        .expect("clear current links");
+    sqlx::query("DELETE FROM proxy_raw_payload_blobs")
+        .execute(&pool)
+        .await
+        .expect("clear current blobs");
+    sqlx::query("DELETE FROM proxy_raw_payload_blob_link_migrations")
+        .execute(&pool)
+        .await
+        .expect("clear migration marker");
+    ensure_schema(&pool).await.expect("run legacy link seed");
+
+    let link_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE raw_path = ?1 AND owner_kind = 'attempt'",
+    )
+    .bind(shared_path.to_string_lossy().as_ref())
+    .fetch_one(&pool)
+    .await
+    .expect("count backfilled attempt link");
+    assert_eq!(link_count, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cold_compression_updates_every_shared_raw_blob_owner_before_removing_old_file() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("shared-raw-blob-cold-compression").await;
+    let shared_path = config.proxy_raw_dir.join("shared-response.bin");
+    fs::write(&shared_path, b"shared response raw").expect("write shared raw");
+    let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "shared-raw-compression",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        Some(&shared_path),
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, attempt_index,
+            distinct_account_index, same_account_retry_index, status,
+            response_raw_path, response_raw_codec, response_raw_size
+        ) VALUES (?1, ?2, '/v1/responses', 'pool', 0, 0, 0, 'success', ?3, 'identity', 19)
+        "#,
+    )
+    .bind("shared-raw-compression")
+    .bind(&occurred_at)
+    .bind(shared_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("insert paired attempt raw link");
+    config.proxy_raw_hot_secs = 0;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    compress_cold_proxy_raw_payloads(&pool, &config, None, false)
+        .await
+        .expect("cold compress shared raw");
+
+    let invocation_path: String =
+        sqlx::query_scalar("SELECT response_raw_path FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("shared-raw-compression")
+            .fetch_one(&pool)
+            .await
+            .expect("load invocation path");
+    let attempt_path: String = sqlx::query_scalar(
+        "SELECT response_raw_path FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind("shared-raw-compression")
+    .fetch_one(&pool)
+    .await
+    .expect("load attempt path");
+    assert_eq!(invocation_path, attempt_path);
+    assert!(invocation_path.ends_with(".gz"));
+    assert!(Path::new(&invocation_path).exists());
+    assert!(!shared_path.exists());
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;

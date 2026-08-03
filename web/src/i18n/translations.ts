@@ -1572,6 +1572,14 @@ const baseTranslations = {
     "system.status.cards.rawBodiesBytes": "Raw payload total",
     "system.status.cards.rawBodiesBytesHint":
       "De-duplicated on-disk bytes for the request + response raw payload file union.",
+    "system.status.rawMetrics.preparing":
+      "Raw payload metrics are being prepared in the background. Values will become complete without scanning files from this page.",
+    "system.status.rawMetrics.ready":
+      "Raw payload metrics are ready and maintained from the write side.",
+    "system.status.rawMetrics.deferred":
+      "Raw payload metrics inventory is deferred while database pressure is elevated.",
+    "system.status.rawMetrics.error":
+      "Raw payload metrics inventory needs recovery; the last known values are retained.",
     "system.status.cards.requestRawBodiesCount": "Request raw payloads",
     "system.status.cards.requestRawBodiesCountHint":
       "Unique request-side raw payload files on disk.",
@@ -4341,6 +4349,11 @@ const baseTranslations = {
     "system.status.cards.rawBodiesBytes": "raw payload 总量",
     "system.status.cards.rawBodiesBytesHint":
       "request + response raw payload 去重并集后的磁盘实测字节数。",
+    "system.status.rawMetrics.preparing":
+      "Raw payload 指标正在后台建立；页面不会扫描文件，完成后数值会自动完整。",
+    "system.status.rawMetrics.ready": "Raw payload 指标已就绪，并由写侧持续维护。",
+    "system.status.rawMetrics.deferred": "数据库压力较高，Raw payload 指标盘点已延后。",
+    "system.status.rawMetrics.error": "Raw payload 指标盘点需要恢复，当前保留最近一次有效数值。",
     "system.status.cards.requestRawBodiesCount": "request raw payload 数量",
     "system.status.cards.requestRawBodiesCountHint": "去重后的 request 侧 raw payload 文件数。",
     "system.status.cards.requestRawBodiesBytes": "request 侧 raw payload",

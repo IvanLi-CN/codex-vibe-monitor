@@ -4218,42 +4218,18 @@ pub(crate) fn spawn_raw_payload_file_write(
         let spool = match RawOverflowSpool::create(state, &invoke_id, kind_for_spool, codec) {
             Ok(spool) => spool,
             Err(err) => {
-                let config = state.config.clone();
-                if !try_reserve_raw_overflow_memory(bytes_for_spool.len()) {
-                    warn!(
-                        capture_path = "memory_overflow",
-                        durability_mode = "memory_overflow",
-                        memory_queue_limit_bytes = RAW_OVERFLOW_MEMORY_QUEUE_TOTAL_MAX_BYTES,
-                        "raw spool and bounded memory overflow queues are both full"
-                    );
-                    return PendingRawPayloadWrite::Ready(RawPayloadMeta {
-                        path: None,
-                        size_bytes: bytes_for_spool.len() as i64,
-                        truncated: true,
-                        truncated_reason: Some("memory_overflow_queue_full".to_string()),
-                    });
-                }
-                return PendingRawPayloadWrite::Task(tokio::spawn(async move {
-                    debug!(
-                        capture_path = "memory_overflow",
-                        durability_mode = "memory_overflow",
-                        error = %err,
-                        "raw spool is unavailable; waiting for a bounded writer instead"
-                    );
-                    let _permit = semaphore
-                        .acquire_owned()
-                        .await
-                        .expect("raw writer semaphore is live");
-                    let meta = store_raw_payload_file(
-                        &config,
-                        &invoke_id,
-                        kind_for_spool,
-                        bytes_for_spool.clone(),
-                    )
-                    .await;
-                    release_raw_overflow_memory(bytes_for_spool.len());
-                    meta
-                }));
+                warn!(
+                    capture_path = "capture_unavailable",
+                    capture_unavailable_reason = "spool_capacity",
+                    error = %err,
+                    "raw capture unavailable because the durable spool cannot accept it"
+                );
+                return PendingRawPayloadWrite::Ready(RawPayloadMeta {
+                    path: None,
+                    size_bytes: bytes_for_spool.len() as i64,
+                    truncated: true,
+                    truncated_reason: Some("capture_unavailable:spool_capacity".to_string()),
+                });
             }
         };
         return PendingRawPayloadWrite::Task(tokio::spawn(async move {
@@ -4263,7 +4239,11 @@ pub(crate) fn spawn_raw_payload_file_write(
                     path: None,
                     size_bytes: bytes_for_spool.len() as i64,
                     truncated: true,
-                    truncated_reason: Some(format!("spool_write_failed:{err}")),
+                    truncated_reason: Some(if err.to_string().contains("capacity") {
+                        "capture_unavailable:spool_capacity".to_string()
+                    } else {
+                        "capture_unavailable:spool_write_failed".to_string()
+                    }),
                 };
             }
             spool.finish(bytes_for_spool.len() as i64).await
@@ -4404,93 +4384,19 @@ const RAW_OVERFLOW_SPOOL_DIR: &str = ".spool";
 const RAW_OVERFLOW_SPOOL_MAGIC: &[u8] = b"CVM_RAW_SPOOL_V1\n";
 pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
-const RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
-const RAW_OVERFLOW_MEMORY_QUEUE_TOTAL_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
 
 static RAW_OVERFLOW_SPOOL_RESERVATIONS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-static RAW_OVERFLOW_MEMORY_QUEUE_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-fn try_reserve_raw_overflow_memory(bytes: usize) -> bool {
-    let bytes = bytes as u64;
-    let mut current = RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire);
-    loop {
-        let Some(next) = current.checked_add(bytes) else {
-            return false;
-        };
-        if next > RAW_OVERFLOW_MEMORY_QUEUE_TOTAL_MAX_BYTES {
-            return false;
-        }
-        match RAW_OVERFLOW_MEMORY_QUEUE_BYTES.compare_exchange_weak(
-            current,
-            next,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        ) {
-            Ok(_) => return true,
-            Err(observed) => current = observed,
-        }
-    }
-}
-
-fn release_raw_overflow_memory(bytes: usize) {
-    RAW_OVERFLOW_MEMORY_QUEUE_BYTES.fetch_sub(bytes as u64, std::sync::atomic::Ordering::AcqRel);
-}
-
-// The global overflow reservation belongs to the queued payload, not its producer. A
-// canceled proxy capture can drop its sender while the async writer is still draining.
-struct RawOverflowMemoryReservation {
-    bytes: usize,
-}
-
-impl Drop for RawOverflowMemoryReservation {
-    fn drop(&mut self) {
-        release_raw_overflow_memory(self.bytes);
-    }
-}
 
 struct StreamingRawPayloadChunk {
     bytes: Bytes,
-    _overflow_reservation: Option<RawOverflowMemoryReservation>,
-    overflow_capture_pending_bytes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl StreamingRawPayloadChunk {
     fn unreserved(bytes: Bytes) -> Self {
-        Self {
-            bytes,
-            _overflow_reservation: None,
-            overflow_capture_pending_bytes: None,
-        }
-    }
-
-    fn reserved(
-        bytes: Bytes,
-        reservation_bytes: usize,
-        overflow_capture_pending_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    ) -> Self {
-        Self {
-            bytes,
-            _overflow_reservation: Some(RawOverflowMemoryReservation {
-                bytes: reservation_bytes,
-            }),
-            overflow_capture_pending_bytes: Some(overflow_capture_pending_bytes),
-        }
-    }
-}
-
-impl Drop for StreamingRawPayloadChunk {
-    fn drop(&mut self) {
-        if let Some(pending_bytes) = &self.overflow_capture_pending_bytes {
-            let _ = pending_bytes.fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |current| Some(current.saturating_sub(self.bytes.len())),
-            );
-        }
+        Self { bytes }
     }
 }
 
@@ -5124,13 +5030,11 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
 }
 
 pub(crate) struct AsyncStreamingRawPayloadWriter {
-    tx: Option<mpsc::UnboundedSender<StreamingRawPayloadChunk>>,
+    tx: Option<std::sync::mpsc::SyncSender<Bytes>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
     observed_size_bytes: i64,
     local_truncated_reason: Option<String>,
     local_truncated: bool,
-    memory_overflow_max_bytes: Option<usize>,
-    memory_overflow_pending_bytes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     spool: Option<RawOverflowSpool>,
 }
 
@@ -5149,8 +5053,6 @@ impl AsyncStreamingRawPayloadWriter {
                 observed_size_bytes: 0,
                 local_truncated_reason: None,
                 local_truncated: false,
-                memory_overflow_max_bytes: None,
-                memory_overflow_pending_bytes: None,
                 spool: None,
             };
         }
@@ -5192,64 +5094,34 @@ impl AsyncStreamingRawPayloadWriter {
                         observed_size_bytes: 0,
                         local_truncated_reason: None,
                         local_truncated: false,
-                        memory_overflow_max_bytes: None,
-                        memory_overflow_pending_bytes: None,
                         spool: Some(spool),
                     }
                 }
                 Err(err) => {
-                    let (tx, mut rx) = mpsc::unbounded_channel::<StreamingRawPayloadChunk>();
-                    let (meta_tx, meta_rx) = oneshot::channel();
-                    let memory_overflow_pending_bytes =
-                        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    let config = state.config.clone();
-                    let invoke_id = invoke_id.to_string();
-                    debug!(
-                        capture_path = "memory_overflow",
-                        durability_mode = "memory_overflow",
+                    warn!(
+                        capture_path = "capture_unavailable",
+                        capture_unavailable_reason = "spool_capacity",
                         storage_codec = ?codec,
                         writer_active,
                         writer_max,
                         error = %err,
-                        "raw streaming capture queued in memory until a writer is available"
+                        "raw streaming capture unavailable because the durable spool cannot accept it"
                     );
-                    tokio::spawn(async move {
-                        let _permit = semaphore
-                            .acquire_owned()
-                            .await
-                            .expect("raw writer semaphore is live");
-                        let meta = write_reserved_streaming_raw_payload_to_file(
-                            path,
-                            config.proxy_raw_max_bytes,
-                            config.proxy_raw_immediate_compression_threshold(),
-                            codec,
-                            &mut rx,
-                        )
-                        .await;
-                        let _ = meta_tx.send(meta);
-                        let _ = invoke_id;
-                    });
                     Self {
-                        tx: Some(tx),
-                        meta_rx: Some(meta_rx),
+                        tx: None,
+                        meta_rx: None,
                         observed_size_bytes: 0,
-                        local_truncated_reason: None,
-                        local_truncated: false,
-                        memory_overflow_max_bytes: Some(
-                            state
-                                .config
-                                .proxy_raw_max_bytes
-                                .unwrap_or(RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES)
-                                .min(RAW_OVERFLOW_MEMORY_QUEUE_MAX_BYTES),
+                        local_truncated_reason: Some(
+                            "capture_unavailable:spool_capacity".to_string(),
                         ),
-                        memory_overflow_pending_bytes: Some(memory_overflow_pending_bytes),
+                        local_truncated: true,
                         spool: None,
                     }
                 }
             };
         }
         let permit = permit.expect("checked above");
-        let (tx, mut rx) = mpsc::unbounded_channel::<StreamingRawPayloadChunk>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Bytes>(64);
         let (meta_tx, meta_rx) = oneshot::channel();
         debug!(
             capture_path = "direct_writer",
@@ -5258,16 +5130,15 @@ impl AsyncStreamingRawPayloadWriter {
             writer_max,
             "raw capture assigned to compression writer"
         );
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let meta = write_reserved_streaming_raw_payload_to_file(
+            let meta = write_direct_streaming_raw_payload_to_file(
                 path,
                 max_bytes,
                 immediate_gzip_bytes,
                 codec,
-                &mut rx,
-            )
-            .await;
+                rx,
+            );
             let _ = meta_tx.send(meta);
         });
 
@@ -5277,16 +5148,19 @@ impl AsyncStreamingRawPayloadWriter {
             observed_size_bytes: 0,
             local_truncated_reason: None,
             local_truncated: false,
-            memory_overflow_max_bytes: None,
-            memory_overflow_pending_bytes: None,
             spool: None,
         }
     }
 
     fn mark_writer_closed(&mut self, message: String) {
         self.local_truncated = true;
-        self.local_truncated_reason
-            .get_or_insert_with(|| format!("write_failed:{message}"));
+        self.local_truncated_reason.get_or_insert_with(|| {
+            if message.starts_with("capture_unavailable:") {
+                message
+            } else {
+                format!("write_failed:{message}")
+            }
+        });
         self.tx = None;
     }
 
@@ -5298,59 +5172,25 @@ impl AsyncStreamingRawPayloadWriter {
         if let Some(spool) = self.spool.as_mut() {
             if let Err(err) = spool.append(bytes) {
                 self.spool = None;
-                self.mark_writer_closed(format!("spool_write_failed:{err}"));
+                let reason = if err.to_string().contains("capacity") {
+                    "capture_unavailable:spool_capacity"
+                } else {
+                    "capture_unavailable:spool_write_failed"
+                };
+                self.mark_writer_closed(reason.to_string());
             }
             return;
         }
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        let (queued_bytes, overflow_reservation_bytes) =
-            if let Some(limit) = self.memory_overflow_max_bytes {
-                let pending_bytes = self
-                    .memory_overflow_pending_bytes
-                    .as_ref()
-                    .expect("memory overflow writer tracks its queued bytes");
-                let remaining =
-                    limit.saturating_sub(pending_bytes.load(std::sync::atomic::Ordering::Acquire));
-                if remaining == 0 {
-                    self.local_truncated = true;
-                    self.local_truncated_reason
-                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-                    return;
-                }
-                let queued = remaining.min(bytes.len());
-                if !try_reserve_raw_overflow_memory(queued) {
-                    self.local_truncated = true;
-                    self.local_truncated_reason
-                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-                    return;
-                }
-                pending_bytes.fetch_add(queued, std::sync::atomic::Ordering::AcqRel);
-                if queued < bytes.len() {
-                    self.local_truncated = true;
-                    self.local_truncated_reason
-                        .get_or_insert_with(|| "memory_overflow_queue_full".to_string());
-                }
-                (&bytes[..queued], Some(queued))
-            } else {
-                (bytes, None)
-            };
-        let chunk = match overflow_reservation_bytes {
-            Some(reservation_bytes) => StreamingRawPayloadChunk::reserved(
-                Bytes::copy_from_slice(queued_bytes),
-                reservation_bytes,
-                self.memory_overflow_pending_bytes
-                    .as_ref()
-                    .expect("reserved chunks originate from memory overflow writers")
-                    .clone(),
-            ),
-            None => StreamingRawPayloadChunk::unreserved(Bytes::copy_from_slice(queued_bytes)),
-        };
-        match tx.send(chunk) {
+        match tx.try_send(Bytes::copy_from_slice(bytes)) {
             Ok(()) => {}
-            Err(_) => {
-                self.mark_writer_closed("async raw writer channel closed".to_string());
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                self.mark_writer_closed("capture_unavailable:ingress_queue_full".to_string());
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                self.mark_writer_closed("capture_unavailable:writer_closed".to_string());
             }
         }
     }
@@ -5378,6 +5218,14 @@ impl AsyncStreamingRawPayloadWriter {
             meta.truncated = true;
             if meta.truncated_reason.is_none() {
                 meta.truncated_reason = self.local_truncated_reason.clone();
+            }
+            if self
+                .local_truncated_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("capture_unavailable:"))
+                && let Some(path) = meta.path.take()
+            {
+                let _ = fs::remove_file(path);
             }
         }
         meta
@@ -5416,6 +5264,159 @@ async fn write_reserved_streaming_raw_payload_to_file(
         StreamingRawPayloadReceiver::ReservedUnbounded(rx),
     )
     .await
+}
+
+pub(crate) fn write_direct_streaming_raw_payload_to_file(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    immediate_gzip_bytes: Option<usize>,
+    codec: RawCompressionCodec,
+    rx: std::sync::mpsc::Receiver<Bytes>,
+) -> RawPayloadMeta {
+    enum DirectWriter {
+        Buffer(Vec<u8>),
+        Plain(fs::File),
+        Gzip(flate2::write::GzEncoder<io::BufWriter<fs::File>>),
+        Zstd(zstd::stream::write::Encoder<'static, io::BufWriter<fs::File>>),
+    }
+
+    let gzip_path = raw_payload_gzip_path(&path);
+    let zstd_path = raw_payload_zstd_path(&path);
+    let mut writer = match codec {
+        // Gzip retains the existing hot-plaintext threshold. Zstd intentionally starts at
+        // the first byte: it is the current identity-response storage format.
+        RawCompressionCodec::Gzip if immediate_gzip_bytes.is_some() => {
+            Ok(DirectWriter::Buffer(Vec::new()))
+        }
+        RawCompressionCodec::Gzip => {
+            create_plain_streaming_raw_file(&path).map(DirectWriter::Plain)
+        }
+        RawCompressionCodec::Zstd => {
+            create_zstd_streaming_raw_encoder(&zstd_path).map(DirectWriter::Zstd)
+        }
+        RawCompressionCodec::None => {
+            create_plain_streaming_raw_file(&path).map(DirectWriter::Plain)
+        }
+    };
+    let mut meta = RawPayloadMeta::default();
+    let mut written_bytes = 0usize;
+    let mut active_path = match codec {
+        RawCompressionCodec::Zstd => Some(zstd_path.clone()),
+        RawCompressionCodec::Gzip if immediate_gzip_bytes.is_none() => Some(path.clone()),
+        RawCompressionCodec::None => Some(path.clone()),
+        RawCompressionCodec::Gzip => None,
+    };
+    while let Ok(bytes) = rx.recv() {
+        meta.size_bytes = meta.size_bytes.saturating_add(bytes.len() as i64);
+        let write_len = max_bytes
+            .map(|limit| limit.saturating_sub(written_bytes).min(bytes.len()))
+            .unwrap_or(bytes.len());
+        if write_len < bytes.len() {
+            meta.truncated = true;
+            meta.truncated_reason
+                .get_or_insert_with(|| "max_bytes_exceeded".to_string());
+        }
+        if write_len == 0 {
+            continue;
+        }
+        let current_writer = std::mem::replace(&mut writer, Ok(DirectWriter::Buffer(Vec::new())));
+        let result = match current_writer {
+            Ok(DirectWriter::Buffer(mut buffer)) => {
+                buffer.extend_from_slice(&bytes[..write_len]);
+                if buffer.len()
+                    >= immediate_gzip_bytes.expect("buffer only used for gzip threshold")
+                {
+                    match create_gzip_streaming_raw_encoder(&gzip_path).and_then(|mut encoder| {
+                        encoder.write_all(&buffer)?;
+                        Ok(encoder)
+                    }) {
+                        Ok(encoder) => {
+                            active_path = Some(gzip_path.clone());
+                            writer = Ok(DirectWriter::Gzip(encoder));
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    writer = Ok(DirectWriter::Buffer(buffer));
+                    Ok(())
+                }
+            }
+            Ok(DirectWriter::Plain(mut file)) => match file.write_all(&bytes[..write_len]) {
+                Ok(()) => {
+                    writer = Ok(DirectWriter::Plain(file));
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
+            Ok(DirectWriter::Gzip(mut encoder)) => match encoder.write_all(&bytes[..write_len]) {
+                Ok(()) => {
+                    writer = Ok(DirectWriter::Gzip(encoder));
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
+            Ok(DirectWriter::Zstd(mut encoder)) => match encoder.write_all(&bytes[..write_len]) {
+                Ok(()) => {
+                    writer = Ok(DirectWriter::Zstd(encoder));
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            if let Some(active_path) = active_path.as_deref() {
+                let _ = fs::remove_file(active_path);
+            }
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{error}"));
+            return meta;
+        }
+        written_bytes = written_bytes.saturating_add(write_len);
+    }
+    if written_bytes == 0 {
+        if let Some(active_path) = active_path.as_deref() {
+            let _ = fs::remove_file(active_path);
+        }
+        return meta;
+    }
+    let result = match writer {
+        Ok(DirectWriter::Buffer(buffer)) => {
+            let mut file = match create_plain_streaming_raw_file(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return RawPayloadMeta {
+                        path: None,
+                        size_bytes: meta.size_bytes,
+                        truncated: true,
+                        truncated_reason: Some(format!("write_failed:{error}")),
+                    };
+                }
+            };
+            active_path = Some(path.clone());
+            file.write_all(&buffer).and_then(|()| file.flush())
+        }
+        Ok(DirectWriter::Plain(mut file)) => file.flush(),
+        Ok(DirectWriter::Gzip(encoder)) => encoder.finish().and_then(|mut file| file.flush()),
+        Ok(DirectWriter::Zstd(encoder)) => encoder.finish().and_then(|mut file| file.flush()),
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(()) => {
+            if let Some(active_path) = active_path {
+                meta.path = Some(active_path.to_string_lossy().to_string());
+            }
+        }
+        Err(error) => {
+            if let Some(active_path) = active_path.as_deref() {
+                let _ = fs::remove_file(active_path);
+            }
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{error}"));
+        }
+    }
+    meta
 }
 
 async fn write_bounded_streaming_raw_payload_to_file(
@@ -5792,39 +5793,28 @@ pub(crate) fn merge_response_capture_reason(
 }
 
 #[cfg(test)]
-mod raw_overflow_memory_tests {
+mod raw_overflow_spool_tests {
     use super::*;
 
     #[test]
-    fn queued_overflow_memory_remains_reserved_after_capture_sender_drops() {
-        let before = RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let pending_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    fn bounded_streaming_ingress_marks_capture_unavailable_without_blocking() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
         let mut writer = AsyncStreamingRawPayloadWriter {
             tx: Some(tx),
             meta_rx: None,
             observed_size_bytes: 0,
             local_truncated_reason: None,
             local_truncated: false,
-            memory_overflow_max_bytes: Some(16),
-            memory_overflow_pending_bytes: Some(pending_bytes.clone()),
             spool: None,
         };
 
-        writer.append(b"queued");
-        assert_eq!(pending_bytes.load(std::sync::atomic::Ordering::Acquire), 6);
-        drop(writer);
-        assert_eq!(
-            RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
-            before + 6
-        );
+        writer.append(b"first");
+        writer.append(b"second");
 
-        let chunk = rx.try_recv().expect("queued capture chunk");
-        drop(chunk);
-        assert_eq!(pending_bytes.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert!(writer.local_truncated);
         assert_eq!(
-            RAW_OVERFLOW_MEMORY_QUEUE_BYTES.load(std::sync::atomic::Ordering::Acquire),
-            before
+            writer.local_truncated_reason.as_deref(),
+            Some("capture_unavailable:ingress_queue_full")
         );
     }
 

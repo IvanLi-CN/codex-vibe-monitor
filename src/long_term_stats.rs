@@ -1012,8 +1012,10 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
         return Ok(());
     }
 
-    // Corrections originate in several write-side workers. Queue every local day touched by the
-    // old or new interval so a later projection pass can replace only the affected buckets.
+    // Corrections originate in several write-side workers. A normal terminal finalize moves an
+    // in-flight record to a terminal state and is consumed through the projection cursor unless
+    // a newer terminal row has already advanced that cursor past it. In that out-of-order case,
+    // the cursor cannot revisit the row, so queue the affected date for an exact repair.
     sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_invocation_correction")
         .execute(pool)
         .await?;
@@ -1024,8 +1026,26 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           source, status, occurred_at, model, payload,
           input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens,
           cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms,
-          t_upstream_ttfb_ms, t_upstream_stream_ms, error_message
+          t_upstream_ttfb_ms, t_upstream_stream_ms, error_message, failure_kind
         ON codex_invocations
+        WHEN NOT (
+          (
+            LOWER(TRIM(COALESCE(OLD.status, ''))) IN ('running', 'pending')
+            OR (
+              LOWER(TRIM(COALESCE(OLD.status, ''))) = 'interrupted'
+              AND LOWER(TRIM(COALESCE(OLD.failure_kind, ''))) = 'proxy_interrupted'
+            )
+          )
+          AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
+          AND NEW.id > COALESCE(
+            (
+              SELECT cursor_row_id
+              FROM long_term_projection_state
+              WHERE consumer = 'long_term_v1'
+            ),
+            0
+          )
+        )
         BEGIN
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
@@ -8741,7 +8761,7 @@ mod tests {
             .await
             .expect("memory pool");
         sqlx::query(
-            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT)",
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT, failure_kind TEXT)",
         )
         .execute(&pool)
         .await
@@ -8779,6 +8799,119 @@ mod tests {
         .await
         .expect("repair marker");
         assert!(next_attempt_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_finalize_does_not_enqueue_a_long_term_date_rebuild() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT, failure_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("invocation schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_correction_trigger(&pool)
+            .await
+            .expect("correction trigger");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (1, '2026-07-26 10:00:00', 'running', 'gpt-5')",
+        )
+        .execute(&pool)
+        .await
+        .expect("running invocation");
+
+        sqlx::query("UPDATE codex_invocations SET status = 'success' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("terminal finalize");
+        let dirty_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+                .fetch_one(&pool)
+                .await
+                .expect("dirty count");
+        assert_eq!(dirty_count, 0);
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, failure_kind, model) VALUES (2, '2026-07-26 11:00:00', 'interrupted', 'proxy_interrupted', 'gpt-5')",
+        )
+        .execute(&pool)
+        .await
+        .expect("recoverable interrupted invocation");
+        sqlx::query(
+            "UPDATE codex_invocations SET status = 'success', failure_kind = NULL WHERE id = 2",
+        )
+        .execute(&pool)
+        .await
+        .expect("recovered terminal finalize");
+        let dirty_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+                .fetch_one(&pool)
+                .await
+                .expect("dirty count");
+        assert_eq!(dirty_count, 0);
+
+        sqlx::query("UPDATE codex_invocations SET model = 'gpt-5.1' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("historical correction");
+        let dirty_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+                .fetch_one(&pool)
+                .await
+                .expect("dirty count");
+        assert_eq!(dirty_count, 1);
+    }
+
+    #[tokio::test]
+    async fn out_of_order_terminal_finalize_queues_an_exact_date_rebuild() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT, failure_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("invocation schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_correction_trigger(&pool)
+            .await
+            .expect("correction trigger");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (1, '2026-07-26 10:00:00', 'running', 'gpt-5'), (2, '2026-07-26 11:00:00', 'success', 'gpt-5')",
+        )
+        .execute(&pool)
+        .await
+        .expect("out-of-order source rows");
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 2)",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .execute(&pool)
+        .await
+        .expect("advanced projection cursor");
+
+        sqlx::query("UPDATE codex_invocations SET status = 'success' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("late terminal finalize");
+        let dirty_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
+                .fetch_one(&pool)
+                .await
+                .expect("dirty count");
+        assert_eq!(dirty_count, 1);
     }
 
     #[tokio::test]
