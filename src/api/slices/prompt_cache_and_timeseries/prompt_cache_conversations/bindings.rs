@@ -16,6 +16,30 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO: &str = 
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE: usize = 20;
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeStickyMutation {
+    Unchanged,
+    Changed {
+        previous_upstream_account_id: Option<i64>,
+    },
+    Suppressed,
+}
+
+impl RuntimeStickyMutation {
+    pub(crate) fn writes_conversation_operation(self) -> bool {
+        matches!(self, Self::Changed { .. } | Self::Suppressed)
+    }
+
+    pub(crate) fn previous_upstream_account_id(self) -> Option<i64> {
+        match self {
+            Self::Changed {
+                previous_upstream_account_id,
+            } => previous_upstream_account_id,
+            Self::Unchanged | Self::Suppressed => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) prompt_cache_key: String,
@@ -1122,6 +1146,52 @@ async fn append_prompt_cache_conversation_operation_event(
     append_prompt_cache_conversation_operation_event_executor(pool, input).await
 }
 
+pub(crate) fn broadcast_prompt_cache_conversation_changed(
+    state: &AppState,
+    prompt_cache_key: &str,
+) {
+    if state.broadcaster.receiver_count() == 0 {
+        return;
+    }
+    if let Err(err) = state
+        .broadcaster
+        .send(BroadcastPayload::PromptCacheConversationChanged {
+            prompt_cache_key: prompt_cache_key.to_string(),
+        })
+    {
+        warn!(
+            ?err,
+            prompt_cache_key, "failed to broadcast prompt cache conversation change"
+        );
+    }
+}
+
+pub(crate) fn broadcast_prompt_cache_conversation_sticky_route_changed(
+    state: &AppState,
+    sticky_key: &str,
+    previous_upstream_account_id: i64,
+    upstream_account_id: i64,
+) {
+    if state.broadcaster.receiver_count() == 0 {
+        return;
+    }
+    if let Err(err) = state.broadcaster.send(
+        BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+            sticky_key: sticky_key.to_string(),
+            previous_upstream_account_id,
+            upstream_account_id,
+        },
+    ) {
+        warn!(
+            ?err,
+            sticky_key,
+            previous_upstream_account_id,
+            upstream_account_id,
+            "failed to broadcast prompt cache conversation sticky route change"
+        );
+    }
+}
+
 pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     pool: &Pool<Sqlite>,
     sticky_key: &str,
@@ -1131,7 +1201,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<bool> {
+) -> Result<RuntimeStickyMutation> {
     let event_prompt_cache_key = prompt_cache_key.filter(|key| *key == sticky_key);
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
@@ -1139,7 +1209,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .await
         .context("failed to acquire runtime sticky event write lock")?;
 
-    let write_outcome: Result<bool> = async {
+    let write_outcome: Result<RuntimeStickyMutation> = async {
         let (trigger_attempt_id, routing_source, routing_selection_audit) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
         let pending_clear_cause =
@@ -1188,7 +1258,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 )
                 .await?;
             }
-            return Ok(false);
+            return Ok(RuntimeStickyMutation::Suppressed);
         }
 
         let previous_account_id = sqlx::query_scalar::<_, i64>(
@@ -1209,9 +1279,8 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
                     .await?;
 
-            if sticky_before != sticky_after
-                && let Some(sticky_after) = sticky_after
-            {
+            let sticky_changed = sticky_before != sticky_after;
+            if sticky_changed && let Some(sticky_after) = sticky_after {
                 let (causing_attempt_id, causing_http_status) = if previous_account_id.is_none() {
                     pending_clear_cause
                 } else {
@@ -1256,7 +1325,13 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 .await?;
             }
         }
-        Ok(true)
+        Ok(if target_changed {
+            RuntimeStickyMutation::Changed {
+                previous_upstream_account_id: previous_account_id,
+            }
+        } else {
+            RuntimeStickyMutation::Unchanged
+        })
     }
     .await;
 
@@ -1903,14 +1978,14 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
     upstream_account_id: i64,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(current_binding) =
         load_prompt_cache_conversation_binding_row(pool, prompt_cache_key).await?
     else {
-        return Ok(());
+        return Ok(false);
     };
     if current_binding.binding_kind != PROMPT_CACHE_BINDING_KIND_GROUP {
-        return Ok(());
+        return Ok(false);
     }
     let Some(bound_group_name) = current_binding
         .group_name
@@ -1918,7 +1993,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return Ok(());
+        return Ok(false);
     };
 
     #[derive(Debug, FromRow)]
@@ -1938,7 +2013,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     .fetch_optional(pool)
     .await?
     else {
-        return Ok(());
+        return Ok(false);
     };
 
     let target_group_name = target_row
@@ -1947,7 +2022,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if target_group_name != Some(bound_group_name) {
-        return Ok(());
+        return Ok(false);
     }
 
     let sticky_before =
@@ -1972,7 +2047,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     .execute(pool)
     .await?;
     if update_result.rows_affected() == 0 {
-        return Ok(());
+        return Ok(false);
     }
 
     let now_iso = format_utc_iso(Utc::now());
@@ -2034,6 +2109,23 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
             },
         )
         .await?;
+    }
+    Ok(true)
+}
+
+pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account_and_broadcast(
+    state: &AppState,
+    prompt_cache_key: &str,
+    upstream_account_id: i64,
+) -> Result<()> {
+    if promote_prompt_cache_group_binding_to_upstream_account(
+        &state.pool,
+        prompt_cache_key,
+        upstream_account_id,
+    )
+    .await?
+    {
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
     }
     Ok(())
 }
@@ -2253,7 +2345,7 @@ fn normalized_prompt_cache_conversation_keys(
     Ok(normalized_keys)
 }
 
-async fn load_prompt_cache_conversation_binding_response_for_key(
+pub(crate) async fn load_prompt_cache_conversation_binding_response_for_key(
     state: &AppState,
     prompt_cache_key: String,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
@@ -2385,6 +2477,7 @@ async fn clear_prompt_cache_conversation_affinity(
         }
     }
     drop(conn);
+    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
@@ -2908,6 +3001,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
         .await?;
     }
 
+    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }

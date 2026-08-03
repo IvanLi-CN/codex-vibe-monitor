@@ -1637,7 +1637,10 @@ async fn proxy_capture_persist_and_broadcast_emits_records_and_dashboard_live() 
             BroadcastPayload::DashboardActivityLive { .. } => {
                 saw_dashboard_live = true;
             }
-            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
+            BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PromptCacheConversationChanged { .. }
+            | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => {}
         }
 
         if saw_record && saw_dashboard_live {

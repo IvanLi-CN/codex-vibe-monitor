@@ -2096,48 +2096,60 @@ async fn record_pool_route_http_failure_preserves_sticky_route_when_single_accou
 }
 
 #[tokio::test]
-async fn record_pool_route_http_failure_clears_sticky_route_on_single_account_rotation_429() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Single Rotation 429").await;
+async fn automatic_single_rotation_429_clear_broadcasts_conversation_change() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_oauth_account(&state.pool, "Single Rotation 429").await;
+    let prompt_cache_key = "pck-single-rotation";
+    let mut broadcast_receiver = state.broadcaster.subscribe();
     upsert_sticky_route(
-        &pool,
-        "sticky-single-rotation",
+        &state.pool,
+        prompt_cache_key,
         account_id,
         &format_utc_iso(Utc::now()),
     )
     .await
     .expect("seed sticky route");
-    let generation_before = load_sticky_affinity_generation(&pool, "sticky-single-rotation")
+    let generation_before = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
         .await
         .expect("load sticky generation before 429");
 
-    record_pool_route_http_failure(
-        &pool,
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
         account_id,
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
         true,
-        Some("sticky-single-rotation"),
+        Some(prompt_cache_key),
         StatusCode::TOO_MANY_REQUESTS,
         "pool upstream responded with 429: too many requests",
         None,
+        "/v1/responses",
+        ImageIntent::Unknown,
+        None,
+        None,
+        Some(prompt_cache_key),
     )
     .await
     .expect("record single-account rotation 429");
 
     assert!(
-        load_sticky_route(&pool, "sticky-single-rotation")
+        load_sticky_route(&state.pool, prompt_cache_key)
             .await
             .expect("load sticky route")
             .is_none(),
         "the conversation should be unbound so the next attempt can pick the next candidate",
     );
     assert_eq!(
-        load_sticky_affinity_generation(&pool, "sticky-single-rotation")
+        load_sticky_affinity_generation(&state.pool, prompt_cache_key)
             .await
             .expect("load sticky generation after 429"),
         generation_before + 1,
         "automatic 429 clear must fence stale completions",
     );
+    assert!(matches!(
+        broadcast_receiver.recv().await.expect("conversation change broadcast"),
+        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+            if key == prompt_cache_key
+    ));
 }
 
 #[tokio::test]

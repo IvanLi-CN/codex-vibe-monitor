@@ -2512,7 +2512,11 @@ export async function cancelBulkUpstreamAccountSyncJob(jobId: string): Promise<v
 }
 
 export function createEventSource(path: string) {
-  return new EventSource(withBase(path));
+  const resolvedPath = withBase(path);
+  if (typeof window !== "undefined" && window.__CVM_DEMO_CREATE_EVENT_SOURCE__) {
+    return window.__CVM_DEMO_CREATE_EVENT_SOURCE__(resolvedPath);
+  }
+  return new EventSource(resolvedPath);
 }
 
 export function createImportedOauthValidationJobEventSource(jobId: string) {

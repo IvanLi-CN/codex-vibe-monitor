@@ -41,6 +41,11 @@
 - `app.version`
 - `prompt-cache.window`
 - `prompt-cache.sticky.window`
+- `invocation-history.window`
+- `invocation-history.overview`
+- `prompt-cache.conversation-binding.current`
+- `prompt-cache.conversation-operations.window`
+- Conversation detail fallback discards cached topic payloads when SSE is disabled, then reloads the active tab through its existing HTTP path; captured history pagination keeps page 1 and every later HTTP page frozen across fresh topic snapshots. The overview topic pins summary and samples to one SQLite snapshot plus captured runtime overlay with a fixed accepted page width, while its HTTP fallback reuses the first page snapshot for summary, bounded samples, and full-history chart bounds. Cached binding payloads are baseline-only for their captured scope and reset when the detail descriptor changes.
 - `invocations.window`
 - `stats.summary.current`（仅开放窗口；`yesterday` / `previous7d` 继续走 HTTP exact）
 - `stats.timeseries.open-window`（开放窗口）
@@ -64,6 +69,7 @@
 - `cargo test subscription_event_envelope_serializes_camel_case_fields -- --nocapture`
 - `cargo test replay_returns_gap_when_cursor_is_within_window -- --nocapture`
 - `cargo test prepare_connection_reports -- --nocapture`
+- `cargo test subscriptions -- --nocapture`
 - `cd web && bun x tsc -b --pretty false`
 - `cd web && bun x vitest run --project=unit src/lib/sse.test.ts src/features/app-shell/AppLayout.test.tsx`
 - `cd web && bun x vitest run --project=unit src/lib/sse.test.ts src/hooks/useSubscriptionTopic.test.tsx src/features/app-shell/AppLayout.test.tsx`
@@ -74,6 +80,7 @@
 - `cd web && bun run test -- AppLayout.test.tsx`
 - `cd web && bun run test-storybook -- AppLayout.stories.tsx`
 - `cd web && bun run build`
+- `cd web && bun run test -- src/hooks/useConversationDetailTopics.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 
 ## Visual Evidence
 
@@ -95,6 +102,8 @@
 - `web/src/hooks/useInvocations.ts`
 - `web/src/hooks/useInvocationRecordsRealtime.ts`
 - `web/src/hooks/usePromptCacheConversations.ts`
+- `web/src/hooks/useConversationDetailTopics.ts`
+- `web/src/features/prompt-cache/PromptCacheConversationTable.tsx`
 - `web/src/hooks/useStats.ts`
 - `web/src/hooks/useTimeseries.ts`
 

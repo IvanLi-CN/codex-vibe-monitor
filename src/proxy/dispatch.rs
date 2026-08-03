@@ -2955,8 +2955,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt(
-                        &state_for_task.pool,
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                        state_for_task.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
@@ -3023,8 +3023,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
-                            &state_for_task.pool,
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                            state_for_task.as_ref(),
                             account.account_id,
                             &account.kind,
                             account.single_account_rotation_enabled,
@@ -3155,12 +3155,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             .await
             {
                 Ok(true) => {
-                    if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
-                        &state_for_task.pool,
-                        prompt_cache_key,
-                        account.account_id,
-                    )
-                    .await
+                    if let Err(err) =
+                        promote_prompt_cache_group_binding_to_upstream_account_and_broadcast(
+                            state_for_task.as_ref(),
+                            prompt_cache_key,
+                            account.account_id,
+                        )
+                        .await
                     {
                         warn!(
                             invoke_id = %invoke_id_for_task,

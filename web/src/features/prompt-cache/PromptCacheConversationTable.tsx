@@ -39,6 +39,11 @@ import { Input } from "../../components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
+import {
+  type InvocationHistoryOverviewTopicPayload,
+  resolveConversationDetailScope,
+  useConversationDetailTopics,
+} from "../../hooks/useConversationDetailTopics";
 import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
@@ -46,6 +51,7 @@ import type {
   EffectiveRoutingRuleSource,
   ForwardProxyBindingNode,
   InvocationRecordsQuery,
+  InvocationRecordsResponse,
   InvocationRecordsSummaryResponse,
   PoolRoutingSelectionAudit,
   PromptCacheConversation,
@@ -94,22 +100,18 @@ interface PromptCacheConversationTableProps {
   keyColumnLabel?: string;
   emptyLabel?: string;
   historyQueryForConversationKey?: (conversationKey: string) => Partial<InvocationRecordsQuery>;
-  historyRecordMatchesConversationKey?: (record: ApiInvocation, conversationKey: string) => boolean;
 }
 
 type ConversationHistoryQueryBuilder = NonNullable<
   PromptCacheConversationTableProps["historyQueryForConversationKey"]
->;
-type ConversationHistoryRecordMatcher = NonNullable<
-  PromptCacheConversationTableProps["historyRecordMatchesConversationKey"]
 >;
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE = 20;
-const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
 const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
+const PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX = 96;
 const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
 const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
 const CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY = 0.0018;
@@ -744,12 +746,6 @@ function PromptCacheConversationInvocationTable({
   );
 }
 
-function startOfLocalDay(value: Date) {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
 function resolveConversationActivityRange(range: ConversationActivityRange) {
   if (range === "history") return {};
 
@@ -776,25 +772,10 @@ function resolveConversationActivityRange(range: ConversationActivityRange) {
   };
 }
 
-function buildConversationActivityQuery(
-  conversationKey: string,
-  range: ConversationActivityRange,
-  historyQueryForConversationKey?: ConversationHistoryQueryBuilder,
-): Partial<InvocationRecordsQuery> {
-  const base = historyQueryForConversationKey?.(conversationKey) ?? {
-    promptCacheKey: conversationKey,
-  };
-  const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = base;
-  void page;
-  void pageSize;
-  void snapshotId;
-  void sortBy;
-  void sortOrder;
-  void signal;
-  return {
-    ...filters,
-    ...resolveConversationActivityRange(range),
-  };
+function startOfLocalDay(value: Date) {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
 }
 
 function formatCompactNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
@@ -1789,13 +1770,17 @@ function PromptCacheConversationActivityOverview({
   open,
   conversationKey,
   historyQueryForConversationKey,
+  realtimePayload,
+  isRealtimeLoading,
+  allowHttpFallback,
   t,
 }: {
   open: boolean;
   conversationKey: string | null;
-  disableLiveUpdates: boolean;
   historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
-  historyRecordMatchesConversationKey?: ConversationHistoryRecordMatcher;
+  realtimePayload: InvocationHistoryOverviewTopicPayload | null;
+  isRealtimeLoading: boolean;
+  allowHttpFallback: boolean;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const { locale } = useTranslation();
@@ -1810,9 +1795,7 @@ function PromptCacheConversationActivityOverview({
   const [chartIsSampled, setChartIsSampled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestSeqRef = useRef(0);
-  const activeLoadControllerRef = useRef<AbortController | null>(null);
-  const isLoadingRef = useRef(false);
+  const fallbackRequestSeqRef = useRef(0);
 
   const numberFormatter = useMemo(
     () =>
@@ -1837,121 +1820,7 @@ function PromptCacheConversationActivityOverview({
     [localeTag],
   );
 
-  const load = useCallback(
-    async ({ silent = false }: { silent?: boolean } = {}) => {
-      if (!open || !conversationKey) return;
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      activeLoadControllerRef.current?.abort();
-      const controller = new AbortController();
-      activeLoadControllerRef.current = controller;
-      const filters = buildConversationActivityQuery(
-        conversationKey,
-        activeRange,
-        historyQueryForConversationKey,
-      );
-      const shouldManageLoading = !silent || isLoadingRef.current;
-      if (shouldManageLoading) {
-        isLoadingRef.current = true;
-        setIsLoading(true);
-      }
-      try {
-        const summaryResponse = await fetchInvocationRecordsSummary({
-          ...filters,
-          signal: controller.signal,
-        });
-        if (requestSeq !== requestSeqRef.current) return;
-        setSummary(summaryResponse);
-
-        let page = 1;
-        let snapshotId: number | undefined;
-        let loaded: ApiInvocation[] = [];
-        let totalRecords = 0;
-        while (true) {
-          const response = await fetchInvocationRecords({
-            ...filters,
-            page,
-            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            ...(snapshotId != null ? { snapshotId } : {}),
-            signal: controller.signal,
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-          snapshotId = response.snapshotId;
-          totalRecords = response.total;
-          loaded = [...loaded, ...response.records].slice(
-            0,
-            PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-          );
-          if (
-            loaded.length >= response.total ||
-            loaded.length >= PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS ||
-            response.records.length === 0
-          ) {
-            break;
-          }
-          page += 1;
-        }
-        if (requestSeq !== requestSeqRef.current) return;
-        let startBoundaryMs = Number.POSITIVE_INFINITY;
-        let endBoundaryMs = Number.NEGATIVE_INFINITY;
-        for (const record of loaded) {
-          const occurredAt = Date.parse(record.occurredAt);
-          if (!Number.isFinite(occurredAt)) continue;
-          startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
-          endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
-        }
-        if (totalRecords > loaded.length && snapshotId != null) {
-          const oldestPage = await fetchInvocationRecords({
-            ...filters,
-            page: Math.max(1, Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE)),
-            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            snapshotId,
-            signal: controller.signal,
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-          for (const record of oldestPage.records) {
-            const occurredAt = Date.parse(record.occurredAt);
-            if (!Number.isFinite(occurredAt)) continue;
-            startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
-            endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
-          }
-        }
-        setRecords(loaded);
-        setChartRangeStartMs(Number.isFinite(startBoundaryMs) ? startBoundaryMs : null);
-        setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
-        setChartTotal(totalRecords);
-        setChartIsSampled(loaded.length < totalRecords);
-        setError(null);
-      } catch (err) {
-        if (requestSeq !== requestSeqRef.current) return;
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          (err instanceof Error && err.name === "AbortError")
-        ) {
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (requestSeq === requestSeqRef.current && shouldManageLoading) {
-          isLoadingRef.current = false;
-          setIsLoading(false);
-        }
-        if (activeLoadControllerRef.current === controller) {
-          activeLoadControllerRef.current = null;
-        }
-      }
-    },
-    [conversationKey, historyQueryForConversationKey, open],
-  );
-
   useEffect(() => {
-    requestSeqRef.current += 1;
-    activeLoadControllerRef.current?.abort();
-    activeLoadControllerRef.current = null;
     if (!open || !conversationKey) {
       setSummary(null);
       setRecords([]);
@@ -1959,7 +1828,6 @@ function PromptCacheConversationActivityOverview({
       setChartRangeEndMs(null);
       setChartTotal(0);
       setChartIsSampled(false);
-      isLoadingRef.current = false;
       setIsLoading(false);
       setError(null);
       return;
@@ -1970,19 +1838,141 @@ function PromptCacheConversationActivityOverview({
     setChartRangeEndMs(null);
     setChartTotal(0);
     setChartIsSampled(false);
-    isLoadingRef.current = false;
     setError(null);
-    void load();
-  }, [conversationKey, load, open]);
+    setIsLoading(isRealtimeLoading);
+  }, [conversationKey, isRealtimeLoading, open]);
 
-  useEffect(
-    () => () => {
-      requestSeqRef.current += 1;
-      activeLoadControllerRef.current?.abort();
-      activeLoadControllerRef.current = null;
-    },
-    [],
-  );
+  useEffect(() => {
+    if (!realtimePayload || allowHttpFallback) return;
+    fallbackRequestSeqRef.current += 1;
+    setSummary(realtimePayload.summary);
+    setRecords(realtimePayload.records);
+    setChartRangeStartMs(
+      realtimePayload.chartRangeStart ? Date.parse(realtimePayload.chartRangeStart) : null,
+    );
+    setChartRangeEndMs(
+      realtimePayload.chartRangeEnd ? Date.parse(realtimePayload.chartRangeEnd) : null,
+    );
+    setChartTotal(realtimePayload.chartTotal);
+    setChartIsSampled(realtimePayload.chartIsSampled);
+    setIsLoading(false);
+    setError(null);
+  }, [allowHttpFallback, realtimePayload]);
+
+  useEffect(() => {
+    if (!open || !conversationKey || !allowHttpFallback) return;
+    const requestSeq = fallbackRequestSeqRef.current + 1;
+    fallbackRequestSeqRef.current = requestSeq;
+    const controller = new AbortController();
+    const baseQuery = historyQueryForConversationKey?.(conversationKey) ?? {
+      promptCacheKey: conversationKey,
+    };
+    const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = baseQuery;
+    void page;
+    void pageSize;
+    void snapshotId;
+    void sortBy;
+    void sortOrder;
+    void signal;
+    setIsLoading(true);
+    setError(null);
+    void (async () => {
+      const latestFirstPage = await fetchInvocationRecords({
+        ...filters,
+        page: 1,
+        pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        signal: controller.signal,
+      });
+      const firstPage = await fetchInvocationRecords({
+        ...filters,
+        page: 1,
+        pageSize: latestFirstPage.pageSize,
+        snapshotId: latestFirstPage.snapshotId,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        signal: controller.signal,
+      });
+      const nextSummary = await fetchInvocationRecordsSummary({
+        ...filters,
+        snapshotId: firstPage.snapshotId,
+        signal: controller.signal,
+      });
+      const records = firstPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS);
+      const pageSize = Math.max(1, firstPage.pageSize);
+      const targetCount = Math.min(
+        PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        Math.max(0, firstPage.total),
+      );
+      let page = 2;
+      let previousPageCount = firstPage.records.length;
+      while (records.length < targetCount && previousPageCount >= pageSize) {
+        if (controller.signal.aborted) return;
+        const nextPage = await fetchInvocationRecords({
+          ...filters,
+          page,
+          pageSize,
+          snapshotId: firstPage.snapshotId,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          signal: controller.signal,
+        });
+        previousPageCount = nextPage.records.length;
+        records.push(
+          ...nextPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS - records.length),
+        );
+        page += 1;
+      }
+      const rangeRecords = [...records];
+      if (firstPage.total > records.length) {
+        const oldestPage = Math.max(1, Math.ceil(firstPage.total / pageSize));
+        const oldestResponse = await fetchInvocationRecords({
+          ...filters,
+          page: oldestPage,
+          pageSize,
+          snapshotId: firstPage.snapshotId,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          signal: controller.signal,
+        });
+        rangeRecords.push(...oldestResponse.records);
+      }
+      const occurredAt = rangeRecords
+        .map((record) => Date.parse(record.occurredAt))
+        .filter((value) => Number.isFinite(value));
+      return {
+        nextSummary,
+        records,
+        chartRangeStartMs: occurredAt.length > 0 ? Math.min(...occurredAt) : null,
+        chartRangeEndMs: occurredAt.length > 0 ? Math.max(...occurredAt) : null,
+        chartTotal: firstPage.total,
+      };
+    })()
+      .then((response) => {
+        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
+        if (!response) return;
+        setSummary(response.nextSummary);
+        setRecords(response.records);
+        setChartRangeStartMs(response.chartRangeStartMs);
+        setChartRangeEndMs(response.chartRangeEndMs);
+        setChartTotal(response.chartTotal);
+        setChartIsSampled(response.records.length < response.chartTotal);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+        setIsLoading(false);
+      });
+    return () => controller.abort();
+  }, [allowHttpFallback, conversationKey, historyQueryForConversationKey, open]);
 
   const bucketSet = useMemo(
     () =>
@@ -2099,7 +2089,6 @@ export function PromptCacheConversationHistoryDrawer({
   open,
   conversationKey,
   conversationLabel,
-  disableLiveUpdates = false,
   initialTab = "overview",
   presentation = "overlay",
   onClose,
@@ -2107,12 +2096,10 @@ export function PromptCacheConversationHistoryDrawer({
   t,
   onOpenUpstreamAccount,
   historyQueryForConversationKey,
-  historyRecordMatchesConversationKey,
 }: {
   open: boolean;
   conversationKey: string | null;
   conversationLabel?: string | null;
-  disableLiveUpdates?: boolean;
   initialTab?: PromptCacheConversationDrawerTab;
   presentation?: "overlay" | "page";
   onClose: () => void;
@@ -2120,7 +2107,6 @@ export function PromptCacheConversationHistoryDrawer({
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
-  historyRecordMatchesConversationKey?: ConversationHistoryRecordMatcher;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -2131,11 +2117,23 @@ export function PromptCacheConversationHistoryDrawer({
   const activeLoadControllerRef = useRef<AbortController | null>(null);
   const operationsLoadControllerRef = useRef<AbortController | null>(null);
   const operationsRequestSeqRef = useRef(0);
+  const bindingHydrationSeqRef = useRef(0);
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
+  const historyHttpSnapshotInitializedRef = useRef(false);
   const historyNextPageRef = useRef(1);
   const historyHasMoreRef = useRef(false);
+  const liveHistoryTotalRef = useRef(0);
   const recordsRef = useRef<ApiInvocation[]>([]);
+  const callTopicInitializedRef = useRef(false);
+  const frozenHistoryStableKeysRef = useRef<Set<string>>(new Set());
+  const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
+  const bindingDraftDirtyRef = useRef(false);
+  const bindingTopicLoadingRef = useRef(false);
+  const bindingTopicSseUnavailableCapturedRef = useRef(false);
+  const bindingTopicSseUnavailableCaptureKeyRef = useRef<string | null>(null);
+  const staleBindingTopicPayloadRef = useRef<PromptCacheConversationBindingResponse | null>(null);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
+  const operationsTopicKeyRef = useRef<string | null>(null);
   const operationsPageRef = useRef(1);
   const operationsTotalRef = useRef(0);
   const [drawerBodyElement, setDrawerBodyElement] = useState<HTMLDivElement | null>(null);
@@ -2169,6 +2167,10 @@ export function PromptCacheConversationHistoryDrawer({
     Partial<Record<ConversationInlinePolicyField, string | null>>
   >({});
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
+  const [bindingRemoteConflict, setBindingRemoteConflict] =
+    useState<PromptCacheConversationBindingResponse | null>(null);
+  const [bindingOwnerConfirmAllowsRemoteOverwrite, setBindingOwnerConfirmAllowsRemoteOverwrite] =
+    useState(false);
   const [activeTab, setActiveTab] = useState<PromptCacheConversationDrawerTab>(initialTab);
   const [operationEvents, setOperationEvents] = useState<PromptCacheConversationOperationEvent[]>(
     [],
@@ -2180,6 +2182,27 @@ export function PromptCacheConversationHistoryDrawer({
   const [operationsError, setOperationsError] = useState<string | null>(null);
   const [operationsFilter, setOperationsFilter] =
     useState<PromptCacheConversationOperationFilter>("all");
+  const conversationDetailScope = useMemo(
+    () =>
+      resolveConversationDetailScope(
+        conversationKey,
+        conversationKey ? historyQueryForConversationKey?.(conversationKey) : undefined,
+      ),
+    [conversationKey, historyQueryForConversationKey],
+  );
+  const {
+    calls: callsTopic,
+    overview: overviewTopic,
+    binding: bindingTopic,
+    operations: operationsTopic,
+    isSseUnavailable,
+  } = useConversationDetailTopics({
+    open,
+    activeTab,
+    scope: conversationDetailScope,
+    operationsInfoType: operationsFilter === "all" ? undefined : operationsFilter,
+  });
+  bindingTopicLoadingRef.current = bindingTopic.isLoading;
 
   useEffect(() => {
     if (!open) {
@@ -2210,6 +2233,44 @@ export function PromptCacheConversationHistoryDrawer({
     refreshTimerRef.current = null;
   }, []);
 
+  // Run before topic hydration so a cached SSE snapshot cannot be cleared by
+  // the same open/scope transition that made it available.
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    hasHydratedRef.current = false;
+    inFlightRef.current = false;
+    pendingLoadRef.current = null;
+    activeLoadControllerRef.current?.abort();
+    activeLoadControllerRef.current = null;
+    historySnapshotIdRef.current = undefined;
+    historyHttpSnapshotInitializedRef.current = false;
+    historyNextPageRef.current = 1;
+    historyHasMoreRef.current = false;
+    liveHistoryTotalRef.current = 0;
+    recordsRef.current = [];
+    callTopicInitializedRef.current = false;
+    frozenHistoryStableKeysRef.current = new Set();
+    pendingCallRecordsRef.current = [];
+    clearPendingRefreshTimer();
+
+    if (!open || !conversationKey) {
+      setRecords([]);
+      setLiveRecords([]);
+      setTotal(0);
+      setIsLoading(false);
+      setIsLoadingMore(false);
+      setError(null);
+      return;
+    }
+
+    setRecords([]);
+    setLiveRecords([]);
+    setTotal(0);
+    setIsLoading(false);
+    setIsLoadingMore(false);
+    setError(null);
+  }, [clearPendingRefreshTimer, conversationKey, open]);
+
   useEffect(() => {
     recordsRef.current = records;
   }, [records]);
@@ -2225,6 +2286,118 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     operationsTotalRef.current = operationsTotal;
   }, [operationsTotal]);
+
+  useEffect(() => {
+    const response = callsTopic.data;
+    if (!open || activeTab !== "calls") return;
+    if (!response || isSseUnavailable) {
+      setIsLoading(callsTopic.isLoading);
+      return;
+    }
+    const current = recordsRef.current;
+    const incomingByKey = new Map(
+      response.records.map((record) => [invocationStableKey(record), record]),
+    );
+    const updatedCurrent = current.map(
+      (record) => incomingByKey.get(invocationStableKey(record)) ?? record,
+    );
+    const pendingByKey = new Map(
+      pendingCallRecordsRef.current.map((record) => [invocationStableKey(record), record]),
+    );
+    const updatedPending = pendingCallRecordsRef.current.map(
+      (record) => incomingByKey.get(invocationStableKey(record)) ?? record,
+    );
+    const loadedKeys = new Set(updatedCurrent.map(invocationStableKey));
+    const newlyVisible = response.records.filter(
+      (record) =>
+        !loadedKeys.has(invocationStableKey(record)) &&
+        !pendingByKey.has(invocationStableKey(record)),
+    );
+    const isInitialTopicSnapshot = !callTopicInitializedRef.current;
+    const isAuthoritativeSnapshot = callsTopic.lastKind === "snapshot";
+    const canInsert =
+      isInitialTopicSnapshot ||
+      !drawerBodyElement ||
+      drawerBodyElement.scrollTop <= PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX;
+    const { nextRecords, nextPending } = isAuthoritativeSnapshot
+      ? (() => {
+          const frozenHistoryRecords = current.filter((record) =>
+            frozenHistoryStableKeysRef.current.has(invocationStableKey(record)),
+          );
+          if (canInsert) {
+            return {
+              nextRecords: mergeInvocationRecordCollections(response.records, frozenHistoryRecords),
+              nextPending: [],
+            };
+          }
+          return {
+            nextRecords: mergeInvocationRecordCollections(updatedCurrent, frozenHistoryRecords),
+            nextPending: mergeInvocationRecordCollections(newlyVisible, updatedPending),
+          };
+        })()
+      : {
+          nextRecords: canInsert
+            ? mergeInvocationRecordCollections(response.records, updatedCurrent)
+            : updatedCurrent,
+          nextPending: canInsert
+            ? []
+            : mergeInvocationRecordCollections(newlyVisible, updatedPending),
+        };
+
+    callTopicInitializedRef.current = true;
+    pendingCallRecordsRef.current = nextPending;
+    recordsRef.current = nextRecords;
+    // The topic owns only the current live head. Deep pagination is pinned to
+    // a separately captured HTTP page so runtime-only rows cannot skew offsets.
+    if (!historyHttpSnapshotInitializedRef.current) {
+      historyNextPageRef.current = 1;
+    }
+    historyHasMoreRef.current = nextRecords.length < response.total;
+    liveHistoryTotalRef.current = response.total;
+    setRecords(nextRecords);
+    setLiveRecords(nextPending);
+    setTotal(response.total);
+    hasHydratedRef.current = true;
+    setIsLoading(false);
+    setError(null);
+  }, [
+    activeTab,
+    callsTopic.data,
+    callsTopic.isLoading,
+    callsTopic.lastKind,
+    drawerBodyElement,
+    isSseUnavailable,
+    open,
+  ]);
+
+  useEffect(() => {
+    const response = operationsTopic.data;
+    if (!response || isSseUnavailable || !open || activeTab !== "operations") return;
+    operationsRequestSeqRef.current += 1;
+    operationsLoadControllerRef.current?.abort();
+    const topicKey = operationsTopic.descriptorKey ?? operationsFilter;
+    const previousItems =
+      operationsTopicKeyRef.current === topicKey ? operationEventsRef.current : [];
+    const nextItems = Array.from(
+      new Map([...response.items, ...previousItems].map((item) => [item.id, item])).values(),
+    );
+    operationsTopicKeyRef.current = topicKey;
+    operationEventsRef.current = nextItems;
+    operationsPageRef.current = Math.max(operationsPageRef.current, response.page);
+    operationsTotalRef.current = response.total;
+    setOperationEvents(nextItems);
+    setOperationsTotal(response.total);
+    setOperationsPage((current) => Math.max(current, response.page));
+    setOperationsLoading(false);
+    setOperationsError(null);
+  }, [
+    activeTab,
+    isSseUnavailable,
+    open,
+    operationsFilter,
+    operationsTopic.data,
+    operationsTopic.descriptorKey,
+  ]);
 
   const runLoad = useCallback(
     async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
@@ -2244,18 +2417,37 @@ export function PromptCacheConversationHistoryDrawer({
         const historyFilters = historyQueryForConversationKey?.(conversationKey) ?? {
           promptCacheKey: conversationKey,
         };
-        const page = append ? historyNextPageRef.current : 1;
-        const response = await fetchInvocationRecords({
-          ...historyFilters,
-          page,
-          pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          ...(append && historySnapshotIdRef.current != null
-            ? { snapshotId: historySnapshotIdRef.current }
-            : {}),
-          signal: controller.signal,
-        });
+        const fetchHistoryPage = (page: number, snapshotId?: number) =>
+          fetchInvocationRecords({
+            ...historyFilters,
+            page,
+            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            ...(snapshotId != null ? { snapshotId } : {}),
+            signal: controller.signal,
+          });
+        let page = append ? historyNextPageRef.current : 1;
+        let response: InvocationRecordsResponse;
+        let capturedHttpHead: InvocationRecordsResponse | null = null;
+
+        if (append && !historyHttpSnapshotInitializedRef.current) {
+          const latestHttpHead = await fetchHistoryPage(1);
+          if (requestSeq !== requestSeqRef.current) return;
+
+          capturedHttpHead = await fetchHistoryPage(1, latestHttpHead.snapshotId);
+          if (requestSeq !== requestSeqRef.current) return;
+
+          historySnapshotIdRef.current = capturedHttpHead.snapshotId;
+          historyHttpSnapshotInitializedRef.current = true;
+          page = capturedHttpHead.page;
+          response = capturedHttpHead;
+        } else {
+          response = await fetchHistoryPage(
+            page,
+            append ? historySnapshotIdRef.current : undefined,
+          );
+        }
         if (requestSeq !== requestSeqRef.current) return;
 
         const previousSnapshotId = historySnapshotIdRef.current;
@@ -2265,20 +2457,31 @@ export function PromptCacheConversationHistoryDrawer({
           hasHydratedRef.current &&
           previousSnapshotId != null &&
           response.snapshotId !== previousSnapshotId;
-        historySnapshotIdRef.current = response.snapshotId;
+        if (historyHttpSnapshotInitializedRef.current) {
+          historySnapshotIdRef.current = response.snapshotId;
+        }
+        const effectiveResponseTotal = Math.max(response.total, liveHistoryTotalRef.current);
+        const responseRecords = capturedHttpHead
+          ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
+          : response.records;
+        if (historyHttpSnapshotInitializedRef.current) {
+          for (const record of responseRecords) {
+            frozenHistoryStableKeysRef.current.add(invocationStableKey(record));
+          }
+        }
         const loaded = snapshotChanged
-          ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
+          ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
               0,
               recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
             )
           : append
-            ? mergeInvocationRecordCollections(recordsRef.current, response.records)
+            ? mergeInvocationRecordCollections(recordsRef.current, responseRecords)
             : silent && hasHydratedRef.current
-              ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
+              ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
                   0,
-                  Math.max(recordsRef.current.length, response.records.length),
+                  Math.max(recordsRef.current.length, responseRecords.length),
                 )
-              : response.records;
+              : mergeInvocationRecordCollections(responseRecords, recordsRef.current);
         recordsRef.current = loaded;
         historyNextPageRef.current = snapshotChanged
           ? 2
@@ -2289,10 +2492,10 @@ export function PromptCacheConversationHistoryDrawer({
                 Math.floor(loaded.length / PROMPT_CACHE_HISTORY_PAGE_SIZE) + 1,
               );
         historyHasMoreRef.current =
-          loaded.length < response.total &&
+          loaded.length < effectiveResponseTotal &&
           (append ? response.records.length > 0 : loaded.length > 0);
         setRecords(loaded);
-        setTotal(response.total);
+        setTotal(effectiveResponseTotal);
 
         if (requestSeq !== requestSeqRef.current) return;
         hasHydratedRef.current = true;
@@ -2300,6 +2503,9 @@ export function PromptCacheConversationHistoryDrawer({
         setLiveRecords((current) =>
           current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
         );
+        if (capturedHttpHead && historyHasMoreRef.current) {
+          pendingLoadRef.current = { append: true, silent: true };
+        }
         setError(null);
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) return;
@@ -2346,6 +2552,19 @@ export function PromptCacheConversationHistoryDrawer({
     },
     [runLoad],
   );
+
+  useEffect(() => {
+    if (
+      !open ||
+      !conversationKey ||
+      activeTab !== "calls" ||
+      (callsTopic.data && !isSseUnavailable) ||
+      !isSseUnavailable
+    ) {
+      return;
+    }
+    void load();
+  }, [activeTab, callsTopic.data, conversationKey, isSseUnavailable, load, open]);
 
   const loadOperationEvents = useCallback(
     async ({ append = false }: { append?: boolean } = {}) => {
@@ -2402,39 +2621,24 @@ export function PromptCacheConversationHistoryDrawer({
   );
 
   useEffect(() => {
-    requestSeqRef.current += 1;
-    hasHydratedRef.current = false;
-    inFlightRef.current = false;
-    pendingLoadRef.current = null;
-    activeLoadControllerRef.current?.abort();
-    activeLoadControllerRef.current = null;
-    historySnapshotIdRef.current = undefined;
-    historyNextPageRef.current = 1;
-    historyHasMoreRef.current = false;
-    recordsRef.current = [];
-    clearPendingRefreshTimer();
-
     if (!open || !conversationKey) {
-      setRecords([]);
-      setLiveRecords([]);
-      setTotal(0);
-      setIsLoading(false);
-      setIsLoadingMore(false);
-      setError(null);
+      bindingDraftDirtyRef.current = false;
+      setBindingRemoteConflict(null);
+      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+      setInlinePolicyBusyField(null);
+      setInlinePolicyErrors({});
       return;
     }
-
-    setRecords([]);
-    setLiveRecords([]);
-    setTotal(0);
-    setIsLoading(false);
-    setIsLoadingMore(false);
-    setError(null);
-    void load();
-  }, [clearPendingRefreshTimer, conversationKey, load, open]);
+    bindingDraftDirtyRef.current = false;
+    setBindingRemoteConflict(null);
+    setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+    setInlinePolicyBusyField(null);
+    setInlinePolicyErrors({});
+  }, [conversationKey, open]);
 
   useEffect(() => {
     if (!open || !conversationKey) {
+      bindingDraftDirtyRef.current = false;
       setActiveTab("overview");
       setBinding(null);
       setBindingKind("none");
@@ -2445,6 +2649,7 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingProxyNodes([]);
       setBindingLoading(false);
       setBindingSaving(false);
+      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
       setBindingError(null);
       setAllowSwitchUpstreamDraft("inherit");
       setFastModeDraft("keep_original");
@@ -2457,6 +2662,7 @@ export function PromptCacheConversationHistoryDrawer({
       setInlinePolicyErrors({});
       operationsLoadControllerRef.current?.abort();
       operationEventsRef.current = [];
+      operationsTopicKeyRef.current = null;
       operationsPageRef.current = 1;
       operationsTotalRef.current = 0;
       setOperationEvents([]);
@@ -2469,13 +2675,19 @@ export function PromptCacheConversationHistoryDrawer({
       return;
     }
 
+    if (activeTab !== "settings") {
+      return;
+    }
+
     const controller = new AbortController();
-    setBindingLoading(true);
+    const hydrationSeq = bindingHydrationSeqRef.current + 1;
+    bindingHydrationSeqRef.current = hydrationSeq;
+    setBindingLoading(isSseUnavailable || bindingTopicLoadingRef.current);
     setBindingError(null);
-    setInlinePolicyBusyField(null);
-    setInlinePolicyErrors({});
     void Promise.all([
-      fetchPromptCacheConversationBinding(conversationKey, controller.signal),
+      isSseUnavailable
+        ? fetchPromptCacheConversationBinding(conversationKey, controller.signal)
+        : Promise.resolve(null),
       fetchUpstreamAccounts({ includeAll: true, pageSize: 500 }),
     ])
       .then(([nextBinding, accountList]) => {
@@ -2489,6 +2701,12 @@ export function PromptCacheConversationHistoryDrawer({
               .filter((groupName) => groupName.length > 0),
           ),
         ).sort((left, right) => left.localeCompare(right));
+        setBindingAccounts(accounts);
+        setBindingGroups(groups);
+        setBindingProxyNodes(
+          (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
+        );
+        if (!nextBinding || hydrationSeq !== bindingHydrationSeqRef.current) return;
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
         applyBindingPolicyDraft(nextBinding, {
@@ -2508,23 +2726,75 @@ export function PromptCacheConversationHistoryDrawer({
               ? String(accounts[0].id)
               : "",
         );
-        setBindingAccounts(accounts);
-        setBindingGroups(groups);
-        setBindingProxyNodes(
-          (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
-        );
         setInlinePolicyErrors({});
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || hydrationSeq !== bindingHydrationSeqRef.current) return;
         setBindingError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setBindingLoading(false);
+        if (
+          isSseUnavailable &&
+          !controller.signal.aborted &&
+          hydrationSeq === bindingHydrationSeqRef.current
+        ) {
+          setBindingLoading(false);
+        }
       });
 
     return () => controller.abort();
-  }, [conversationKey, open]);
+  }, [activeTab, conversationKey, isSseUnavailable, open]);
+
+  useEffect(() => {
+    if (!isSseUnavailable) {
+      bindingTopicSseUnavailableCapturedRef.current = false;
+      bindingTopicSseUnavailableCaptureKeyRef.current = null;
+      staleBindingTopicPayloadRef.current = null;
+      return;
+    }
+    if (bindingTopicSseUnavailableCaptureKeyRef.current !== conversationKey) {
+      // Keep the payload that was already cached when transport failed. A later
+      // in-flight topic update is newer than this fallback baseline.
+      staleBindingTopicPayloadRef.current = bindingTopic.data;
+      bindingTopicSseUnavailableCapturedRef.current = true;
+      bindingTopicSseUnavailableCaptureKeyRef.current = conversationKey;
+    }
+  }, [bindingTopic.data, conversationKey, isSseUnavailable]);
+
+  useEffect(() => {
+    const nextBinding = bindingTopic.data;
+    const isCachedFallbackPayload =
+      isSseUnavailable &&
+      bindingTopicSseUnavailableCapturedRef.current &&
+      nextBinding === staleBindingTopicPayloadRef.current;
+    if (!nextBinding || isCachedFallbackPayload || !open || activeTab !== "settings") return;
+    bindingHydrationSeqRef.current += 1;
+    if (bindingDraftDirtyRef.current) {
+      setBindingRemoteConflict(nextBinding);
+      return;
+    }
+    setBinding(nextBinding);
+    setBindingKind(nextBinding.bindingKind);
+    applyBindingPolicyDraft(nextBinding, {
+      setAllowSwitchUpstreamDraft,
+      setFastModeDraft,
+      setImageToolDraft,
+      setCodexImagegenDraft,
+      setAvailableModelsMode,
+      setAvailableModelsDraft,
+      setForwardProxyKeysDraft,
+    });
+    setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
+    setBindingAccountId(
+      nextBinding.upstreamAccountId != null
+        ? String(nextBinding.upstreamAccountId)
+        : bindingAccounts[0]
+          ? String(bindingAccounts[0].id)
+          : "",
+    );
+    setBindingLoading(false);
+    setBindingError(null);
+  }, [activeTab, bindingAccounts, bindingGroups, bindingTopic.data, isSseUnavailable, open]);
 
   useEffect(
     () => () => {
@@ -2540,6 +2810,12 @@ export function PromptCacheConversationHistoryDrawer({
     if (!open || !conversationKey || activeTab !== "operations") {
       return;
     }
+    if (operationsTopic.data && !isSseUnavailable) {
+      return;
+    }
+    operationsRequestSeqRef.current += 1;
+    operationsLoadControllerRef.current?.abort();
+    operationsTopicKeyRef.current = operationsTopic.descriptorKey ?? operationsFilter;
     operationEventsRef.current = [];
     operationsPageRef.current = 1;
     operationsTotalRef.current = 0;
@@ -2547,8 +2823,19 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsTotal(0);
     setOperationsPage(1);
     setOperationsError(null);
-    void loadOperationEvents();
-  }, [activeTab, conversationKey, loadOperationEvents, open, operationsFilter]);
+    if (isSseUnavailable) {
+      void loadOperationEvents();
+    }
+  }, [
+    activeTab,
+    conversationKey,
+    isSseUnavailable,
+    loadOperationEvents,
+    open,
+    operationsFilter,
+    operationsTopic.data,
+    operationsTopic.descriptorKey,
+  ]);
 
   useEffect(() => {
     if (!open || activeTab !== "calls" || !drawerBodyElement) return;
@@ -2572,23 +2859,13 @@ export function PromptCacheConversationHistoryDrawer({
     };
   }, [activeTab, drawerBodyElement, isLoading, isLoadingMore, load, open]);
 
-  const visibleRecords = useMemo(
-    () => mergeInvocationRecordCollections(liveRecords, records),
-    [liveRecords, records],
-  );
+  const visibleRecords = records;
   const displayTitle = conversationLabel?.trim() || conversationKey || FALLBACK_CELL;
   const shouldShowConversationKey =
     Boolean(conversationLabel?.trim()) &&
     Boolean(conversationKey?.trim()) &&
     conversationLabel?.trim() !== conversationKey?.trim();
-  const effectiveTotal = useMemo(() => {
-    const loadedStableKeys = new Set(records.map(invocationStableKey));
-    const optimisticCount = liveRecords.reduce(
-      (count, record) => count + (loadedStableKeys.has(invocationStableKey(record)) ? 0 : 1),
-      0,
-    );
-    return total + optimisticCount;
-  }, [liveRecords, records, total]);
+  const effectiveTotal = total;
   const loadedCount = visibleRecords.length;
   const availableModelsOverrideList = useMemo(
     () => splitConversationModelsDraft(availableModelsDraft),
@@ -2676,6 +2953,7 @@ export function PromptCacheConversationHistoryDrawer({
         | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> },
     ) => {
       if (!conversationKey || !binding || bindingSaving || inlinePolicyBusyField != null) return;
+      bindingDraftDirtyRef.current = true;
       setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
       setBindingError(null);
       setInlinePolicyBusyField(field);
@@ -2695,7 +2973,17 @@ export function PromptCacheConversationHistoryDrawer({
           setForwardProxyKeysDraft,
         });
         setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
+        const hasUnsavedManualBindingDraft =
+          nextBinding.bindingKind !== bindingKind ||
+          (bindingKind === "group" && nextBinding.groupName !== bindingGroupName) ||
+          (bindingKind === "upstreamAccount" &&
+            String(nextBinding.upstreamAccountId ?? "") !== bindingAccountId);
+        bindingDraftDirtyRef.current = hasUnsavedManualBindingDraft;
+        if (!hasUnsavedManualBindingDraft) {
+          setBindingRemoteConflict(null);
+        }
       } catch (err) {
+        bindingDraftDirtyRef.current = true;
         setInlinePolicyErrors((current) => ({
           ...current,
           [field]: err instanceof Error ? err.message : String(err),
@@ -2706,6 +2994,9 @@ export function PromptCacheConversationHistoryDrawer({
     },
     [
       binding,
+      bindingAccountId,
+      bindingGroupName,
+      bindingKind,
       bindingSaving,
       buildCurrentBindingPayloadBase,
       conversationKey,
@@ -2810,6 +3101,7 @@ export function PromptCacheConversationHistoryDrawer({
             placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
             className="h-9"
             onChange={(event) => {
+              bindingDraftDirtyRef.current = true;
               setAvailableModelsMode("override");
               setAvailableModelsDraft(event.target.value);
             }}
@@ -2899,7 +3191,10 @@ export function PromptCacheConversationHistoryDrawer({
             aria-label={t("live.conversations.drawer.binding.kind")}
             size="sm"
             options={bindingKindOptions}
-            onValueChange={(value) => setBindingKind(value as ConversationBindingDraftKind)}
+            onValueChange={(value) => {
+              bindingDraftDirtyRef.current = true;
+              setBindingKind(value as ConversationBindingDraftKind);
+            }}
           />
           {bindingKind === "group" ? (
             <SelectField
@@ -2911,7 +3206,10 @@ export function PromptCacheConversationHistoryDrawer({
                 value: groupName,
                 label: groupName,
               }))}
-              onValueChange={setBindingGroupName}
+              onValueChange={(value) => {
+                bindingDraftDirtyRef.current = true;
+                setBindingGroupName(value);
+              }}
             />
           ) : bindingKind === "upstreamAccount" ? (
             <SelectField
@@ -2923,7 +3221,10 @@ export function PromptCacheConversationHistoryDrawer({
                 value: String(account.id),
                 label: conversationBindingAccountLabel(account),
               }))}
-              onValueChange={setBindingAccountId}
+              onValueChange={(value) => {
+                bindingDraftDirtyRef.current = true;
+                setBindingAccountId(value);
+              }}
             />
           ) : (
             <div className="hidden sm:block" aria-hidden="true" />
@@ -2940,6 +3241,53 @@ export function PromptCacheConversationHistoryDrawer({
           </Button>
         </div>
         {bindingError ? <p className="mt-2 text-xs text-error">{bindingError}</p> : null}
+        {bindingRemoteConflict ? (
+          <Alert className="mt-3" variant="warning">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t("live.conversations.drawer.binding.remoteConflict")}</span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const latest = bindingRemoteConflict;
+                    bindingDraftDirtyRef.current = false;
+                    setBinding(latest);
+                    setBindingKind(latest.bindingKind);
+                    applyBindingPolicyDraft(latest, {
+                      setAllowSwitchUpstreamDraft,
+                      setFastModeDraft,
+                      setImageToolDraft,
+                      setCodexImagegenDraft,
+                      setAvailableModelsMode,
+                      setAvailableModelsDraft,
+                      setForwardProxyKeysDraft,
+                    });
+                    setBindingGroupName(latest.groupName ?? bindingGroups[0] ?? "");
+                    setBindingAccountId(
+                      latest.upstreamAccountId != null
+                        ? String(latest.upstreamAccountId)
+                        : bindingAccounts[0]
+                          ? String(bindingAccounts[0].id)
+                          : "",
+                    );
+                    setBindingRemoteConflict(null);
+                  }}
+                >
+                  {t("live.conversations.drawer.binding.adoptLatest")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void saveBinding({ allowRemoteOverwrite: true })}
+                >
+                  {t("live.conversations.drawer.binding.keepSaving")}
+                </Button>
+              </div>
+            </div>
+          </Alert>
+        ) : null}
       </section>
       {conversationEffectiveRoutingRule ? (
         <EffectiveRoutingRuleCard
@@ -3404,8 +3752,9 @@ export function PromptCacheConversationHistoryDrawer({
     </div>
   );
   const saveBinding = useCallback(
-    async (options?: { skipOwnerWarning?: boolean }) => {
+    async (options?: { skipOwnerWarning?: boolean; allowRemoteOverwrite?: boolean }) => {
       if (!conversationKey || bindingSubmitDisabled) return;
+      if (bindingRemoteConflict && !options?.allowRemoteOverwrite) return;
       if (
         !options?.skipOwnerWarning &&
         nextBindingWouldOverrideEncryptedOwner(
@@ -3415,11 +3764,13 @@ export function PromptCacheConversationHistoryDrawer({
           bindingAccountId,
         )
       ) {
+        setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
         setBindingOwnerConfirmOpen(true);
         return;
       }
       setBindingSaving(true);
       setBindingError(null);
+      setBindingRemoteConflict(null);
       try {
         const nextBinding = await updatePromptCacheConversationBinding(
           conversationKey,
@@ -3454,7 +3805,10 @@ export function PromptCacheConversationHistoryDrawer({
               ? String(bindingAccounts[0].id)
               : "",
         );
+        bindingDraftDirtyRef.current = false;
+        setBindingRemoteConflict(null);
       } catch (err) {
+        bindingDraftDirtyRef.current = true;
         setBindingError(err instanceof Error ? err.message : String(err));
       } finally {
         setBindingSaving(false);
@@ -3467,10 +3821,20 @@ export function PromptCacheConversationHistoryDrawer({
       bindingGroupName,
       bindingGroups,
       bindingKind,
+      bindingRemoteConflict,
       bindingSubmitDisabled,
       conversationKey,
     ],
   );
+  const revealPendingCalls = useCallback(() => {
+    if (liveRecords.length === 0) return;
+    const nextRecords = mergeInvocationRecordCollections(liveRecords, recordsRef.current);
+    pendingCallRecordsRef.current = [];
+    recordsRef.current = nextRecords;
+    setRecords(nextRecords);
+    setLiveRecords([]);
+    drawerBodyElement?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [drawerBodyElement, liveRecords]);
 
   return (
     <>
@@ -3570,9 +3934,10 @@ export function PromptCacheConversationHistoryDrawer({
             <PromptCacheConversationActivityOverview
               open={open}
               conversationKey={conversationKey}
-              disableLiveUpdates={disableLiveUpdates}
               historyQueryForConversationKey={historyQueryForConversationKey}
-              historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}
+              realtimePayload={overviewTopic.data}
+              isRealtimeLoading={overviewTopic.isLoading}
+              allowHttpFallback={isSseUnavailable}
               t={t}
             />
           </div>
@@ -3584,6 +3949,15 @@ export function PromptCacheConversationHistoryDrawer({
             aria-labelledby={`${titleId}-tab-calls`}
             className="space-y-3"
           >
+            {liveRecords.length > 0 ? (
+              <div className="sticky top-2 z-10 flex justify-center">
+                <Button type="button" size="sm" onClick={revealPendingCalls}>
+                  {t("live.conversations.drawer.calls.newRecords", {
+                    count: liveRecords.length,
+                  })}
+                </Button>
+              </div>
+            ) : null}
             <PromptCacheConversationInvocationTable
               records={visibleRecords}
               isLoading={isLoading}
@@ -3622,7 +3996,10 @@ export function PromptCacheConversationHistoryDrawer({
       <Dialog
         open={open && bindingOwnerConfirmOpen}
         onOpenChange={(nextOpen) => {
-          if (!bindingSaving) setBindingOwnerConfirmOpen(nextOpen);
+          if (!bindingSaving) {
+            setBindingOwnerConfirmOpen(nextOpen);
+            if (!nextOpen) setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+          }
         }}
       >
         <DialogContent
@@ -3660,7 +4037,10 @@ export function PromptCacheConversationHistoryDrawer({
               disabled={bindingSaving}
               onClick={() => {
                 setBindingOwnerConfirmOpen(false);
-                void saveBinding({ skipOwnerWarning: true });
+                void saveBinding({
+                  skipOwnerWarning: true,
+                  allowRemoteOverwrite: bindingOwnerConfirmAllowsRemoteOverwrite,
+                });
               }}
             >
               {bindingSaving
@@ -3684,7 +4064,6 @@ export function PromptCacheConversationTable({
   keyColumnLabel,
   emptyLabel,
   historyQueryForConversationKey,
-  historyRecordMatchesConversationKey,
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
@@ -4177,7 +4556,6 @@ export function PromptCacheConversationTable({
         t={t}
         onOpenUpstreamAccount={onOpenUpstreamAccount}
         historyQueryForConversationKey={historyQueryForConversationKey}
-        historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}
       />
     </div>
   );

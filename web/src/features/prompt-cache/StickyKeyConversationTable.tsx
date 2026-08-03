@@ -1,7 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "../../i18n";
 import type {
-  ApiInvocation,
   PromptCacheConversation,
   PromptCacheConversationsResponse,
   PromptCacheConversationUpstreamAccount,
@@ -107,16 +106,6 @@ export function StickyKeyConversationTable({
     }),
     [accountId],
   );
-  const historyRecordMatchesConversationKey = useCallback(
-    (record: ApiInvocation, stickyKey: string) => {
-      const resolvedStickyKey = record.stickyKey?.trim() || record.promptCacheKey?.trim() || "";
-      if (resolvedStickyKey !== stickyKey) return false;
-      if (accountId == null) return true;
-      return record.upstreamAccountId === accountId;
-    },
-    [accountId],
-  );
-
   return (
     <PromptCacheConversationTable
       stats={promptCacheStats}
@@ -128,7 +117,6 @@ export function StickyKeyConversationTable({
       keyColumnLabel={t("accountPool.upstreamAccounts.stickyConversations.table.stickyKey")}
       emptyLabel={t("accountPool.upstreamAccounts.stickyConversations.empty")}
       historyQueryForConversationKey={historyQueryForConversationKey}
-      historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}
     />
   );
 }
