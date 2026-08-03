@@ -131,6 +131,8 @@ pub(crate) struct PromptCacheConversationOperationStickySnapshot {
 pub(crate) struct PromptCacheConversationOperationRoutingContext {
     pub(crate) reason_code: String,
     pub(crate) routing_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     pub(crate) http_status: Option<u16>,
     pub(crate) trigger_attempt_id: Option<String>,
     pub(crate) causing_attempt_id: Option<String>,
@@ -1052,20 +1054,36 @@ where
 async fn load_runtime_attempt_routing_context_executor<'e, E>(
     executor: E,
     attempt_id: Option<i64>,
-) -> Result<(Option<String>, Option<String>)>
+) -> Result<(
+    Option<String>,
+    Option<String>,
+    Option<PoolRoutingSelectionAudit>,
+)>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let Some(attempt_id) = attempt_id else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
-    sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT attempt_public_id, routing_source FROM pool_upstream_request_attempts WHERE id = ?1",
+    sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        "SELECT attempt_public_id, routing_source, routing_selection_audit_json FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(executor)
     .await
-    .map(|value| value.unwrap_or((None, None)))
+    .map(|value| {
+        value
+            .map(|(attempt_public_id, routing_source, routing_selection_audit_json)| {
+                (
+                    attempt_public_id,
+                    routing_source,
+                    routing_selection_audit_json
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str(raw).ok()),
+                )
+            })
+            .unwrap_or((None, None, None))
+    })
     .map_err(Into::into)
 }
 
@@ -1122,7 +1140,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .context("failed to acquire runtime sticky event write lock")?;
 
     let write_outcome: Result<bool> = async {
-        let (trigger_attempt_id, routing_source) =
+        let (trigger_attempt_id, routing_source, routing_selection_audit) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
         let pending_clear_cause =
             load_pending_sticky_clear_cause_executor(conn.as_mut(), sticky_key).await?;
@@ -1161,6 +1179,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                     Some(PromptCacheConversationOperationRoutingContext {
                         reason_code: "staleConcurrentCompletion".to_string(),
                         routing_source,
+                        routing_selection_audit: routing_selection_audit.clone(),
                         http_status: None,
                         trigger_attempt_id,
                         causing_attempt_id: None,
@@ -1227,6 +1246,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                             "firstSuccessfulAssignment".to_string()
                         },
                         routing_source,
+                        routing_selection_audit,
                         http_status: None,
                         trigger_attempt_id,
                         causing_attempt_id,

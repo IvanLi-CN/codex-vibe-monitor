@@ -476,6 +476,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   endpoint: string;
   stickyKey?: string | null;
   routingSource?: string | null;
+  routingSelectionAudit?: PoolRoutingSelectionAudit | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
   model?: string | null;
@@ -515,6 +516,22 @@ export interface ApiPoolUpstreamRequestAttempt {
   createdAt: string;
   invocationRecord?: ApiInvocation | null;
   workflowEntry?: ApiInvocationWorkflowTimelineEntry | null;
+}
+
+export interface PoolRoutingSelectionAuditExcludedCandidate {
+  accountId: number;
+  accountName: string;
+  reasonCode: string;
+}
+
+export interface PoolRoutingSelectionAudit {
+  selectedAccountId: number;
+  selectedAccountName: string;
+  eligibleCandidateCount: number;
+  winnerReasonCode: string;
+  comparedAccountId?: number | null;
+  comparedAccountName?: string | null;
+  excludedCandidates: PoolRoutingSelectionAuditExcludedCandidate[];
 }
 
 export interface UpstreamAccountAttemptStickyKeyOption {
@@ -736,6 +753,7 @@ export interface ApiInvocationWorkflowAttempt {
   endpoint: string;
   stickyKey?: string | null;
   routingSource?: string | null;
+  routingSelectionAudit?: PoolRoutingSelectionAudit | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
   requestModel?: string | null;
@@ -1857,6 +1875,7 @@ export interface PromptCacheConversationOperationStickySnapshot {
 export interface PromptCacheConversationOperationRoutingContext {
   reasonCode: string;
   routingSource: "stickyReuse" | "freshAssignment" | string | null;
+  routingSelectionAudit?: PoolRoutingSelectionAudit | null;
   httpStatus: number | null;
   triggerAttemptId: string | null;
   causingAttemptId: string | null;
@@ -3361,6 +3380,47 @@ function normalizePromptCacheConversationOperationStickySnapshot(
   };
 }
 
+function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionAudit | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const selectedAccountId = normalizeFiniteNumber(payload.selectedAccountId);
+  const selectedAccountName =
+    typeof payload.selectedAccountName === "string" ? payload.selectedAccountName.trim() : "";
+  const eligibleCandidateCount = normalizeFiniteNumber(payload.eligibleCandidateCount);
+  const winnerReasonCode =
+    typeof payload.winnerReasonCode === "string" ? payload.winnerReasonCode.trim() : "";
+  if (
+    selectedAccountId == null ||
+    !selectedAccountName ||
+    eligibleCandidateCount == null ||
+    !winnerReasonCode
+  ) {
+    return null;
+  }
+  const excludedCandidates = Array.isArray(payload.excludedCandidates)
+    ? payload.excludedCandidates.flatMap((candidate) => {
+        const item = candidate as Record<string, unknown>;
+        const accountId = normalizeFiniteNumber(item.accountId);
+        const accountName = typeof item.accountName === "string" ? item.accountName.trim() : "";
+        const reasonCode = typeof item.reasonCode === "string" ? item.reasonCode.trim() : "";
+        return accountId == null || !accountName || !reasonCode
+          ? []
+          : [{ accountId, accountName, reasonCode }];
+      })
+    : [];
+  return {
+    selectedAccountId,
+    selectedAccountName,
+    eligibleCandidateCount,
+    winnerReasonCode,
+    comparedAccountId: normalizeFiniteNumber(payload.comparedAccountId),
+    comparedAccountName:
+      typeof payload.comparedAccountName === "string" && payload.comparedAccountName.trim()
+        ? payload.comparedAccountName.trim()
+        : null,
+    excludedCandidates,
+  };
+}
+
 function normalizePromptCacheConversationOperationRoutingContext(
   raw: unknown,
 ): PromptCacheConversationOperationRoutingContext | null {
@@ -3372,6 +3432,7 @@ function normalizePromptCacheConversationOperationRoutingContext(
   return {
     reasonCode,
     routingSource: attemptId(payload.routingSource),
+    routingSelectionAudit: normalizePoolRoutingSelectionAudit(payload.routingSelectionAudit),
     httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
     triggerAttemptId: attemptId(payload.triggerAttemptId),
     causingAttemptId: attemptId(payload.causingAttemptId),

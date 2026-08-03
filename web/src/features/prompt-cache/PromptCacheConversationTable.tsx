@@ -47,6 +47,7 @@ import type {
   ForwardProxyBindingNode,
   InvocationRecordsQuery,
   InvocationRecordsSummaryResponse,
+  PoolRoutingSelectionAudit,
   PromptCacheConversation,
   PromptCacheConversationBindingKind,
   PromptCacheConversationBindingResponse,
@@ -462,6 +463,35 @@ function conversationOperationRoutingReasonLabel(
   });
   return translated === key
     ? t("live.conversations.drawer.operations.routingContext.reasons.unknown")
+    : translated;
+}
+
+function routingSelectionWinnerLabel(
+  audit: PoolRoutingSelectionAudit,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const key = `table.poolAttempts.routingDecision.winnerReasons.${audit.winnerReasonCode}`;
+  const translated = t(key, {
+    account: audit.selectedAccountName,
+    comparedAccount: audit.comparedAccountName ?? "-",
+  });
+  return translated === key
+    ? t("table.poolAttempts.routingDecision.winnerReasons.unknown", {
+        account: audit.selectedAccountName,
+        comparedAccount: audit.comparedAccountName ?? "-",
+      })
+    : translated;
+}
+
+function routingSelectionExclusionLabel(
+  account: string,
+  reasonCode: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const key = `table.poolAttempts.routingDecision.exclusionReasons.${reasonCode}`;
+  const translated = t(key, { account });
+  return translated === key
+    ? t("table.poolAttempts.routingDecision.exclusionReasons.unknown", { account })
     : translated;
 }
 
@@ -3296,6 +3326,30 @@ export function PromptCacheConversationHistoryDrawer({
                   })}
                 </p>
               ) : null}
+              {event.routingContext?.routingSelectionAudit ? (
+                <div className="space-y-1 rounded border border-info/25 bg-info/5 p-2">
+                  <p className="font-medium text-base-content">
+                    {t("table.poolAttempts.routingDecision.summary", {
+                      account: event.routingContext.routingSelectionAudit.selectedAccountName,
+                      count: event.routingContext.routingSelectionAudit.eligibleCandidateCount,
+                    })}
+                  </p>
+                  <p>
+                    {routingSelectionWinnerLabel(event.routingContext.routingSelectionAudit, t)}
+                  </p>
+                  {event.routingContext.routingSelectionAudit.excludedCandidates.map(
+                    (candidate) => (
+                      <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
+                        {routingSelectionExclusionLabel(
+                          candidate.accountName,
+                          candidate.reasonCode,
+                          t,
+                        )}
+                      </p>
+                    ),
+                  )}
+                </div>
+              ) : null}
               {event.routingContext?.causingAttemptId ? (
                 <Link
                   className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
@@ -3311,9 +3365,14 @@ export function PromptCacheConversationHistoryDrawer({
                   className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
                   to={`/records?attemptId=${encodeURIComponent(event.routingContext.triggerAttemptId)}`}
                 >
-                  {t("live.conversations.drawer.operations.routingContext.triggerAttempt", {
-                    attemptId: event.routingContext.triggerAttemptId,
-                  })}
+                  {t(
+                    event.routingContext.routingSelectionAudit
+                      ? "live.conversations.drawer.operations.routingContext.routingDecisionAttempt"
+                      : "live.conversations.drawer.operations.routingContext.triggerAttempt",
+                    {
+                      attemptId: event.routingContext.triggerAttemptId,
+                    },
+                  )}
                 </Link>
               ) : null}
             </div>

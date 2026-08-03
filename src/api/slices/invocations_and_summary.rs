@@ -3209,6 +3209,7 @@ struct InvocationWorkflowAttemptRow {
     endpoint: String,
     sticky_key: Option<String>,
     routing_source: Option<String>,
+    routing_selection_audit_json: Option<String>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
     upstream_route_key: Option<String>,
@@ -3310,6 +3311,8 @@ pub(crate) struct InvocationWorkflowAttempt {
     pub(crate) sticky_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) routing_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_account_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4129,6 +4132,10 @@ fn build_workflow_attempt_from_row(
         endpoint: attempt.endpoint.clone(),
         sticky_key: attempt.sticky_key.clone(),
         routing_source: attempt.routing_source.clone(),
+        routing_selection_audit: attempt
+            .routing_selection_audit_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok()),
         upstream_account_id: attempt.upstream_account_id,
         upstream_account_name: attempt.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4284,6 +4291,7 @@ fn build_synthetic_workflow_attempt(
         endpoint: record.endpoint.clone().unwrap_or_default(),
         sticky_key: record.sticky_key.clone(),
         routing_source: None,
+        routing_selection_audit: None,
         upstream_account_id: record.upstream_account_id,
         upstream_account_name: record.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4713,6 +4721,7 @@ async fn query_invocation_workflow_attempt_rows(
             attempts.endpoint,
             attempts.sticky_key,
             attempts.routing_source,
+            attempts.routing_selection_audit_json,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
@@ -18987,6 +18996,7 @@ mod invocation_cost_audit_tests {
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
             routing_source: None,
+            routing_selection_audit_json: None,
             upstream_account_id: Some(17),
             upstream_account_name: Some("Pool 17".to_string()),
             upstream_route_key: Some("route-17".to_string()),

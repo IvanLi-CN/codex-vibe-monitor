@@ -5,6 +5,7 @@ use aes_gcm::{
 };
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::{RngCore, rngs::OsRng};
+use serde::{Deserialize, Serialize};
 
 pub(crate) fn pool_routing_timeouts_from_config(
     config: &AppConfig,
@@ -1000,6 +1001,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
     pub(crate) sticky_affinity_generation: Option<i64>,
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
 }
 
 impl PoolResolvedAccount {
@@ -1018,6 +1020,31 @@ impl PoolResolvedAccount {
         self.sticky_affinity_generation = generation;
         self
     }
+
+    pub(crate) fn with_routing_selection_audit(mut self, audit: PoolRoutingSelectionAudit) -> Self {
+        self.routing_selection_audit = Some(audit);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingSelectionAudit {
+    pub(crate) selected_account_id: i64,
+    pub(crate) selected_account_name: String,
+    pub(crate) eligible_candidate_count: usize,
+    pub(crate) winner_reason_code: String,
+    pub(crate) compared_account_id: Option<i64>,
+    pub(crate) compared_account_name: Option<String>,
+    pub(crate) excluded_candidates: Vec<PoolRoutingSelectionAuditExcludedCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingSelectionAuditExcludedCandidate {
+    pub(crate) account_id: i64,
+    pub(crate) account_name: String,
+    pub(crate) reason_code: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

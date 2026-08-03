@@ -1942,6 +1942,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
     };
 
     let outcome = inspect_ws_request_payload_guard(
@@ -2071,6 +2072,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
     };
 
     let outcome = inspect_ws_request_payload_guard(
@@ -7508,6 +7510,7 @@ fn test_live_first_pool_account(
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
     }
 }
 

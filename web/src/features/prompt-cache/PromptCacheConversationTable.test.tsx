@@ -1535,6 +1535,21 @@ describe("PromptCacheConversationTable", () => {
             routingContext: {
               reasonCode: "freshAssignmentAfterFailure",
               routingSource: "freshAssignment",
+              routingSelectionAudit: {
+                selectedAccountId: 42,
+                selectedAccountName: "Pool Alpha",
+                eligibleCandidateCount: 1,
+                winnerReasonCode: "onlyEligibleCandidate",
+                comparedAccountId: null,
+                comparedAccountName: null,
+                excludedCandidates: [
+                  {
+                    accountId: 43,
+                    accountName: "Pool Beta",
+                    reasonCode: "modelNotAllowed",
+                  },
+                ],
+              },
               httpStatus: null,
               triggerAttemptId: "SUCCESS42",
               causingAttemptId: "FAILED41",
@@ -1615,11 +1630,18 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("invokeId: inv-op-42");
     expect(document.body.textContent).toContain("重新分配源于上游失败（HTTP 502）");
     expect(document.body.textContent).toContain("起因尝试：FAILED41");
-    expect(document.body.textContent).toContain("触发尝试：SUCCESS42");
+    expect(document.body.textContent).toContain("选路决策：在 1 个合格候选中选择了 Pool Alpha");
+    expect(document.body.textContent).toContain("Pool Alpha 是唯一合格候选");
+    expect(document.body.textContent).toContain("Pool Beta 不允许当前请求模型");
+    expect(document.body.textContent).toContain("查看选路决策：SUCCESS42");
     const causeAttemptLink = Array.from(document.querySelectorAll("a")).find((link) =>
       link.textContent?.includes("起因尝试：FAILED41"),
     );
     expect(causeAttemptLink?.getAttribute("href")).toContain("attemptId=FAILED41");
+    const routingDecisionLink = Array.from(document.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("查看选路决策：SUCCESS42"),
+    );
+    expect(routingDecisionLink?.getAttribute("href")).toContain("attemptId=SUCCESS42");
     expect(document.body.textContent).toContain("正向代理相关");
 
     const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>
