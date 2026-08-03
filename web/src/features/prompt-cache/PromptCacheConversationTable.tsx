@@ -2119,6 +2119,7 @@ export function PromptCacheConversationHistoryDrawer({
   const frozenHistoryStableKeysRef = useRef<Set<string>>(new Set());
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
+  const bindingTopicLoadingRef = useRef(false);
   const bindingTopicSseUnavailableCapturedRef = useRef(false);
   const bindingTopicSseUnavailableCaptureKeyRef = useRef<string | null>(null);
   const staleBindingTopicPayloadRef = useRef<PromptCacheConversationBindingResponse | null>(null);
@@ -2192,6 +2193,7 @@ export function PromptCacheConversationHistoryDrawer({
     scope: conversationDetailScope,
     operationsInfoType: operationsFilter === "all" ? undefined : operationsFilter,
   });
+  bindingTopicLoadingRef.current = bindingTopic.isLoading;
 
   useEffect(() => {
     if (!open) {
@@ -2678,7 +2680,7 @@ export function PromptCacheConversationHistoryDrawer({
     const controller = new AbortController();
     const hydrationSeq = bindingHydrationSeqRef.current + 1;
     bindingHydrationSeqRef.current = hydrationSeq;
-    setBindingLoading(isSseUnavailable || bindingTopic.isLoading);
+    setBindingLoading(isSseUnavailable || bindingTopicLoadingRef.current);
     setBindingError(null);
     void Promise.all([
       isSseUnavailable
@@ -2739,7 +2741,7 @@ export function PromptCacheConversationHistoryDrawer({
       });
 
     return () => controller.abort();
-  }, [activeTab, bindingTopic.isLoading, conversationKey, isSseUnavailable, open]);
+  }, [activeTab, conversationKey, isSseUnavailable, open]);
 
   useEffect(() => {
     if (!isSseUnavailable) {

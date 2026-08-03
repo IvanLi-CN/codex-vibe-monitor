@@ -1858,7 +1858,7 @@ describe("PromptCacheConversationTable", () => {
     });
   });
 
-  it("hydrates settings from its topic without a binding HTTP bootstrap", async () => {
+  it("hydrates settings from its topic without a binding HTTP bootstrap or duplicate account load", async () => {
     detailTopicMocks.current.binding.data = {
       promptCacheKey: "pck-binding-topic",
       bindingKind: "group",
@@ -1867,7 +1867,8 @@ describe("PromptCacheConversationTable", () => {
       upstreamAccountName: null,
       updatedAt: "2026-03-02T12:00:00Z",
     };
-    renderInteractive({
+    Object.assign(detailTopicMocks.current.binding, { isLoading: true });
+    const stats: PromptCacheConversationsResponse = {
       rangeStart: "2026-03-02T00:00:00Z",
       rangeEnd: "2026-03-03T00:00:00Z",
       selectionMode: "count",
@@ -1884,7 +1885,8 @@ describe("PromptCacheConversationTable", () => {
           lastActivityAt: "2026-03-02T12:00:00Z",
         }),
       ],
-    });
+    };
+    renderInteractive(stats);
 
     await act(async () => {
       findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
@@ -1896,6 +1898,16 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("当前：分组 prod");
+    await vi.waitFor(() => expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1));
+
+    detailTopicMocks.current.binding = {
+      ...detailTopicMocks.current.binding,
+      isLoading: false,
+    } as typeof detailTopicMocks.current.binding;
+    renderInteractive(stats);
+    await flushInteractive();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the current binding when SSE is unavailable despite a cached topic", async () => {
