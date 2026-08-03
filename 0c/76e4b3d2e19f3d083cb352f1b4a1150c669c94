@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.54.7",
+  "base_stable_version": "2.54.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-03T10:44:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.54.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1e064a3664721ac16e6671ae79b92cd7d8dd29bd",
+  "pr_number": 730,
+  "pr_title": "fix(perf): coalesce raw capture and projections",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.54.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.54.7",
+  "target_sha": "0c76e4b3d2e19f3d083cb352f1b4a1150c669c94",
+  "type_label": "type:patch"
+}
