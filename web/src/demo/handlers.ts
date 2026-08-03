@@ -379,6 +379,97 @@ export function demoSummary() {
   };
 }
 
+function demoAverage(values: Array<number | null | undefined>) {
+  const defined = values.filter((value): value is number => typeof value === "number");
+  if (defined.length === 0) return null;
+  return Number((defined.reduce((total, value) => total + value, 0) / defined.length).toFixed(2));
+}
+
+function demoPercentile(values: Array<number | null | undefined>, percentile: number) {
+  const defined = values
+    .filter((value): value is number => typeof value === "number")
+    .sort((left, right) => left - right);
+  if (defined.length === 0) return null;
+  return defined[Math.min(defined.length - 1, Math.ceil(defined.length * percentile) - 1)] ?? null;
+}
+
+function demoInvocationSummary(records: ReturnType<typeof invocations>) {
+  const totalCount = records.length;
+  const successCount = records.filter((record) => record.status === "success").length;
+  const failureRecords = records.filter((record) => record.failureClass !== "none");
+  const totalTokens = records.reduce((total, record) => total + (record.totalTokens ?? 0), 0);
+  const totalCost = Number(
+    records.reduce((total, record) => total + (record.cost ?? 0), 0).toFixed(4),
+  );
+  const cacheWriteTokens = records.reduce(
+    (total, record) => total + (record.cacheWriteTokens ?? 0),
+    0,
+  );
+  const cacheInputTokens = records.reduce(
+    (total, record) => total + (record.cacheInputTokens ?? 0),
+    0,
+  );
+  const outputTokens = records.reduce((total, record) => total + (record.outputTokens ?? 0), 0);
+  const totalDurations = records.map((record) => record.tTotalMs);
+  const firstByteDurations = records.map((record) => record.tUpstreamTtfbMs);
+  const rangeStart = records.reduce<string | null>(
+    (earliest, record) =>
+      earliest == null || record.occurredAt < earliest ? record.occurredAt : earliest,
+    null,
+  );
+  const rangeEnd = records.reduce<string | null>(
+    (latest, record) => (latest == null || record.occurredAt > latest ? record.occurredAt : latest),
+    null,
+  );
+
+  return {
+    rangeStart: rangeStart ?? demoNow(),
+    rangeEnd: rangeEnd ?? demoNow(),
+    totalCount,
+    successCount,
+    failureCount: failureRecords.length,
+    totalCost,
+    totalTokens,
+    usageBreakdown: null,
+    inProgressConversationCount: records.filter((record) => record.status === "running").length,
+    token: {
+      requestCount: totalCount,
+      totalTokens,
+      avgTokensPerRequest: totalCount === 0 ? 0 : totalTokens / totalCount,
+      cacheWriteTokens,
+      cacheInputTokens,
+      outputTokens,
+      totalCost,
+      maxTokensPerRequest:
+        totalCount === 0 ? null : Math.max(...records.map((record) => record.totalTokens ?? 0)),
+    },
+    network: {
+      avgTtfbMs: demoAverage(firstByteDurations),
+      p95TtfbMs: demoPercentile(firstByteDurations, 0.95),
+      avgFirstTokenMs: null,
+      p95FirstTokenMs: null,
+      avgResponseDurationMs: demoAverage(totalDurations),
+      p95ResponseDurationMs: demoPercentile(totalDurations, 0.95),
+      avgTotalMs: demoAverage(totalDurations),
+      p95TotalMs: demoPercentile(totalDurations, 0.95),
+      maxTotalMs:
+        totalCount === 0 ? null : Math.max(...records.map((record) => record.tTotalMs ?? 0)),
+    },
+    exception: {
+      failureCount: failureRecords.length,
+      serviceFailureCount: failureRecords.filter(
+        (record) => record.failureClass === "service_failure",
+      ).length,
+      clientFailureCount: failureRecords.filter(
+        (record) => record.failureClass === "client_failure",
+      ).length,
+      clientAbortCount: failureRecords.filter((record) => record.failureClass === "client_abort")
+        .length,
+      actionableFailureCount: failureRecords.filter((record) => record.isActionable).length,
+    },
+  };
+}
+
 function invocations() {
   if (demoModel.snapshot.scene === "empty") return [];
   const attention = demoModel.snapshot.scene === "attention";
@@ -2239,6 +2330,36 @@ function demoLongTermSeries(url: URL) {
   };
 }
 
+function filterDemoInvocations(url: URL) {
+  let records = invocations();
+  const model = url.searchParams.get("model");
+  const status = url.searchParams.get("status");
+  const endpoint = url.searchParams.get("endpoint");
+  const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
+  const attemptId = url.searchParams.get("attemptId");
+  const upstreamAccountId = Number(url.searchParams.get("upstreamAccountId"));
+  const promptCacheKey = url.searchParams.get("promptCacheKey");
+  const stickyKey = url.searchParams.get("stickyKey");
+  const keyword = url.searchParams.get("keyword")?.toLowerCase();
+  if (model) records = records.filter((record) => record.model === model);
+  if (status) records = records.filter((record) => record.status === status);
+  if (endpoint) records = records.filter((record) => record.endpoint === endpoint);
+  if (invokeId) records = records.filter((record) => record.invokeId === invokeId);
+  if (attemptId) {
+    records = records.filter((record) =>
+      poolAttempts(record.invokeId).some((attempt) => attempt.attemptId === attemptId),
+    );
+  }
+  if (Number.isFinite(upstreamAccountId) && upstreamAccountId > 0)
+    records = records.filter((record) => record.upstreamAccountId === upstreamAccountId);
+  if (promptCacheKey)
+    records = records.filter((record) => record.promptCacheKey === promptCacheKey);
+  if (stickyKey) records = records.filter((record) => record.stickyKey === stickyKey);
+  if (keyword)
+    records = records.filter((record) => JSON.stringify(record).toLowerCase().includes(keyword));
+  return records;
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -2506,32 +2627,7 @@ export async function handleDemoRequest(request: Request) {
     });
 
   if (pathname === "/api/invocations") {
-    let records = invocations();
-    const model = url.searchParams.get("model");
-    const status = url.searchParams.get("status");
-    const endpoint = url.searchParams.get("endpoint");
-    const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
-    const attemptId = url.searchParams.get("attemptId");
-    const upstreamAccountId = Number(url.searchParams.get("upstreamAccountId"));
-    const promptCacheKey = url.searchParams.get("promptCacheKey");
-    const stickyKey = url.searchParams.get("stickyKey");
-    const keyword = url.searchParams.get("keyword")?.toLowerCase();
-    if (model) records = records.filter((record) => record.model === model);
-    if (status) records = records.filter((record) => record.status === status);
-    if (endpoint) records = records.filter((record) => record.endpoint === endpoint);
-    if (invokeId) records = records.filter((record) => record.invokeId === invokeId);
-    if (attemptId) {
-      records = records.filter((record) =>
-        poolAttempts(record.invokeId).some((attempt) => attempt.attemptId === attemptId),
-      );
-    }
-    if (Number.isFinite(upstreamAccountId) && upstreamAccountId > 0)
-      records = records.filter((record) => record.upstreamAccountId === upstreamAccountId);
-    if (promptCacheKey)
-      records = records.filter((record) => record.promptCacheKey === promptCacheKey);
-    if (stickyKey) records = records.filter((record) => record.stickyKey === stickyKey);
-    if (keyword)
-      records = records.filter((record) => JSON.stringify(record).toLowerCase().includes(keyword));
+    const records = filterDemoInvocations(url);
     const pageSize = Number(
       url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 50,
     );
@@ -2545,8 +2641,13 @@ export async function handleDemoRequest(request: Request) {
       records: records.slice(start, start + pageSize),
     });
   }
-  if (pathname === "/api/invocations/summary")
-    return json({ snapshotId: 901, newRecordsCount: 0, ...demoSummary() });
+  if (pathname === "/api/invocations/summary") {
+    return json({
+      snapshotId: 901,
+      newRecordsCount: 0,
+      ...demoInvocationSummary(filterDemoInvocations(url)),
+    });
+  }
   if (pathname === "/api/invocations/new-count")
     return json({ snapshotId: 901, newRecordsCount: 0 });
   if (pathname === "/api/invocations/suggestions") {

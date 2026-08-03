@@ -3609,7 +3609,6 @@ export function PromptCacheConversationHistoryDrawer({
       }
       setBindingSaving(true);
       setBindingError(null);
-      bindingDraftDirtyRef.current = false;
       setBindingRemoteConflict(null);
       try {
         const nextBinding = await updatePromptCacheConversationBinding(
@@ -3646,6 +3645,7 @@ export function PromptCacheConversationHistoryDrawer({
               : "",
         );
         bindingDraftDirtyRef.current = false;
+        setBindingRemoteConflict(null);
       } catch (err) {
         bindingDraftDirtyRef.current = true;
         setBindingError(err instanceof Error ? err.message : String(err));
@@ -3871,7 +3871,6 @@ export function PromptCacheConversationHistoryDrawer({
               disabled={bindingSaving}
               onClick={() => {
                 setBindingOwnerConfirmOpen(false);
-                bindingDraftDirtyRef.current = false;
                 setBindingRemoteConflict(null);
                 void saveBinding({ skipOwnerWarning: true });
               }}

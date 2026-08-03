@@ -1550,6 +1550,121 @@ describe("PromptCacheConversationTable", () => {
     });
   });
 
+  it("keeps a binding draft protected when a remote topic arrives during its save", async () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-history",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+        }),
+      ],
+    };
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-history",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [
+        createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+        createUpstreamAccountSummary(77, "Pool Beta", "backup"),
+      ],
+      groups: [
+        { groupName: "prod", accountCount: 1 },
+        { groupName: "backup", accountCount: 1 },
+      ],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 2,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+      routing: null,
+    });
+    let resolveSave: ((value: PromptCacheConversationBindingResponse) => void) | undefined;
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      () =>
+        new Promise<PromptCacheConversationBindingResponse>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive(stats);
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="绑定类型"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("上游账号")!);
+    await flushInteractive();
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="账号绑定目标"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("Pool Beta")!);
+    await act(async () => {
+      findButtonByAriaLabel("保存")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    detailTopicMocks.current.binding.data = {
+      promptCacheKey: "pck-history",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:01:00Z",
+    };
+    renderInteractive(stats);
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+    expect(
+      document.querySelector('[role="combobox"][aria-label="账号绑定目标"]')?.textContent,
+    ).toContain("Pool Beta");
+
+    await act(async () => {
+      resolveSave?.({
+        promptCacheKey: "pck-history",
+        bindingKind: "upstreamAccount",
+        groupName: null,
+        upstreamAccountId: 77,
+        upstreamAccountName: "Pool Beta",
+        updatedAt: "2026-03-02T12:02:00Z",
+      });
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).not.toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+    expect(document.body.textContent).toContain("当前：账号 Pool Beta");
+  });
+
   it("allows retrying a binding save after a transient failure", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-binding",

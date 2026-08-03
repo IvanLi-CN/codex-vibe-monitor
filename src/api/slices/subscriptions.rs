@@ -2920,7 +2920,9 @@ impl SubscriptionTopic {
                         as i64;
                     let Json(response) = list_invocations(
                         State(state.clone()),
-                        Query(scope.list_query(page, page_size, Some(summary.snapshot_id))),
+                        // Keep chart samples on the same live view as the summary. Supplying a
+                        // snapshot ID deliberately disables the runtime overlay in the records API.
+                        Query(scope.list_query(page, page_size, None)),
                     )
                     .await?;
                     chart_total = response.total;
@@ -3799,6 +3801,53 @@ mod tests {
         assert!(!operations.is_affected_by(&BroadcastPayload::Records {
             records: Vec::new(),
         }));
+    }
+
+    #[tokio::test]
+    async fn conversation_overview_includes_runtime_records_in_chart_samples() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let prompt_cache_key = "runtime-overview-pck";
+        let occurred_at = crate::proxy::shanghai_now_string();
+        let runtime_record = crate::proxy::build_admitted_proxy_capture_runtime_snapshot(
+            "runtime-overview-invoke",
+            &occurred_at,
+            ProxyCaptureTarget::Responses,
+            None,
+            None,
+            Some(prompt_cache_key),
+        );
+        state
+            .proxy_runtime_invocations
+            .upsert(crate::proxy::api_invocation_from_runtime_record(
+                &runtime_record,
+            ));
+
+        let topic = SubscriptionTopic::InvocationHistoryOverview {
+            scope: ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key.to_string()),
+        };
+        let payload = topic
+            .build_payload(state)
+            .await
+            .expect("conversation overview payload should build");
+
+        assert_eq!(
+            payload
+                .pointer("/summary/totalCount")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(payload.get("chartTotal").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            payload
+                .get("records")
+                .and_then(Value::as_array)
+                .and_then(|records| records.first())
+                .and_then(|record| record.get("invokeId"))
+                .and_then(Value::as_str),
+            Some("runtime-overview-invoke")
+        );
     }
 
     #[tokio::test]

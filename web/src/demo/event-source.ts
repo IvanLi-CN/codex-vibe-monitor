@@ -19,7 +19,7 @@ declare global {
   }
 }
 
-class DemoTopicEventSource implements EventTarget {
+export class DemoTopicEventSource implements EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSED = 2;
@@ -72,6 +72,7 @@ class DemoTopicEventSource implements EventTarget {
     this.readyState = DemoTopicEventSource.OPEN;
     this.emit("open", new Event("open"));
     await this.publish(topics, "snapshot");
+    if (this.readyState !== DemoTopicEventSource.OPEN) return;
     this.#unsubscribe = subscribeToDemoRealtime(() => void this.publish(topics, "live"));
   }
 
