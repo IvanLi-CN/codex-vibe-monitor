@@ -36,8 +36,8 @@
 
 - Four tab-scoped topic descriptors now cover the shared conversation drawer: `invocation-history.window`, `invocation-history.overview`, `prompt-cache.conversation-binding.current`, and `prompt-cache.conversation-operations.window`.
 - Calls merges the current 50-row topic window over the entire frozen HTTP snapshot, including page 1, by stable invocation key. Running rows update in place; deferred new rows preserve the reading anchor and surface a counted reveal action.
-- Overview captures one SQLite snapshot and runtime overlay for its current summary plus bounded chart samples, keeps the accepted page width fixed across internal pages, coalesces record-driven rebuilds for two seconds, and keeps last-good data on refresh failure. Its SSE-disabled HTTP fallback follows the response page width until the bounded chart window is complete.
-- Binding and operations topics receive committed conversation-configuration broadcasts from detail saves, bulk changes, affinity resets, automatic sticky changes, and group promotions. Settings holds a dirty local draft until the operator explicitly adopts the external snapshot or saves last-write-wins.
+- Overview captures one SQLite snapshot and runtime overlay for its current summary plus bounded chart samples, keeps the accepted page width fixed across internal pages, coalesces record-driven rebuilds for two seconds, and keeps last-good data on refresh failure. Its SSE-disabled HTTP fallback reuses the first page snapshot for summary, every sample page, and the oldest page that retains full-history chart bounds.
+- Binding and operations topics receive committed conversation-configuration broadcasts from detail saves, bulk changes, affinity resets, automatic sticky changes, and group promotions. Settings holds a dirty local draft until the operator explicitly adopts the external snapshot or saves last-write-wins; its SSE-disabled cached-payload baseline is reset for every conversation scope.
 - Storybook covers deferred-call insertion and Settings conflict actions; the mock-only web demo verifies the Calls drawer at desktop and `393x852` mobile viewports.
 
 ## Dashboard Bulk Actions Update

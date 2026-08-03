@@ -1877,17 +1877,19 @@ function PromptCacheConversationActivityOverview({
     setIsLoading(true);
     setError(null);
     void (async () => {
-      const [nextSummary, firstPage] = await Promise.all([
-        fetchInvocationRecordsSummary({ ...filters, signal: controller.signal }),
-        fetchInvocationRecords({
-          ...filters,
-          page: 1,
-          pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          signal: controller.signal,
-        }),
-      ]);
+      const firstPage = await fetchInvocationRecords({
+        ...filters,
+        page: 1,
+        pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        signal: controller.signal,
+      });
+      const nextSummary = await fetchInvocationRecordsSummary({
+        ...filters,
+        snapshotId: firstPage.snapshotId,
+        signal: controller.signal,
+      });
       const records = firstPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS);
       const pageSize = Math.max(1, firstPage.pageSize);
       const targetCount = Math.min(
@@ -1902,6 +1904,7 @@ function PromptCacheConversationActivityOverview({
           ...filters,
           page,
           pageSize,
+          snapshotId: firstPage.snapshotId,
           sortBy: "occurredAt",
           sortOrder: "desc",
           signal: controller.signal,
@@ -1912,18 +1915,38 @@ function PromptCacheConversationActivityOverview({
         );
         page += 1;
       }
-      return { nextSummary, records, chartTotal: firstPage.total };
+      const rangeRecords = [...records];
+      if (firstPage.total > records.length) {
+        const oldestPage = Math.max(1, Math.ceil(firstPage.total / pageSize));
+        const oldestResponse = await fetchInvocationRecords({
+          ...filters,
+          page: oldestPage,
+          pageSize,
+          snapshotId: firstPage.snapshotId,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          signal: controller.signal,
+        });
+        rangeRecords.push(...oldestResponse.records);
+      }
+      const occurredAt = rangeRecords
+        .map((record) => Date.parse(record.occurredAt))
+        .filter((value) => Number.isFinite(value));
+      return {
+        nextSummary,
+        records,
+        chartRangeStartMs: occurredAt.length > 0 ? Math.min(...occurredAt) : null,
+        chartRangeEndMs: occurredAt.length > 0 ? Math.max(...occurredAt) : null,
+        chartTotal: firstPage.total,
+      };
     })()
       .then((response) => {
         if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
         if (!response) return;
-        const occurredAt = response.records
-          .map((record) => Date.parse(record.occurredAt))
-          .filter((value) => Number.isFinite(value));
         setSummary(response.nextSummary);
         setRecords(response.records);
-        setChartRangeStartMs(occurredAt.length > 0 ? Math.min(...occurredAt) : null);
-        setChartRangeEndMs(occurredAt.length > 0 ? Math.max(...occurredAt) : null);
+        setChartRangeStartMs(response.chartRangeStartMs);
+        setChartRangeEndMs(response.chartRangeEndMs);
         setChartTotal(response.chartTotal);
         setChartIsSampled(response.records.length < response.chartTotal);
         setIsLoading(false);
@@ -2097,6 +2120,7 @@ export function PromptCacheConversationHistoryDrawer({
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
   const bindingTopicSseUnavailableCapturedRef = useRef(false);
+  const bindingTopicSseUnavailableCaptureKeyRef = useRef<string | null>(null);
   const staleBindingTopicPayloadRef = useRef<PromptCacheConversationBindingResponse | null>(null);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
   const operationsTopicKeyRef = useRef<string | null>(null);
@@ -2720,16 +2744,18 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     if (!isSseUnavailable) {
       bindingTopicSseUnavailableCapturedRef.current = false;
+      bindingTopicSseUnavailableCaptureKeyRef.current = null;
       staleBindingTopicPayloadRef.current = null;
       return;
     }
-    if (!bindingTopicSseUnavailableCapturedRef.current) {
+    if (bindingTopicSseUnavailableCaptureKeyRef.current !== conversationKey) {
       // Keep the payload that was already cached when transport failed. A later
       // in-flight topic update is newer than this fallback baseline.
       staleBindingTopicPayloadRef.current = bindingTopic.data;
       bindingTopicSseUnavailableCapturedRef.current = true;
+      bindingTopicSseUnavailableCaptureKeyRef.current = conversationKey;
     }
-  }, [bindingTopic.data, isSseUnavailable]);
+  }, [bindingTopic.data, conversationKey, isSseUnavailable]);
 
   useEffect(() => {
     const nextBinding = bindingTopic.data;
