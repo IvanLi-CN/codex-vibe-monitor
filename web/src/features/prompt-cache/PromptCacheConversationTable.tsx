@@ -2156,6 +2156,7 @@ export function PromptCacheConversationHistoryDrawer({
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
   const historyNextPageRef = useRef(1);
   const historyHasMoreRef = useRef(false);
+  const liveHistoryTotalRef = useRef(0);
   const recordsRef = useRef<ApiInvocation[]>([]);
   const callTopicInitializedRef = useRef(false);
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
@@ -2309,6 +2310,7 @@ export function PromptCacheConversationHistoryDrawer({
     callTopicInitializedRef.current = true;
     pendingCallRecordsRef.current = nextPending;
     recordsRef.current = nextRecords;
+    liveHistoryTotalRef.current = response.total;
     setRecords(nextRecords);
     setLiveRecords(nextPending);
     setTotal(response.total);
@@ -2374,6 +2376,7 @@ export function PromptCacheConversationHistoryDrawer({
           previousSnapshotId != null &&
           response.snapshotId !== previousSnapshotId;
         historySnapshotIdRef.current = response.snapshotId;
+        const effectiveResponseTotal = Math.max(response.total, liveHistoryTotalRef.current);
         const loaded = snapshotChanged
           ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
               0,
@@ -2386,7 +2389,7 @@ export function PromptCacheConversationHistoryDrawer({
                   0,
                   Math.max(recordsRef.current.length, response.records.length),
                 )
-              : response.records;
+              : mergeInvocationRecordCollections(response.records, recordsRef.current);
         recordsRef.current = loaded;
         historyNextPageRef.current = snapshotChanged
           ? 2
@@ -2397,10 +2400,10 @@ export function PromptCacheConversationHistoryDrawer({
                 Math.floor(loaded.length / PROMPT_CACHE_HISTORY_PAGE_SIZE) + 1,
               );
         historyHasMoreRef.current =
-          loaded.length < response.total &&
+          loaded.length < effectiveResponseTotal &&
           (append ? response.records.length > 0 : loaded.length > 0);
         setRecords(loaded);
-        setTotal(response.total);
+        setTotal(effectiveResponseTotal);
 
         if (requestSeq !== requestSeqRef.current) return;
         hasHydratedRef.current = true;
@@ -2519,6 +2522,7 @@ export function PromptCacheConversationHistoryDrawer({
     historySnapshotIdRef.current = undefined;
     historyNextPageRef.current = 1;
     historyHasMoreRef.current = false;
+    liveHistoryTotalRef.current = 0;
     recordsRef.current = [];
     callTopicInitializedRef.current = false;
     pendingCallRecordsRef.current = [];
@@ -2808,6 +2812,7 @@ export function PromptCacheConversationHistoryDrawer({
         | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> },
     ) => {
       if (!conversationKey || !binding || bindingSaving || inlinePolicyBusyField != null) return;
+      bindingDraftDirtyRef.current = true;
       setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
       setBindingError(null);
       setInlinePolicyBusyField(field);
@@ -2827,7 +2832,17 @@ export function PromptCacheConversationHistoryDrawer({
           setForwardProxyKeysDraft,
         });
         setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
+        const hasUnsavedManualBindingDraft =
+          nextBinding.bindingKind !== bindingKind ||
+          (bindingKind === "group" && nextBinding.groupName !== bindingGroupName) ||
+          (bindingKind === "upstreamAccount" &&
+            String(nextBinding.upstreamAccountId ?? "") !== bindingAccountId);
+        bindingDraftDirtyRef.current = hasUnsavedManualBindingDraft;
+        if (!hasUnsavedManualBindingDraft) {
+          setBindingRemoteConflict(null);
+        }
       } catch (err) {
+        bindingDraftDirtyRef.current = true;
         setInlinePolicyErrors((current) => ({
           ...current,
           [field]: err instanceof Error ? err.message : String(err),
@@ -2838,6 +2853,9 @@ export function PromptCacheConversationHistoryDrawer({
     },
     [
       binding,
+      bindingAccountId,
+      bindingGroupName,
+      bindingKind,
       bindingSaving,
       buildCurrentBindingPayloadBase,
       conversationKey,
