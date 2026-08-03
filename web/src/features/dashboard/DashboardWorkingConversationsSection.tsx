@@ -181,7 +181,8 @@ export interface DashboardWorkingConversationSelection {
 }
 
 const ACCOUNT_CARD_CLASS_NAME =
-  "flex h-full min-w-0 w-full max-w-full flex-col overflow-hidden rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)] desktop1660:min-h-[31.5rem]";
+  "flex min-w-0 w-full max-w-full flex-col overflow-hidden rounded-[1rem] border border-[rgba(148,163,184,0.32)] bg-base-100/72 p-4 shadow-[0_6px_12px_rgba(15,23,42,0.07)]";
+const ACCOUNT_CARD_SKELETON_CLASS_NAME = `${ACCOUNT_CARD_CLASS_NAME} h-full desktop1660:min-h-[31.5rem]`;
 
 const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
 const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
@@ -2265,50 +2266,55 @@ function AccountRecentInvocationRow({
           />
         </div>
         <div
-          data-testid="dashboard-upstream-account-recent-summary-line"
-          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74"
-          title={recentSummaryTitle}
+          data-testid="dashboard-upstream-account-recent-details-row"
+          className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-0.5 sm:grid-cols-2 sm:items-center"
         >
-          {renderInvocationSummaryFields(recentSummaryFields)}
-        </div>
-        <div
-          data-testid="dashboard-upstream-account-recent-meta-line"
-          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72"
-        >
-          <span>{occurredAtShortLabel}</span>
-          <span className="text-base-content/28">·</span>
-          {shouldGroupModelContext ? (
-            <InvocationModelContextCluster
-              modelValue={viewModel.modelValue}
-              reasoningEffortValue={viewModel.reasoningEffortValue}
-              fastIndicatorState={viewModel.fastIndicatorState}
-              grouped
-              t={t}
-              testId="dashboard-upstream-account-recent-model-context"
-              modelTestId="dashboard-upstream-account-recent-model"
-            />
-          ) : (
-            <>
-              <span className="min-w-0">
-                {renderUpstreamAccountRecentModelDisplay(
-                  viewModel.modelHasMismatch,
-                  viewModel.modelValue,
-                  requestModelValue,
-                  responseModelValue,
-                  t,
-                )}
-              </span>
-              {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
-                <>
-                  <span className="text-base-content/28">·</span>
-                  <InvocationReasoningEffortBadge
-                    value={viewModel.reasoningEffortValue}
-                    testId="dashboard-working-conversation-reasoning-effort"
-                  />
-                </>
-              ) : null}
-            </>
-          )}
+          <div
+            data-testid="dashboard-upstream-account-recent-meta-line"
+            className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72"
+          >
+            <span>{occurredAtShortLabel}</span>
+            <span className="text-base-content/28">·</span>
+            {shouldGroupModelContext ? (
+              <InvocationModelContextCluster
+                modelValue={viewModel.modelValue}
+                reasoningEffortValue={viewModel.reasoningEffortValue}
+                fastIndicatorState={viewModel.fastIndicatorState}
+                grouped
+                t={t}
+                testId="dashboard-upstream-account-recent-model-context"
+                modelTestId="dashboard-upstream-account-recent-model"
+              />
+            ) : (
+              <>
+                <span className="min-w-0">
+                  {renderUpstreamAccountRecentModelDisplay(
+                    viewModel.modelHasMismatch,
+                    viewModel.modelValue,
+                    requestModelValue,
+                    responseModelValue,
+                    t,
+                  )}
+                </span>
+                {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+                  <>
+                    <span className="text-base-content/28">·</span>
+                    <InvocationReasoningEffortBadge
+                      value={viewModel.reasoningEffortValue}
+                      testId="dashboard-working-conversation-reasoning-effort"
+                    />
+                  </>
+                ) : null}
+              </>
+            )}
+          </div>
+          <div
+            data-testid="dashboard-upstream-account-recent-summary-line"
+            className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74 sm:justify-end sm:text-right"
+            title={recentSummaryTitle}
+          >
+            {renderInvocationSummaryFields(recentSummaryFields)}
+          </div>
         </div>
       </div>
       {viewModel.collapsedErrorSummary ? (
@@ -3907,7 +3913,7 @@ function DashboardUpstreamAccountGridSkeleton() {
       aria-busy="true"
     >
       {DASHBOARD_ACCOUNT_SKELETON_IDS.map((cardId) => (
-        <div key={cardId} className={ACCOUNT_CARD_CLASS_NAME}>
+        <div key={cardId} className={ACCOUNT_CARD_SKELETON_CLASS_NAME}>
           <div className="flex items-center justify-between gap-4">
             <div className="h-5 w-36 animate-pulse rounded bg-base-300/75" />
             <div className="h-7 w-28 animate-pulse rounded-full bg-base-300/55" />
@@ -5649,7 +5655,7 @@ export function DashboardWorkingConversationsSection({
               <div
                 data-testid="dashboard-upstream-account-grid"
                 ref={setGridContainerRef}
-                className="grid grid-cols-1 gap-4 desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]"
+                className="grid items-start grid-cols-1 gap-4 desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]"
               >
                 {upstreamAccountRows.flat().map((account) => (
                   <DashboardUpstreamAccountActivityCard

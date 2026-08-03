@@ -967,6 +967,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-grid-skeleton"]'),
     ).not.toBeNull();
+    const skeletonCard = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-grid-skeleton"] > div',
+    );
+    expect(skeletonCard?.className).toContain("h-full");
+    expect(skeletonCard?.className).toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).toContain("账号加载中");
     expect(host?.textContent).not.toContain("当前范围内暂无活动上游账号");
   });
@@ -1253,7 +1258,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
-    ).toContain("desktop1660:min-h-[31.5rem]");
+    ).not.toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).not.toContain("繁忙");
     expect(host?.textContent).not.toContain("关注");
     expect(host?.textContent).not.toContain("稳定");
@@ -3174,9 +3179,17 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(warningRow.textContent).not.toContain(" C ");
     expect(warningRow.textContent).not.toContain("O ");
     expect(warningRow.textContent).not.toContain("T ");
+    const warningDetailsRow = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-details-row"]',
+    );
+    if (!(warningDetailsRow instanceof HTMLElement)) {
+      throw new Error("missing upstream account recent details row");
+    }
+    expect(warningDetailsRow.className).toContain("sm:grid-cols-2");
     expect(
-      warningSummary.compareDocumentPosition(warningMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+      warningMetaLine.compareDocumentPosition(warningSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+    expect(warningSummary.className).toContain("sm:justify-end");
     expect(warningHit.textContent).toContain("Hit 89.9%");
     expect(warningHit.dataset.summaryTone).toBe("warning");
     expect(warningCost.textContent).toContain("$0.1001");
@@ -6159,7 +6172,10 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorTrigger.getAttribute("tabindex")).toBe("0");
     expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
     expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
+    expect(accountGrid.className).toContain("items-start");
     expect(accountCard.className).toContain("min-w-0");
+    expect(accountCard.className).not.toContain("h-full");
+    expect(accountCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
     expect(recentRow.className).toContain("min-w-0");
     expect(errorTrigger.className).toContain("w-full");
     expect(errorTrigger.className).toContain("overflow-hidden");

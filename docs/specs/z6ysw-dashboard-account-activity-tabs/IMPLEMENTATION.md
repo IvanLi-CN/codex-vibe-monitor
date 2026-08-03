@@ -10,6 +10,7 @@
 
 ## Coverage / rollout summary
 
+- 已实现：上游账号 recent 行保持既有“对话短 ID + 请求 ID + 状态”主标识行；下方的时间/模型/思考强度与 `Hit / Token / Cost` 现于宽屏同一行左右对齐，窄屏回流为前者在上、摘要在下。live 账号卡不再以 `h-full` 或宽屏最小高度等高拉伸，双列 grid 顶对齐，只有含错误摘要的卡片按内容增加高度；加载 skeleton 继续保留稳定高度。
 - 已修复账号活动 v2 coverage 的升级自愈：新的 live/archive repair generation 会先撤销旧 marker、仅清零 v2 派生字段并重置独立回放进度；完整小时只在该小时现存 live rows 全部越过 repair cursor 后写 marker，marker 缺口继续走 exact raw/archive fallback。整桶重算写入独立的 per-bucket invocation watermark，使滞后 repair 只跳过已被权威重算包含的行，但不会提前宣告 coverage；coverage、rollup、cursor 与 exact tail 固定在同一 SQLite 读事务。已覆盖错误 marker + 稀疏 rollup + 游标追平、重复启动幂等、部分回放与 covered-hour late live tail，通用 rollup、原始调用和 legacy 字段保持不变。
 - 已实现：`today / 1d / 7d` Dashboard 与上游账号活动 HTTP/SSE 共享 cache-backed memory-first baseline。terminal record 以 `(invokeId, occurredAt)` 幂等增量更新累计账号/总览 usage；open range 以 60 秒 reconcile 与错误 last-good fallback 负责最终对账。rolling `1d / 7d` 的 baseline、in-flight replay 与后续 terminal 都写入按时间排序的 bounded expiry queue；expiry 覆盖不足或窗口跨入 archive 前缀时拒绝伪内存命中并明确 exact fallback。
 - 已实现：Dashboard 上游账号视图拆为汇总优先与快照绑定的 recent 批量补齐；首屏使用局部骨架，范围刷新保留旧卡片，recent 失败保留汇总并局部重试。
