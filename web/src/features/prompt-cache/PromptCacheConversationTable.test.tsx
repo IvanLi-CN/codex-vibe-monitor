@@ -14,7 +14,10 @@ import type {
   UpstreamAccountDetail,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
+import {
+  PromptCacheConversationHistoryDrawer,
+  PromptCacheConversationTable,
+} from "./PromptCacheConversationTable";
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
@@ -1216,6 +1219,7 @@ describe("PromptCacheConversationTable", () => {
       occurredAt: "2026-03-02T12:30:00Z",
       status: "completed",
       failureClass: "none",
+      model: "retained-model",
       totalTokens: 1500,
       cost: 0.31,
       endpoint: "/v1/responses",
@@ -1290,13 +1294,14 @@ describe("PromptCacheConversationTable", () => {
       total: 2,
       page: 1,
       pageSize: 50,
-      records: [newRecord, initialRecord],
+      records: [newRecord],
     };
     renderInteractive(stats);
     await flushInteractive();
 
     expect(document.body.textContent).toContain("查看 1 条新记录");
     expect(document.body.textContent).not.toContain("live-model");
+    expect(document.body.textContent).toContain("retained-model");
 
     await act(async () => {
       findButtonByAriaLabel("查看 1 条新记录")?.dispatchEvent(
@@ -1307,6 +1312,44 @@ describe("PromptCacheConversationTable", () => {
 
     expect(document.body.textContent).toContain("live-model");
     expect(document.body.textContent).not.toContain("查看 1 条新记录");
+  });
+
+  it("keeps a cached Calls snapshot when the drawer opens directly on that tab", async () => {
+    detailTopicMocks.current.calls.data = {
+      snapshotId: 906,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 906,
+          invokeId: "cached-open-calls",
+          occurredAt: "2026-03-02T12:35:00Z",
+          status: "completed",
+          failureClass: "none",
+          model: "cached-calls-model",
+          totalTokens: 100,
+          cost: 0.01,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-cached-calls",
+          createdAt: "2026-03-02T12:35:00Z",
+        },
+      ],
+    };
+
+    renderInteractiveElement(
+      <PromptCacheConversationHistoryDrawer
+        open
+        conversationKey="pck-cached-calls"
+        initialTab="calls"
+        onClose={() => undefined}
+        t={(key) => key}
+      />,
+    );
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("cached-calls-model");
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
   });
 
   it("anchors deep pagination to a frozen HTTP head when the topic includes a runtime row", async () => {
@@ -1745,6 +1788,13 @@ describe("PromptCacheConversationTable", () => {
       .mockResolvedValueOnce({
         snapshotId: 904,
         total: 250,
+        page: 1,
+        pageSize: 200,
+        records: Array.from({ length: 200 }, (_, index) => makeRecord(index + 1)),
+      })
+      .mockResolvedValueOnce({
+        snapshotId: 904,
+        total: 250,
         page: 2,
         pageSize: 200,
         records: Array.from({ length: 50 }, (_, index) => makeRecord(index + 201)),
@@ -1774,9 +1824,18 @@ describe("PromptCacheConversationTable", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-overview-pages",
+      page: 1,
+      pageSize: 200,
+      snapshotId: 904,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
       promptCacheKey: "pck-overview-pages",
       page: 2,
       pageSize: 200,
@@ -1804,6 +1863,15 @@ describe("PromptCacheConversationTable", () => {
       createdAt: occurredAt,
     });
     apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 905,
+        total: 1_001,
+        page: 1,
+        pageSize: 1_000,
+        records: Array.from({ length: 1_000 }, (_, index) =>
+          makeRecord(index + 1, `2026-03-02T12:${String(index % 60).padStart(2, "0")}:00Z`),
+        ),
+      })
       .mockResolvedValueOnce({
         snapshotId: 905,
         total: 1_001,
@@ -1845,9 +1913,18 @@ describe("PromptCacheConversationTable", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3));
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-overview-range",
+      page: 1,
+      pageSize: 1_000,
+      snapshotId: 905,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
       promptCacheKey: "pck-overview-range",
       page: 2,
       pageSize: 1_000,

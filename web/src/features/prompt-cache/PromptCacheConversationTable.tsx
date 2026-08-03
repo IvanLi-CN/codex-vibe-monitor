@@ -1877,10 +1877,19 @@ function PromptCacheConversationActivityOverview({
     setIsLoading(true);
     setError(null);
     void (async () => {
-      const firstPage = await fetchInvocationRecords({
+      const latestFirstPage = await fetchInvocationRecords({
         ...filters,
         page: 1,
         pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        signal: controller.signal,
+      });
+      const firstPage = await fetchInvocationRecords({
+        ...filters,
+        page: 1,
+        pageSize: latestFirstPage.pageSize,
+        snapshotId: latestFirstPage.snapshotId,
         sortBy: "occurredAt",
         sortOrder: "desc",
         signal: controller.signal,
@@ -2224,6 +2233,44 @@ export function PromptCacheConversationHistoryDrawer({
     refreshTimerRef.current = null;
   }, []);
 
+  // Run before topic hydration so a cached SSE snapshot cannot be cleared by
+  // the same open/scope transition that made it available.
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    hasHydratedRef.current = false;
+    inFlightRef.current = false;
+    pendingLoadRef.current = null;
+    activeLoadControllerRef.current?.abort();
+    activeLoadControllerRef.current = null;
+    historySnapshotIdRef.current = undefined;
+    historyHttpSnapshotInitializedRef.current = false;
+    historyNextPageRef.current = 1;
+    historyHasMoreRef.current = false;
+    liveHistoryTotalRef.current = 0;
+    recordsRef.current = [];
+    callTopicInitializedRef.current = false;
+    frozenHistoryStableKeysRef.current = new Set();
+    pendingCallRecordsRef.current = [];
+    clearPendingRefreshTimer();
+
+    if (!open || !conversationKey) {
+      setRecords([]);
+      setLiveRecords([]);
+      setTotal(0);
+      setIsLoading(false);
+      setIsLoadingMore(false);
+      setError(null);
+      return;
+    }
+
+    setRecords([]);
+    setLiveRecords([]);
+    setTotal(0);
+    setIsLoading(false);
+    setIsLoadingMore(false);
+    setError(null);
+  }, [clearPendingRefreshTimer, conversationKey, open]);
+
   useEffect(() => {
     recordsRef.current = records;
   }, [records]);
@@ -2251,7 +2298,6 @@ export function PromptCacheConversationHistoryDrawer({
     const incomingByKey = new Map(
       response.records.map((record) => [invocationStableKey(record), record]),
     );
-    const currentKeys = new Set(current.map(invocationStableKey));
     const updatedCurrent = current.map(
       (record) => incomingByKey.get(invocationStableKey(record)) ?? record,
     );
@@ -2284,17 +2330,9 @@ export function PromptCacheConversationHistoryDrawer({
               nextPending: [],
             };
           }
-          const refreshedVisibleRecords = response.records.filter((record) =>
-            currentKeys.has(invocationStableKey(record)),
-          );
           return {
-            nextRecords: mergeInvocationRecordCollections(
-              refreshedVisibleRecords,
-              frozenHistoryRecords,
-            ),
-            nextPending: response.records.filter(
-              (record) => !currentKeys.has(invocationStableKey(record)),
-            ),
+            nextRecords: mergeInvocationRecordCollections(updatedCurrent, frozenHistoryRecords),
+            nextPending: mergeInvocationRecordCollections(newlyVisible, updatedPending),
           };
         })()
       : {
@@ -2581,42 +2619,6 @@ export function PromptCacheConversationHistoryDrawer({
     },
     [activeTab, conversationKey, open, operationsFilter],
   );
-
-  useEffect(() => {
-    requestSeqRef.current += 1;
-    hasHydratedRef.current = false;
-    inFlightRef.current = false;
-    pendingLoadRef.current = null;
-    activeLoadControllerRef.current?.abort();
-    activeLoadControllerRef.current = null;
-    historySnapshotIdRef.current = undefined;
-    historyHttpSnapshotInitializedRef.current = false;
-    historyNextPageRef.current = 1;
-    historyHasMoreRef.current = false;
-    liveHistoryTotalRef.current = 0;
-    recordsRef.current = [];
-    callTopicInitializedRef.current = false;
-    frozenHistoryStableKeysRef.current = new Set();
-    pendingCallRecordsRef.current = [];
-    clearPendingRefreshTimer();
-
-    if (!open || !conversationKey) {
-      setRecords([]);
-      setLiveRecords([]);
-      setTotal(0);
-      setIsLoading(false);
-      setIsLoadingMore(false);
-      setError(null);
-      return;
-    }
-
-    setRecords([]);
-    setLiveRecords([]);
-    setTotal(0);
-    setIsLoading(false);
-    setIsLoadingMore(false);
-    setError(null);
-  }, [clearPendingRefreshTimer, conversationKey, open]);
 
   useEffect(() => {
     if (!open || !conversationKey) {

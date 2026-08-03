@@ -385,17 +385,6 @@ enum ConversationSubscriptionScope {
     },
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InvocationHistoryOverviewTopicPayload {
-    summary: InvocationSummaryResponse,
-    records: Vec<ApiInvocation>,
-    chart_total: i64,
-    chart_is_sampled: bool,
-    chart_range_start: Option<String>,
-    chart_range_end: Option<String>,
-}
-
 impl ConversationSubscriptionScope {
     fn binding_key(&self) -> &str {
         match self {
@@ -3039,80 +3028,14 @@ impl SubscriptionTopic {
             }
             Self::InvocationHistoryOverview { scope } => {
                 let runtime_overlay_records = runtime_overlay_snapshot(state.as_ref());
-                let Json(summary) = fetch_invocation_summary_with_runtime_overlay(
+                let overview = fetch_invocation_history_overview_with_runtime_overlay(
                     state.clone(),
                     scope.list_query(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT, None),
-                    Some(runtime_overlay_records.clone()),
+                    runtime_overlay_records,
+                    SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS,
                 )
                 .await?;
-                let overview_page_size = (state.config.list_limit_max as i64)
-                    .clamp(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT);
-                let mut records = Vec::new();
-                let mut page = 1_i64;
-                let chart_total = summary.total_count;
-                while records.len() < SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS {
-                    let Json(response) = list_invocations_with_runtime_overlay(
-                        state.clone(),
-                        scope.list_query(page, overview_page_size, Some(summary.snapshot_id)),
-                        Some(runtime_overlay_records.clone()),
-                    )
-                    .await?;
-                    let received_count = response.records.len();
-                    if received_count == 0 {
-                        break;
-                    }
-                    let remaining = SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS - records.len();
-                    records.extend(response.records.into_iter().take(remaining));
-                    if records.len() >= chart_total as usize
-                        || received_count < overview_page_size as usize
-                    {
-                        break;
-                    }
-                    page += 1;
-                }
-                let mut chart_range_start = records
-                    .iter()
-                    .map(|record| record.occurred_at.clone())
-                    .min();
-                let mut chart_range_end = records
-                    .iter()
-                    .map(|record| record.occurred_at.clone())
-                    .max();
-                if chart_total as usize > records.len() {
-                    let oldest_page = (chart_total + overview_page_size - 1) / overview_page_size;
-                    let Json(oldest_response) = list_invocations_with_runtime_overlay(
-                        state.clone(),
-                        scope.list_query(
-                            oldest_page.max(1),
-                            overview_page_size,
-                            Some(summary.snapshot_id),
-                        ),
-                        Some(runtime_overlay_records),
-                    )
-                    .await?;
-                    for record in oldest_response.records {
-                        chart_range_start = Some(
-                            chart_range_start.map_or(record.occurred_at.clone(), |current| {
-                                current.min(record.occurred_at.clone())
-                            }),
-                        );
-                        chart_range_end = Some(
-                            chart_range_end.map_or(record.occurred_at.clone(), |current| {
-                                current.max(record.occurred_at.clone())
-                            }),
-                        );
-                    }
-                }
-                Ok(serde_json::to_value(
-                    InvocationHistoryOverviewTopicPayload {
-                        summary,
-                        chart_is_sampled: chart_total as usize > records.len(),
-                        records,
-                        chart_total,
-                        chart_range_start,
-                        chart_range_end,
-                    },
-                )?)
+                Ok(serde_json::to_value(overview)?)
             }
             Self::PromptCacheConversationBindingCurrent { scope } => Ok(serde_json::to_value(
                 load_prompt_cache_conversation_binding_response_for_key(
