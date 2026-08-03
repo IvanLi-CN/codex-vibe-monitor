@@ -159,6 +159,28 @@
 ## Visual Evidence
 
 - source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/StatusRequestHeavy
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1280
+  viewport_strategy: explicit_browser_viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  PR: none
+  evidence_note: raw payload 指标处于 `preparing` 时，页面保留可用统计值，明确说明后台盘点且不在请求中扫描文件。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-preparing-browser-viewport.png`
+- source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/Status
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1280
+  viewport_strategy: explicit_browser_viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  PR: none
+  evidence_note: raw payload 指标处于 `ready` 时，页面明确显示指标已由写侧维护，状态读取不触发文件扫描。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-ready-browser-viewport.png`
+- source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/Status
   target_program: mock-only
   capture_scope: browser-viewport
