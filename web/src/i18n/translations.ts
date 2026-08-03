@@ -2841,6 +2841,8 @@ const baseTranslations = {
       "{{account}} had a recent transport failure.",
     "table.poolAttempts.routingDecision.exclusionReasons.previousAttemptExcluded":
       "{{account}} was already excluded by this request's prior attempt.",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyReuseUnavailable":
+      "{{account}} could not be reused as the Sticky target.",
     "table.poolAttempts.routingDecision.exclusionReasons.rateLimited":
       "{{account}} was rate limited.",
     "table.poolAttempts.routingDecision.exclusionReasons.degraded": "{{account}} was degraded.",
@@ -5615,6 +5617,8 @@ const baseTranslations = {
       "{{account}} 最近发生过传输失败。",
     "table.poolAttempts.routingDecision.exclusionReasons.previousAttemptExcluded":
       "{{account}} 已被本请求的先前尝试排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyReuseUnavailable":
+      "{{account}} 无法作为 Sticky 目标继续复用。",
     "table.poolAttempts.routingDecision.exclusionReasons.rateLimited": "{{account}} 已被限流。",
     "table.poolAttempts.routingDecision.exclusionReasons.degraded":
       "{{account}} 当前处于降级状态。",

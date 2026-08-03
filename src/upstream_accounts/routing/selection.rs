@@ -16,7 +16,11 @@ fn push_routing_selection_audit_exclusion(
     row: &UpstreamAccountRow,
     reason_code: &str,
 ) {
-    if exclusions.len() >= POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT {
+    if exclusions.len() >= POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT
+        || exclusions
+            .iter()
+            .any(|candidate| candidate.account_id == row.id)
+    {
         return;
     }
     exclusions.push(PoolRoutingSelectionAuditExcludedCandidate {
@@ -1244,6 +1248,28 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         }
     }
 
+    let mut selection_audit_exclusions = Vec::new();
+    for account_id in excluded_ids {
+        if let Some(row) = load_upstream_account_row(&state.pool, *account_id).await? {
+            push_routing_selection_audit_exclusion(
+                &mut selection_audit_exclusions,
+                &row,
+                "previousAttemptExcluded",
+            );
+        }
+    }
+    if let Some(account_id) = sticky_source_id
+        && !excluded_ids.contains(&account_id)
+        && tried.contains(&account_id)
+        && let Some(row) = load_upstream_account_row(&state.pool, account_id).await?
+    {
+        push_routing_selection_audit_exclusion(
+            &mut selection_audit_exclusions,
+            &row,
+            "stickyReuseUnavailable",
+        );
+    }
+
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
         load_transport_decode_sticky_escape_states(
@@ -1285,7 +1311,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     for rule in candidate_effective_rules.values_mut() {
         apply_conversation_routing_override(rule, conversation_override);
     }
-    let mut selection_audit_exclusions = Vec::new();
     for candidate in candidates {
         let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
             continue;
@@ -1556,6 +1581,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
 
     resolved_candidates
         .sort_by(|lhs, rhs| compare_pool_routing_candidate_scores(&lhs.score, &rhs.score));
+    selection_audit_exclusions.retain(|excluded| {
+        !resolved_candidates.iter().any(|candidate| {
+            candidate
+                .resolved_account
+                .as_ref()
+                .is_some_and(|account| account.account_id == excluded.account_id)
+        })
+    });
     let selection_audit = resolved_candidates.first().and_then(|winner| {
         let account = winner.resolved_account.as_ref()?;
         if account.routing_source != PoolRoutingSelectionSource::FreshAssignment {
