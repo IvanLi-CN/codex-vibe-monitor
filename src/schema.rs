@@ -328,6 +328,18 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
     let update_new_refresh_sql = invocation_in_progress_live_refresh_sql_for_key(
         &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
     );
+    // Proxy terminal writes are registered with the in-process projection hub before
+    // persistence. Other sources can update an existing in-flight row directly, so
+    // invalidate only their `all` projection coverage and let the existing exact warm
+    // path rebuild the affected selections.
+    let non_proxy_terminal_projection_invalidation_sql = r#"
+        UPDATE timeseries_minute_projection_v2
+        SET coverage_state = 'warming'
+        WHERE source_scope = 'all'
+          AND COALESCE(OLD.source, '') <> 'proxy'
+          AND LOWER(TRIM(COALESCE(OLD.status, ''))) IN ('running', 'pending')
+          AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
+    "#;
     let update_trigger_sql = format!(
         r#"
         CREATE TRIGGER trg_codex_invocations_live_update
@@ -338,11 +350,14 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
             {upsert_sql};
             {refresh_old_sql};
             {refresh_new_sql};
+            {non_proxy_terminal_projection_invalidation_sql};
         END
         "#,
         upsert_sql = invocation_in_progress_live_upsert_sql("NEW"),
         refresh_old_sql = update_old_refresh_sql,
         refresh_new_sql = update_new_refresh_sql,
+        non_proxy_terminal_projection_invalidation_sql =
+            non_proxy_terminal_projection_invalidation_sql,
     );
     sqlx::query(&update_trigger_sql)
         .execute(tx.as_mut())
@@ -2361,6 +2376,53 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure timeseries_minute_projection_records table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2 (
+            minute_start_epoch INTEGER NOT NULL,
+            source_scope TEXT NOT NULL CHECK(source_scope IN ('all', 'proxy_only')),
+            upstream_account_key INTEGER NOT NULL,
+            aggregate_json TEXT NOT NULL,
+            total_latency_samples_json TEXT NOT NULL,
+            first_byte_samples_json TEXT NOT NULL,
+            first_response_byte_total_samples_json TEXT NOT NULL,
+            first_token_samples_json TEXT NOT NULL,
+            max_row_id INTEGER NOT NULL DEFAULT 0,
+            coverage_state TEXT NOT NULL DEFAULT 'warming',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (minute_start_epoch, source_scope, upstream_account_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_timeseries_minute_projection_v2_scope_range
+        ON timeseries_minute_projection_v2 (source_scope, upstream_account_key, minute_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 scope range index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_state (
+            consumer TEXT PRIMARY KEY,
+            cursor_row_id INTEGER NOT NULL DEFAULT 0,
+            last_flush_at TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 state table existence")?;
 
     sqlx::query(
         r#"

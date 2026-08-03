@@ -129,6 +129,11 @@ async fn advance_parallel_work_full_detail_start_epoch(
     .fetch_optional(pool)
     .await?
     .flatten();
+    let watermark_source = if persisted_marker.is_some() {
+        "retention_watermark"
+    } else {
+        "legacy_seed"
+    };
     let latest_unrecoverable_epoch = if let Some(marker) = persisted_marker {
         Some(marker)
     } else {
@@ -186,6 +191,13 @@ async fn advance_parallel_work_full_detail_start_epoch(
     .fetch_one(tx.as_mut())
     .await?;
     tx.commit().await?;
+    debug!(
+        route = "parallel_work_coverage",
+        watermark_source,
+        watermark_epoch = ?latest_unrecoverable_epoch,
+        scan_avoided = watermark_source == "retention_watermark",
+        "advanced parallel-work full-detail coverage watermark"
+    );
     Ok(Some(full_detail_start_epoch))
 }
 

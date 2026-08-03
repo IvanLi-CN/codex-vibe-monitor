@@ -1250,7 +1250,13 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending =
             !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
         run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
+        // Register before either P2 supervisor is scheduled so long-term pruning cannot
+        // reclaim a terminal event ahead of the minute projection consumer.
+        state
+            .terminal_projection_hub
+            .activate_timeseries_consumer(0);
         spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
+        spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);

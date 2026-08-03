@@ -100,3 +100,4 @@ related_specs:
 
 - Dashboard 和长期统计可以共享 terminal admission/ACK Hub，但 5 秒 Dashboard publish 与 60 秒长期物化必须是独立 deadline；后者永远不能反向触发 Dashboard DB build。
 - `response_source=memory` 之外还应记录 projection trigger、cursor lag、dirty bucket、flush outcome 与 pressure defer，避免把后台物化成本误标为纯内存命中。
+- `stats.timeseries.open-window` is another projection consumer: full minutes read durable aggregates, unflushed terminal deltas are overlaid from the Hub, and only boundary minutes may use exact raw reads. Its 60-second P2 flush must not share the Dashboard publish deadline or force a topic rebuild.

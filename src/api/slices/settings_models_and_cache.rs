@@ -262,7 +262,7 @@ pub(crate) struct UsageBreakdownResponse {
     pub(crate) models: Vec<UsageBreakdownModelResponse>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationPhaseCountsResponse {
     pub(crate) queued: i64,

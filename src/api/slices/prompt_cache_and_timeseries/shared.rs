@@ -403,6 +403,101 @@ pub(super) async fn query_invocation_aggregate_records_from_live_range_for_accou
     .await
 }
 
+pub(super) async fn query_in_flight_invocation_aggregate_records_from_live_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    snapshot_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_in_flight_invocation_aggregate_records_from_live_range_executor(
+        pool,
+        range,
+        source_scope,
+        snapshot_id,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn query_in_flight_invocation_aggregate_records_from_live_range_for_account(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    snapshot_id: Option<i64>,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_in_flight_invocation_aggregate_records_from_live_range_executor(
+        pool,
+        range,
+        source_scope,
+        snapshot_id,
+        Some(upstream_account_id),
+    )
+    .await
+}
+
+async fn query_in_flight_invocation_aggregate_records_from_live_range_executor<'e, E>(
+    executor: E,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    snapshot_id: Option<i64>,
+    upstream_account_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT \
+            id, invoke_id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
+    );
+    query
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(
+            " AS failure_kind, \
+            ",
+        )
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(
+            " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
+            ",
+        )
+        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(
+            " AS live_phase, \
+            t_total_ms, t_req_read_ms, t_req_parse_ms, \
+            t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, \
+            t_resp_parse_ms, t_persist_ms \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+        );
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    if let Some(snapshot_id) = snapshot_id {
+        query.push(" AND id <= ").push_bind(snapshot_id);
+    }
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(" ORDER BY occurred_at ASC, id ASC");
+    query
+        .build_query_as::<InvocationAggregateRecord>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_invocation_aggregate_records_from_live_range_tx(
     tx: &mut SqliteConnection,
     range: ExactUtcRange,
@@ -1100,4 +1195,68 @@ pub(crate) fn record_perf_stage_sample(
     entry.1 += value;
     entry.2 = entry.2.max(value);
     add_approx_histogram_sample(&mut entry.3, value);
+}
+
+#[cfg(test)]
+mod in_flight_query_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn in_flight_query_ignores_projection_cursor_and_keeps_account_scope() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, status TEXT, total_tokens INTEGER, cache_input_tokens INTEGER, cost REAL, error_message TEXT, payload TEXT, failure_kind TEXT, failure_class TEXT, source TEXT, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, t_upstream_stream_ms REAL, t_resp_parse_ms REAL, t_persist_ms REAL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create invocations");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, attempt_index INTEGER NOT NULL, phase TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create pool attempts");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, source) VALUES (1, 'running', '2026-08-03 08:00:10', 'running', '{\"upstreamAccountId\":7}', 'proxy'), (2, 'terminal', '2026-08-03 08:00:20', 'success', '{\"upstreamAccountId\":7}', 'proxy')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert in-flight and terminal records");
+        let range = ExactUtcRange {
+            start: Utc.with_ymd_and_hms(2026, 8, 3, 0, 0, 0).single().unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 8, 3, 0, 1, 0).single().unwrap(),
+        };
+
+        let global = query_in_flight_invocation_aggregate_records_from_live_range(
+            &pool,
+            range,
+            InvocationSourceScope::All,
+            Some(2),
+        )
+        .await
+        .expect("query global in-flight records");
+        let account = query_in_flight_invocation_aggregate_records_from_live_range_for_account(
+            &pool,
+            range,
+            InvocationSourceScope::All,
+            Some(2),
+            7,
+        )
+        .await
+        .expect("query account in-flight records");
+
+        assert_eq!(
+            global.iter().map(|record| record.id).collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(
+            account.iter().map(|record| record.id).collect::<Vec<_>>(),
+            [1]
+        );
+    }
 }
