@@ -2152,19 +2152,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             proxy_settings.response_body_logging_enabled,
             upstream_content_encoding_for_task.as_deref(),
         );
+        // A pool attempt observes the same downstream response stream as its invocation.
+        // Capture the bytes once and attach the finalized payload to both records below.
         let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
             && pending_pool_attempt_record_for_task.is_some();
-        let attempt_response_capture_key = pending_pool_attempt_record_for_task
-            .as_ref()
-            .map(pool_attempt_response_capture_key)
-            .unwrap_or_else(|| invoke_id_for_task.clone());
-        let mut attempt_response_raw_writer = AsyncStreamingRawPayloadWriter::new(
-            state_for_task.as_ref(),
-            &attempt_response_capture_key,
-            "response",
-            attempt_response_capture_enabled,
-            upstream_content_encoding_for_task.as_deref(),
-        );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut stream_response_decoder =
             IncrementalResponsePayloadDecoder::new(upstream_content_encoding_for_task.as_deref());
@@ -2196,7 +2187,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 prefetched_first_chunk_received_at_for_task.unwrap_or_else(Instant::now);
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
-            attempt_response_raw_writer.append(&chunk);
             let successful_terminal_seen_before_chunk =
                 stream_response_parser.successful_terminal_seen();
             let decoded_chunk = stream_response_decoder.ingest(&chunk);
@@ -2533,7 +2523,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk);
-                    attempt_response_raw_writer.append(&chunk);
                     let successful_terminal_seen_before_chunk =
                         stream_response_parser.successful_terminal_seen();
                     let decoded_chunk = stream_response_decoder.ingest(&chunk);
@@ -2747,7 +2736,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let req_raw_for_task = req_raw_pending_for_task.finish().await;
         let raw_response_finish_started = Instant::now();
         let resp_raw = response_raw_writer.finish().await;
-        let attempt_resp_raw = attempt_response_raw_writer.finish().await;
+        let attempt_resp_raw = if attempt_response_capture_enabled {
+            resp_raw.clone()
+        } else {
+            RawPayloadMeta::default()
+        };
         let raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64;
         if raw_response_write_log_at_info(raw_response_write_elapsed, resp_raw.size_bytes) {
             info!(
@@ -2755,6 +2748,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 raw_response_write_elapsed,
                 raw_response_bytes = resp_raw.size_bytes,
                 raw_response_codec = raw_payload_meta_codec(&resp_raw),
+                capture_strategy = if attempt_response_capture_enabled {
+                    "shared_invocation_attempt"
+                } else {
+                    "invocation_only"
+                },
                 raw_response_truncated = resp_raw.truncated,
                 "openai proxy capture response raw writer finished"
             );
@@ -2764,6 +2762,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 raw_response_write_elapsed,
                 raw_response_bytes = resp_raw.size_bytes,
                 raw_response_codec = raw_payload_meta_codec(&resp_raw),
+                capture_strategy = if attempt_response_capture_enabled {
+                    "shared_invocation_attempt"
+                } else {
+                    "invocation_only"
+                },
                 raw_response_truncated = resp_raw.truncated,
                 "openai proxy capture response raw writer finished"
             );

@@ -839,6 +839,9 @@ pub(crate) struct SystemStatusCacheEntry {
 #[derive(Debug, Default)]
 pub(crate) struct SystemStatusCacheState {
     pub(crate) latest: Option<SystemStatusCacheEntry>,
+    pub(crate) in_flight: Option<watch::Sender<bool>>,
+    pub(crate) waiter_count: usize,
+    pub(crate) raw_metrics_health_override: Option<String>,
 }
 
 pub(crate) fn default_enabled_preset_models() -> Vec<String> {
