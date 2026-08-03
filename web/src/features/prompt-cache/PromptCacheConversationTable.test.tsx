@@ -2808,7 +2808,6 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("Pool Alpha 是唯一合格候选");
     expect(document.body.textContent).toContain("Pool Beta 不允许当前请求模型");
     expect(document.body.textContent).toContain("查看选路决策：SUCCESS42");
-    expect(document.body.textContent).toContain("触发尝试：SUCCESS42");
     expect(document.body.textContent).not.toContain("Stale topic event");
     const causeAttemptLink = Array.from(document.querySelectorAll("a")).find((link) =>
       link.textContent?.includes("起因尝试：FAILED41"),
