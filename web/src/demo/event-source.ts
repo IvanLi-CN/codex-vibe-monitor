@@ -71,7 +71,14 @@ export class DemoTopicEventSource implements EventTarget {
     const topics = parseDemoRequestedTopics(this.url);
     this.readyState = DemoTopicEventSource.OPEN;
     this.emit("open", new Event("open"));
-    await this.publish(topics, "snapshot");
+    try {
+      await this.publish(topics, "snapshot");
+    } catch {
+      if (this.readyState !== DemoTopicEventSource.OPEN) return;
+      this.close();
+      this.emit("error", new Event("error"));
+      return;
+    }
     if (this.readyState !== DemoTopicEventSource.OPEN) return;
     this.#unsubscribe = subscribeToDemoRealtime(() => void this.publish(topics, "live"));
   }

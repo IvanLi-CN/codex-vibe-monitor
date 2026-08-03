@@ -1843,7 +1843,7 @@ function PromptCacheConversationActivityOverview({
   }, [conversationKey, isRealtimeLoading, open]);
 
   useEffect(() => {
-    if (!realtimePayload) return;
+    if (!realtimePayload || allowHttpFallback) return;
     fallbackRequestSeqRef.current += 1;
     setSummary(realtimePayload.summary);
     setRecords(realtimePayload.records);
@@ -1857,10 +1857,10 @@ function PromptCacheConversationActivityOverview({
     setChartIsSampled(realtimePayload.chartIsSampled);
     setIsLoading(false);
     setError(null);
-  }, [realtimePayload]);
+  }, [allowHttpFallback, realtimePayload]);
 
   useEffect(() => {
-    if (!open || !conversationKey || realtimePayload || !allowHttpFallback) return;
+    if (!open || !conversationKey || !allowHttpFallback) return;
     const requestSeq = fallbackRequestSeqRef.current + 1;
     fallbackRequestSeqRef.current = requestSeq;
     const controller = new AbortController();
@@ -1912,7 +1912,7 @@ function PromptCacheConversationActivityOverview({
         setIsLoading(false);
       });
     return () => controller.abort();
-  }, [allowHttpFallback, conversationKey, historyQueryForConversationKey, open, realtimePayload]);
+  }, [allowHttpFallback, conversationKey, historyQueryForConversationKey, open]);
 
   const bucketSet = useMemo(
     () =>
@@ -2068,6 +2068,8 @@ export function PromptCacheConversationHistoryDrawer({
   const frozenHistoryStableKeysRef = useRef<Set<string>>(new Set());
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
+  const bindingTopicSseUnavailableCapturedRef = useRef(false);
+  const staleBindingTopicPayloadRef = useRef<PromptCacheConversationBindingResponse | null>(null);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
   const operationsTopicKeyRef = useRef<string | null>(null);
   const operationsPageRef = useRef(1);
@@ -2187,7 +2189,7 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     const response = callsTopic.data;
     if (!open || activeTab !== "calls") return;
-    if (!response) {
+    if (!response || isSseUnavailable) {
       setIsLoading(callsTopic.isLoading);
       return;
     }
@@ -2272,12 +2274,13 @@ export function PromptCacheConversationHistoryDrawer({
     callsTopic.isLoading,
     callsTopic.lastKind,
     drawerBodyElement,
+    isSseUnavailable,
     open,
   ]);
 
   useEffect(() => {
     const response = operationsTopic.data;
-    if (!response || !open || activeTab !== "operations") return;
+    if (!response || isSseUnavailable || !open || activeTab !== "operations") return;
     operationsRequestSeqRef.current += 1;
     operationsLoadControllerRef.current?.abort();
     const topicKey = operationsTopic.descriptorKey ?? operationsFilter;
@@ -2295,7 +2298,14 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsPage((current) => Math.max(current, response.page));
     setOperationsLoading(false);
     setOperationsError(null);
-  }, [activeTab, open, operationsFilter, operationsTopic.data, operationsTopic.descriptorKey]);
+  }, [
+    activeTab,
+    isSseUnavailable,
+    open,
+    operationsFilter,
+    operationsTopic.data,
+    operationsTopic.descriptorKey,
+  ]);
 
   const runLoad = useCallback(
     async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
@@ -2456,7 +2466,7 @@ export function PromptCacheConversationHistoryDrawer({
       !open ||
       !conversationKey ||
       activeTab !== "calls" ||
-      callsTopic.data ||
+      (callsTopic.data && !isSseUnavailable) ||
       !isSseUnavailable
     ) {
       return;
@@ -2680,8 +2690,26 @@ export function PromptCacheConversationHistoryDrawer({
   }, [activeTab, bindingTopic.isLoading, conversationKey, isSseUnavailable, open]);
 
   useEffect(() => {
+    if (!isSseUnavailable) {
+      bindingTopicSseUnavailableCapturedRef.current = false;
+      staleBindingTopicPayloadRef.current = null;
+      return;
+    }
+    if (!bindingTopicSseUnavailableCapturedRef.current) {
+      // Keep the payload that was already cached when transport failed. A later
+      // in-flight topic update is newer than this fallback baseline.
+      staleBindingTopicPayloadRef.current = bindingTopic.data;
+      bindingTopicSseUnavailableCapturedRef.current = true;
+    }
+  }, [bindingTopic.data, isSseUnavailable]);
+
+  useEffect(() => {
     const nextBinding = bindingTopic.data;
-    if (!nextBinding || !open || activeTab !== "settings") return;
+    const isCachedFallbackPayload =
+      isSseUnavailable &&
+      bindingTopicSseUnavailableCapturedRef.current &&
+      nextBinding === staleBindingTopicPayloadRef.current;
+    if (!nextBinding || isCachedFallbackPayload || !open || activeTab !== "settings") return;
     bindingHydrationSeqRef.current += 1;
     if (bindingDraftDirtyRef.current) {
       setBindingRemoteConflict(nextBinding);
@@ -2708,7 +2736,7 @@ export function PromptCacheConversationHistoryDrawer({
     );
     setBindingLoading(false);
     setBindingError(null);
-  }, [activeTab, bindingAccounts, bindingGroups, bindingTopic.data, open]);
+  }, [activeTab, bindingAccounts, bindingGroups, bindingTopic.data, isSseUnavailable, open]);
 
   useEffect(
     () => () => {
@@ -2724,7 +2752,7 @@ export function PromptCacheConversationHistoryDrawer({
     if (!open || !conversationKey || activeTab !== "operations") {
       return;
     }
-    if (operationsTopic.data) {
+    if (operationsTopic.data && !isSseUnavailable) {
       return;
     }
     operationsRequestSeqRef.current += 1;
@@ -2737,7 +2765,7 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsTotal(0);
     setOperationsPage(1);
     setOperationsError(null);
-    if (!operationsTopic.data && isSseUnavailable) {
+    if (isSseUnavailable) {
       void loadOperationEvents();
     }
   }, [

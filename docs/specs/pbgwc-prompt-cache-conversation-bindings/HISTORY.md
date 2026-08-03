@@ -2,7 +2,7 @@
 
 ## Key Decisions
 
-- 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while HTTP deep pages remain frozen; overview coalesces matching Records changes, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.
+- 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while the entire captured HTTP snapshot, including page 1, remains frozen; overview coalesces matching Records changes, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.
 - 2026-05-25: Created a dedicated topic spec because per-conversation routing bindings introduce a new stable runtime contract distinct from invocation observability.
 - 2026-05-25: Chose hard-constraint routing semantics so bound conversations never silently fall back to unrelated accounts or groups.
 - 2026-05-25: Added Storybook coverage and visual evidence for the drawer binding panel to keep the UI contract reviewable.

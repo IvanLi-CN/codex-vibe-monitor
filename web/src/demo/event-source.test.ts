@@ -47,6 +47,22 @@ describe("DemoTopicEventSource", () => {
     expect(unsubscribe).not.toHaveBeenCalled();
   });
 
+  it("reports an error when the initial topic snapshot cannot be resolved", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockRejectedValue(new Error("network unavailable"));
+    const source = new DemoTopicEventSource("/events?topics=W3sidG9waWMiOiJhcHAudmVyc2lvbiJ9XQ");
+    const events: string[] = [];
+    source.addEventListener("open", () => events.push("open"));
+    source.addEventListener("error", () => events.push("error"));
+
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(events).toEqual(["open", "error"]);
+    expect(source.readyState).toBe(DemoTopicEventSource.CLOSED);
+    expect(mocks.subscribeToDemoRealtime).not.toHaveBeenCalled();
+  });
+
   it("matches the topic SSE endpoint beneath a deploy base", () => {
     expect(isDemoTopicEventSourcePath("/repo/demo/events?topics=abc", "/repo/demo/")).toBe(true);
     expect(isDemoTopicEventSourcePath("/events?topics=abc", "/repo/demo/")).toBe(false);

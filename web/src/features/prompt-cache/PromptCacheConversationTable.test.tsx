@@ -1549,6 +1549,29 @@ describe("PromptCacheConversationTable", () => {
 
   it("falls back to the calls snapshot after SSE becomes unavailable", async () => {
     detailTopicMocks.current.isSseUnavailable = true;
+    detailTopicMocks.current.calls.data = {
+      snapshotId: 902,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 72,
+          invokeId: "stale-topic-history-72",
+          occurredAt: "2026-03-02T12:31:00Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 800,
+          cost: 0.1,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-fallback-history",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Stale Proxy",
+          createdAt: "2026-03-02T12:31:00Z",
+        },
+      ],
+    };
     apiMocks.fetchInvocationRecords.mockResolvedValue({
       snapshotId: 903,
       total: 1,
@@ -1610,6 +1633,88 @@ describe("PromptCacheConversationTable", () => {
       signal: expect.any(AbortSignal),
     });
     expect(document.body.textContent).toContain("Fallback Proxy");
+    expect(document.body.textContent).not.toContain("Stale Proxy");
+  });
+
+  it("falls back to overview HTTP data when SSE is unavailable despite a cached topic", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    detailTopicMocks.current.overview.data = {
+      summary: {
+        snapshotId: 902,
+        newRecordsCount: 0,
+        totalCount: 99,
+        successCount: 99,
+        failureCount: 0,
+        totalCost: 9.9,
+        totalTokens: 9900,
+        token: {
+          requestCount: 99,
+          totalTokens: 9900,
+          avgTokensPerRequest: 100,
+          cacheInputTokens: 0,
+          totalCost: 9.9,
+        },
+        network: { avgTtfbMs: null, p95TtfbMs: null, avgTotalMs: null, p95TotalMs: null },
+        exception: {
+          failureCount: 0,
+          serviceFailureCount: 0,
+          clientFailureCount: 0,
+          clientAbortCount: 0,
+          actionableFailureCount: 0,
+        },
+      },
+      records: [],
+      chartTotal: 99,
+      chartIsSampled: false,
+      chartRangeStart: null,
+      chartRangeEnd: null,
+    };
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 903,
+      total: 1,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-overview-fallback",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T12:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith({
+      promptCacheKey: "pck-overview-fallback",
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+      promptCacheKey: "pck-overview-fallback",
+      page: 1,
+      pageSize: 1000,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("hydrates settings from its topic without a binding HTTP bootstrap", async () => {
@@ -1650,6 +1755,59 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("当前：分组 prod");
+  });
+
+  it("falls back to the current binding when SSE is unavailable despite a cached topic", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    detailTopicMocks.current.binding.data = {
+      promptCacheKey: "pck-binding-fallback",
+      bindingKind: "group",
+      groupName: "stale-topic-group",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    };
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding-fallback",
+      bindingKind: "group",
+      groupName: "http-fallback-group",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:30:00Z",
+    });
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding-fallback",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+        }),
+      ],
+    });
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
+      "pck-binding-fallback",
+      expect.any(AbortSignal),
+    );
+    expect(document.body.textContent).toContain("当前：分组 http-fallback-group");
+    expect(document.body.textContent).not.toContain("stale-topic-group");
   });
 
   it("saves an upstream account binding from the history drawer", async () => {
@@ -2256,6 +2414,28 @@ describe("PromptCacheConversationTable", () => {
 
   it("renders conversation events and filters by info type in the operations tab", async () => {
     detailTopicMocks.current.isSseUnavailable = true;
+    detailTopicMocks.current.operations.data = {
+      items: [
+        {
+          id: 99,
+          promptCacheKey: "pck-operations",
+          action: "staleOperation",
+          origin: "systemAuto",
+          infoTypes: ["routing"],
+          occurredAt: "2026-03-02T12:02:00Z",
+          headline: "Stale topic event",
+          changedFields: [],
+          bindingBefore: null,
+          bindingAfter: null,
+          stickyBefore: null,
+          stickyAfter: null,
+          invokeId: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    };
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     apiMocks.fetchPromptCacheConversationOperationEvents.mockImplementation(
       async (_promptCacheKey, query) => {
@@ -2389,6 +2569,8 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("Pool Alpha 是唯一合格候选");
     expect(document.body.textContent).toContain("Pool Beta 不允许当前请求模型");
     expect(document.body.textContent).toContain("查看选路决策：SUCCESS42");
+    expect(document.body.textContent).toContain("触发尝试：SUCCESS42");
+    expect(document.body.textContent).not.toContain("Stale topic event");
     const causeAttemptLink = Array.from(document.querySelectorAll("a")).find((link) =>
       link.textContent?.includes("起因尝试：FAILED41"),
     );
