@@ -1306,6 +1306,148 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("查看 1 条新记录");
   });
 
+  it("anchors deep pagination to a frozen HTTP head when the topic includes a runtime row", async () => {
+    const persistedRecords = Array.from({ length: 51 }, (_, index) => {
+      const id = 151 - index;
+      const occurredAt = new Date(
+        Date.parse("2026-03-02T12:30:00Z") - index * 60_000,
+      ).toISOString();
+      return {
+        id,
+        invokeId: `persisted-${id}`,
+        occurredAt,
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 100,
+        cost: 0.01,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-runtime-head",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy West",
+        createdAt: occurredAt,
+      };
+    });
+    const runtimeRecord = {
+      ...persistedRecords[0],
+      id: 152,
+      invokeId: "runtime-152",
+      occurredAt: "2026-03-02T12:31:00Z",
+      status: "running",
+      createdAt: "2026-03-02T12:31:00Z",
+    };
+    detailTopicMocks.current.calls.data = {
+      snapshotId: 900,
+      total: 52,
+      page: 1,
+      pageSize: 50,
+      records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+    };
+    apiMocks.fetchInvocationRecords.mockImplementation(
+      async (query: {
+        page?: number;
+        pageSize?: number;
+        snapshotId?: number;
+        signal?: AbortSignal;
+      }) => {
+        if (query.page === 1 && query.snapshotId == null) {
+          return {
+            snapshotId: 900,
+            total: 52,
+            page: 1,
+            pageSize: 50,
+            records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+          };
+        }
+        if (query.page === 1 && query.snapshotId === 900) {
+          return {
+            snapshotId: 900,
+            total: 51,
+            page: 1,
+            pageSize: 50,
+            records: persistedRecords.slice(0, 50),
+          };
+        }
+        if (query.page === 2 && query.snapshotId === 900) {
+          return {
+            snapshotId: 900,
+            total: 51,
+            page: 2,
+            pageSize: 50,
+            records: persistedRecords.slice(50),
+          };
+        }
+        throw new Error(`unexpected history request: ${JSON.stringify(query)}`);
+      },
+    );
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-runtime-head",
+          requestCount: 52,
+          totalTokens: 5200,
+          totalCost: 0.52,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:31:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("调用");
+
+    const drawerBody = document.querySelector(".drawer-body") as HTMLElement;
+    Object.defineProperties(drawerBody, {
+      scrollHeight: { configurable: true, value: 2_000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, value: 1_500 },
+    });
+    await act(async () => {
+      drawerBody.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
+      promptCacheKey: "pck-runtime-head",
+      page: 1,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-runtime-head",
+      page: 1,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      snapshotId: 900,
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
+      promptCacheKey: "pck-runtime-head",
+      page: 2,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      snapshotId: 900,
+      signal: expect.any(AbortSignal),
+    });
+    expect(document.body.textContent).toContain("共 52 条保留调用记录");
+  });
+
   it("hydrates the calls head from its topic without an initial HTTP request", async () => {
     const initialRecord = {
       id: 71,

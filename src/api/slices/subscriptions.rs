@@ -179,6 +179,9 @@ struct CachedSubscriptionTopic {
     cursor: u64,
     snapshot_built_at: Instant,
     refresh_scheduled: bool,
+    conversation_overview_refresh_scheduled: bool,
+    conversation_overview_refresh_in_flight: bool,
+    conversation_overview_refresh_pending: bool,
     dirty: bool,
     summary_refresh_scheduled: bool,
     summary_refresh_in_flight: bool,
@@ -1021,6 +1024,18 @@ impl SubscriptionHub {
                 cursor: next_cursor,
                 snapshot_built_at: Instant::now(),
                 refresh_scheduled: false,
+                conversation_overview_refresh_scheduled: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.conversation_overview_refresh_scheduled),
+                conversation_overview_refresh_in_flight: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.conversation_overview_refresh_in_flight),
+                conversation_overview_refresh_pending: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.conversation_overview_refresh_pending),
                 dirty: false,
                 summary_refresh_scheduled: guard
                     .topics
@@ -1264,16 +1279,6 @@ impl Default for SubscriptionHub {
 }
 
 impl SubscriptionHub {
-    async fn clear_topic_refresh_flag(&self, topic: &SubscriptionTopic) {
-        let Ok(topic_key) = topic.cache_key() else {
-            return;
-        };
-        let mut guard = self.state.lock().await;
-        if let Some(cached) = guard.topics.get_mut(&topic_key) {
-            cached.refresh_scheduled = false;
-        }
-    }
-
     async fn mark_topic_dirty(&self, topic: &SubscriptionTopic) {
         let Ok(topic_key) = topic.cache_key() else {
             return;
@@ -1282,8 +1287,62 @@ impl SubscriptionHub {
         if let Some(cached) = guard.topics.get_mut(&topic_key) {
             cached.dirty = true;
             cached.refresh_scheduled = false;
+            cached.conversation_overview_refresh_scheduled = false;
+            cached.conversation_overview_refresh_in_flight = false;
+            cached.conversation_overview_refresh_pending = false;
             cached.latest_live_snapshot = None;
         }
+    }
+
+    async fn begin_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if !cached.conversation_overview_refresh_scheduled {
+            return false;
+        }
+        cached.conversation_overview_refresh_in_flight = true;
+        true
+    }
+
+    async fn finish_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        let rerun = cached.conversation_overview_refresh_pending;
+        cached.conversation_overview_refresh_scheduled = false;
+        cached.conversation_overview_refresh_in_flight = false;
+        cached.conversation_overview_refresh_pending = false;
+        rerun
+    }
+
+    async fn rearm_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default();
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if active == 0 {
+            cached.dirty = true;
+            return false;
+        }
+        cached.conversation_overview_refresh_scheduled = true;
+        true
     }
 
     async fn schedule_conversation_overview_topic_refresh(
@@ -1306,38 +1365,52 @@ impl SubscriptionHub {
                 cached.dirty = true;
                 return Ok(());
             }
-            if cached.refresh_scheduled {
+            if cached.conversation_overview_refresh_scheduled {
+                if cached.conversation_overview_refresh_in_flight {
+                    cached.conversation_overview_refresh_pending = true;
+                }
                 return Ok(());
             }
-            cached.refresh_scheduled = true;
+            cached.conversation_overview_refresh_scheduled = true;
             CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE
         };
         let hub = state.subscription_hub.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            if !hub.has_active_topic_key(&topic_key).await {
-                tracing::debug!(
-                    topic = %topic.name(),
-                    refresh_outcome = "marked_dirty",
-                    "skipping deferred conversation overview refresh without owner subscribers"
-                );
-                hub.mark_topic_dirty(&topic).await;
-                return;
-            }
-            match hub
-                .refresh_topic_if_active(state.clone(), topic.clone(), true)
-                .await
-            {
-                Ok(Some(_)) | Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        topic = %topic.name(),
-                        refresh_outcome = "retained_last_good",
-                        "conversation overview topic refresh failed"
-                    );
-                    hub.clear_topic_refresh_flag(&topic).await;
+            let mut delay = delay;
+            loop {
+                tokio::time::sleep(delay).await;
+                if !hub.begin_conversation_overview_topic_refresh(&topic).await {
+                    return;
                 }
+                if !hub.has_active_topic_key(&topic_key).await {
+                    tracing::debug!(
+                        topic = %topic.name(),
+                        refresh_outcome = "marked_dirty",
+                        "skipping deferred conversation overview refresh without owner subscribers"
+                    );
+                    hub.finish_conversation_overview_topic_refresh(&topic).await;
+                    hub.mark_topic_dirty(&topic).await;
+                    return;
+                }
+                let result = hub
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await;
+                let rerun = hub.finish_conversation_overview_topic_refresh(&topic).await;
+                match result {
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            topic = %topic.name(),
+                            refresh_outcome = "retained_last_good",
+                            "conversation overview topic refresh failed"
+                        );
+                    }
+                }
+                if !rerun || !hub.rearm_conversation_overview_topic_refresh(&topic).await {
+                    return;
+                }
+                delay = CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE;
             }
         });
         Ok(())
@@ -3697,6 +3770,9 @@ mod tests {
             cursor,
             snapshot_built_at: Instant::now(),
             refresh_scheduled: false,
+            conversation_overview_refresh_scheduled: false,
+            conversation_overview_refresh_in_flight: false,
+            conversation_overview_refresh_pending: false,
             dirty: false,
             summary_refresh_scheduled: false,
             summary_refresh_in_flight: false,
@@ -3859,6 +3935,40 @@ mod tests {
         assert!(!operations.is_affected_by(&BroadcastPayload::Records {
             records: Vec::new(),
         }));
+    }
+
+    #[tokio::test]
+    async fn conversation_overview_refresh_marks_events_arriving_during_rebuild_for_rerun() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::InvocationHistoryOverview {
+            scope: ConversationSubscriptionScope::PromptCacheKey("pck-1".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("conversation overview topic key");
+
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
+            cached.conversation_overview_refresh_scheduled = true;
+            cached.conversation_overview_refresh_in_flight = true;
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        hub.schedule_conversation_overview_topic_refresh(state, topic)
+            .await
+            .expect("in-flight conversation overview refresh should accept a pending event");
+
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.conversation_overview_refresh_pending)
+        );
     }
 
     #[tokio::test]

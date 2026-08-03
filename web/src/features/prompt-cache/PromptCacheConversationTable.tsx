@@ -51,6 +51,7 @@ import type {
   EffectiveRoutingRuleSource,
   ForwardProxyBindingNode,
   InvocationRecordsQuery,
+  InvocationRecordsResponse,
   InvocationRecordsSummaryResponse,
   PoolRoutingSelectionAudit,
   PromptCacheConversation,
@@ -2058,6 +2059,7 @@ export function PromptCacheConversationHistoryDrawer({
   const operationsRequestSeqRef = useRef(0);
   const bindingHydrationSeqRef = useRef(0);
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
+  const historyHttpSnapshotInitializedRef = useRef(false);
   const historyNextPageRef = useRef(1);
   const historyHasMoreRef = useRef(false);
   const liveHistoryTotalRef = useRef(0);
@@ -2222,11 +2224,10 @@ export function PromptCacheConversationHistoryDrawer({
     callTopicInitializedRef.current = true;
     pendingCallRecordsRef.current = nextPending;
     recordsRef.current = nextRecords;
-    if (historySnapshotIdRef.current == null) {
-      // History pagination remains pinned to its initial snapshot while live
-      // windows reconcile only the visible head.
-      historySnapshotIdRef.current = response.snapshotId;
-      historyNextPageRef.current = response.page + 1;
+    // The topic owns only the current live head. Deep pagination is pinned to
+    // a separately captured HTTP page so runtime-only rows cannot skew offsets.
+    if (!historyHttpSnapshotInitializedRef.current) {
+      historyNextPageRef.current = 1;
     }
     historyHasMoreRef.current = nextRecords.length < response.total;
     liveHistoryTotalRef.current = response.total;
@@ -2278,18 +2279,37 @@ export function PromptCacheConversationHistoryDrawer({
         const historyFilters = historyQueryForConversationKey?.(conversationKey) ?? {
           promptCacheKey: conversationKey,
         };
-        const page = append ? historyNextPageRef.current : 1;
-        const response = await fetchInvocationRecords({
-          ...historyFilters,
-          page,
-          pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          ...(append && historySnapshotIdRef.current != null
-            ? { snapshotId: historySnapshotIdRef.current }
-            : {}),
-          signal: controller.signal,
-        });
+        const fetchHistoryPage = (page: number, snapshotId?: number) =>
+          fetchInvocationRecords({
+            ...historyFilters,
+            page,
+            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            ...(snapshotId != null ? { snapshotId } : {}),
+            signal: controller.signal,
+          });
+        let page = append ? historyNextPageRef.current : 1;
+        let response: InvocationRecordsResponse;
+        let capturedHttpHead: InvocationRecordsResponse | null = null;
+
+        if (append && !historyHttpSnapshotInitializedRef.current) {
+          const latestHttpHead = await fetchHistoryPage(1);
+          if (requestSeq !== requestSeqRef.current) return;
+
+          capturedHttpHead = await fetchHistoryPage(1, latestHttpHead.snapshotId);
+          if (requestSeq !== requestSeqRef.current) return;
+
+          historySnapshotIdRef.current = capturedHttpHead.snapshotId;
+          historyHttpSnapshotInitializedRef.current = true;
+          page = capturedHttpHead.page;
+          response = capturedHttpHead;
+        } else {
+          response = await fetchHistoryPage(
+            page,
+            append ? historySnapshotIdRef.current : undefined,
+          );
+        }
         if (requestSeq !== requestSeqRef.current) return;
 
         const previousSnapshotId = historySnapshotIdRef.current;
@@ -2299,21 +2319,26 @@ export function PromptCacheConversationHistoryDrawer({
           hasHydratedRef.current &&
           previousSnapshotId != null &&
           response.snapshotId !== previousSnapshotId;
-        historySnapshotIdRef.current = response.snapshotId;
+        if (historyHttpSnapshotInitializedRef.current) {
+          historySnapshotIdRef.current = response.snapshotId;
+        }
         const effectiveResponseTotal = Math.max(response.total, liveHistoryTotalRef.current);
+        const responseRecords = capturedHttpHead
+          ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
+          : response.records;
         const loaded = snapshotChanged
-          ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
+          ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
               0,
               recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
             )
           : append
-            ? mergeInvocationRecordCollections(recordsRef.current, response.records)
+            ? mergeInvocationRecordCollections(recordsRef.current, responseRecords)
             : silent && hasHydratedRef.current
-              ? mergeInvocationRecordCollections(response.records, recordsRef.current).slice(
+              ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
                   0,
-                  Math.max(recordsRef.current.length, response.records.length),
+                  Math.max(recordsRef.current.length, responseRecords.length),
                 )
-              : mergeInvocationRecordCollections(response.records, recordsRef.current);
+              : mergeInvocationRecordCollections(responseRecords, recordsRef.current);
         recordsRef.current = loaded;
         historyNextPageRef.current = snapshotChanged
           ? 2
@@ -2335,6 +2360,9 @@ export function PromptCacheConversationHistoryDrawer({
         setLiveRecords((current) =>
           current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
         );
+        if (capturedHttpHead && historyHasMoreRef.current) {
+          pendingLoadRef.current = { append: true, silent: true };
+        }
         setError(null);
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) return;
@@ -2457,6 +2485,7 @@ export function PromptCacheConversationHistoryDrawer({
     activeLoadControllerRef.current?.abort();
     activeLoadControllerRef.current = null;
     historySnapshotIdRef.current = undefined;
+    historyHttpSnapshotInitializedRef.current = false;
     historyNextPageRef.current = 1;
     historyHasMoreRef.current = false;
     liveHistoryTotalRef.current = 0;
