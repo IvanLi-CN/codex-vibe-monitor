@@ -11,6 +11,7 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 - 建立 `TerminalProjectionHub`：terminal ingress 在 P1 journal admission 后注册紧凑事件，P1 成功持久化后以单调 `rowId` 确认；Dashboard 与长期统计作为独立消费者使用自己的 cursor。
 - P1 只保证 raw terminal 落库和 journal ACK；任何投影、rollup、repair 都不得延长 P1 锁窗口。
 - 长期统计以持久 cursor、持久 rollup 与精确 interval overlay 增量物化。正常 terminal burst 固定 60 秒合并，只 hydrate 新的 terminal row 并 additive upsert 受影响 rollup key；raw 自然日重建仅用于明确 repair，不执行无条件近两天扫描。
+- `running/pending -> terminal` 的正常 finalize 只推进 cursor 和增量桶，不得制造自然日 dirty bucket；但若该行已被更大的 terminal `rowId` 跨越，必须标记其自然日精确 repair，不能静默漏记。价格、模型、账号归属、archive rewrite/restore 等会修正已持久化事实的 mutation 同样标记旧/新受影响自然日。
 - 墙上时间继续由每个维度的规范化区间并集精确计算；不允许用计数或近似采样替代。
 - `/api/stats/long-term/*`、Dashboard HTTP/SSE 的 wire shape 和既有刷新节奏保持不变；`GET /api/system/status` 可新增只读 `projectionHealth`。
 

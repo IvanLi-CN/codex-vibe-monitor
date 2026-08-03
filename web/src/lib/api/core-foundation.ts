@@ -2124,6 +2124,12 @@ export interface SystemProjectionHealth {
   longTerm: SystemProjectionConsumerHealth;
 }
 
+export interface SystemRawMetricsHealth {
+  state: string;
+  inventoryCursor: number;
+  updatedAgeMs?: number;
+}
+
 export interface SystemStatusResponse {
   liveInvocationsCount: number;
   successCount: number;
@@ -2136,6 +2142,7 @@ export interface SystemStatusResponse {
   databaseBytes: number;
   otherFilesBytes: number;
   projectionHealth: SystemProjectionHealth;
+  rawMetricsHealth: SystemRawMetricsHealth;
   refreshedAt: string;
 }
 
@@ -3926,6 +3933,15 @@ function normalizeSystemProjectionHealth(raw: unknown): SystemProjectionHealth {
   };
 }
 
+function normalizeSystemRawMetricsHealth(raw: unknown): SystemRawMetricsHealth {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    state: typeof payload.state === "string" ? payload.state : "preparing",
+    inventoryCursor: normalizeFiniteNumber(payload.inventoryCursor) ?? 0,
+    updatedAgeMs: normalizeFiniteNumber(payload.updatedAgeMs) ?? undefined,
+  };
+}
+
 function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -3940,6 +3956,7 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
     databaseBytes: normalizeFiniteNumber(payload.databaseBytes) ?? 0,
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
     projectionHealth: normalizeSystemProjectionHealth(payload.projectionHealth),
+    rawMetricsHealth: normalizeSystemRawMetricsHealth(payload.rawMetricsHealth),
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
 }

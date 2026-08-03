@@ -31,6 +31,7 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   responseRawBodies: { count: 670, bytes: 8_000_000_000 },
   databaseBytes: 618_659_840,
   otherFilesBytes: 142_344_192,
+  rawMetricsHealth: { state: "ready", inventoryCursor: 128_076 },
   projectionHealth: {
     terminal: {
       state: "healthy",
@@ -384,6 +385,7 @@ export const StatusRequestHeavy: Story = {
       archivedBodies: { count: 118_420, bytes: 649_117_696 },
       databaseBytes: 5_261_484_032,
       otherFilesBytes: 8_806,
+      rawMetricsHealth: { state: "preparing", inventoryCursor: 64_000 },
       projectionHealth: {
         terminal: {
           state: "dirty_last_good",

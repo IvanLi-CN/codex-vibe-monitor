@@ -1,5 +1,10 @@
 # SQLite 写入压力与后台背压模式
 
+## Read-side status and terminal projection
+
+- Long-term projection must distinguish normal terminal finalization from fact correction. The former advances the terminal cursor and additive rollups; marking a natural-day repair for every status transition recreates a write-pressure feedback loop.
+- Raw disk metrics are not a request-path filesystem inventory. Persist a bounded, pressure-gated inventory snapshot and expose its readiness explicitly so System Status can remain responsive without representing an incomplete scan as authoritative.
+
 ## 适用场景
 
 - 单进程服务使用 SQLite 作为主库，同时存在前台 HTTP 写入、请求收尾写入、后台维护写入与历史回填写入。
@@ -105,5 +110,6 @@
 - Projection schema、trigger 和兼容迁移属于启动期工作；固定 cadence 的 flush 或验证路径不得重复执行 DDL，否则后台维护本身会重新抢占 SQLite 写锁。
 - 增量 projection 替换全窗重算时，必须把旧 builder 的 hourly retention 一并迁入 P2 维护路径，并同步清理对应 hourly interval 状态；否则 service 虽然不再慢扫原表，却会在长期运行中把 projection 表无限累积。
 - `wall_time_ms` 由 interval union 派生，不能像 token/cost 一样对每批 delta 直接相加。持久化 interval segment 是重启恢复 union 的必要条件；upsert 应以完整 union 覆盖旧快照，才能保持重叠调用的精确值。
+- A terminal cursor ordered by row ID must not silently skip an older request that becomes terminal after a newer row. Mark that affected bucket for exact repair when the cursor has already crossed the row; normal in-order terminal finalization remains incremental.
 - Open-window timeseries must not persist full invocation JSON merely to preserve P95. Store minute aggregates plus exact latency sample blobs, use a terminal-delta overlay until the fixed P2 flush succeeds, and allow raw reads only for explicit leading/trailing minute tails or coverage warmup. A projection consumer must acknowledge individual persisted events, not advance by an unrelated maximum row ID, because SQLite row IDs can be sparse with respect to terminal writes.
 - A durable raw overflow spool needs a defined capacity boundary. At that boundary, choose and log a durability mode explicitly: retain in a bounded writer-backed memory queue for availability, or reject capture before it is accepted. Never relabel a capacity failure as an ordinary asynchronous backpressure drop.

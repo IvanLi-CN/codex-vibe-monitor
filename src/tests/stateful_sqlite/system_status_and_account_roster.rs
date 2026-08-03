@@ -228,6 +228,9 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     .await
     .expect("insert non-invocation completed archive batch");
 
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("refresh persisted raw metrics snapshot");
     let response = load_system_status_cached(state.as_ref())
         .await
         .expect("load cached system status");
@@ -244,6 +247,7 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     assert_eq!(response.request_raw_bodies.bytes, 20);
     assert_eq!(response.response_raw_bodies.count, 2);
     assert_eq!(response.response_raw_bodies.bytes, 28);
+    assert_eq!(response.raw_metrics_health.state, "ready");
     assert!(
         response.database_bytes > 0,
         "database bytes should include sqlite files"
@@ -253,6 +257,87 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         parse_to_utc_datetime(&response.refreshed_at).is_some(),
         "refreshedAt should be an ISO UTC timestamp"
     );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
+    use std::time::Duration as StdDuration;
+
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "system-status-late-raw-link",
+        StdDuration::from_millis(100),
+    )
+    .await;
+    let raw_dir = state.config.resolved_proxy_raw_dir();
+    fs::create_dir_all(&raw_dir).expect("create raw dir");
+    let request_path = raw_dir.join("request.zst");
+    let response_path = raw_dir.join("response.zst");
+    fs::write(&request_path, b"rq").expect("write request raw");
+    fs::write(&response_path, b"rsp").expect("write response raw");
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, raw_response, request_raw_path, request_raw_size) VALUES (?1, ?2, 'proxy', '', ?3, 2)",
+    )
+    .bind("late-raw-link")
+    .bind("2026-08-03T00:00:00.000Z")
+    .bind(request_path.to_string_lossy().as_ref())
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation with request raw");
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("advance legacy and link cursors");
+
+    sqlx::query("UPDATE codex_invocations SET response_raw_path = ?2, response_raw_size = 3 WHERE invoke_id = ?1")
+        .bind("late-raw-link")
+        .bind(response_path.to_string_lossy().as_ref())
+        .execute(&state.pool)
+        .await
+        .expect("attach response raw after invocation cursor advanced");
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("consume late response blob link");
+
+    let response = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load raw metrics snapshot");
+    assert_eq!(response.raw_bodies.count, 2);
+    assert_eq!(response.raw_bodies.bytes, 5);
+    assert_eq!(response.request_raw_bodies.count, 1);
+    assert_eq!(response.response_raw_bodies.count, 1);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write() {
+    use std::time::Duration as StdDuration;
+
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "system-status-raw-metrics-deferred",
+        StdDuration::from_millis(100),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE system_raw_payload_metrics SET inventory_state = 'ready' WHERE singleton = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed ready inventory state");
+
+    set_system_raw_metrics_health_override(state.as_ref(), Some("deferred")).await;
+    let deferred = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load deferred status");
+    assert_eq!(deferred.raw_metrics_health.state, "deferred");
+
+    set_system_raw_metrics_health_override(state.as_ref(), None).await;
+    let recovered = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load recovered status");
+    assert_eq!(recovered.raw_metrics_health.state, "ready");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }

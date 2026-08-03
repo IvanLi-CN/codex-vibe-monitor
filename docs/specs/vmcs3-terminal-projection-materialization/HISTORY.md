@@ -9,6 +9,8 @@
 - Retention 保留轻量 live 行时，目标桶 repair 以 `rowId` 合并 archive 详情与 retained columns，不能因相同 ID 去重而丢失 archive 维度。
 - 长期统计保留期约束同时覆盖增量写入的 hourly rollup 与 hourly interval 段；daily 历史仍保持永久累计。
 - 墙上时间按调用区间并集计算。增量 upsert 保存当前完整并集，重启后先恢复持久区间再接收新 delta，不能改成相加。
+- Long-term normal terminal handling stays cursor-incremental even when a recoverable `proxy_interrupted` record later reaches its terminal state; that transition must not restart a natural-day rebuild.
+- Cursor-incremental handling is safe only before the cursor has crossed the row. A late terminal transition for an older row queues an exact affected-day repair, preserving totals when requests finish out of insertion order.
 
 # Repair Source Boundaries
 

@@ -15,6 +15,7 @@
 - 把顶层 `设置` 升级为顶层 `系统` 工作区，采用左侧导航、右侧子路由出口的两栏布局。
 - 在 `系统` 下稳定提供 `状态 / 任务 / 设置 / 代理` 四个子界面。
 - 新增系统状态读接口，展示调用成功数、非成功数、归档 body 数量/体积、raw payload 总量/体积、request raw payload、response raw payload、数据库体积、其他文件体积，并按 60 秒轮询刷新。
+- raw payload 指标读取持久快照；首次升级或 retention 后通过 additive `rawMetricsHealth=preparing|ready|deferred|error` 明确盘点状态。ready 后状态读取不得查询全部 raw path 或逐文件读取元数据。
 - 新增系统后台任务记录读接口，至少覆盖 scheduler、retention/archive（含 raw compression 摘要）、startup backfill、forward-proxy subscription refresh。
 - 保持现有 `/api/settings*` 写接口契约不变；原设置能力按职责拆到 `系统/设置` 与 `系统/代理`。
 
@@ -157,6 +158,28 @@
 
 ## Visual Evidence
 
+- source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/StatusRequestHeavy
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1280
+  viewport_strategy: explicit_browser_viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  PR: none
+  evidence_note: raw payload 指标处于 `preparing` 时，页面保留可用统计值，明确说明后台盘点且不在请求中扫描文件。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-preparing-browser-viewport.png`
+- source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/Status
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1280
+  viewport_strategy: explicit_browser_viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  PR: none
+  evidence_note: raw payload 指标处于 `ready` 时，页面明确显示指标已由写侧维护，状态读取不触发文件扫描。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-ready-browser-viewport.png`
 - source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/Status
   target_program: mock-only

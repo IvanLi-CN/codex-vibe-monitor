@@ -830,6 +830,16 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     )
                     .await;
                 }
+                // A cold-compression rename changes the physical path as well. Reset the
+                // incremental inventory so it cannot count both the retired and new blob.
+                if (summary.raw_files_compressed > 0
+                    || summary.raw_files_removed > 0
+                    || summary.orphan_raw_files_removed > 0)
+                    && let Err(error) =
+                        reset_system_raw_payload_metrics_inventory(state.as_ref()).await
+                {
+                    warn!(error = %error, "failed to reset system raw metrics inventory after retention");
+                }
                 invalidate_system_status_cache(state.as_ref()).await;
                 true
             }
@@ -1263,13 +1273,12 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             if !dry_run
                 && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
             {
-                sqlx::query(
-                    "UPDATE pool_upstream_request_attempts SET response_raw_path = ?1, response_raw_codec = ?2 WHERE id = ?3",
+                replace_proxy_raw_path_references(
+                    pool,
+                    &candidate.raw_path,
+                    &next_path,
+                    &next_codec,
                 )
-                .bind(&next_path)
-                .bind(&next_codec)
-                .bind(candidate.id)
-                .execute(pool)
                 .await?;
                 if let Some(path) = outcome.old_exact_path.as_deref()
                     && next_path != candidate.raw_path
@@ -1407,17 +1416,13 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             if !dry_run
                 && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
             {
-                let update_sql = format!(
-                    "UPDATE codex_invocations SET {path_column} = ?1, {codec_column} = ?2 WHERE id = ?3",
-                    path_column = field.path_column(),
-                    codec_column = field.codec_column(),
-                );
-                sqlx::query(&update_sql)
-                    .bind(&next_path)
-                    .bind(&next_codec)
-                    .bind(candidate.id)
-                    .execute(pool)
-                    .await?;
+                replace_proxy_raw_path_references(
+                    pool,
+                    &candidate.raw_path,
+                    &next_path,
+                    &next_codec,
+                )
+                .await?;
 
                 if let Some(path) = outcome.old_exact_path.as_deref()
                     && next_path != candidate.raw_path
@@ -1636,6 +1641,43 @@ pub(crate) fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gz", path.display()))
 }
 
+async fn replace_proxy_raw_path_references(
+    pool: &Pool<Sqlite>,
+    old_path: &str,
+    next_path: &str,
+    next_codec: &str,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    for (path_column, codec_column) in [
+        ("request_raw_path", "request_raw_codec"),
+        ("response_raw_path", "response_raw_codec"),
+    ] {
+        let query = format!(
+            "UPDATE codex_invocations SET {path_column} = ?1, {codec_column} = ?2 WHERE {path_column} = ?3"
+        );
+        sqlx::query(&query)
+            .bind(next_path)
+            .bind(next_codec)
+            .bind(old_path)
+            .execute(tx.as_mut())
+            .await?;
+    }
+    sqlx::query(
+        "UPDATE pool_upstream_request_attempts SET response_raw_path = ?1, response_raw_codec = ?2 WHERE response_raw_path = ?3",
+    )
+    .bind(next_path)
+    .bind(next_codec)
+    .bind(old_path)
+    .execute(tx.as_mut())
+    .await?;
+    tx.commit().await?;
+    debug!(
+        old_path,
+        next_path, next_codec, "propagated shared proxy raw path replacement"
+    );
+    Ok(())
+}
+
 pub(crate) fn locate_existing_proxy_raw_path(
     path: &str,
     fallback_root: Option<&Path>,
@@ -1679,51 +1721,39 @@ pub(crate) fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
-async fn pool_attempt_response_paths_for_invocation_ids(
+async fn filter_unreferenced_proxy_raw_paths(
     pool: &Pool<Sqlite>,
-    invocation_ids: &[i64],
-) -> Result<Vec<String>> {
-    if invocation_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT attempts.response_raw_path FROM pool_upstream_request_attempts AS attempts JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id AND inv.occurred_at = attempts.occurred_at WHERE inv.id IN (",
-    );
-    {
-        let mut separated = query.separated(", ");
-        for id in invocation_ids {
-            separated.push_bind(id);
-        }
-    }
-    query.push(") AND attempts.response_raw_path IS NOT NULL");
-    Ok(query
-        .build_query_scalar::<Option<String>>()
-        .fetch_all(pool)
-        .await?
-        .into_iter()
+    raw_paths: &[Option<String>],
+) -> Result<Vec<Option<String>>> {
+    let candidates = raw_paths
+        .iter()
         .flatten()
-        .collect())
-}
-
-async fn clear_pool_attempt_response_captures_for_invocation_ids(
-    tx: &mut sqlx::SqliteConnection,
-    invocation_ids: &[i64],
-) -> Result<()> {
-    if invocation_ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "UPDATE pool_upstream_request_attempts SET response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, response_content_encoding = NULL WHERE EXISTS (SELECT 1 FROM codex_invocations AS inv WHERE inv.id IN (",
-    );
-    {
-        let mut separated = query.separated(", ");
-        for id in invocation_ids {
-            separated.push_bind(id);
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut unreferenced = Vec::with_capacity(candidates.len());
+    for path in candidates {
+        let referenced = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT EXISTS(
+              SELECT 1 FROM proxy_raw_payload_blob_links
+              WHERE raw_path = ?1
+              UNION ALL
+              SELECT 1 FROM codex_invocations
+              WHERE request_raw_path = ?1 OR response_raw_path = ?1
+              UNION ALL
+              SELECT 1 FROM pool_upstream_request_attempts
+              WHERE response_raw_path = ?1
+            )
+            "#,
+        )
+        .bind(&path)
+        .fetch_one(pool)
+        .await?;
+        if referenced == 0 {
+            unreferenced.push(Some(path));
         }
     }
-    query.push(") AND inv.invoke_id = pool_upstream_request_attempts.invoke_id AND inv.occurred_at = pool_upstream_request_attempts.occurred_at)");
-    query.build().execute(&mut *tx).await?;
-    Ok(())
+    Ok(unreferenced)
 }
 
 pub(crate) async fn prune_old_invocation_details(
@@ -1769,11 +1799,7 @@ pub(crate) async fn prune_old_invocation_details(
                 "retention dry-run planned invocation detail prune archive batch"
             );
         }
-        let ids = candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
-        let mut raw_paths = candidates
+        let raw_paths = candidates
             .iter()
             .flat_map(|candidate| {
                 [
@@ -1782,12 +1808,6 @@ pub(crate) async fn prune_old_invocation_details(
                 ]
             })
             .collect::<Vec<_>>();
-        raw_paths.extend(
-            pool_attempt_response_paths_for_invocation_ids(pool, &ids)
-                .await?
-                .into_iter()
-                .map(Some),
-        );
         return Ok((
             candidates.len(),
             by_group.len(),
@@ -1838,7 +1858,7 @@ pub(crate) async fn prune_old_invocation_details(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let mut raw_paths = group
+            let raw_paths = group
                 .iter()
                 .flat_map(|candidate| {
                     [
@@ -1847,12 +1867,6 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
-            raw_paths.extend(
-                pool_attempt_response_paths_for_invocation_ids(pool, &ids)
-                    .await?
-                    .into_iter()
-                    .map(Some),
-            );
             let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
                 ArchiveBatchLayout::LegacyMonth => {
                     archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
@@ -1892,7 +1906,6 @@ pub(crate) async fn prune_old_invocation_details(
                 }
             }
             query.push(")");
-            clear_pool_attempt_response_captures_for_invocation_ids(tx.as_mut(), &ids).await?;
             query.build().execute(tx.as_mut()).await?;
             if let Some(latest) = group
                 .iter()
@@ -1903,6 +1916,7 @@ pub(crate) async fn prune_old_invocation_details(
             }
             tx.commit().await?;
 
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -2074,6 +2088,7 @@ pub(crate) async fn archive_old_invocations(
             )
             .await?;
             tx.commit().await?;
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -2356,8 +2371,9 @@ pub(crate) async fn archive_timestamped_dataset(
             .await?;
             tx.commit().await?;
             if spec.dataset == "pool_upstream_request_attempts" {
-                let _ =
-                    delete_proxy_raw_paths(&pool_attempt_raw_paths, config.database_path.parent())?;
+                let raw_paths =
+                    filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
+                let _ = delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
             }
         }
     }

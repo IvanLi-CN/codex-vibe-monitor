@@ -192,6 +192,7 @@ pub(crate) async fn run() -> Result<()> {
         upstream_accounts,
     });
     spawn_subscription_broadcast_listener(state.clone());
+    spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());

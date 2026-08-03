@@ -35,7 +35,8 @@
 
 - Response raw capture must preserve an already content-encoded wire response as-is; it must not decode and recompress `gzip`, `zstd`, or `deflate` on the proxy request path.
 - Identity payload storage defaults to Zstd. Existing `.gz` captures remain readable and expire through normal retention; no bulk migration is permitted.
-- A saturated raw writer queues enabled capture work instead of marking it `async_backpressure_dropped`. Compression concurrency is bounded by `PROXY_RAW_ZSTD_MAX_CONCURRENT_WRITERS` or `clamp(available_parallelism / 2, 2, 8)`.
+- A saturated raw writer queues enabled capture work in the durable spool. Compression concurrency is bounded by `PROXY_RAW_ZSTD_MAX_CONCURRENT_WRITERS` or `clamp(available_parallelism / 2, 2, 8)`. If the spool hard limit cannot accept a capture, the invocation records `capture_unavailable:*`; it never falls back to an unbounded memory queue.
+- A paired pool response stream uses one bounded ingress and one encoder worker. Invocation and attempt metadata may link to the same published response raw path, while retention keeps that path until both independent owners have released it.
 - `src/config.rs` / `src/app_state.rs` / `src/runtime.rs` 中 whole-proxy admission gate 的移除、纯观测型 in-flight 指标与 deprecated 配置告警。
 - `src/api/mod.rs` 中 invocation 列表分页查询的轻量页 id 预选 + 当前页重型投影（保留并复验，不回退）。
 - `src/tests/mod.rs` 中与 100 并行、不再本地 admission reject、raw 异步和长流 in-flight tracking 相关的回归测试。
@@ -51,7 +52,7 @@
 
 - `/v1/*` 不允许再存在任何整机级 whole-proxy admission gate；观测可以保留，准入拒绝不允许保留。
 - response raw 必须“先转发 chunk，再异步落盘”；request raw 必须“先发上游/继续流程，再异步收尾写盘”。
-- raw 异步旁路必须有明确截断原因，至少覆盖 `max_bytes_exceeded`、`write_failed:*`、`memory_overflow_queue_full`；容量耗尽不得伪装成普通异步背压丢弃。
+- raw 异步旁路必须有明确截断原因，至少覆盖 `max_bytes_exceeded`、`write_failed:*`、`capture_unavailable:spool_capacity` 与 `capture_unavailable:ingress_queue_full`；容量耗尽不得伪装成普通异步背压丢弃。
 - 大 body sticky 探测只允许读取固定前缀窗口；超过窗口仍未识别时，直接回落到“无 body sticky 优化”的 replay 路径。
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `proxy capture follow-up` 必须先看 `receiver_count()`，无 SSE 订阅者且非 shutdown flush 时直接跳过，不消耗 follow-up seq，也不触发 summary/quota 查询或 rollup refresh。
