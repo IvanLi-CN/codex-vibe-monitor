@@ -159,6 +159,8 @@
 - `stats.summary.current`（open-range only）
 - `stats.timeseries.open-window`
 
+`invocation-history.overview` binds its summary and up to 1,000 chart samples to one SQLite snapshot plus one captured runtime overlay. All internal pages use one fixed server-accepted page width, so configured limits that do not divide the sample cap cannot cause duplicate or missing samples; its SSE-disabled HTTP fallback follows the returned page width through the bounded sample window.
+
 ### Open-Window Timeseries Projection
 
 - `today` and `1d` minute windows may use a durable minute projection of exact invocation aggregate records. A missing projection is a warming fallback, not a different response contract.
@@ -190,6 +192,7 @@
 - Given `/events` 连续失败，When 前端进入自动恢复，Then 新的 SSE 尝试必须按退避节奏出现，而不是在数秒内打出成百上千个 `attempt`。
 - Given 关闭历史窗口或非订阅页面仍使用 HTTP，When 本轮纯 SSE 改造完成，Then 它们现有语义保持不变。
 - Given a conversation detail topic cannot resume, When the client reconnects, Then the active tab adopts a fresh snapshot while its entire captured HTTP snapshot, including page 1, remains frozen and deduplicated.
+- Given an `invocation-history.overview` response spans multiple pages under a non-divisor server limit, When the topic or its SSE-disabled fallback loads chart samples, Then it keeps one snapshot and fixed accepted page width so every eligible bounded sample appears at most once.
 
 ## 验收清单（Acceptance checklist）
 

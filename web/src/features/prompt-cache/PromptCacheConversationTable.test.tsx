@@ -1717,6 +1717,74 @@ describe("PromptCacheConversationTable", () => {
     });
   });
 
+  it("paginates overview fallback samples with the server's accepted page size", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    const makeRecord = (id: number) => ({
+      id,
+      invokeId: `fallback-overview-${id}`,
+      occurredAt: `2026-03-02T12:${String(id % 60).padStart(2, "0")}:00Z`,
+      status: "completed",
+      failureClass: "none",
+      totalTokens: 100,
+      cost: 0.01,
+      endpoint: "/v1/responses",
+      promptCacheKey: "pck-overview-pages",
+      upstreamAccountId: 101,
+      upstreamAccountName: "Pool Alpha",
+      createdAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 904,
+        total: 250,
+        page: 1,
+        pageSize: 200,
+        records: Array.from({ length: 200 }, (_, index) => makeRecord(index + 1)),
+      })
+      .mockResolvedValueOnce({
+        snapshotId: 904,
+        total: 250,
+        page: 2,
+        pageSize: 200,
+        records: Array.from({ length: 50 }, (_, index) => makeRecord(index + 201)),
+      });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-overview-pages",
+          requestCount: 250,
+          totalTokens: 25_000,
+          totalCost: 2.5,
+          createdAt: "2026-03-02T12:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await vi.waitFor(() => expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2));
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-overview-pages",
+      page: 2,
+      pageSize: 200,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   it("hydrates settings from its topic without a binding HTTP bootstrap", async () => {
     detailTopicMocks.current.binding.data = {
       promptCacheKey: "pck-binding-topic",

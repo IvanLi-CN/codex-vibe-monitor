@@ -2675,7 +2675,7 @@ pub(crate) async fn list_invocations(
     list_invocations_with_runtime_overlay(state, params, runtime_overlay).await
 }
 
-async fn list_invocations_with_runtime_overlay(
+pub(crate) async fn list_invocations_with_runtime_overlay(
     state: Arc<AppState>,
     params: ListQuery,
     runtime_overlay_override: Option<Vec<ApiInvocation>>,
@@ -5521,6 +5521,14 @@ pub(crate) async fn fetch_invocation_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSummaryResponse>, ApiError> {
+    fetch_invocation_summary_with_runtime_overlay(state, params, None).await
+}
+
+pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_override: Option<Vec<ApiInvocation>>,
+) -> Result<Json<InvocationSummaryResponse>, ApiError> {
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -5588,7 +5596,8 @@ pub(crate) async fn fetch_invocation_summary(
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         )
         .await?;
-        let runtime_records = runtime_overlay_snapshot(state.as_ref());
+        let runtime_records =
+            runtime_overlay_override.unwrap_or_else(|| runtime_overlay_snapshot(state.as_ref()));
         let db_terminal_keys = query_terminal_db_keys_for_runtime_records(
             &state.pool,
             &runtime_records,

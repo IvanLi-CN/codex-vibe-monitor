@@ -3038,31 +3038,34 @@ impl SubscriptionTopic {
                 Ok(serde_json::to_value(response)?)
             }
             Self::InvocationHistoryOverview { scope } => {
-                let Json(summary) = fetch_invocation_summary(
-                    State(state.clone()),
-                    Query(scope.list_query(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT, None)),
+                let runtime_overlay_records = runtime_overlay_snapshot(state.as_ref());
+                let Json(summary) = fetch_invocation_summary_with_runtime_overlay(
+                    state.clone(),
+                    scope.list_query(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT, None),
+                    Some(runtime_overlay_records.clone()),
                 )
                 .await?;
+                let overview_page_size = (state.config.list_limit_max as i64)
+                    .clamp(1, SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT);
                 let mut records = Vec::new();
                 let mut page = 1_i64;
-                let mut chart_total = summary.total_count;
+                let chart_total = summary.total_count;
                 while records.len() < SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS {
-                    let page_size = (SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS - records.len())
-                        .min(SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT as usize)
-                        as i64;
-                    let Json(response) = list_invocations(
-                        State(state.clone()),
-                        // Keep chart samples on the same live view as the summary. Supplying a
-                        // snapshot ID deliberately disables the runtime overlay in the records API.
-                        Query(scope.list_query(page, page_size, None)),
+                    let Json(response) = list_invocations_with_runtime_overlay(
+                        state.clone(),
+                        scope.list_query(page, overview_page_size, Some(summary.snapshot_id)),
+                        Some(runtime_overlay_records.clone()),
                     )
                     .await?;
-                    chart_total = response.total;
-                    if response.records.is_empty() {
+                    let received_count = response.records.len();
+                    if received_count == 0 {
                         break;
                     }
-                    records.extend(response.records);
-                    if records.len() >= chart_total as usize || page_size <= 0 {
+                    let remaining = SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS - records.len();
+                    records.extend(response.records.into_iter().take(remaining));
+                    if records.len() >= chart_total as usize
+                        || received_count < overview_page_size as usize
+                    {
                         break;
                     }
                     page += 1;
@@ -3076,15 +3079,15 @@ impl SubscriptionTopic {
                     .map(|record| record.occurred_at.clone())
                     .max();
                 if chart_total as usize > records.len() {
-                    let oldest_page = (chart_total + SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT - 1)
-                        / SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT;
-                    let Json(oldest_response) = list_invocations(
-                        State(state.clone()),
-                        Query(scope.list_query(
+                    let oldest_page = (chart_total + overview_page_size - 1) / overview_page_size;
+                    let Json(oldest_response) = list_invocations_with_runtime_overlay(
+                        state.clone(),
+                        scope.list_query(
                             oldest_page.max(1),
-                            SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT,
-                            None,
-                        )),
+                            overview_page_size,
+                            Some(summary.snapshot_id),
+                        ),
+                        Some(runtime_overlay_records),
                     )
                     .await?;
                     for record in oldest_response.records {
@@ -4075,6 +4078,57 @@ mod tests {
                 .and_then(Value::as_str),
             Some("runtime-overview-invoke")
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_overview_keeps_non_divisor_page_limits_contiguous() {
+        let mut state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        Arc::get_mut(&mut state)
+            .expect("overview test state should not have external owners")
+            .config
+            .list_limit_max = 37;
+        let prompt_cache_key = "overview-page-limit-pck";
+        for index in 0..75 {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, payload, raw_response
+                )
+                VALUES (?1, ?2, 'proxy', 'success', ?3, '{}')
+                "#,
+            )
+            .bind(format!("overview-page-limit-{index:03}"))
+            .bind(format!("2026-03-02 12:{:02}:{:02}", index / 60, index % 60))
+            .bind(format!(r#"{{"promptCacheKey":"{prompt_cache_key}"}}"#))
+            .execute(&state.pool)
+            .await
+            .expect("insert overview pagination seed row");
+        }
+
+        let topic = SubscriptionTopic::InvocationHistoryOverview {
+            scope: ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key.to_string()),
+        };
+        let payload = topic
+            .build_payload(state)
+            .await
+            .expect("conversation overview payload should build");
+        let records = payload
+            .get("records")
+            .and_then(Value::as_array)
+            .expect("overview records should serialize");
+        let mut invoke_ids = records
+            .iter()
+            .filter_map(|record| record.get("invokeId").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        invoke_ids.sort_unstable();
+        invoke_ids.dedup();
+
+        assert_eq!(payload.get("chartTotal").and_then(Value::as_i64), Some(75));
+        assert_eq!(records.len(), 75);
+        assert_eq!(invoke_ids.len(), 75);
     }
 
     #[tokio::test]

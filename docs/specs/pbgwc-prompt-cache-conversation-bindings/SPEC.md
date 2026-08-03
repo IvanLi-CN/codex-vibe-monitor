@@ -83,7 +83,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Conversation detail history tables must stay virtualized so the retained-record `total` does not linearly increase mounted DOM rows or block the binding controls.
 - Detail drawers subscribe only for their active tab, using `promptCacheKey` or the pair `stickyKey + upstreamAccountId` as the authoritative scope.
 - `invocation-history.window` supplies the current 50-row head window with `total` and `snapshotId`; after deep pagination starts, the entire captured HTTP snapshot, including page 1, remains frozen and is deduplicated against the live head by invocation stable key.
-- `invocation-history.overview` supplies the current summary and at most 1,000 chart samples; it may coalesce matching record changes for up to two seconds and retains last-good data on a refresh failure.
+- `invocation-history.overview` supplies the current summary and at most 1,000 chart samples; one topic build binds the summary and every chart page to one SQLite snapshot plus one captured runtime overlay, and uses one fixed accepted page width so a non-divisor server limit cannot duplicate or skip samples. It may coalesce matching record changes for up to two seconds and retains last-good data on a refresh failure. When SSE is unavailable, the HTTP fallback uses the server-accepted page width to fetch the same bounded sample window.
 - `prompt-cache.conversation-binding.current` supplies the current binding/policy snapshot, while `prompt-cache.conversation-operations.window` supplies the newest 20 events for the selected filter. A local Settings draft is never overwritten by an external snapshot: the operator explicitly adopts it or saves the draft as last-write-wins.
 - When the Calls view is within 96px of its top edge, a newly keyed invocation is inserted immediately. Otherwise, the existing scroll anchor is preserved and a `Show N new` action reveals deferred rows; updates to an existing stable key never increase `N`.
 
@@ -161,7 +161,7 @@ The row is deleted only when there is no binding target, all four timeout overri
 ### Detail-drawer topic subscriptions
 
 - `invocation-history.window` accepts exactly one detail scope and returns `{ records, total, snapshotId }` for the newest 50 retained calls.
-- `invocation-history.overview` accepts the same scope and returns `{ summary, records, chartTotal, chartIsSampled }`, where `records` contains at most 1,000 chart samples.
+- `invocation-history.overview` accepts the same scope and returns `{ summary, records, chartTotal, chartIsSampled }`, where `records` contains at most 1,000 chart samples from one SQLite snapshot and one captured runtime overlay. Internal pagination keeps the server-accepted page width constant for every page.
 - `prompt-cache.conversation-binding.current` and `prompt-cache.conversation-operations.window` accept the same scope; the operations topic also accepts the current `infoType` filter and returns the newest 20 rows.
 - A `Records` broadcast refreshes only the matching calls and overview topics. A committed conversation binding/policy change refreshes only the matching binding and operations topics.
 - Topic recovery follows the shared `snapshot/replay` contract. When replay is unavailable, the new snapshot replaces the live head while the entire captured HTTP snapshot, including page 1, remains frozen at its original snapshot.
@@ -269,6 +269,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a matching new invocation arrives while the Calls view is at its top edge, the current 50-row topic window updates within about one second and a running row becomes terminal in place without being counted as a new row.
 - Given the Calls view is away from its top edge, a newly keyed row leaves the current scroll anchor unchanged, increments `Show N new`, and is merged only after the operator requests the newest rows; existing-row updates do not increment that count.
 - Given a detail topic replay misses after reconnect, the active tab adopts its fresh snapshot, retains last-good data during a refresh failure, and keeps the entire captured HTTP snapshot, including page 1, frozen and deduplicated.
+- Given the overview has more than one chart page and the configured server list limit is not a divisor of the sample cap, its snapshot contains every eligible sample at most once; an SSE-unavailable HTTP fallback follows the returned page width until the same bounded window is loaded.
 - Given an external binding change arrives while Settings has a dirty draft, the inputs remain unchanged until the operator adopts the latest binding or explicitly saves the draft as last-write-wins.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.

@@ -45,7 +45,7 @@
 - `invocation-history.overview`
 - `prompt-cache.conversation-binding.current`
 - `prompt-cache.conversation-operations.window`
-- Conversation detail fallback discards cached topic payloads when SSE is disabled, then reloads the active tab through its existing HTTP path; captured history pagination keeps page 1 and every later HTTP page frozen across fresh topic snapshots.
+- Conversation detail fallback discards cached topic payloads when SSE is disabled, then reloads the active tab through its existing HTTP path; captured history pagination keeps page 1 and every later HTTP page frozen across fresh topic snapshots. The overview topic pins summary and samples to one SQLite snapshot plus captured runtime overlay with a fixed accepted page width, while its HTTP fallback uses the returned page width to fill the bounded chart sample window.
 - `invocations.window`
 - `stats.summary.current`（仅开放窗口；`yesterday` / `previous7d` 继续走 HTTP exact）
 - `stats.timeseries.open-window`（开放窗口）

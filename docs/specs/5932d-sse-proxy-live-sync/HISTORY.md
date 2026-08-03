@@ -6,7 +6,7 @@
 
 ## Key Decisions
 
-- 2026-08-03：Prompt Cache conversation detail joined the shared topic bus with four tab-scoped read models. The realtime Calls head remains bounded to 50 rows; the entire captured HTTP snapshot, including page 1, deliberately remains frozen across fresh topic snapshots, while configuration broadcasts only target binding/event subscribers.
+- 2026-08-03：Prompt Cache conversation detail joined the shared topic bus with four tab-scoped read models. The realtime Calls head remains bounded to 50 rows; the entire captured HTTP snapshot, including page 1, deliberately remains frozen across fresh topic snapshots. The overview additionally pins its summary and samples to one SQLite snapshot plus captured runtime overlay with a fixed accepted page width, while configuration broadcasts only target binding/event subscribers.
 - 2026-07-24：线上复查确认 Summary topic 的主要残留压力来自 terminal follow-up 对 `all/30m/1h/1d/1mo` 五个 legacy 窗口的无关重建，以及 `today` summary 的 `non_success_tokens` 仍走整窗账号活动聚合。本轮删除生产 Summary follow-up，open-range topic 改为 live overlay + 固定 `500ms` totals coalescer；`non_success_tokens` 复用 hourly v2 rollup 与 boundary scalar tail。Dashboard 保留既有 `5s` TTL，仅改用真实 owner subscriber lease 门控，并以 dirty reconnect 保证失活期间不回放旧连续性。
 - 2026-07-24：补充闭区间防护：`yesterday` / `previous7d` 即使有遗留兼容 topic，也不再被 Records 或 live 广播触发重建；当前应用继续通过 HTTP exact path 获取闭区间结果。
 - 2026-07-24：离线黄条的掉线时长保留既有 SSE 状态与翻译计算，只改为标题旁紧凑等宽纯文本，避免在 warning 容器上再叠加半透明胶囊背景。AppLayout Storybook 通过仅用于故事的状态上下文稳定提供断线诊断数据，桌面与 `390px` 移动状态复用同一断线 fixture。

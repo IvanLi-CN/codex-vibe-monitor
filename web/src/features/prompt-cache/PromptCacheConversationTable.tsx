@@ -1876,28 +1876,56 @@ function PromptCacheConversationActivityOverview({
     void signal;
     setIsLoading(true);
     setError(null);
-    void Promise.all([
-      fetchInvocationRecordsSummary({ ...filters, signal: controller.signal }),
-      fetchInvocationRecords({
-        ...filters,
-        page: 1,
-        pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        signal: controller.signal,
-      }),
-    ])
-      .then(([nextSummary, response]) => {
+    void (async () => {
+      const [nextSummary, firstPage] = await Promise.all([
+        fetchInvocationRecordsSummary({ ...filters, signal: controller.signal }),
+        fetchInvocationRecords({
+          ...filters,
+          page: 1,
+          pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          signal: controller.signal,
+        }),
+      ]);
+      const records = firstPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS);
+      const pageSize = Math.max(1, firstPage.pageSize);
+      const targetCount = Math.min(
+        PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+        Math.max(0, firstPage.total),
+      );
+      let page = 2;
+      let previousPageCount = firstPage.records.length;
+      while (records.length < targetCount && previousPageCount >= pageSize) {
+        if (controller.signal.aborted) return;
+        const nextPage = await fetchInvocationRecords({
+          ...filters,
+          page,
+          pageSize,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          signal: controller.signal,
+        });
+        previousPageCount = nextPage.records.length;
+        records.push(
+          ...nextPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS - records.length),
+        );
+        page += 1;
+      }
+      return { nextSummary, records, chartTotal: firstPage.total };
+    })()
+      .then((response) => {
         if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
+        if (!response) return;
         const occurredAt = response.records
           .map((record) => Date.parse(record.occurredAt))
           .filter((value) => Number.isFinite(value));
-        setSummary(nextSummary);
+        setSummary(response.nextSummary);
         setRecords(response.records);
         setChartRangeStartMs(occurredAt.length > 0 ? Math.min(...occurredAt) : null);
         setChartRangeEndMs(occurredAt.length > 0 ? Math.max(...occurredAt) : null);
-        setChartTotal(response.total);
-        setChartIsSampled(response.records.length < response.total);
+        setChartTotal(response.chartTotal);
+        setChartIsSampled(response.records.length < response.chartTotal);
         setIsLoading(false);
       })
       .catch((err) => {
