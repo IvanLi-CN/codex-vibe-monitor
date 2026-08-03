@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.55.0",
+  "base_stable_version": "2.54.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-03T14:56:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.55.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "bb71d154e941a4b70a8b7c9a0b1977a808d7cd81",
+  "pr_number": 728,
+  "pr_title": "feat(realtime): sync conversation detail drawers",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.55.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.55.0",
+  "target_sha": "9b95aa2954f806350410b28db312a60d4312f09f",
+  "type_label": "type:minor"
+}
