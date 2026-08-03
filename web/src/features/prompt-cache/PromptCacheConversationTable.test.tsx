@@ -29,10 +29,13 @@ const apiMocks = vi.hoisted(() => ({
 
 const detailTopicMocks = vi.hoisted(() => ({
   current: {
-    calls: { data: null as unknown },
-    overview: { data: null as unknown },
-    binding: { data: null as unknown },
-    operations: { data: null as unknown },
+    calls: { data: null as unknown, lastKind: null as "snapshot" | "replay" | "live" | null },
+    overview: { data: null as unknown, lastKind: null as "snapshot" | "replay" | "live" | null },
+    binding: { data: null as unknown, lastKind: null as "snapshot" | "replay" | "live" | null },
+    operations: {
+      data: null as unknown,
+      lastKind: null as "snapshot" | "replay" | "live" | null,
+    },
     isSseUnavailable: false,
   },
 }));
@@ -219,10 +222,10 @@ describe("PromptCacheConversationTable", () => {
     apiMocks.fetchUpstreamAccounts.mockReset();
     apiMocks.updatePromptCacheConversationBinding.mockReset();
     detailTopicMocks.current = {
-      calls: { data: null as unknown },
-      overview: { data: null as unknown },
-      binding: { data: null as unknown },
-      operations: { data: null as unknown },
+      calls: { data: null as unknown, lastKind: null },
+      overview: { data: null as unknown, lastKind: null },
+      binding: { data: null as unknown, lastKind: null },
+      operations: { data: null as unknown, lastKind: null },
       isSseUnavailable: false,
     };
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
@@ -1506,11 +1509,26 @@ describe("PromptCacheConversationTable", () => {
       pageSize: 50,
       records: [liveRecord, initialRecord],
     };
+    detailTopicMocks.current.calls.lastKind = "snapshot";
     renderInteractive(stats);
     await flushInteractive();
     expect(document.body.textContent).toContain("live-before-http");
     expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("共 2 条保留调用记录");
+
+    detailTopicMocks.current.calls.data = {
+      snapshotId: 903,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [initialRecord],
+    };
+    detailTopicMocks.current.calls.lastKind = "snapshot";
+    renderInteractive(stats);
+    await flushInteractive();
+
+    expect(document.body.textContent).not.toContain("live-before-http");
+    expect(document.body.textContent).toContain("共 1 条保留调用记录");
   });
 
   it("falls back to the calls snapshot after SSE becomes unavailable", async () => {

@@ -424,6 +424,25 @@ impl ConversationSubscriptionScope {
         }
     }
 
+    fn matches_sticky_route_change(
+        &self,
+        sticky_key: &str,
+        previous_upstream_account_id: i64,
+        upstream_account_id: i64,
+    ) -> bool {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => prompt_cache_key == sticky_key,
+            Self::StickyKey {
+                sticky_key: current_sticky_key,
+                upstream_account_id: current_upstream_account_id,
+            } => {
+                current_sticky_key == sticky_key
+                    && (*current_upstream_account_id == previous_upstream_account_id
+                        || *current_upstream_account_id == upstream_account_id)
+            }
+        }
+    }
+
     fn descriptor_params(&self) -> BTreeMap<String, String> {
         match self {
             Self::PromptCacheKey(prompt_cache_key) => {
@@ -1194,7 +1213,11 @@ impl SubscriptionHub {
             }
 
             if cached.topic.uses_conversation_overview_refresh()
-                && matches!(payload, BroadcastPayload::Records { .. })
+                && matches!(
+                    payload,
+                    BroadcastPayload::Records { .. }
+                        | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. }
+                )
             {
                 if let Err(err) = self
                     .schedule_conversation_overview_topic_refresh(
@@ -2851,6 +2874,19 @@ impl SubscriptionTopic {
                 }
                 _ => false,
             },
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key,
+                previous_upstream_account_id,
+                upstream_account_id,
+            } => match self {
+                Self::InvocationHistoryWindow { scope }
+                | Self::InvocationHistoryOverview { scope } => scope.matches_sticky_route_change(
+                    sticky_key,
+                    *previous_upstream_account_id,
+                    *upstream_account_id,
+                ),
+                _ => false,
+            },
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
@@ -3935,6 +3971,29 @@ mod tests {
         assert!(!operations.is_affected_by(&BroadcastPayload::Records {
             records: Vec::new(),
         }));
+    }
+
+    #[test]
+    fn sticky_route_changes_refresh_only_the_previous_and_current_history_scopes() {
+        let topic_for = |upstream_account_id| SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::StickyKey {
+                sticky_key: "sticky-1".to_string(),
+                upstream_account_id,
+            },
+        };
+        let prompt_cache_topic = SubscriptionTopic::InvocationHistoryOverview {
+            scope: ConversationSubscriptionScope::PromptCacheKey("sticky-1".to_string()),
+        };
+        let event = BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+            sticky_key: "sticky-1".to_string(),
+            previous_upstream_account_id: 41,
+            upstream_account_id: 42,
+        };
+
+        assert!(topic_for(41).is_affected_by(&event));
+        assert!(topic_for(42).is_affected_by(&event));
+        assert!(!topic_for(43).is_affected_by(&event));
+        assert!(prompt_cache_topic.is_affected_by(&event));
     }
 
     #[tokio::test]

@@ -2065,6 +2065,7 @@ export function PromptCacheConversationHistoryDrawer({
   const liveHistoryTotalRef = useRef(0);
   const recordsRef = useRef<ApiInvocation[]>([]);
   const callTopicInitializedRef = useRef(false);
+  const frozenHistoryStableKeysRef = useRef<Set<string>>(new Set());
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
@@ -2194,6 +2195,7 @@ export function PromptCacheConversationHistoryDrawer({
     const incomingByKey = new Map(
       response.records.map((record) => [invocationStableKey(record), record]),
     );
+    const currentKeys = new Set(current.map(invocationStableKey));
     const updatedCurrent = current.map(
       (record) => incomingByKey.get(invocationStableKey(record)) ?? record,
     );
@@ -2210,16 +2212,43 @@ export function PromptCacheConversationHistoryDrawer({
         !pendingByKey.has(invocationStableKey(record)),
     );
     const isInitialTopicSnapshot = !callTopicInitializedRef.current;
+    const isAuthoritativeSnapshot = callsTopic.lastKind === "snapshot";
     const canInsert =
       isInitialTopicSnapshot ||
       !drawerBodyElement ||
       drawerBodyElement.scrollTop <= PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX;
-    const nextRecords = canInsert
-      ? mergeInvocationRecordCollections(response.records, updatedCurrent)
-      : updatedCurrent;
-    const nextPending = canInsert
-      ? []
-      : mergeInvocationRecordCollections(newlyVisible, updatedPending);
+    const { nextRecords, nextPending } = isAuthoritativeSnapshot
+      ? (() => {
+          const frozenHistoryRecords = current.filter((record) =>
+            frozenHistoryStableKeysRef.current.has(invocationStableKey(record)),
+          );
+          if (canInsert) {
+            return {
+              nextRecords: mergeInvocationRecordCollections(response.records, frozenHistoryRecords),
+              nextPending: [],
+            };
+          }
+          const refreshedVisibleRecords = response.records.filter((record) =>
+            currentKeys.has(invocationStableKey(record)),
+          );
+          return {
+            nextRecords: mergeInvocationRecordCollections(
+              refreshedVisibleRecords,
+              frozenHistoryRecords,
+            ),
+            nextPending: response.records.filter(
+              (record) => !currentKeys.has(invocationStableKey(record)),
+            ),
+          };
+        })()
+      : {
+          nextRecords: canInsert
+            ? mergeInvocationRecordCollections(response.records, updatedCurrent)
+            : updatedCurrent,
+          nextPending: canInsert
+            ? []
+            : mergeInvocationRecordCollections(newlyVisible, updatedPending),
+        };
 
     callTopicInitializedRef.current = true;
     pendingCallRecordsRef.current = nextPending;
@@ -2237,7 +2266,14 @@ export function PromptCacheConversationHistoryDrawer({
     hasHydratedRef.current = true;
     setIsLoading(false);
     setError(null);
-  }, [activeTab, callsTopic.data, callsTopic.isLoading, drawerBodyElement, open]);
+  }, [
+    activeTab,
+    callsTopic.data,
+    callsTopic.isLoading,
+    callsTopic.lastKind,
+    drawerBodyElement,
+    open,
+  ]);
 
   useEffect(() => {
     const response = operationsTopic.data;
@@ -2326,6 +2362,11 @@ export function PromptCacheConversationHistoryDrawer({
         const responseRecords = capturedHttpHead
           ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
           : response.records;
+        if (historyHttpSnapshotInitializedRef.current && page > 1) {
+          for (const record of response.records) {
+            frozenHistoryStableKeysRef.current.add(invocationStableKey(record));
+          }
+        }
         const loaded = snapshotChanged
           ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
               0,
@@ -2491,6 +2532,7 @@ export function PromptCacheConversationHistoryDrawer({
     liveHistoryTotalRef.current = 0;
     recordsRef.current = [];
     callTopicInitializedRef.current = false;
+    frozenHistoryStableKeysRef.current = new Set();
     pendingCallRecordsRef.current = [];
     clearPendingRefreshTimer();
 

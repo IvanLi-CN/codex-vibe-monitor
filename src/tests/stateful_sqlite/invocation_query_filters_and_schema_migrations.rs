@@ -5881,6 +5881,86 @@ async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_co
 }
 
 #[tokio::test]
+async fn runtime_sticky_route_change_broadcasts_previous_and_current_history_scopes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let previous_account_id =
+        insert_test_pool_api_key_account(&state, "Previous Sticky Target", "upstream-previous")
+            .await;
+    let current_account_id =
+        insert_test_pool_api_key_account(&state, "Current Sticky Target", "upstream-current").await;
+    let prompt_cache_key = "prompt-cache-sticky-history-invalidation";
+    upsert_sticky_route(
+        &state.pool,
+        prompt_cache_key,
+        previous_account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed previous sticky target");
+    let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load seeded sticky generation");
+    let mut broadcast_receiver = state.broadcaster.subscribe();
+
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
+        current_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some("sticky-route-change"),
+        None,
+        Some(generation),
+    )
+    .await
+    .expect("route success should move sticky target");
+
+    let first = broadcast_receiver
+        .recv()
+        .await
+        .expect("sticky mutation should publish configuration change");
+    let second = broadcast_receiver
+        .recv()
+        .await
+        .expect("sticky mutation should publish history invalidation");
+    assert!(
+        matches!(
+            &first,
+            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+                if key == prompt_cache_key
+        ) || matches!(
+            &second,
+            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+                if key == prompt_cache_key
+        )
+    );
+    assert!(
+        matches!(
+            &first,
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key,
+                previous_upstream_account_id,
+                upstream_account_id,
+            } if sticky_key == prompt_cache_key
+                && *previous_upstream_account_id == previous_account_id
+                && *upstream_account_id == current_account_id
+        ) || matches!(
+            &second,
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key,
+                previous_upstream_account_id,
+                upstream_account_id,
+            } if sticky_key == prompt_cache_key
+                && *previous_upstream_account_id == previous_account_id
+                && *upstream_account_id == current_account_id
+        )
+    );
+}
+
+#[tokio::test]
 async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

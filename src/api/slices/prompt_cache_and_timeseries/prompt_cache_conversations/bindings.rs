@@ -19,13 +19,24 @@ const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeStickyMutation {
     Unchanged,
-    Changed,
+    Changed {
+        previous_upstream_account_id: Option<i64>,
+    },
     Suppressed,
 }
 
 impl RuntimeStickyMutation {
     pub(crate) fn writes_conversation_operation(self) -> bool {
-        matches!(self, Self::Changed | Self::Suppressed)
+        matches!(self, Self::Changed { .. } | Self::Suppressed)
+    }
+
+    pub(crate) fn previous_upstream_account_id(self) -> Option<i64> {
+        match self {
+            Self::Changed {
+                previous_upstream_account_id,
+            } => previous_upstream_account_id,
+            Self::Unchanged | Self::Suppressed => None,
+        }
     }
 }
 
@@ -1155,6 +1166,32 @@ pub(crate) fn broadcast_prompt_cache_conversation_changed(
     }
 }
 
+pub(crate) fn broadcast_prompt_cache_conversation_sticky_route_changed(
+    state: &AppState,
+    sticky_key: &str,
+    previous_upstream_account_id: i64,
+    upstream_account_id: i64,
+) {
+    if state.broadcaster.receiver_count() == 0 {
+        return;
+    }
+    if let Err(err) = state.broadcaster.send(
+        BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+            sticky_key: sticky_key.to_string(),
+            previous_upstream_account_id,
+            upstream_account_id,
+        },
+    ) {
+        warn!(
+            ?err,
+            sticky_key,
+            previous_upstream_account_id,
+            upstream_account_id,
+            "failed to broadcast prompt cache conversation sticky route change"
+        );
+    }
+}
+
 pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     pool: &Pool<Sqlite>,
     sticky_key: &str,
@@ -1237,13 +1274,12 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
             bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
         }
 
-        let mut sticky_changed = false;
         if let Some(prompt_cache_key) = event_prompt_cache_key {
             let sticky_after =
                 load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
                     .await?;
 
-            sticky_changed = sticky_before != sticky_after;
+            let sticky_changed = sticky_before != sticky_after;
             if sticky_changed && let Some(sticky_after) = sticky_after {
                 let (causing_attempt_id, causing_http_status) = if previous_account_id.is_none() {
                     pending_clear_cause
@@ -1289,8 +1325,10 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 .await?;
             }
         }
-        Ok(if sticky_changed {
-            RuntimeStickyMutation::Changed
+        Ok(if target_changed {
+            RuntimeStickyMutation::Changed {
+                previous_upstream_account_id: previous_account_id,
+            }
         } else {
             RuntimeStickyMutation::Unchanged
         })

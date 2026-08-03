@@ -1,6 +1,7 @@
 use super::*;
 use crate::api::{
     RuntimeStickyMutation, broadcast_prompt_cache_conversation_changed,
+    broadcast_prompt_cache_conversation_sticky_route_changed,
     upsert_runtime_prompt_cache_conversation_sticky_route,
 };
 
@@ -124,6 +125,16 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    }
+    if let Some(previous_upstream_account_id) = sticky_mutation.previous_upstream_account_id()
+        && let Some(sticky_key) = sticky_key
+    {
+        broadcast_prompt_cache_conversation_sticky_route_changed(
+            state,
+            sticky_key,
+            previous_upstream_account_id,
+            account_id,
+        );
     }
     Ok(())
 }
@@ -382,6 +393,16 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    }
+    if let Some(previous_upstream_account_id) = sticky_mutation.previous_upstream_account_id()
+        && let Some(sticky_key) = sticky_key
+    {
+        broadcast_prompt_cache_conversation_sticky_route_changed(
+            state,
+            sticky_key,
+            previous_upstream_account_id,
+            account_id,
+        );
     }
     record_pool_route_success_capability_observations(
         &state.pool,

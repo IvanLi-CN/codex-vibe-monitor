@@ -2639,6 +2639,11 @@ pub(crate) enum BroadcastPayload {
     PromptCacheConversationChanged {
         prompt_cache_key: String,
     },
+    PromptCacheConversationStickyRouteChanged {
+        sticky_key: String,
+        previous_upstream_account_id: i64,
+        upstream_account_id: i64,
+    },
     DashboardActivityLive {
         snapshot: Box<DashboardActivityLiveSnapshot>,
     },

@@ -4,6 +4,7 @@ import {
   getTopicDescriptorKey,
   requestTopicRefresh,
   type SubscriptionTopicDescriptor,
+  type SubscriptionTopicEnvelope,
   subscribeToTopic,
 } from "../lib/sse";
 
@@ -21,6 +22,9 @@ export function useSubscriptionTopic<T>(
   const [lastReceivedAt, setLastReceivedAt] = useState<number | null>(() =>
     descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.receivedAt ?? null) : null,
   );
+  const [lastKind, setLastKind] = useState<SubscriptionTopicEnvelope["type"] | null>(() =>
+    descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.lastKind ?? null) : null,
+  );
   const [isLoading, setIsLoading] = useState(() =>
     Boolean(descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload == null),
   );
@@ -31,6 +35,7 @@ export function useSubscriptionTopic<T>(
       setData(null);
       setDataDescriptorKey(null);
       setLastReceivedAt(null);
+      setLastKind(null);
       setIsLoading(false);
       return;
     }
@@ -38,12 +43,14 @@ export function useSubscriptionTopic<T>(
     setData(cached?.payload ?? null);
     setDataDescriptorKey(descriptorKey);
     setLastReceivedAt(cached?.receivedAt ?? null);
+    setLastKind(cached?.lastKind ?? null);
     setIsLoading(cached?.payload == null);
     const unsubscribe = subscribeToTopic<T>(descriptor, (event) => {
       const nextCached = getCachedTopicState<T>(descriptor);
       setData(event.payload);
       setDataDescriptorKey(descriptorKey);
       setLastReceivedAt(nextCached?.receivedAt ?? Date.now());
+      setLastKind(event.type);
       setIsLoading(false);
     });
     return unsubscribe;
@@ -64,6 +71,7 @@ export function useSubscriptionTopic<T>(
     data: isCurrentDescriptor ? data : null,
     descriptorKey,
     lastReceivedAt: isCurrentDescriptor ? lastReceivedAt : null,
+    lastKind: isCurrentDescriptor ? lastKind : null,
     isLoading: enabled ? (isCurrentDescriptor ? isLoading : true) : false,
     error: null as string | null,
     refresh,
