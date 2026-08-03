@@ -66,7 +66,7 @@
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回；尚未完成 SQLite batch flush 的 runtime running / pending / terminal 记录必须参与 recent 候选，与 SQLite 行按 `(invokeId, occurredAt)` 去重后再截断到 `recentLimit`，不得等待后续调用事件才能显示。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
-- 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
+- 账号卡必须保持紧凑信息卡定位；live 账号卡不得使用满高或宽屏固定最小高度，错误摘要只允许撑高自身卡片；加载 skeleton 可以保留稳定高度。在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
 - 单账号卡标题行必须展示账号名、异常/注意状态 badge 集合、计划/活动状态、固定快捷策略 chip、账号 ID 与路由设置按钮，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
 - 账号卡标题行的状态 badge 集合只显示异常/注意态，不为正常/空闲状态保留占位；集合至少覆盖 `禁用`、`同步中`、`上游拒绝`、`上游不可达`、`需重登`、`限流`、`降级`、`其它异常` 等状态，点击集合必须打开当前账号详情的 `healthEvents` 标签页。
 - 状态 badge 集合里的每个状态都必须作为独立 chip 并排显示；不得再额外渲染包裹这些状态 chip 的外层胶囊、group badge 或二次描边。
@@ -91,6 +91,7 @@
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字；运行态必须拆成 `排队中 / 请求中 / 响应中`，数值来自账号级 `inProgressPhaseCounts`，终态继续使用账号级 `successCount / failureCount / nonSuccessCount`，并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint，以及与对话卡片一致的 `Hit <percent> · Token <total> · <cost>` 三字段摘要。完整 token / cost / reasoning 诊断明细继续只通过 hover、focus、long-press、title 或等价可访问说明暴露，不再把 `IN / CW / C / O / T` 或 `RQ / UP / ED / TT` 作为 recent 行常驻正文。
+- 上游账号 recent 行必须保持“对话短 ID + 请求 ID + 状态”主标识行不变；紧随其后的时间/模型/思考强度与 `Hit / Token / Cost` 摘要在可用宽度内组成同一行，前者居左、后者居右。窄屏或超长内容按“时间/模型在前，摘要在后”垂直回流，不得产生横向溢出或遮挡；错误摘要继续位于该行之后。
 - Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位中的可见用量行必须收敛为 `Hit <percent> · Token <total> · <cost>` 三项；`Hit` 口径固定为 `cacheInputTokens / totalTokens`。`Hit` 默认普通正文色，`< 90%` 升级为 warning，`< 50%` 升级为 error；成本默认普通正文色，`> 0.1` 升级为 warning，`> 0.5` 升级为 error，边界值按字面严格比较且停留在较低一档。完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续只通过 hover / title 暴露。
 - Dashboard 工作区 `对话` tab 的 recent/current 调用错误摘要，以及 `上游账号` tab recent 行错误摘要，必须统一保持单行省略；摘要文本本身就是 tooltip trigger，hover / focus / long-press 时使用 UI 库 tooltip 在 trigger 下方优先展示完整错误，除非浮层系统因视口避让自动翻转；不得依赖浏览器原生 `title` 作为最终交互。
 - 宽屏上游账号双列 grid 必须使用可缩小 track；账号卡、recent 调用行与错误摘要 trigger 必须组成连续的 `min-w-0` / 最大宽度约束链，确保任意长度的错误载荷都不能扩大 grid track、账号卡或 recent 行。
@@ -220,6 +221,9 @@
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
 - Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
 - Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行显示同一套 `Hit`、`Token` 与成本三字段摘要，不出现可见的 `IN / CW / C / O / T` 或 `RQ / UP / ED / TT` 正文片段，且 4 条记录完整留在卡内。
+- Given 查看宽屏账号卡内 recent 调用记录，When 主标识行之后的时间/模型和调用摘要都有值，Then 时间/模型/思考强度位于左侧，`Hit / Token / Cost` 位于同一行右侧，错误摘要仍位于两者之后。
+- Given 窄屏或本地化长值，When recent 行的次级信息无法并排容纳，Then 时间/模型先于 `Hit / Token / Cost` 垂直回流，且页面没有横向滚动、内容重叠或关键字段截断。
+- Given 宽屏双列中只有一个账号存在 recent 错误摘要，When 两张卡同时渲染，Then 只有错误卡按内容变高，正常相邻卡保留自身内容高度；加载 skeleton 仍保持稳定占位高度。
 - Given 查看 Dashboard 对话卡片的 `当前调用` 或 `上一条调用` 槽位，When 卡面处于常驻态，Then `用量` 行只显示 `Hit`、`Token` 与成本 3 项，不出现可见的 `IN / CW / C / O` 片段；hover/title 仍保留完整 token、成本与推理诊断明细。
 - Given `Hit` 或成本位于阈值边界，When `Hit=90% / 50%` 或 `cost=0.1 / 0.5`，Then 显示仍停留在较低一档；When `Hit=89.9% / 49.9%` 或 `cost=0.1001 / 0.5001`，Then 分别升级为 warning / error。
 - Given 账号卡 recent 调用记录所在账号已由大卡标题表达，When 查看 recent 行辅助元信息，Then 不再重复渲染账号名。
@@ -568,6 +572,34 @@
   image:
   PR: include
   ![Dashboard 上游账号渐进加载移动完成态](./assets/dashboard-progressive-complete-mobile.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard`
+  scenario: `desktop recent rows size to their own content`
+  evidence_note: 在 1660px 宽 mock-only Dashboard 中，账号卡的 normal recent 行保持紧凑高度；同卡出现错误摘要时，只有错误行增加高度，`Hit / Token / Cost` 仍在右侧，时间、模型与思考强度保持左侧，不再为错误摘要预留空白。
+  requested_viewport: `1660x980`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  evidence_binding_sha: `79e08977`
+  image:
+  PR: none
+  ![Dashboard 上游账号 recent 行按内容高度展示桌面证据](./assets/dashboard-upstream-account-recent-content-height-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard`
+  scenario: `mobile recent rows stack without horizontal overflow`
+  evidence_note: 在 393x852 mock-only Dashboard 中，recent 行回流为元信息在上、`Hit / Token / Cost` 在下；错误摘要仅增加所属行高度，账号卡与页面均无横向溢出。
+  requested_viewport: `393x852`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  evidence_binding_sha: `79e08977`
+  image:
+  PR: none
+  ![Dashboard 上游账号 recent 行按内容高度展示移动证据](./assets/dashboard-upstream-account-recent-content-height-mobile.png)
 
 ## Related PRs
 

@@ -967,6 +967,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-grid-skeleton"]'),
     ).not.toBeNull();
+    const skeletonCard = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-grid-skeleton"] > div',
+    );
+    expect(skeletonCard?.className).toContain("h-full");
+    expect(skeletonCard?.className).toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).toContain("账号加载中");
     expect(host?.textContent).not.toContain("当前范围内暂无活动上游账号");
   });
@@ -1253,7 +1258,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
-    ).toContain("desktop1660:min-h-[31.5rem]");
+    ).not.toContain("desktop1660:min-h-[31.5rem]");
     expect(host?.textContent).not.toContain("繁忙");
     expect(host?.textContent).not.toContain("关注");
     expect(host?.textContent).not.toContain("稳定");
@@ -2927,6 +2932,7 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("applies strict hit and cost threshold tones to conversation and upstream recent summaries", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700);
     upstreamAccountActivityMock.data = {
       ...createUpstreamAccountActivityResponse(),
       accounts: [
@@ -3174,9 +3180,18 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(warningRow.textContent).not.toContain(" C ");
     expect(warningRow.textContent).not.toContain("O ");
     expect(warningRow.textContent).not.toContain("T ");
+    const warningDetailsRow = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-details-row"]',
+    );
+    if (!(warningDetailsRow instanceof HTMLElement)) {
+      throw new Error("missing upstream account recent details row");
+    }
+    expect(warningDetailsRow.className).toContain("sm:grid-cols-2");
+    expect(warningDetailsRow.dataset.layout).toBe("split");
     expect(
-      warningSummary.compareDocumentPosition(warningMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+      warningMetaLine.compareDocumentPosition(warningSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+    expect(warningSummary.className).toContain("sm:justify-end");
     expect(warningHit.textContent).toContain("Hit 89.9%");
     expect(warningHit.dataset.summaryTone).toBe("warning");
     expect(warningCost.textContent).toContain("$0.1001");
@@ -6081,6 +6096,7 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("renders the recent-row error summary as a truncated trigger and exposes the full message on focus", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(620);
     const upstreamActivity = createUpstreamAccountActivityResponse();
     upstreamAccountActivityMock.data = {
       ...upstreamActivity,
@@ -6137,17 +6153,27 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
     const accountCard = recentRow.closest('[data-testid="dashboard-upstream-account-card"]');
+    const recentList = accountCard?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-list"]',
+    );
     if (!(accountGrid instanceof HTMLElement) || !(accountCard instanceof HTMLElement)) {
       throw new Error("missing account layout shrink chain");
+    }
+    if (!(recentList instanceof HTMLElement)) {
+      throw new Error("missing account recent list");
     }
 
     const errorSummary = recentRow.querySelector('[data-testid="invocation-error-summary"]');
     const errorText = recentRow.querySelector('[data-testid="invocation-error-summary-text"]');
+    const detailsRow = recentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-details-row"]',
+    );
     const errorTrigger = errorSummary?.parentElement;
     if (
       !(errorSummary instanceof HTMLElement) ||
       !(errorTrigger instanceof HTMLElement) ||
-      !(errorText instanceof HTMLElement)
+      !(errorText instanceof HTMLElement) ||
+      !(detailsRow instanceof HTMLElement)
     ) {
       throw new Error("missing recent row error summary");
     }
@@ -6158,8 +6184,16 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorText.className).toContain("whitespace-nowrap");
     expect(errorTrigger.getAttribute("tabindex")).toBe("0");
     expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+    expect(detailsRow.dataset.layout).toBe("stacked");
+    expect(detailsRow.className).not.toContain("sm:grid-cols-2");
     expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
+    expect(accountGrid.className).toContain("items-start");
     expect(accountCard.className).toContain("min-w-0");
+    expect(accountCard.className).not.toContain("h-full");
+    expect(accountCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
+    expect(recentList.className).toContain("content-start");
+    expect(recentList.className).not.toContain("flex-1");
+    expect(recentList.className).not.toContain("auto-rows-fr");
     expect(recentRow.className).toContain("min-w-0");
     expect(errorTrigger.className).toContain("w-full");
     expect(errorTrigger.className).toContain("overflow-hidden");

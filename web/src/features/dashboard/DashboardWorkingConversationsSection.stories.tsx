@@ -1144,6 +1144,54 @@ function createWarningSuccessUpstreamAccountActivityResponse(): UpstreamAccountA
   };
 }
 
+function createUpstreamAccountRecentLayoutStoryResponse(): UpstreamAccountActivityResponse {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const primaryAccount = response.accounts[0];
+  if (!primaryAccount) return response;
+
+  const errorAccount = {
+    ...primaryAccount,
+    recentInvocations: primaryAccount.recentInvocations.map((invocation, index) =>
+      index === 0
+        ? {
+            ...invocation,
+            status: "http_502" as const,
+            failureClass: "service_failure" as const,
+            failureKind: "upstream_http_5xx" as const,
+            errorMessage: LONG_ERROR_SUMMARY,
+            tUpstreamTtfbMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: 21_006,
+          }
+        : invocation,
+    ),
+  };
+  const normalAccount = {
+    ...primaryAccount,
+    upstreamAccountId: 87,
+    displayName: "Pool Beta",
+    groupName: "Fallback",
+    lastError: null,
+    recentInvocations: primaryAccount.recentInvocations.map((invocation, index) => ({
+      ...invocation,
+      id: invocation.id + 100,
+      invokeId: `pool-beta-${invocation.invokeId}`,
+      promptCacheKey: `pool-beta-${invocation.promptCacheKey ?? index}`,
+      upstreamAccountId: 87,
+      upstreamAccountName: "Pool Beta",
+      status: "success" as const,
+      failureClass: "none" as const,
+      failureKind: "none" as const,
+      errorMessage: undefined,
+    })),
+  };
+
+  return {
+    ...response,
+    accounts: [errorAccount, normalAccount],
+  };
+}
+
 function createRequestingOnlyResponse() {
   return createResponse([
     createConversation("pck-requesting-only", [
@@ -4518,6 +4566,100 @@ export const UpstreamAccountWarningSuccess: Story = {
   },
 };
 
+export const UpstreamAccountRecentLayout: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createUpstreamAccountRecentLayoutStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountGrid = await canvas.findByTestId("dashboard-upstream-account-grid");
+    const accountCards = canvas.getAllByTestId("dashboard-upstream-account-card");
+    const errorCard = accountCards.find((card) => card.dataset.accountKey === "42");
+    const normalCard = accountCards.find((card) => card.dataset.accountKey === "87");
+    if (!(errorCard instanceof HTMLElement) || !(normalCard instanceof HTMLElement)) {
+      throw new Error("missing paired account cards");
+    }
+
+    const recentRow = errorCard.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"]',
+    );
+    const recentList = errorCard.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-list"]',
+    );
+    const detailsRow = recentRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-details-row"]',
+    );
+    const metaLine = recentRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-meta-line"]',
+    );
+    const summaryLine = recentRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-line"]',
+    );
+    if (
+      !(recentRow instanceof HTMLElement) ||
+      !(recentList instanceof HTMLElement) ||
+      !(detailsRow instanceof HTMLElement) ||
+      !(metaLine instanceof HTMLElement) ||
+      !(summaryLine instanceof HTMLElement)
+    ) {
+      throw new Error("missing upstream account recent layout row");
+    }
+
+    expect(accountGrid.className).toContain("items-start");
+    expect(errorCard.className).not.toContain("h-full");
+    expect(errorCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
+    expect(recentList.className).toContain("content-start");
+    expect(recentList.className).not.toContain("flex-1");
+    expect(recentList.className).not.toContain("auto-rows-fr");
+    expect(detailsRow.className).toContain("grid-cols-1");
+    const expectedDetailsLayout = window.innerWidth >= 640 ? "split" : "stacked";
+    expect(detailsRow.dataset.layout).toBe(expectedDetailsLayout);
+    if (expectedDetailsLayout === "split") {
+      expect(detailsRow.className).toContain("sm:grid-cols-2");
+    } else {
+      expect(detailsRow.className).not.toContain("sm:grid-cols-2");
+    }
+    expect(
+      metaLine.compareDocumentPosition(summaryLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    if (expectedDetailsLayout === "split") {
+      expect(summaryLine.className).toContain("sm:justify-end");
+    } else {
+      expect(summaryLine.className).not.toContain("sm:justify-end");
+    }
+    expect(errorCard.querySelector('[data-testid="invocation-error-summary"]')).toBeTruthy();
+    expect(normalCard.querySelector('[data-testid="invocation-error-summary"]')).toBeNull();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Desktop account-pair layout: the timestamp/model metadata stays left of the Hit, Token, and Cost summary, while only the failed account grows for its truncated error summary.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountRecentLayoutMobile: Story = {
+  ...UpstreamAccountRecentLayout,
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    docs: {
+      description: {
+        story:
+          "Narrow account layout falls back to metadata followed by the compact summary, without horizontal overflow or hiding the error summary.",
+      },
+    },
+  },
+};
+
 export const UpstreamAccountInitialSkeleton: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
@@ -5345,7 +5487,10 @@ export const ErrorSummaryTooltips: Story = {
     }
 
     expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
+    expect(accountGrid.className).toContain("items-start");
     expect(accountCard.className).toContain("min-w-0");
+    expect(accountCard.className).not.toContain("h-full");
+    expect(accountCard.className).not.toContain("desktop1660:min-h-[31.5rem]");
     expect(recentRow.className).toContain("min-w-0");
     expect(recentErrorTrigger.className).toContain("w-full");
     expect(recentErrorTrigger.className).toContain("overflow-hidden");
