@@ -573,6 +573,34 @@
   PR: include
   ![Dashboard 上游账号渐进加载移动完成态](./assets/dashboard-progressive-complete-mobile.png)
 
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard`
+  scenario: `desktop recent rows size to their own content`
+  evidence_note: 在 1660px 宽 mock-only Dashboard 中，账号卡的 normal recent 行保持紧凑高度；同卡出现错误摘要时，只有错误行增加高度，`Hit / Token / Cost` 仍在右侧，时间、模型与思考强度保持左侧，不再为错误摘要预留空白。
+  requested_viewport: `1660x980`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  evidence_binding_sha: `79e08977`
+  image:
+  PR: none
+  ![Dashboard 上游账号 recent 行按内容高度展示桌面证据](./assets/dashboard-upstream-account-recent-content-height-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard`
+  scenario: `mobile recent rows stack without horizontal overflow`
+  evidence_note: 在 393x852 mock-only Dashboard 中，recent 行回流为元信息在上、`Hit / Token / Cost` 在下；错误摘要仅增加所属行高度，账号卡与页面均无横向溢出。
+  requested_viewport: `393x852`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  evidence_binding_sha: `79e08977`
+  image:
+  PR: none
+  ![Dashboard 上游账号 recent 行按内容高度展示移动证据](./assets/dashboard-upstream-account-recent-content-height-mobile.png)
+
 ## Related PRs
 
 - None
