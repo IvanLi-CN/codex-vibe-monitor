@@ -391,6 +391,7 @@ const ACCOUNT_CARD_STACKED_HEADER_BREAKPOINT_PX = 620;
 const ACCOUNT_CARD_HERO_SINGLE_COLUMN_BREAKPOINT_PX = 300;
 const ACCOUNT_CARD_HERO_TWO_COLUMN_BREAKPOINT_PX = 760;
 const ACCOUNT_CARD_RECENT_STACK_BREAKPOINT_PX = 520;
+const ACCOUNT_CARD_RECENT_DETAILS_SPLIT_BREAKPOINT_PX = 640;
 
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
   "dashboard-upstream-account-identity-chip--tone-sky",
@@ -1975,6 +1976,7 @@ function AccountRecentInvocationRow({
   invocation,
   locale,
   nowMs,
+  detailsLayout,
   onOpenUpstreamAccount,
   onOpenConversation,
   onOpenInvocation,
@@ -1982,6 +1984,7 @@ function AccountRecentInvocationRow({
   invocation: DashboardWorkingConversationInvocationModel;
   locale: "zh" | "en";
   nowMs: number;
+  detailsLayout: "stacked" | "split";
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
@@ -2267,7 +2270,11 @@ function AccountRecentInvocationRow({
         </div>
         <div
           data-testid="dashboard-upstream-account-recent-details-row"
-          className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-0.5 sm:grid-cols-2 sm:items-center"
+          data-layout={detailsLayout}
+          className={cn(
+            "grid min-w-0 grid-cols-1 gap-x-3 gap-y-0.5",
+            detailsLayout === "split" && "sm:grid-cols-2 sm:items-center",
+          )}
         >
           <div
             data-testid="dashboard-upstream-account-recent-meta-line"
@@ -2310,7 +2317,10 @@ function AccountRecentInvocationRow({
           </div>
           <div
             data-testid="dashboard-upstream-account-recent-summary-line"
-            className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74 sm:justify-end sm:text-right"
+            className={cn(
+              "flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74",
+              detailsLayout === "split" && "sm:justify-end sm:text-right",
+            )}
             title={recentSummaryTitle}
           >
             {renderInvocationSummaryFields(recentSummaryFields)}
@@ -3570,6 +3580,10 @@ function DashboardUpstreamAccountActivityCard({
         : 4;
   const recentBreakdownLayout =
     cardWidth > 0 && cardWidth < ACCOUNT_CARD_RECENT_STACK_BREAKPOINT_PX ? "stacked" : "inline";
+  const recentDetailsLayout =
+    cardWidth > 0 && cardWidth >= ACCOUNT_CARD_RECENT_DETAILS_SPLIT_BREAKPOINT_PX
+      ? "split"
+      : "stacked";
   return (
     <article
       ref={cardRef}
@@ -3897,6 +3911,7 @@ function DashboardUpstreamAccountActivityCard({
                   invocation={invocation}
                   locale={locale}
                   nowMs={nowMs}
+                  detailsLayout={recentDetailsLayout}
                   onOpenUpstreamAccount={onOpenUpstreamAccount}
                   onOpenConversation={onOpenConversation}
                   onOpenInvocation={onOpenInvocation}

@@ -4618,11 +4618,21 @@ export const UpstreamAccountRecentLayout: Story = {
     expect(recentList.className).not.toContain("flex-1");
     expect(recentList.className).not.toContain("auto-rows-fr");
     expect(detailsRow.className).toContain("grid-cols-1");
-    expect(detailsRow.className).toContain("sm:grid-cols-2");
+    const expectedDetailsLayout = window.innerWidth >= 640 ? "split" : "stacked";
+    expect(detailsRow.dataset.layout).toBe(expectedDetailsLayout);
+    if (expectedDetailsLayout === "split") {
+      expect(detailsRow.className).toContain("sm:grid-cols-2");
+    } else {
+      expect(detailsRow.className).not.toContain("sm:grid-cols-2");
+    }
     expect(
       metaLine.compareDocumentPosition(summaryLine) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
-    expect(summaryLine.className).toContain("sm:justify-end");
+    if (expectedDetailsLayout === "split") {
+      expect(summaryLine.className).toContain("sm:justify-end");
+    } else {
+      expect(summaryLine.className).not.toContain("sm:justify-end");
+    }
     expect(errorCard.querySelector('[data-testid="invocation-error-summary"]')).toBeTruthy();
     expect(normalCard.querySelector('[data-testid="invocation-error-summary"]')).toBeNull();
   },

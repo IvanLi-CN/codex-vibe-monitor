@@ -2932,6 +2932,7 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("applies strict hit and cost threshold tones to conversation and upstream recent summaries", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700);
     upstreamAccountActivityMock.data = {
       ...createUpstreamAccountActivityResponse(),
       accounts: [
@@ -3186,6 +3187,7 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing upstream account recent details row");
     }
     expect(warningDetailsRow.className).toContain("sm:grid-cols-2");
+    expect(warningDetailsRow.dataset.layout).toBe("split");
     expect(
       warningMetaLine.compareDocumentPosition(warningSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
@@ -6094,6 +6096,7 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("renders the recent-row error summary as a truncated trigger and exposes the full message on focus", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(620);
     const upstreamActivity = createUpstreamAccountActivityResponse();
     upstreamAccountActivityMock.data = {
       ...upstreamActivity,
@@ -6162,11 +6165,15 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const errorSummary = recentRow.querySelector('[data-testid="invocation-error-summary"]');
     const errorText = recentRow.querySelector('[data-testid="invocation-error-summary-text"]');
+    const detailsRow = recentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-details-row"]',
+    );
     const errorTrigger = errorSummary?.parentElement;
     if (
       !(errorSummary instanceof HTMLElement) ||
       !(errorTrigger instanceof HTMLElement) ||
-      !(errorText instanceof HTMLElement)
+      !(errorText instanceof HTMLElement) ||
+      !(detailsRow instanceof HTMLElement)
     ) {
       throw new Error("missing recent row error summary");
     }
@@ -6177,6 +6184,8 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorText.className).toContain("whitespace-nowrap");
     expect(errorTrigger.getAttribute("tabindex")).toBe("0");
     expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+    expect(detailsRow.dataset.layout).toBe("stacked");
+    expect(detailsRow.className).not.toContain("sm:grid-cols-2");
     expect(accountGrid.className).toContain("desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]");
     expect(accountGrid.className).toContain("items-start");
     expect(accountCard.className).toContain("min-w-0");
