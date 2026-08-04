@@ -3758,41 +3758,43 @@ export function PromptCacheConversationHistoryDrawer({
                   )}
                 </div>
               ) : null}
-              {event.routingContext?.causingAttemptId ? (
-                <Link
-                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                  to={routingAttemptHref(event, event.routingContext.causingAttemptId)}
-                >
-                  {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
-                    attemptId: event.routingContext.causingAttemptId,
-                  })}
-                </Link>
-              ) : null}
-              {event.routingContext?.triggerAttemptId ? (
-                <Link
-                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                  to={routingAttemptHref(event, event.routingContext.triggerAttemptId)}
-                >
-                  {t(
-                    event.routingContext.routingSelectionAudit
-                      ? "live.conversations.drawer.operations.routingContext.routingDecisionAttempt"
-                      : "live.conversations.drawer.operations.routingContext.triggerAttempt",
-                    {
-                      attemptId: event.routingContext.triggerAttemptId,
-                    },
-                  )}
-                </Link>
-              ) : null}
-              {routingInvocationRecordHref(event) ? (
-                <Link
-                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                  to={routingInvocationRecordHref(event) ?? "#"}
-                >
-                  {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
-                    id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
-                  })}
-                </Link>
-              ) : null}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                {event.routingContext?.causingAttemptId ? (
+                  <Link
+                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                    to={routingAttemptHref(event, event.routingContext.causingAttemptId)}
+                  >
+                    {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
+                      attemptId: event.routingContext.causingAttemptId,
+                    })}
+                  </Link>
+                ) : null}
+                {event.routingContext?.triggerAttemptId ? (
+                  <Link
+                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                    to={routingAttemptHref(event, event.routingContext.triggerAttemptId)}
+                  >
+                    {t(
+                      event.routingContext.routingSelectionAudit
+                        ? "live.conversations.drawer.operations.routingContext.routingDecisionAttempt"
+                        : "live.conversations.drawer.operations.routingContext.triggerAttempt",
+                      {
+                        attemptId: event.routingContext.triggerAttemptId,
+                      },
+                    )}
+                  </Link>
+                ) : null}
+                {routingInvocationRecordHref(event) ? (
+                  <Link
+                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                    to={routingInvocationRecordHref(event) ?? "#"}
+                  >
+                    {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
+                      id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+                    })}
+                  </Link>
+                ) : null}
+              </div>
             </div>
           ) : null}
           {event.invokeId ? (
