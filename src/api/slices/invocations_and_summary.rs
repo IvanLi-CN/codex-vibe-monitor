@@ -7692,7 +7692,7 @@ impl UpstreamAccountInProgressSummary {
     }
 }
 
-fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
+pub(crate) fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
@@ -11859,6 +11859,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
                     .map(|id| format!("upstream:{id}"))
                     .unwrap_or_else(|| "unassigned".to_string()),
                 upstream_account_id,
+                upstream_account_name: None,
                 in_progress_invocation_count: summary.in_progress_count,
                 in_progress_phase_counts: summary.phase_counts,
                 retry_invocation_count: summary.retry_count,
@@ -11884,6 +11885,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         accounts.push(DashboardActivityLiveAccount {
             account_key,
             upstream_account_id,
+            upstream_account_name: None,
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
@@ -14215,14 +14217,17 @@ pub(crate) fn dashboard_activity_account_from_live(
 ) -> DashboardActivityAccountResponse {
     let status_fields =
         meta.map(|row| build_upstream_account_activity_status_fields(row, Utc::now()));
-    let display_name_hint = recent_invocations.iter().find_map(|invocation| {
-        invocation
-            .upstream_account_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    });
+    let display_name_hint = recent_invocations
+        .iter()
+        .find_map(|invocation| {
+            invocation
+                .upstream_account_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| live_account.upstream_account_name.clone());
     let plan_type_hint = recent_invocations.iter().find_map(|invocation| {
         invocation
             .upstream_account_plan_type
@@ -14642,6 +14647,7 @@ async fn overlay_dashboard_activity_live_accounts(
                         .map(|id| format!("upstream:{id}"))
                         .unwrap_or_else(|| "unassigned".to_string()),
                     upstream_account_id,
+                    upstream_account_name: None,
                     in_progress_invocation_count: 0,
                     in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                     retry_invocation_count: 0,
@@ -17337,7 +17343,7 @@ fn dashboard_network_bucket_rate(
     total_bytes.max(0) as f64 / (effective_millis as f64 / 1000.0)
 }
 
-fn build_dashboard_network_realtime_rate_response(
+pub(crate) fn build_dashboard_network_realtime_rate_response(
     snapshot: DashboardNetworkRealtimeByteSnapshot,
 ) -> DashboardNetworkRealtimeRateResponse {
     DashboardNetworkRealtimeRateResponse {
@@ -17411,7 +17417,7 @@ fn build_dashboard_recent_network_window_response(
     }
 }
 
-fn build_dashboard_network_timeseries_point_response(
+pub(crate) fn build_dashboard_network_timeseries_point_response(
     bucket_start: DateTime<Utc>,
     bucket_end: DateTime<Utc>,
     totals: DashboardNetworkByteTotals,

@@ -32,4 +32,12 @@
 
 ## Verification State
 
-Implementation and validation evidence are recorded as child pull requests are integrated. The aggregate branch is merge-ready only after full backend/web/Storybook tests, performance assertions, review convergence, and owner-approved browser viewport evidence complete.
+Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardLiveProjection`:
+
+- Runtime, phase, account metadata, network and terminal mutations feed one in-memory current-state projection.
+- Healthy Dashboard current-state rendering has no SQLite dependency; persistence is isolated to startup restore, the pressure-gated 60-second reconcile and explicit cold fallback.
+- Producer updates use a non-extending 250-millisecond deadline, retain last-good data on degraded paths and suppress unchanged revisions.
+- Runtime pressure health exposes projection mode/state, producer/subscriber state, live-path database reads, build count, revision, snapshot origin and last-good age without querying SQLite.
+- Tests cover 10,000 healthy mutations with zero live-path database reads, a current-state update p95 at or below 400 milliseconds, cold fallback and degraded last-good behavior.
+
+Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.

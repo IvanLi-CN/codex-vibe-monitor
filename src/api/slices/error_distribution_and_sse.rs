@@ -2115,6 +2115,8 @@ mod tests {
         assert_eq!(snapshot.in_progress_phase_counts.queued, 0);
         assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
         assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+        assert_eq!(snapshot.in_progress_wait_sample_count, 1);
+        assert_eq!(snapshot.in_progress_wait_sum_ms, 12.0);
     }
 
     #[test]
@@ -2123,6 +2125,314 @@ mod tests {
         let second = reserve_dashboard_activity_live_revision();
 
         assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn runtime_projection_mode_keeps_auto_default_and_legacy_kill_switch() {
+        assert_eq!(
+            RuntimeProjectionMode::parse(None).expect("default projection mode"),
+            RuntimeProjectionMode::Auto
+        );
+        assert_eq!(
+            RuntimeProjectionMode::parse(Some("legacy")).expect("legacy projection mode"),
+            RuntimeProjectionMode::Legacy
+        );
+        assert!(RuntimeProjectionMode::parse(Some("invalid")).is_err());
+    }
+
+    #[test]
+    fn runtime_projection_fixed_deadline_is_not_extended_by_later_mutations() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let started_at = Instant::now();
+
+        hub.mark_dashboard_dirty_at("runtime_upsert", started_at);
+        let first_deadline = hub
+            .pending_dashboard_deadline()
+            .expect("first mutation should establish a deadline");
+        hub.mark_dashboard_dirty_at("network_delta", started_at + Duration::from_millis(200));
+
+        assert_eq!(
+            first_deadline.duration_since(started_at),
+            Duration::from_millis(250)
+        );
+        assert_eq!(hub.pending_dashboard_deadline(), Some(first_deadline));
+    }
+
+    #[test]
+    fn healthy_runtime_projection_renders_ten_thousand_mutations_without_sql() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.bind_dashboard_network_speed_cache(Arc::new(DashboardNetworkSpeedCache::new(
+            Utc::now(),
+        )))
+        .expect("bind dashboard network cache");
+        let mut record = live_record("high-frequency", Some(42), "running", Some("queued"), 1);
+
+        for mutation in 0..10_000 {
+            record.live_phase = Some(if mutation % 2 == 0 {
+                "requesting".to_string()
+            } else {
+                "responding".to_string()
+            });
+            hub.upsert(record.clone());
+        }
+
+        let mut render_samples_ms = Vec::new();
+        let mut snapshot = None;
+        for _ in 0..20 {
+            let started_at = Instant::now();
+            snapshot = Some(
+                hub.dashboard_live_projection()
+                    .snapshot()
+                    .expect("healthy memory projection snapshot"),
+            );
+            render_samples_ms.push(started_at.elapsed().as_secs_f64() * 1_000.0);
+        }
+        render_samples_ms.sort_by(f64::total_cmp);
+        let p95_index = ((render_samples_ms.len() - 1) as f64 * 0.95).ceil() as usize;
+        let p95_ms = render_samples_ms[p95_index];
+        let snapshot = snapshot.expect("projection snapshot");
+        let health = hub.health_snapshot(0);
+
+        assert_eq!(snapshot.in_progress_invocation_count, 1);
+        assert_eq!(health.live_path_db_read_count, 0);
+        assert!(
+            p95_ms <= 400.0,
+            "projection p95 exceeded 400ms: {p95_ms:.2}ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_runtime_projection_update_p95_stays_within_four_hundred_ms() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let _lease = state
+            .subscription_hub
+            .register_test_topic_name("dashboard.activity.current")
+            .await;
+        let mut receiver = state.broadcaster.subscribe();
+        let mut samples_ms = Vec::new();
+
+        for mutation in 0..20 {
+            let phase = if mutation % 2 == 0 {
+                "requesting"
+            } else {
+                "responding"
+            };
+            state.proxy_runtime_invocations.upsert(live_record(
+                "latency-contract",
+                Some(42),
+                "running",
+                Some(phase),
+                1,
+            ));
+            let started_at = Instant::now();
+            schedule_dashboard_activity_live_snapshot(state.as_ref());
+            let snapshot = tokio::time::timeout(Duration::from_millis(400), async {
+                loop {
+                    if let Ok(BroadcastPayload::DashboardActivityLive { snapshot }) =
+                        receiver.recv().await
+                    {
+                        return snapshot;
+                    }
+                }
+            })
+            .await
+            .expect("dashboard current update exceeded 400ms");
+            assert_eq!(snapshot.in_progress_invocation_count, 1);
+            samples_ms.push(started_at.elapsed().as_secs_f64() * 1_000.0);
+        }
+
+        samples_ms.sort_by(f64::total_cmp);
+        let p95_index = ((samples_ms.len() - 1) as f64 * 0.95).ceil() as usize;
+        let p95_ms = samples_ms[p95_index];
+        let health = state.proxy_runtime_invocations.health_snapshot(1);
+        assert_eq!(health.live_path_db_read_count, 0);
+        assert!(
+            p95_ms <= 400.0,
+            "dashboard current update p95 exceeded 400ms: {p95_ms:.2}ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn network_mutation_without_subscribers_is_dirty_for_first_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "network-first-snapshot",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+
+        schedule_dashboard_activity_live_snapshot(state.as_ref());
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .pending_dashboard_deadline()
+                .is_some()
+        );
+        let snapshot = capture_dashboard_activity_live_snapshot(state.as_ref())
+            .await
+            .expect("first memory snapshot after subscriber-free network mutation");
+        let health = state.proxy_runtime_invocations.health_snapshot(0);
+
+        assert_eq!(
+            snapshot
+                .network_live_bucket
+                .expect("global live bucket")
+                .upload_bytes,
+            128
+        );
+        assert_eq!(health.live_path_db_read_count, 0);
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .pending_dashboard_deadline()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unchanged_runtime_projection_does_not_advance_revision() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.bind_dashboard_network_speed_cache(Arc::new(DashboardNetworkSpeedCache::new(
+            Utc::now(),
+        )))
+        .expect("bind dashboard network cache");
+        hub.upsert(live_record(
+            "stable-revision",
+            Some(42),
+            "running",
+            Some("requesting"),
+            1,
+        ));
+
+        let first = hub
+            .capture_memory_snapshot()
+            .expect("first memory snapshot");
+        let second = hub
+            .capture_memory_snapshot()
+            .expect("unchanged memory snapshot");
+
+        assert!(first.changed);
+        assert!(!second.changed);
+        assert_eq!(second.snapshot.revision, first.snapshot.revision);
+    }
+
+    #[tokio::test]
+    async fn degraded_runtime_projection_reuses_last_good_without_database_read() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state.proxy_runtime_invocations.upsert(live_record(
+            "last-good",
+            Some(42),
+            "running",
+            Some("requesting"),
+            1,
+        ));
+        let first = capture_dashboard_activity_live_snapshot(state.as_ref())
+            .await
+            .expect("healthy memory snapshot");
+        state
+            .proxy_runtime_invocations
+            .mark_degraded("test_health_gate");
+
+        let degraded = capture_dashboard_activity_live_snapshot(state.as_ref())
+            .await
+            .expect("degraded last-good snapshot");
+        let health = state.proxy_runtime_invocations.health_snapshot(1);
+
+        assert_eq!(degraded.revision, first.revision);
+        assert_eq!(health.live_path_db_read_count, 0);
+        assert_eq!(health.snapshot_origin, "last_good");
+        assert_eq!(health.state, "degraded");
+    }
+
+    #[test]
+    fn reconcile_failure_reports_degraded_health_without_freezing_memory_projection() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.bind_dashboard_network_speed_cache(Arc::new(DashboardNetworkSpeedCache::new(
+            Utc::now(),
+        )))
+        .expect("bind dashboard network cache");
+        hub.upsert(live_record(
+            "reconcile-health",
+            Some(42),
+            "running",
+            Some("requesting"),
+            1,
+        ));
+        hub.record_reconcile_failure("reconcile_failed");
+
+        let snapshot = hub
+            .capture_memory_snapshot()
+            .expect("reconcile failure must not gate healthy memory projection");
+        let health = hub.health_snapshot(1);
+
+        assert_eq!(snapshot.snapshot.in_progress_invocation_count, 1);
+        assert!(hub.is_memory_ready());
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.degraded_reason.as_deref(), Some("reconcile_failed"));
+        assert_eq!(health.live_path_db_read_count, 0);
+    }
+
+    #[tokio::test]
+    async fn cold_runtime_projection_uses_exact_persistence_fallback_once() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+
+        let snapshot = capture_dashboard_activity_live_snapshot(state.as_ref())
+            .await
+            .expect("cold persistence fallback");
+        let health = state.proxy_runtime_invocations.health_snapshot(1);
+
+        assert_eq!(snapshot.in_progress_invocation_count, 0);
+        assert_eq!(health.live_path_db_read_count, 1);
+        assert_eq!(health.snapshot_origin, "cold_fallback");
+        assert_eq!(health.state, "healthy");
+    }
+
+    #[tokio::test]
+    async fn legacy_runtime_projection_kill_switch_keeps_persistence_path() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Legacy);
+        hub.bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind dashboard network cache");
+
+        let first = capture_dashboard_activity_live_snapshot_from_runtime(
+            &state.pool,
+            &hub,
+            state.dashboard_network_speed_cache.as_ref(),
+        )
+        .await
+        .expect("first legacy capture");
+        let second = capture_dashboard_activity_live_snapshot_from_runtime(
+            &state.pool,
+            &hub,
+            state.dashboard_network_speed_cache.as_ref(),
+        )
+        .await
+        .expect("second legacy capture");
+        let health = hub.health_snapshot(0);
+
+        assert!(first.changed);
+        assert!(!second.changed);
+        assert_eq!(second.snapshot.revision, first.snapshot.revision);
+        assert_eq!(health.mode, "legacy");
+        assert_eq!(health.live_path_db_read_count, 2);
     }
 
     #[test]
@@ -2381,13 +2691,16 @@ pub(crate) struct BroadcastStateCache {
 }
 
 static DASHBOARD_ACTIVITY_LIVE_REVISION: AtomicU64 = AtomicU64::new(0);
-const DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE: Duration = Duration::from_millis(100);
+pub(crate) const DASHBOARD_RUNTIME_PROJECTION_RECONCILE_INTERVAL: Duration =
+    Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardActivityLiveAccount {
     pub(crate) account_key: String,
     pub(crate) upstream_account_id: Option<i64>,
+    #[serde(skip)]
+    pub(crate) upstream_account_name: Option<String>,
     pub(crate) in_progress_invocation_count: i64,
     pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) retry_invocation_count: i64,
@@ -2424,13 +2737,31 @@ pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
 }
 
-fn reserve_dashboard_activity_live_revision() -> u64 {
+pub(crate) fn reserve_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1
 }
 
 pub(crate) async fn capture_dashboard_activity_live_snapshot(
     state: &AppState,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    let pending_window = state
+        .proxy_runtime_invocations
+        .pending_dashboard_publish_window();
+    let capture = capture_dashboard_activity_live_snapshot_with_outcome(state).await?;
+    if let Some(window) = pending_window {
+        state
+            .proxy_runtime_invocations
+            .complete_dashboard_publish_window(window);
+    }
+    Ok(capture.snapshot)
+}
+
+async fn capture_dashboard_activity_live_snapshot_with_outcome(
+    state: &AppState,
+) -> Result<DashboardProjectionCapture, ApiError> {
+    state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())?;
     capture_dashboard_activity_live_snapshot_from_runtime(
         &state.pool,
         state.proxy_runtime_invocations.as_ref(),
@@ -2441,18 +2772,227 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
 
 async fn capture_dashboard_activity_live_snapshot_from_runtime(
     pool: &Pool<Sqlite>,
-    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    hub: &RuntimeProjectionHub,
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
-) -> Result<DashboardActivityLiveSnapshot, ApiError> {
-    // Reserve before awaiting so concurrent captures cannot label an older read as newer.
-    let revision = reserve_dashboard_activity_live_revision();
-    query_dashboard_activity_live_snapshot_from_runtime(
+) -> Result<DashboardProjectionCapture, ApiError> {
+    let started_at = Instant::now();
+    let capture = match hub.mode() {
+        RuntimeProjectionMode::Legacy => {
+            capture_dashboard_activity_live_snapshot_from_persistence(
+                pool,
+                hub,
+                dashboard_network_speed_cache,
+                true,
+                "legacy",
+            )
+            .await?
+        }
+        RuntimeProjectionMode::Auto if hub.is_memory_ready() => {
+            match hub.capture_memory_snapshot() {
+                Ok(capture) => capture,
+                Err(err) => {
+                    hub.mark_degraded("memory_snapshot_failed");
+                    warn!(
+                        ?err,
+                        "dashboard runtime projection entered degraded last-good mode"
+                    );
+                    if let Some(capture) = hub.last_good_capture("last_good") {
+                        capture
+                    } else {
+                        capture_dashboard_activity_live_snapshot_from_persistence(
+                            pool,
+                            hub,
+                            dashboard_network_speed_cache,
+                            true,
+                            "cold_fallback",
+                        )
+                        .await?
+                    }
+                }
+            }
+        }
+        RuntimeProjectionMode::Auto => {
+            if let Some(capture) = hub.last_good_capture("last_good") {
+                capture
+            } else {
+                capture_dashboard_activity_live_snapshot_from_persistence(
+                    pool,
+                    hub,
+                    dashboard_network_speed_cache,
+                    true,
+                    "cold_fallback",
+                )
+                .await?
+            }
+        }
+    };
+    let health = hub.health_snapshot(0);
+    tracing::debug!(
+        projection = "dashboard_current",
+        trigger = "capture",
+        revision = capture.snapshot.revision,
+        render_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        live_path_db_read_count = health.live_path_db_read_count,
+        snapshot_origin = capture.snapshot_origin,
+        last_good_age_ms = health.last_good_age_ms,
+        changed = capture.changed,
+        "captured dashboard runtime projection"
+    );
+    Ok(capture)
+}
+
+async fn capture_dashboard_activity_live_snapshot_from_persistence(
+    pool: &Pool<Sqlite>,
+    hub: &RuntimeProjectionHub,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    count_live_path_read: bool,
+    snapshot_origin: &'static str,
+) -> Result<DashboardProjectionCapture, ApiError> {
+    let expected_generation = hub.dashboard_generation();
+    if count_live_path_read {
+        hub.record_live_path_db_read();
+    }
+    hub.record_build();
+    let snapshot = query_dashboard_activity_live_snapshot_from_runtime(
         pool,
-        proxy_runtime_invocations,
+        hub,
         dashboard_network_speed_cache,
-        revision,
+        0,
+    )
+    .await?;
+    let expected_generation = if hub.mode() == RuntimeProjectionMode::Legacy {
+        hub.dashboard_generation()
+    } else {
+        expected_generation
+    };
+    if let Some(capture) = hub.install_persistence_baseline_if_generation(
+        snapshot,
+        snapshot_origin,
+        expected_generation,
+    )? {
+        return Ok(capture);
+    }
+    Ok(hub.capture_memory_snapshot()?)
+}
+
+pub(crate) async fn warm_dashboard_runtime_projection(state: &AppState) {
+    if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy {
+        return;
+    }
+    if let Err(err) = capture_dashboard_activity_live_snapshot_from_persistence(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        state.dashboard_network_speed_cache.as_ref(),
+        false,
+        "startup_restore",
     )
     .await
+    {
+        state
+            .proxy_runtime_invocations
+            .mark_degraded("startup_restore_failed");
+        warn!(
+            ?err,
+            "failed to warm dashboard runtime projection from persistence"
+        );
+    }
+}
+
+pub(crate) async fn reconcile_dashboard_runtime_projection_once(
+    state: &AppState,
+) -> Result<DashboardProjectionCapture, ApiError> {
+    capture_dashboard_activity_live_snapshot_from_persistence(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        state.dashboard_network_speed_cache.as_ref(),
+        false,
+        "reconcile",
+    )
+    .await
+}
+
+pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>) {
+    if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut cadence = tokio::time::interval(DASHBOARD_RUNTIME_PROJECTION_RECONCILE_INTERVAL);
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        cadence.tick().await;
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {}
+            }
+            let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+            let _pressure_permit = match pressure_gate
+                .try_begin_background("dashboard_runtime_projection_reconcile")
+            {
+                Ok(permit) => permit,
+                Err(reason) => {
+                    let reason = match reason {
+                        crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                            "writer_pressure"
+                        }
+                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                            "background_busy"
+                        }
+                    };
+                    state
+                        .proxy_runtime_invocations
+                        .record_reconcile_deferred(reason);
+                    tracing::debug!(
+                        projection = "dashboard_current",
+                        defer_reason = reason,
+                        "deferred dashboard runtime projection reconcile"
+                    );
+                    continue;
+                }
+            };
+            match reconcile_dashboard_runtime_projection_once(state.as_ref()).await {
+                Ok(capture) => {
+                    tracing::debug!(
+                        projection = "dashboard_current",
+                        revision = capture.snapshot.revision,
+                        changed = capture.changed,
+                        snapshot_origin = capture.snapshot_origin,
+                        "reconciled dashboard runtime projection baseline"
+                    );
+                    if capture.changed
+                        && state
+                            .subscription_hub
+                            .has_active_dashboard_activity_live_topic()
+                            .await
+                    {
+                        let _ = state
+                            .broadcaster
+                            .send(BroadcastPayload::DashboardActivityLive {
+                                snapshot: Box::new(capture.snapshot),
+                            });
+                    }
+                }
+                Err(err) => {
+                    let pressure_error = match &err {
+                        ApiError::BadRequest(err) | ApiError::Internal(err) => pressure_gate
+                            .record_error("dashboard_runtime_projection_reconcile", err),
+                    };
+                    if pressure_error {
+                        state
+                            .proxy_runtime_invocations
+                            .record_reconcile_deferred("writer_pressure");
+                    } else {
+                        state
+                            .proxy_runtime_invocations
+                            .record_reconcile_failure("reconcile_failed");
+                    }
+                    warn!(
+                        ?err,
+                        pressure_error, "failed to reconcile dashboard runtime projection baseline"
+                    );
+                }
+            }
+        }
+    });
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
@@ -2475,6 +3015,9 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                     .map(|id| format!("upstream:{id}"))
                     .unwrap_or_else(|| "unassigned".to_string()),
                 upstream_account_id: account_id,
+                upstream_account_name: normalize_trimmed_optional_string_local(
+                    record.upstream_account_name.clone(),
+                ),
                 in_progress_invocation_count: 0,
                 in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                 retry_invocation_count: 0,
@@ -2484,6 +3027,10 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 download_bytes_per_second: 0.0,
                 network_live_bucket: None,
             });
+        if account.upstream_account_name.is_none() {
+            account.upstream_account_name =
+                normalize_trimmed_optional_string_local(record.upstream_account_name.clone());
+        }
         account.in_progress_invocation_count += 1;
         let live_phase = record
             .live_phase
@@ -2494,6 +3041,10 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
             .increment_phase_name(live_phase);
         if record.pool_attempt_count.unwrap_or_default() > 1 {
             account.retry_invocation_count += 1;
+        }
+        if let Some(wait_ms) = normalized_wait_ms(record.t_upstream_ttfb_ms) {
+            account.in_progress_wait_sum_ms += wait_ms;
+            account.in_progress_wait_sample_count += 1;
         }
     }
     let mut accounts = accounts.into_values().collect::<Vec<_>>();
@@ -2526,15 +3077,115 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
     }
 }
 
+pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
+    revision: u64,
+    records: impl IntoIterator<Item = ApiInvocation>,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+) -> DashboardActivityLiveSnapshot {
+    let now = Utc::now();
+    let mut snapshot = build_dashboard_activity_live_snapshot(revision, records);
+    let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
+    let mut existing_account_keys = HashSet::new();
+    for account in &mut snapshot.accounts {
+        existing_account_keys.insert(account.account_key.clone());
+        let rate = account_rates
+            .get(&account.upstream_account_id)
+            .copied()
+            .unwrap_or_default();
+        account.upload_bytes_per_second = rate.upload_bytes_per_second;
+        account.download_bytes_per_second = rate.download_bytes_per_second;
+        account.network_live_bucket = Some(dashboard_network_live_bucket_from_memory(
+            dashboard_network_speed_cache,
+            DashboardNetworkScopeKey::account_scope(account.upstream_account_id),
+            now,
+        ));
+    }
+    for (upstream_account_id, rate) in account_rates {
+        let account_key = upstream_account_id
+            .map(|id| format!("upstream:{id}"))
+            .unwrap_or_else(|| "unassigned".to_string());
+        if existing_account_keys.contains(&account_key) {
+            continue;
+        }
+        snapshot.accounts.push(DashboardActivityLiveAccount {
+            account_key,
+            upstream_account_id,
+            upstream_account_name: None,
+            in_progress_invocation_count: 0,
+            in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+            retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
+            upload_bytes_per_second: rate.upload_bytes_per_second,
+            download_bytes_per_second: rate.download_bytes_per_second,
+            network_live_bucket: Some(dashboard_network_live_bucket_from_memory(
+                dashboard_network_speed_cache,
+                DashboardNetworkScopeKey::account_scope(upstream_account_id),
+                now,
+            )),
+        });
+    }
+    snapshot
+        .accounts
+        .sort_by(|left, right| left.account_key.cmp(&right.account_key));
+    snapshot.network_live_bucket = Some(dashboard_network_live_bucket_from_memory(
+        dashboard_network_speed_cache,
+        DashboardNetworkScopeKey::Global,
+        now,
+    ));
+    snapshot.network_realtime_rate = Some(build_dashboard_network_realtime_rate_response(
+        dashboard_network_speed_cache
+            .snapshot_scope_realtime_bytes(DashboardNetworkScopeKey::Global, now),
+    ));
+    snapshot.generated_at = format_utc_iso(now);
+    snapshot
+}
+
+fn dashboard_network_live_bucket_from_memory(
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    scope: DashboardNetworkScopeKey,
+    now: DateTime<Utc>,
+) -> DashboardNetworkTimeseriesPointResponse {
+    let snapshot = dashboard_network_speed_cache.snapshot_open_bucket(scope, now);
+    build_dashboard_network_timeseries_point_response(
+        snapshot.bucket_start,
+        snapshot.bucket_end,
+        snapshot.totals,
+        ExactUtcRange {
+            start: snapshot.bucket_start,
+            end: now.min(snapshot.bucket_end),
+        },
+        true,
+    )
+}
+
 pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
-    if state.shutdown.is_cancelled()
-        || !state
-            .subscription_hub
-            .has_active_dashboard_activity_live_topic_sync()
+    if state.shutdown.is_cancelled() {
+        return;
+    }
+    if let Err(err) = state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+    {
+        state
+            .proxy_runtime_invocations
+            .mark_degraded("network_cache_bind_failed");
+        warn!(
+            ?err,
+            "failed to bind dashboard network cache to runtime projection"
+        );
+        return;
+    }
+    state
+        .proxy_runtime_invocations
+        .mark_dashboard_dirty("dashboard_live_schedule");
+    if !state
+        .subscription_hub
+        .has_active_dashboard_activity_live_topic_sync()
     {
         return;
     }
-    let worker_start_seq = state
+    let _ = state
         .dashboard_activity_live_broadcast_seq
         .fetch_add(1, Ordering::Relaxed)
         + 1;
@@ -2545,6 +3196,7 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     {
         return;
     }
+    state.proxy_runtime_invocations.set_producer_running(true);
 
     let latest_seq = state.dashboard_activity_live_broadcast_seq.clone();
     let broadcast_running = state.dashboard_activity_live_broadcast_running.clone();
@@ -2555,22 +3207,37 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     let broadcaster = state.broadcaster.clone();
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
-        let mut delivered_seq = worker_start_seq.saturating_sub(1);
-        let mut cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
+        let mut delivered_seq = latest_seq.load(Ordering::Acquire).saturating_sub(1);
         loop {
+            let Some(window) = proxy_runtime_invocations.pending_dashboard_publish_window() else {
+                broadcast_running.store(false, Ordering::Release);
+                proxy_runtime_invocations.set_producer_running(false);
+                if proxy_runtime_invocations
+                    .pending_dashboard_publish_window()
+                    .is_some()
+                    && broadcast_running
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    proxy_runtime_invocations.set_producer_running(true);
+                    continue;
+                }
+                return;
+            };
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     broadcast_running.store(false, Ordering::Release);
+                    proxy_runtime_invocations.set_producer_running(false);
                     return;
                 }
-                _ = tokio::time::sleep(cadence) => {}
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(window.deadline)) => {}
             }
 
             let sent_seq = latest_seq.load(Ordering::Acquire);
-            if subscription_hub
+            let has_active_subscribers = subscription_hub
                 .has_active_dashboard_activity_live_topic()
-                .await
-            {
+                .await;
+            if has_active_subscribers {
                 let started = Instant::now();
                 match capture_dashboard_activity_live_snapshot_from_runtime(
                     &pool,
@@ -2579,11 +3246,11 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
                 )
                 .await
                 {
-                    Ok(snapshot) => {
-                        let revision = snapshot.revision;
+                    Ok(capture) if capture.changed => {
+                        let revision = capture.snapshot.revision;
                         if let Err(err) =
                             broadcaster.send(BroadcastPayload::DashboardActivityLive {
-                                snapshot: Box::new(snapshot),
+                                snapshot: Box::new(capture.snapshot),
                             })
                         {
                             warn!(
@@ -2595,34 +3262,28 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
                                 revision,
                                 coalesced_mutation_count = sent_seq.saturating_sub(delivered_seq),
                                 generated_to_sent_ms = started.elapsed().as_millis() as u64,
+                                snapshot_origin = capture.snapshot_origin,
                                 "broadcast dashboard activity live snapshot"
                             );
                         }
                     }
+                    Ok(capture) => tracing::debug!(
+                        revision = capture.snapshot.revision,
+                        snapshot_origin = capture.snapshot_origin,
+                        "suppressed unchanged dashboard activity live snapshot"
+                    ),
                     Err(err) => warn!(?err, "failed to capture dashboard activity live snapshot"),
                 }
             }
+            proxy_runtime_invocations.complete_dashboard_publish_window(window);
             delivered_seq = sent_seq;
 
-            if latest_seq.load(Ordering::Acquire) != sent_seq {
-                cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
-                continue;
-            }
-            if dashboard_network_speed_cache.should_keep_dashboard_activity_live_stream(Utc::now())
+            if has_active_subscribers
+                && dashboard_network_speed_cache
+                    .should_keep_dashboard_activity_live_stream(Utc::now())
             {
-                cadence = Duration::from_secs(1);
-                continue;
+                proxy_runtime_invocations.mark_dashboard_dirty("network_visibility");
             }
-            broadcast_running.store(false, Ordering::Release);
-            if latest_seq.load(Ordering::Acquire) != sent_seq
-                && broadcast_running
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
-                cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
-                continue;
-            }
-            return;
         }
     });
 }

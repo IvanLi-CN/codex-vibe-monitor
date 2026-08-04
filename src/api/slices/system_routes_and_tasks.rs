@@ -74,6 +74,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) process: SystemRuntimePressureProcess,
     pub(crate) allocator: SystemRuntimePressureAllocator,
     pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
+    pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -99,7 +100,17 @@ pub(crate) struct SystemStatusResponse {
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
     let memory = state.memory_diagnostics.runtime_pressure_snapshot();
     let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
-    let state = if writer_accounting.state == "degraded" || memory.pressure_level != "normal" {
+    let active_subscriber_count = state
+        .subscription_hub
+        .dashboard_activity_live_subscriber_count()
+        .await;
+    let dashboard_projection = state
+        .proxy_runtime_invocations
+        .health_snapshot(active_subscriber_count);
+    let state = if writer_accounting.state == "degraded"
+        || memory.pressure_level != "normal"
+        || dashboard_projection.state == "degraded"
+    {
         "degraded".to_string()
     } else {
         "healthy".to_string()
@@ -120,6 +131,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             malloc_arena_max: memory.malloc_arena_max,
         },
         writer_accounting,
+        dashboard_projection,
     }
 }
 

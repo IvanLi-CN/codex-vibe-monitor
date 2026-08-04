@@ -565,6 +565,38 @@ impl SubscriptionHub {
         has_cached_live_topic
     }
 
+    pub(crate) async fn dashboard_activity_live_subscriber_count(&self) -> usize {
+        let guard = self.state.lock().await;
+        let cached_count = guard
+            .topics
+            .iter()
+            .filter(|(_, cached)| {
+                cached.topic.uses_dashboard_activity_live_overlay()
+                    || cached.topic.uses_summary_live_overlay()
+                    || cached.topic.uses_dashboard_network_live_snapshot()
+            })
+            .map(|(topic_key, _)| {
+                guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .sum::<usize>();
+        #[cfg(test)]
+        {
+            cached_count.max(
+                guard
+                    .active_topic_names
+                    .get("dashboard.activity.current")
+                    .copied()
+                    .unwrap_or_default(),
+            )
+        }
+        #[cfg(not(test))]
+        cached_count
+    }
+
     pub(crate) fn has_active_dashboard_activity_live_topic_sync(&self) -> bool {
         let Ok(guard) = self.state.try_lock() else {
             return true;
