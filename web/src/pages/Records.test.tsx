@@ -3,7 +3,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { InvocationRecordsSummaryResponse, InvocationSuggestionsResponse } from "../lib/api";
+import type {
+  InvocationRecordLocationResponse,
+  InvocationRecordsSummaryResponse,
+  InvocationSuggestionsResponse,
+} from "../lib/api";
 import {
   createDefaultCustomRange,
   createDefaultInvocationRecordsDraft,
@@ -15,6 +19,7 @@ const hookMocks = vi.hoisted(() => ({
 }));
 
 const apiMocks = vi.hoisted(() => ({
+  fetchInvocationRecordLocation: vi.fn<() => Promise<InvocationRecordLocationResponse>>(),
   fetchInvocationSuggestions: vi.fn<() => Promise<InvocationSuggestionsResponse>>(),
 }));
 
@@ -26,6 +31,7 @@ vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
+    fetchInvocationRecordLocation: apiMocks.fetchInvocationRecordLocation,
     fetchInvocationSuggestions: apiMocks.fetchInvocationSuggestions,
   };
 });
@@ -989,5 +995,44 @@ describe("RecordsPage new data action", () => {
     expect(searchDraft?.rangePreset).toBe("today");
     expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-target");
     expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-target");
+  });
+
+  it("locates an attempt-only deep link and focuses that attempt in its invocation", async () => {
+    const resetDraft = vi.fn();
+    const updateDraft = vi.fn();
+    const search = vi.fn(() => Promise.resolve());
+    apiMocks.fetchInvocationRecordLocation.mockResolvedValue({
+      anchorId: "anchor-cause",
+      snapshotId: 7,
+      invokeId: "invoke-cause",
+      attemptId: "attempt-cause",
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      records: [],
+      targetIndex: 0,
+      targetAbsoluteIndex: 0,
+    });
+    mockInvocationRecords({ resetDraft, updateDraft, search, pageSize: 20 });
+
+    vi.useFakeTimers();
+    render(<RecordsPage />, ["/records?attemptId=attempt-cause"]);
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptId: "attempt-cause", pageSize: 20 }),
+    );
+    expect(search).toHaveBeenCalledTimes(1);
+    const searchDraft = search.mock.calls[0]?.[0]?.draft;
+    expect(searchDraft).toMatchObject({
+      invokeId: "invoke-cause",
+      attemptId: "attempt-cause",
+    });
+    expect(resetDraft).toHaveBeenCalledTimes(1);
+    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-cause");
+    expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-cause");
   });
 });
