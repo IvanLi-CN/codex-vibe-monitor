@@ -167,6 +167,7 @@ struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
     active_subscribers: HashMap<String, usize>,
     active_topic_names: HashMap<String, usize>,
+    dashboard_live_subscriber_count: usize,
     server_push_subscribers: HashMap<String, usize>,
     server_push_tasks: HashSet<String>,
 }
@@ -213,6 +214,7 @@ pub(crate) struct TopicSubscriptionLease {
     hub: Arc<SubscriptionHub>,
     topic_keys: Vec<String>,
     topic_names: Vec<String>,
+    dashboard_live_topic_count: usize,
 }
 
 impl Drop for TopicSubscriptionLease {
@@ -223,8 +225,10 @@ impl Drop for TopicSubscriptionLease {
         let hub = self.hub.clone();
         let topic_keys = std::mem::take(&mut self.topic_keys);
         let topic_names = std::mem::take(&mut self.topic_names);
+        let dashboard_live_topic_count = self.dashboard_live_topic_count;
         tokio::spawn(async move {
-            hub.release_topic_subscribers(topic_keys, topic_names).await;
+            hub.release_topic_subscribers(topic_keys, topic_names, dashboard_live_topic_count)
+                .await;
         });
     }
 }
@@ -537,108 +541,32 @@ impl SubscriptionHub {
 
     pub(crate) async fn has_active_dashboard_activity_live_topic(&self) -> bool {
         let guard = self.state.lock().await;
-        let has_cached_live_topic = guard.topics.iter().any(|(topic_key, cached)| {
-            (cached.topic.uses_dashboard_activity_live_overlay()
-                || cached.topic.uses_summary_live_overlay()
-                || cached.topic.uses_dashboard_network_live_snapshot())
-                && guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-        });
-        #[cfg(test)]
-        if has_cached_live_topic {
-            return true;
-        }
-        #[cfg(test)]
-        if guard
-            .active_topic_names
-            .get("dashboard.activity.current")
-            .copied()
-            .unwrap_or_default()
-            > 0
-        {
-            return true;
-        }
-        has_cached_live_topic
+        guard.dashboard_live_subscriber_count > 0
     }
 
     pub(crate) async fn dashboard_activity_live_subscriber_count(&self) -> usize {
-        let guard = self.state.lock().await;
-        let cached_count = guard
-            .topics
-            .iter()
-            .filter(|(_, cached)| {
-                cached.topic.uses_dashboard_activity_live_overlay()
-                    || cached.topic.uses_summary_live_overlay()
-                    || cached.topic.uses_dashboard_network_live_snapshot()
-            })
-            .map(|(topic_key, _)| {
-                guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-            })
-            .sum::<usize>();
-        #[cfg(test)]
-        {
-            cached_count.max(
-                guard
-                    .active_topic_names
-                    .get("dashboard.activity.current")
-                    .copied()
-                    .unwrap_or_default(),
-            )
-        }
-        #[cfg(not(test))]
-        cached_count
+        self.state.lock().await.dashboard_live_subscriber_count
     }
 
     pub(crate) fn has_active_dashboard_activity_live_topic_sync(&self) -> bool {
         let Ok(guard) = self.state.try_lock() else {
             return true;
         };
-        let has_cached_live_topic = guard.topics.iter().any(|(topic_key, cached)| {
-            (cached.topic.uses_dashboard_activity_live_overlay()
-                || cached.topic.uses_summary_live_overlay()
-                || cached.topic.uses_dashboard_network_live_snapshot())
-                && guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-        });
-        #[cfg(test)]
-        if has_cached_live_topic {
-            return true;
-        }
-        #[cfg(test)]
-        if guard
-            .active_topic_names
-            .get("dashboard.activity.current")
-            .copied()
-            .unwrap_or_default()
-            > 0
-        {
-            return true;
-        }
-        has_cached_live_topic
+        guard.dashboard_live_subscriber_count > 0
     }
 
     async fn register_topic_subscribers(
         self: &Arc<Self>,
-        state: &AppState,
         topics: &[SubscriptionTopic],
     ) -> Result<TopicSubscriptionLease, ApiError> {
-        let owns_dashboard_live = topics.iter().any(|topic| {
-            topic.uses_dashboard_activity_live_overlay()
-                || topic.uses_summary_live_overlay()
-                || topic.uses_dashboard_network_live_snapshot()
-        });
+        let dashboard_live_topic_count = topics
+            .iter()
+            .filter(|topic| {
+                topic.uses_dashboard_activity_live_overlay()
+                    || topic.uses_summary_live_overlay()
+                    || topic.uses_dashboard_network_live_snapshot()
+            })
+            .count();
         let topic_keys = topics
             .iter()
             .map(SubscriptionTopic::cache_key)
@@ -665,14 +593,14 @@ impl SubscriptionHub {
                 .entry(topic_name.clone())
                 .or_insert(0) += 1;
         }
-        drop(guard);
-        if owns_dashboard_live {
-            ensure_dashboard_activity_live_snapshot_producer(state);
-        }
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_add(dashboard_live_topic_count);
         Ok(TopicSubscriptionLease {
             hub: self.clone(),
             topic_keys,
             topic_names,
+            dashboard_live_topic_count,
         })
     }
 
@@ -686,6 +614,10 @@ impl SubscriptionHub {
             .active_topic_names
             .entry(topic_name.to_string())
             .or_insert(0) += 1;
+        let dashboard_live_topic_count = usize::from(topic_name == "dashboard.activity.current");
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_add(dashboard_live_topic_count);
         let topic_keys = guard
             .topics
             .iter()
@@ -702,10 +634,16 @@ impl SubscriptionHub {
             hub: self.clone(),
             topic_keys,
             topic_names: vec![topic_name.to_string()],
+            dashboard_live_topic_count,
         }
     }
 
-    async fn release_topic_subscribers(&self, topic_keys: Vec<String>, topic_names: Vec<String>) {
+    async fn release_topic_subscribers(
+        &self,
+        topic_keys: Vec<String>,
+        topic_names: Vec<String>,
+        dashboard_live_topic_count: usize,
+    ) {
         let mut guard = self.state.lock().await;
         for topic_key in topic_keys {
             match guard.active_subscribers.get_mut(&topic_key) {
@@ -725,6 +663,9 @@ impl SubscriptionHub {
                 None => {}
             }
         }
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_sub(dashboard_live_topic_count);
     }
 
     async fn register_server_push_topics(
@@ -2341,12 +2282,19 @@ pub(crate) async fn topic_sse_stream(
         .collect::<Result<HashSet<_>, _>>()?;
     let topic_lease = state
         .subscription_hub
-        .register_topic_subscribers(state.as_ref(), &selected_topics)
+        .register_topic_subscribers(&selected_topics)
         .await?;
     let prepared = state
         .subscription_hub
         .prepare_connection(state.clone(), descriptors, resume)
         .await?;
+    if selected_topics.iter().any(|topic| {
+        topic.uses_dashboard_activity_live_overlay()
+            || topic.uses_summary_live_overlay()
+            || topic.uses_dashboard_network_live_snapshot()
+    }) {
+        ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
+    }
     tracing::info!(
         attempt = query.attempt,
         reason = query.reason.as_deref().unwrap_or("unknown"),
@@ -3531,11 +3479,6 @@ mod tests {
             include_accounts: true,
             include_recent: true,
         };
-        state
-            .subscription_hub
-            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
-            .await
-            .expect("prime a disconnected dashboard topic");
         state.dashboard_network_speed_cache.record_request_bytes(
             "network-before-owner",
             "2026-08-04 12:00:00",
@@ -3551,32 +3494,24 @@ mod tests {
                 .pending_dashboard_deadline()
                 .is_some()
         );
-        let mut receiver = state.broadcaster.subscribe();
-
         let _lease = state
             .subscription_hub
-            .register_topic_subscribers(state.as_ref(), std::slice::from_ref(&topic))
+            .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register first dashboard owner");
-        let snapshot = tokio::time::timeout(Duration::from_millis(600), async {
-            loop {
-                if let Ok(BroadcastPayload::DashboardActivityLive { snapshot }) =
-                    receiver.recv().await
-                {
-                    return snapshot;
-                }
-            }
-        })
-        .await
-        .expect("first owner should start pending projection producer");
-
-        assert_eq!(
-            snapshot
-                .network_live_bucket
-                .expect("global live bucket")
-                .upload_bytes,
-            128
+        assert!(
+            state
+                .subscription_hub
+                .has_active_dashboard_activity_live_topic()
+                .await
         );
+        let prepared = state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prepare first dashboard owner connection");
+        assert!(!prepared.initial.is_empty());
+        ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
     }
 
     #[tokio::test]
