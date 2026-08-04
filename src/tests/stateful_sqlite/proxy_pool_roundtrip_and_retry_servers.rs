@@ -311,6 +311,7 @@ struct PoolHttpFailureUpstreamState {
 async fn pool_retry_upstream(
     State(state): State<PoolRetryUpstreamState>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Response {
     let authorization = headers
         .get(http_header::AUTHORIZATION)
@@ -349,6 +350,8 @@ async fn pool_retry_upstream(
             "ok": true,
             "authorization": authorization,
             "attempt": attempt,
+            "path": uri.path(),
+            "query": uri.query().unwrap_or_default(),
         })),
     )
         .into_response()
@@ -1173,6 +1176,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
     let path = request.uri().path().to_string();
+    let request_uri_query = request.uri().query().unwrap_or_default().to_string();
     let mut forwarded_header_names = request
         .headers()
         .keys()
@@ -1246,6 +1250,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         StatusCode::OK,
         Json(json!({
             "path": path,
+            "query": request_uri_query,
             "authorization": authorization,
             "chatgptAccountId": chatgpt_account_id,
             "stickyKeyHeader": sticky_key_header,
@@ -1260,6 +1265,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
             "forwardedFor": forwarded_for,
             "forwardedHeaderNames": forwarded_header_names,
             "bodyLength": body.len(),
+            "body": String::from_utf8_lossy(&body),
         })),
     )
         .into_response()
@@ -1523,6 +1529,7 @@ pub(crate) async fn spawn_pool_retry_upstream(
         .route("/v1/responses", post(pool_retry_upstream))
         .route("/v1/responses/compact", post(pool_retry_upstream))
         .route("/v1/chat/completions", post(pool_retry_upstream))
+        .route("/v1/alpha/search", post(pool_retry_upstream))
         .with_state(PoolRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
@@ -1590,6 +1597,10 @@ pub(crate) async fn spawn_pool_static_failure_responses_upstream(
     let app = Router::new()
         .route(
             "/v1/responses",
+            post(pool_static_failure_responses_upstream),
+        )
+        .route(
+            "/v1/alpha/search",
             post(pool_static_failure_responses_upstream),
         )
         .with_state(PoolStaticFailureResponsesUpstreamState {

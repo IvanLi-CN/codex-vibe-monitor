@@ -265,6 +265,46 @@ fn compact_request_body_still_avoids_rewrite_and_usage_injection() {
     assert!(!ProxyCaptureTarget::ResponsesCompact.should_auto_include_usage());
 }
 
+#[test]
+fn standalone_search_has_exact_non_stream_capture_target() {
+    assert_eq!(
+        capture_target_for_request("/v1/alpha/search", &Method::POST),
+        Some(ProxyCaptureTarget::StandaloneSearch)
+    );
+    assert_eq!(
+        ProxyCaptureTarget::from_endpoint("/v1/alpha/search"),
+        ProxyCaptureTarget::StandaloneSearch
+    );
+    assert_eq!(
+        ProxyCaptureTarget::StandaloneSearch.endpoint(),
+        "/v1/alpha/search"
+    );
+    assert!(!ProxyCaptureTarget::StandaloneSearch.allows_fast_mode_rewrite());
+    assert!(!ProxyCaptureTarget::StandaloneSearch.should_auto_include_usage());
+    assert_eq!(
+        capture_target_for_request("/v1/alpha/search/", &Method::POST),
+        None
+    );
+    assert_eq!(
+        capture_target_for_request("/v1/alpha/other", &Method::POST),
+        None
+    );
+    assert_eq!(
+        capture_target_for_request("/v1/alpha/search", &Method::GET),
+        None
+    );
+
+    let request_body = br#"{"model":"gpt-5.4","stream":true,"query":"hello"}"#;
+    let (prepared_body, request_info, rewritten) = prepare_target_request_body(
+        ProxyCaptureTarget::StandaloneSearch,
+        request_body.to_vec(),
+        true,
+    );
+    assert_eq!(prepared_body, request_body);
+    assert!(!request_info.is_stream);
+    assert!(!rewritten);
+}
+
 #[tokio::test]
 async fn prompt_cache_recent_invocations_include_attributed_compact_preview() {
     let state = test_state_from_config(test_config(), true).await;

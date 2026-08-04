@@ -1575,6 +1575,7 @@ pub(crate) enum ProxyCaptureTarget {
     ChatCompletions,
     Responses,
     ResponsesCompact,
+    StandaloneSearch,
     ImageGenerations,
     ImageEdits,
 }
@@ -1585,6 +1586,7 @@ impl ProxyCaptureTarget {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
             Self::ResponsesCompact => "/v1/responses/compact",
+            Self::StandaloneSearch => "/v1/alpha/search",
             Self::ImageGenerations => "/v1/images/generations",
             Self::ImageEdits => "/v1/images/edits",
         }
@@ -1603,6 +1605,7 @@ impl ProxyCaptureTarget {
             "/v1/chat/completions" => Self::ChatCompletions,
             "/v1/responses/compact" => Self::ResponsesCompact,
             "/v1/responses" => Self::Responses,
+            "/v1/alpha/search" => Self::StandaloneSearch,
             "/v1/images/generations" => Self::ImageGenerations,
             "/v1/images/edits" => Self::ImageEdits,
             _ => Self::Responses,
