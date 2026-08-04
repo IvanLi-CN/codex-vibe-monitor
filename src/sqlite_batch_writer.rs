@@ -243,7 +243,7 @@ impl PendingBatch {
             .unwrap_or_default()
     }
 
-    fn push(&mut self, write: SqliteBatchWrite) {
+    fn push(&mut self, write: SqliteBatchWrite) -> usize {
         let now = Instant::now();
         let write_bytes = write.estimated_memory_bytes();
         self.oldest_at.get_or_insert(now);
@@ -279,18 +279,18 @@ impl PendingBatch {
                 } else {
                     self.replace_estimate(estimate_change.0, estimate_change.1, true);
                 }
+                estimate_change.0
             }
             SqliteBatchWrite::AttemptProgress(progress) => {
                 let old = self.attempt_progress.insert(progress.attempt_id, progress);
                 if let Some(old) = old {
-                    self.replace_estimate(
-                        SqliteBatchWrite::AttemptProgress(old).estimated_memory_bytes(),
-                        write_bytes,
-                        false,
-                    );
+                    let old_bytes = estimated_attempt_progress_memory_bytes(&old);
+                    self.replace_estimate(old_bytes, write_bytes, false);
                     self.coalesced_rows += 1;
+                    old_bytes
                 } else {
                     self.add_estimate(write_bytes, false);
+                    0
                 }
             }
             SqliteBatchWrite::InvocationDerived(derived) => {
@@ -298,55 +298,55 @@ impl PendingBatch {
                     .invocation_derived
                     .insert(derived.invocation_id, derived);
                 if let Some(old) = old {
-                    self.replace_estimate(
-                        SqliteBatchWrite::InvocationDerived(old).estimated_memory_bytes(),
-                        write_bytes,
-                        false,
-                    );
+                    let old_bytes = estimated_invocation_derived_memory_bytes(&old);
+                    self.replace_estimate(old_bytes, write_bytes, false);
                     self.coalesced_rows += 1;
+                    old_bytes
                 } else {
                     self.add_estimate(write_bytes, false);
+                    0
                 }
             }
             SqliteBatchWrite::AccountSelectedTouch(touch) => {
-                let mut estimate_change = None;
-                match self.account_selected_touches.get_mut(&touch.account_id) {
-                    Some(existing) => {
+                match self.account_selected_touches.entry(touch.account_id) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(touch);
+                        self.add_estimate(write_bytes, false);
+                        0
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let existing = entry.get_mut();
+                        let old_bytes = estimated_account_selected_touch_memory_bytes(existing);
                         if existing.selected_at < touch.selected_at {
-                            let old_bytes = estimated_account_selected_touch_memory_bytes(existing);
                             *existing = touch;
-                            estimate_change = Some((old_bytes, write_bytes));
+                            self.replace_estimate(old_bytes, write_bytes, false);
+                            self.coalesced_rows += 1;
+                            old_bytes
+                        } else {
+                            self.coalesced_rows += 1;
+                            write_bytes
                         }
-                        self.coalesced_rows += 1;
-                    }
-                    None => {
-                        self.account_selected_touches
-                            .insert(touch.account_id, touch);
-                        estimate_change = Some((0, write_bytes));
-                    }
-                }
-                if let Some((old_bytes, new_bytes)) = estimate_change {
-                    if old_bytes == 0 {
-                        self.add_estimate(new_bytes, false);
-                    } else {
-                        self.replace_estimate(old_bytes, new_bytes, false);
                     }
                 }
             }
             SqliteBatchWrite::SystemTaskFinish(finish) => {
                 let old = self.system_task_finishes.insert(finish.run_id, finish);
                 if let Some(old) = old {
-                    self.replace_estimate(
-                        SqliteBatchWrite::SystemTaskFinish(old).estimated_memory_bytes(),
-                        write_bytes,
-                        false,
-                    );
+                    let old_bytes = estimated_system_task_finish_memory_bytes(&old);
+                    self.replace_estimate(old_bytes, write_bytes, false);
                     self.coalesced_rows += 1;
+                    old_bytes
                 } else {
                     self.add_estimate(write_bytes, false);
+                    0
                 }
             }
         }
+    }
+
+    fn push_accounted(&mut self, write: SqliteBatchWrite, pending_bytes: &Arc<AtomicUsize>) {
+        let obsolete_bytes = self.push(write);
+        pending_bytes.fetch_sub(obsolete_bytes, Ordering::Relaxed);
     }
 
     fn take(&mut self) -> Self {
@@ -1044,6 +1044,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut write_receiver,
                             &mut pending,
                             &pending_depth,
+                            &pending_bytes,
                             queued_depth_snapshot,
                         );
                         drain_terminal_journal_deferred_writes(
@@ -1090,6 +1091,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut write_receiver,
                             &mut pending,
                             &pending_depth,
+                            &pending_bytes,
                             queued_depth_snapshot,
                         );
                         drain_terminal_journal_deferred_writes(
@@ -1175,7 +1177,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                     return;
                 };
                 pending_depth.fetch_sub(1, Ordering::Relaxed);
-                pending.push(write);
+                pending.push_accounted(write, &pending_bytes);
                 if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
                     && let Some(retained) =
                         flush_pending_batch_accounted(
@@ -1296,7 +1298,7 @@ fn drain_terminal_journal_deferred_writes(
         for terminal in journal.take_deferred_writes(max_writes) {
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             pending_bytes.fetch_add(write.estimated_memory_bytes(), Ordering::Relaxed);
-            pending.push(write);
+            pending.push_accounted(write, pending_bytes);
         }
     }
 }
@@ -1305,13 +1307,14 @@ pub(crate) fn drain_queued_batch_writes(
     write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
     pending: &mut PendingBatch,
     pending_depth: &Arc<AtomicUsize>,
+    pending_bytes: &Arc<AtomicUsize>,
     max_messages: usize,
 ) {
     for _ in 0..max_messages {
         match write_receiver.try_recv() {
             Ok(write) => {
                 pending_depth.fetch_sub(1, Ordering::Relaxed);
-                pending.push(write);
+                pending.push_accounted(write, pending_bytes);
             }
             Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
                 break;
@@ -1938,12 +1941,17 @@ mod tests {
     #[test]
     fn terminal_batch_coalescing_preserves_the_persistence_ack_sequence() {
         let mut batch = PendingBatch::default();
+        let pending_bytes = Arc::new(AtomicUsize::new(0));
         let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
         first.terminal_projection_event_ids.push(11);
-        batch.push(SqliteBatchWrite::TerminalInvocation(first));
+        let first = SqliteBatchWrite::TerminalInvocation(first);
+        pending_bytes.fetch_add(first.estimated_memory_bytes(), Ordering::Relaxed);
+        batch.push_accounted(first, &pending_bytes);
         let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
         second.terminal_projection_event_ids.push(12);
-        batch.push(SqliteBatchWrite::TerminalInvocation(second));
+        let second = SqliteBatchWrite::TerminalInvocation(second);
+        pending_bytes.fetch_add(second.estimated_memory_bytes(), Ordering::Relaxed);
+        batch.push_accounted(second, &pending_bytes);
 
         let terminal = batch
             .terminal_invocations
@@ -1956,6 +1964,10 @@ mod tests {
         assert_eq!(
             batch.estimated_memory_bytes(),
             terminal.estimated_memory_bytes()
+        );
+        assert_eq!(
+            pending_bytes.load(Ordering::Relaxed),
+            batch.estimated_memory_bytes()
         );
     }
 
