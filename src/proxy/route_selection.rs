@@ -987,7 +987,9 @@ fn analyze_replay_snapshot_route_value(
                 ImageIntent::No
             }
         }
-        Some(ProxyCaptureTarget::ChatCompletions) | None => ImageIntent::Unknown,
+        Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {
+            ImageIntent::Unknown
+        },
     };
     let hosted_image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
@@ -1004,7 +1006,9 @@ fn analyze_replay_snapshot_route_value(
                 ImageIntent::No
             }
         }
-        Some(ProxyCaptureTarget::ChatCompletions) | None => ImageIntent::Unknown,
+        Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {
+            ImageIntent::Unknown
+        },
     };
     let compaction_kind = match capture_target {
         Some(ProxyCaptureTarget::ResponsesCompact) => Some(CompactionKind::Compact),
