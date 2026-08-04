@@ -150,6 +150,23 @@ describe("buildAppliedInvocationFilters", () => {
     expect(buildInvocationSuggestionsQuery(draft, 42).attemptId).toBe("4V7MYPJG");
   });
 
+  it("removes the date window for exact record targets", () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      rangePreset: "today" as const,
+      invokeId: "invoke-historical",
+      attemptId: "attempt-historical",
+    };
+
+    const filters = buildAppliedInvocationFilters(draft, new Date("2026-08-04T12:00:00Z"));
+
+    expect(filters.invokeId).toBe("invoke-historical");
+    expect(filters.attemptId).toBe("attempt-historical");
+    expect(filters.rangePreset).toBeUndefined();
+    expect(filters.from).toBeUndefined();
+    expect(filters.to).toBeUndefined();
+  });
+
   it("uses upstreamAccountId for exact account filters while keeping the display label in draft", () => {
     const draft = {
       ...createDefaultInvocationRecordsDraft(),

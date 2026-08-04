@@ -147,6 +147,7 @@ export type {
   PoolRoutingMaintenanceSettings,
   PoolRoutingSelectionAudit,
   PoolRoutingSelectionAuditExcludedCandidate,
+  PoolRoutingSelectionScoreSnapshot,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
   PricingEntry,

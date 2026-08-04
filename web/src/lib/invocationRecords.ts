@@ -376,11 +376,14 @@ export function buildAppliedInvocationFilters(
   if (validation.modelFilters === "missingModel") {
     throw new Error("Model filter requires at least one model");
   }
-  const bounds = resolveRangeBounds(draft.rangePreset, draft, now);
+  const hasExactRecordTarget = Boolean(draft.invokeId.trim() || draft.attemptId.trim());
+  const bounds = hasExactRecordTarget
+    ? { from: undefined, to: undefined }
+    : resolveRangeBounds(draft.rangePreset, draft, now);
   const models = resolveModelList(draft);
   const reasoningEfforts = resolveReasoningEffortList(draft);
   return {
-    rangePreset: draft.rangePreset,
+    rangePreset: hasExactRecordTarget ? undefined : draft.rangePreset,
     from: bounds.from,
     to: bounds.to,
     status: normalizeText(draft.status),

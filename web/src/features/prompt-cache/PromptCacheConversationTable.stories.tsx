@@ -456,6 +456,21 @@ const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationO
             winnerReasonCode: "onlyEligibleCandidate",
             comparedAccountId: null,
             comparedAccountName: null,
+            selectedScore: {
+              eligibility: "assignable",
+              routeBindingFailurePenalty: 0,
+              modelRoutePenalty: 0,
+              modelRoutePenaltyCode: "normal",
+              routingPriorityRank: 0,
+              capacityLane: "primary",
+              dispatchState: "readyOnOwnedNode",
+              secondaryResetProximitySecs: null,
+              primaryResetProximitySecs: null,
+              scarcityScore: "0.000000",
+              effectiveLoad: 0,
+              lastSelectedAt: null,
+            },
+            comparedScore: null,
             excludedCandidates: [
               {
                 accountId: 21,
@@ -2470,7 +2485,16 @@ export const DrawerOperations: Story = {
     ).toBeInTheDocument();
     await expect(
       documentScope.getByRole("link", { name: /查看选路决策|View routing decision/i }),
-    ).toHaveAttribute("href", "/records?attemptId=SUCCESS32");
+    ).toHaveAttribute("href", "/records?attemptId=SUCCESS32&invokeId=invoke-short-32");
+    await expect(
+      documentScope.getByRole("link", { name: /起因尝试：FAILED31|Cause attempt: FAILED31/i }),
+    ).toHaveAttribute("href", "/records?attemptId=FAILED31");
+    await expect(
+      documentScope.getByRole("link", {
+        name: /查看对应调用记录：invoke-short-32|View corresponding invocation: invoke-short-32/i,
+      }),
+    ).toHaveAttribute("href", "/records?attemptId=SUCCESS32&invokeId=invoke-short-32");
+    await expect(documentScope.getByText("invoke-short-32")).toBeInTheDocument();
     await expect(
       documentScope.getAllByText(/Sticky 目标已切换|Sticky target changed/i).length,
     ).toBe(1);

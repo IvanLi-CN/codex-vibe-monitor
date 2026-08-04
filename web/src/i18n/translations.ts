@@ -2327,6 +2327,9 @@ const baseTranslations = {
       "Trigger attempt: {{attemptId}}",
     "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
       "View routing decision: {{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecord": "{{id}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecordLabel":
+      "View corresponding invocation: {{id}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "First successful request established this Sticky target.",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
@@ -2846,6 +2849,10 @@ const baseTranslations = {
       "{{account}} won the stable account-order tie-break over {{comparedAccount}}.",
     "table.poolAttempts.routingDecision.winnerReasons.unknown":
       "{{account}} won the recorded candidate comparison.",
+    "table.poolAttempts.routingDecision.auditUnavailable":
+      "Candidate score details were not recorded for this historical decision; the comparison between {{account}} and {{comparedAccount}} cannot be verified.",
+    "table.poolAttempts.routingDecision.score":
+      "{{account}} score: model-route penalty {{modelPenalty}} ({{modelPenaltyCode}}), route-failure penalty {{routeFailurePenalty}}, priority {{priority}}, capacity {{capacityLane}}, dispatch {{dispatchState}}, load {{effectiveLoad}}, scarcity {{scarcityScore}}.",
     "table.poolAttempts.routingDecision.exclusionReasons.bindingConstraint":
       "{{account}} was excluded by the conversation binding.",
     "table.poolAttempts.routingDecision.exclusionReasons.requiredRouteMismatch":
@@ -5137,6 +5144,9 @@ const baseTranslations = {
     "live.conversations.drawer.operations.routingContext.triggerAttempt": "触发尝试：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
       "查看选路决策：{{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecord": "{{id}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecordLabel":
+      "查看对应调用记录：{{id}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "首个成功请求已建立此 Sticky 目标。",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
@@ -5632,6 +5642,10 @@ const baseTranslations = {
       "{{account}} 在稳定账号顺序的平局规则中优于 {{comparedAccount}}。",
     "table.poolAttempts.routingDecision.winnerReasons.unknown":
       "{{account}} 赢得了已记录的候选比较。",
+    "table.poolAttempts.routingDecision.auditUnavailable":
+      "历史事件未保存候选评分，无法验证 {{account}} 与 {{comparedAccount}} 的比较结果。",
+    "table.poolAttempts.routingDecision.score":
+      "{{account}} 评分：模型路由惩罚 {{modelPenalty}}（{{modelPenaltyCode}}），路由失败惩罚 {{routeFailurePenalty}}，优先级 {{priority}}，容量档位 {{capacityLane}}，分发状态 {{dispatchState}}，有效负载 {{effectiveLoad}}，稀缺压力 {{scarcityScore}}。",
     "table.poolAttempts.routingDecision.exclusionReasons.bindingConstraint":
       "{{account}} 被当前会话绑定条件排除。",
     "table.poolAttempts.routingDecision.exclusionReasons.requiredRouteMismatch":
