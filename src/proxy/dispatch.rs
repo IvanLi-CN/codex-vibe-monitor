@@ -418,7 +418,7 @@ fn build_local_capture_error_resp_raw(envelope: &ProxyErrorResponseEnvelope) -> 
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_pre_attempt_proxy_capture_error(
-    state: &AppState,
+    state: Arc<AppState>,
     proxy_request_id: u64,
     capture_started: Instant,
     invoke_id: &str,
@@ -430,7 +430,8 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     sticky_key: Option<&str>,
     prompt_cache_key: Option<&str>,
     client_attribution_context: &ClientPromptCacheAttributionContext,
-    request_body_for_capture: Bytes,
+    request_body_for_capture: Option<Bytes>,
+    request_body_snapshot: PoolReplayBodySnapshot,
     request_body_logging_enabled: bool,
     t_req_read_ms: f64,
     t_req_parse_ms: f64,
@@ -446,13 +447,22 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
 ) -> bool {
     let response_envelope = response_envelope_override
         .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
-    let req_raw = spawn_raw_payload_file_write(
-        state,
-        invoke_id,
-        "request",
-        request_body_for_capture,
-        request_body_logging_enabled,
-    )
+    let req_raw = match request_body_for_capture {
+        Some(bytes) => spawn_raw_payload_file_write(
+            state.as_ref(),
+            invoke_id,
+            "request",
+            bytes,
+            request_body_logging_enabled,
+        ),
+        None => spawn_raw_payload_snapshot_write(
+            state.clone(),
+            invoke_id,
+            "request",
+            request_body_snapshot,
+            request_body_logging_enabled,
+        ),
+    }
     .finish()
     .await;
     let usage = ParsedUsage::default();
@@ -582,7 +592,9 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             t_persist_ms: 0.0,
         },
     };
-    if let Err(err) = persist_and_broadcast_proxy_capture(state, capture_started, record).await {
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
+    {
         warn!(
             proxy_request_id,
             error = %err,
@@ -959,7 +971,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let status = StatusCode::BAD_GATEWAY;
                 let message = format!("failed to resolve prompt cache conversation binding: {err}");
                 let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.as_ref(),
+                    state.clone(),
                     proxy_request_id,
                     capture_started,
                     &invoke_id,
@@ -971,10 +983,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     &client_attribution_context,
-                    semantic_projection
-                        .request_body_for_capture
-                        .clone()
-                        .unwrap_or_default(),
+                    semantic_projection.request_body_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                     t_req_read_ms,
                     elapsed_ms(req_parse_started),
@@ -1011,7 +1021,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let message =
                     format!("failed to resolve prompt cache conversation overrides: {err}");
                 let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.as_ref(),
+                    state.clone(),
                     proxy_request_id,
                     capture_started,
                     &invoke_id,
@@ -1023,10 +1033,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     &client_attribution_context,
-                    semantic_projection
-                        .request_body_for_capture
-                        .clone()
-                        .unwrap_or_default(),
+                    semantic_projection.request_body_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                     t_req_read_ms,
                     elapsed_ms(req_parse_started),
@@ -1060,11 +1068,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         request_model: request_info.model.clone(),
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
-    let upstream_body_bytes = semantic_projection
-        .request_body_for_capture
-        .clone()
-        .unwrap_or_default();
-    let base_request_bytes_for_capture = upstream_body_bytes.clone();
     let upstream_body_snapshot = semantic_projection.upstream_snapshot.clone();
 
     let initial_running_record = build_running_proxy_capture_record(
@@ -1111,6 +1114,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         pool_route_active.then(|| PoolAttemptRuntimeSnapshotContext {
             capture_target,
             request_info: request_info.clone(),
+            hosted_image_intent: Some(semantic_projection.hosted_image_intent),
             prompt_cache_key: prompt_cache_key.clone(),
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
@@ -1200,17 +1204,22 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .requested_service_tier
                     .clone()
                     .or(request_info.requested_service_tier);
-                let request_body_for_capture = err
-                    .request_body_for_capture
-                    .clone()
-                    .unwrap_or_else(|| base_request_bytes_for_capture.clone());
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
-                    &invoke_id,
-                    "request",
-                    request_body_for_capture,
-                    proxy_settings.request_body_logging_enabled,
-                )
+                let req_raw = match err.request_body_for_capture.clone() {
+                    Some(bytes) => spawn_raw_payload_file_write(
+                        state.as_ref(),
+                        &invoke_id,
+                        "request",
+                        bytes,
+                        proxy_settings.request_body_logging_enabled,
+                    ),
+                    None => spawn_raw_payload_snapshot_write(
+                        state.clone(),
+                        &invoke_id,
+                        "request",
+                        semantic_projection.upstream_snapshot.clone(),
+                        proxy_settings.request_body_logging_enabled,
+                    ),
+                }
                 .finish()
                 .await;
                 let usage = ParsedUsage::default();
@@ -1437,7 +1446,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Method::POST,
             target_url,
             &upstream_headers,
-            Some(upstream_body_bytes.clone()),
+            Some(upstream_body_snapshot.clone()),
             Some(UpstreamTrafficReporter::new(
                 state.clone(),
                 invoke_id.as_str(),
@@ -1470,7 +1479,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.attempt_started_at),
                 None,
                 response.http_approx,
-                Some(base_request_bytes_for_capture.clone()),
+                semantic_projection.request_body_for_capture.clone(),
                 request_info.requested_service_tier.clone(),
                 None,
                 response.response,
@@ -1480,11 +1489,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let response_envelope =
                     build_local_capture_error_envelope(&invoke_id, err.status, &err.message);
                 drop(proxy_request_permit);
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
+                let req_raw = spawn_raw_payload_snapshot_write(
+                    state.clone(),
                     &invoke_id,
                     "request",
-                    base_request_bytes_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                 )
                 .finish()
@@ -1681,7 +1690,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             state.clone(),
             &invoke_id,
             "request",
-            semantic_projection.snapshot.clone(),
+            semantic_projection.upstream_snapshot.clone(),
             proxy_settings.request_body_logging_enabled,
         ),
     });

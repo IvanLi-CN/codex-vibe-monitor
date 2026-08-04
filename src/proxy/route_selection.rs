@@ -287,9 +287,207 @@ struct SelectiveRequestSemantics {
     nested_reasoning_effort: Option<String>,
     contains_encrypted_content: bool,
     contains_image_generation: bool,
+    contains_codex_image_generation: bool,
     declares_remote_v2_compaction: bool,
     stream_options_present: bool,
     invalid_sticky_projection: bool,
+}
+
+#[derive(Default)]
+struct SemanticMarkerScanner {
+    in_string: bool,
+    escaped: bool,
+    unicode_remaining: u8,
+    unicode_value: u16,
+    string_is_value: bool,
+    string_len: usize,
+    raw_string_bytes: usize,
+    string_overflow: bool,
+    string: [u8; 32],
+    candidate: Option<([u8; 32], usize)>,
+    value_key: Option<([u8; 32], usize)>,
+    contains_encrypted_content: bool,
+    contains_image_generation: bool,
+    contains_codex_image_generation: bool,
+    semantic_limit_exceeded: bool,
+}
+
+impl SemanticMarkerScanner {
+    fn scan(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if self.in_string {
+                self.raw_string_bytes = self.raw_string_bytes.saturating_add(1);
+                let selected_value = self.string_is_value
+                    && self.value_key.is_some_and(|(key, len)| {
+                        matches!(
+                            &key[..len],
+                            b"model"
+                                | b"sticky_key"
+                                | b"stickyKey"
+                                | b"prompt_cache_key"
+                                | b"promptCacheKey"
+                                | b"service_tier"
+                                | b"serviceTier"
+                                | b"reasoning_effort"
+                                | b"effort"
+                                | b"type"
+                        )
+                    });
+                if selected_value && self.raw_string_bytes > REQUEST_SEMANTIC_STRING_MAX_BYTES {
+                    self.semantic_limit_exceeded = true;
+                }
+                if self.unicode_remaining > 0 {
+                    let Some(digit) = (byte as char).to_digit(16) else {
+                        self.string_overflow = true;
+                        self.unicode_remaining = 0;
+                        continue;
+                    };
+                    self.unicode_value = (self.unicode_value << 4) | digit as u16;
+                    self.unicode_remaining -= 1;
+                    if self.unicode_remaining == 0 {
+                        if self.unicode_value <= 0x7f && self.string_len < self.string.len() {
+                            self.string[self.string_len] = self.unicode_value as u8;
+                            self.string_len += 1;
+                        } else {
+                            self.string_overflow = true;
+                        }
+                    }
+                    continue;
+                }
+                if self.escaped {
+                    self.escaped = false;
+                    if byte == b'u' {
+                        self.unicode_remaining = 4;
+                        self.unicode_value = 0;
+                    } else {
+                        let decoded = match byte {
+                            b'"' | b'\\' | b'/' => byte,
+                            b'b' => 0x08,
+                            b'f' => 0x0c,
+                            b'n' => b'\n',
+                            b'r' => b'\r',
+                            b't' => b'\t',
+                            _ => {
+                                self.string_overflow = true;
+                                continue;
+                            }
+                        };
+                        if self.string_len < self.string.len() {
+                            self.string[self.string_len] = decoded;
+                            self.string_len += 1;
+                        } else {
+                            self.string_overflow = true;
+                        }
+                    }
+                    continue;
+                }
+                if byte == b'\\' {
+                    self.escaped = true;
+                    continue;
+                }
+                if byte == b'"' {
+                    self.in_string = false;
+                    if !self.string_overflow {
+                        let captured = (self.string, self.string_len);
+                        if self.string_is_value {
+                            if self
+                                .value_key
+                                .is_some_and(|(key, len)| &key[..len] == b"type")
+                            {
+                                let value = &captured.0[..captured.1];
+                                self.contains_encrypted_content |= value == b"encrypted_content";
+                                self.contains_image_generation |= value == b"image_generation";
+                                self.contains_codex_image_generation |=
+                                    value == b"image_gen.imagegen";
+                            }
+                            self.value_key = None;
+                        } else {
+                            self.candidate = Some(captured);
+                        }
+                    } else if self.string_is_value {
+                        self.value_key = None;
+                    }
+                    continue;
+                }
+                if self.string_len < self.string.len() {
+                    self.string[self.string_len] = byte;
+                    self.string_len += 1;
+                } else {
+                    self.string_overflow = true;
+                }
+                continue;
+            }
+
+            if byte == b'"' {
+                self.in_string = true;
+                self.escaped = false;
+                self.unicode_remaining = 0;
+                self.unicode_value = 0;
+                self.string_len = 0;
+                self.raw_string_bytes = 0;
+                self.string_overflow = false;
+                self.string_is_value = self.value_key.is_some();
+                continue;
+            }
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            if byte == b':' {
+                self.value_key = self.candidate.take();
+                if self
+                    .value_key
+                    .is_some_and(|(key, len)| &key[..len] == b"encrypted_content")
+                {
+                    self.contains_encrypted_content = true;
+                }
+            } else if self.value_key.is_some() {
+                self.value_key = None;
+            }
+        }
+    }
+}
+
+struct SemanticMarkerReader<R> {
+    inner: R,
+    scanner: SemanticMarkerScanner,
+}
+
+impl<R> SemanticMarkerReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            scanner: SemanticMarkerScanner::default(),
+        }
+    }
+}
+
+impl<R: Read> Read for SemanticMarkerReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.scanner.scan(&buffer[..read]);
+        if self.scanner.semantic_limit_exceeded {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request semantic string exceeds bounded projection limit",
+            ));
+        }
+        Ok(read)
+    }
+}
+
+fn parse_selective_request_semantics(
+    reader: impl Read,
+) -> Result<SelectiveRequestSemantics, &'static str> {
+    let mut reader = SemanticMarkerReader::new(reader);
+    let parsed = serde_json::from_reader::<_, SelectiveRequestSemantics>(std::io::BufReader::new(
+        &mut reader,
+    ))
+    .map_err(|_| "invalid_json")?;
+    let mut parsed = parsed;
+    parsed.contains_encrypted_content |= reader.scanner.contains_encrypted_content;
+    parsed.contains_image_generation |= reader.scanner.contains_image_generation;
+    parsed.contains_codex_image_generation |= reader.scanner.contains_codex_image_generation;
+    Ok(parsed)
 }
 
 #[derive(Clone, Copy)]
@@ -307,6 +505,8 @@ struct OptionalString {
     valid: bool,
 }
 
+const REQUEST_SEMANTIC_STRING_MAX_BYTES: usize = 256;
+
 impl<'de> Deserialize<'de> for OptionalString {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -319,12 +519,24 @@ impl<'de> Deserialize<'de> for OptionalString {
                 formatter.write_str("a string or ignored JSON value")
             }
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                if value.len() > REQUEST_SEMANTIC_STRING_MAX_BYTES {
+                    return Ok(OptionalString {
+                        value: None,
+                        valid: false,
+                    });
+                }
                 Ok(OptionalString {
                     value: Some(value.to_string()),
                     valid: true,
                 })
             }
             fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                if value.len() > REQUEST_SEMANTIC_STRING_MAX_BYTES {
+                    return Ok(OptionalString {
+                        value: None,
+                        valid: false,
+                    });
+                }
                 Ok(OptionalString {
                     value: Some(value),
                     valid: true,
@@ -607,7 +819,11 @@ impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
                     compact_threshold_present = true;
                     map.next_value::<serde::de::IgnoredAny>()?;
                 }
-                _ => map.next_value_seed(SelectiveSemanticSeed {
+                (
+                    _,
+                    "input" | "messages" | "content" | "items" | "tools" | "tool_choice"
+                    | "additional_tools" | "context",
+                ) => map.next_value_seed(SelectiveSemanticSeed {
                     projection: &mut *self.projection,
                     scope: if matches!(self.scope, SelectiveSemanticScope::ContextManagement) {
                         SelectiveSemanticScope::ContextManagement
@@ -615,6 +831,9 @@ impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
                         SelectiveSemanticScope::Nested
                     },
                 })?,
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
             }
         }
         if object_type.as_deref() == Some("encrypted_content") {
@@ -622,6 +841,9 @@ impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
         }
         if object_type.as_deref() == Some("image_generation") {
             self.projection.contains_image_generation = true;
+        }
+        if object_type.as_deref() == Some("image_gen.imagegen") {
+            self.projection.contains_codex_image_generation = true;
         }
         if matches!(self.scope, SelectiveSemanticScope::ContextManagement)
             && object_type.as_deref() == Some("compaction")
@@ -703,6 +925,7 @@ pub(crate) struct ReplaySnapshotRouteAnalysis {
     pub(crate) requested_model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
     pub(crate) image_intent: ImageIntent,
+    pub(crate) hosted_image_intent: ImageIntent,
     pub(crate) compaction_kind: Option<CompactionKind>,
     pub(crate) is_stream: bool,
     pub(crate) requested_service_tier: Option<String>,
@@ -757,6 +980,24 @@ fn analyze_replay_snapshot_route_value(
                 .as_deref()
                 .is_some_and(is_openai_image_generation_model)
                 || value.contains_image_generation
+                || value.contains_codex_image_generation
+            {
+                ImageIntent::Yes
+            } else {
+                ImageIntent::No
+            }
+        }
+        Some(ProxyCaptureTarget::ChatCompletions) | None => ImageIntent::Unknown,
+    };
+    let hosted_image_intent = match capture_target {
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            ImageIntent::DirectImage
+        }
+        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
+            if requested_model
+                .as_deref()
+                .is_some_and(is_openai_image_generation_model)
+                || value.contains_image_generation
             {
                 ImageIntent::Yes
             } else {
@@ -788,6 +1029,7 @@ fn analyze_replay_snapshot_route_value(
         requested_model,
         contains_encrypted_content: value.contains_encrypted_content,
         image_intent,
+        hosted_image_intent,
         compaction_kind,
         is_stream: value.stream,
         requested_service_tier,
@@ -814,19 +1056,17 @@ pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
     let snapshot_bytes = pool_request_snapshot_body_bytes(snapshot);
     let (value, parse_outcome, file_read_count, json_parse_count) = match snapshot {
         PoolReplayBodySnapshot::Empty => (None, "empty", 0_u8, 0_u8),
-        PoolReplayBodySnapshot::Memory(bytes) => match serde_json::from_slice(bytes.as_ref()) {
-            Ok(value) => (Some(value), "parsed", 0, 1),
-            Err(_) => (None, "invalid_json", 0, 1),
-        },
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            match parse_selective_request_semantics(std::io::Cursor::new(bytes.as_ref())) {
+                Ok(value) => (Some(value), "parsed", 0, 1),
+                Err(_) => (None, "invalid_json", 0, 1),
+            }
+        }
         PoolReplayBodySnapshot::File { temp_file, .. } => {
             let path = temp_file.path.clone();
             match tokio::task::spawn_blocking(move || {
                 let file = std::fs::File::open(path).map_err(|_| "read_failed")?;
-                serde_json::from_reader::<_, SelectiveRequestSemantics>(std::io::BufReader::new(
-                    file,
-                ))
-                .map(Some)
-                .map_err(|_| "invalid_json")
+                parse_selective_request_semantics(file).map(Some)
             })
             .await
             {
@@ -2493,6 +2733,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
             model: requested_model.clone(),
             ..RequestCaptureInfo::default()
         },
+        hosted_image_intent: None,
         prompt_cache_key: prompt_cache_key.clone(),
         owner_auto_guard_active,
         t_req_read_ms: 0.0,
@@ -2521,14 +2762,19 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     )
     .await;
     if let Err(error) = &result {
+        let request_body_snapshot = match replay_status_rx.borrow().clone() {
+            PoolReplayBodyStatus::Complete(snapshot) => snapshot,
+            _ => PoolReplayBodySnapshot::Empty,
+        };
         persist_pool_failover_terminal_invocation(
-            state.as_ref(),
+            state.clone(),
             proxy_request_id,
             capture_started,
             original_uri,
             headers,
             Some(&trace_context),
             Some(&runtime_snapshot_context),
+            request_body_snapshot,
             error,
         )
         .await;
@@ -2833,6 +3079,7 @@ async fn continue_or_retry_pool_live_request_inner(
                         compaction_request_kind: replay_request_compaction_kind,
                         ..RequestCaptureInfo::default()
                     },
+                    hosted_image_intent: None,
                     prompt_cache_key: replay_prompt_cache_key,
                     owner_auto_guard_active: replay_owner_auto_guard_active,
                     t_req_read_ms: 0.0,
@@ -3119,6 +3366,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     compaction_request_kind: request_compaction_kind,
                                     ..RequestCaptureInfo::default()
                                 },
+                                hosted_image_intent: None,
                                 prompt_cache_key: effective_prompt_cache_key.clone(),
                                 owner_auto_guard_active,
                                 t_req_read_ms: 0.0,
@@ -4705,6 +4953,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     compaction_request_kind: request_compaction_kind,
                                     ..RequestCaptureInfo::default()
                                 },
+                                hosted_image_intent: None,
                                 prompt_cache_key: body_prompt_cache_key.clone(),
                                 owner_auto_guard_active,
                                 t_req_read_ms: 0.0,
@@ -4768,6 +5017,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         Some(PoolAttemptRuntimeSnapshotContext {
                             capture_target: header_capture_target,
                             request_info: RequestCaptureInfo::default(),
+                            hosted_image_intent: None,
                             prompt_cache_key: header_prompt_cache_key.clone(),
                             owner_auto_guard_active,
                             t_req_read_ms: 0.0,
@@ -5298,7 +5548,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
     method: Method,
     target_url: Url,
     headers: &HeaderMap,
-    body: Option<Bytes>,
+    body: Option<PoolReplayBodySnapshot>,
     live_reporter: Option<UpstreamTrafficReporter>,
     handshake_timeout: Duration,
     capture_target: Option<ProxyCaptureTarget>,
@@ -5322,14 +5572,15 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
     }
 
     let request_connection_scoped = connection_scoped_header_names(headers);
-    let request_body_len = body.as_ref().map(Bytes::len);
-    let request_compression = body.as_ref().and_then(|body_bytes| {
-        observe_request_compression_from_bytes(
-            body_bytes.as_ref(),
+    let request_body_len = body.as_ref().map(pool_request_snapshot_body_bytes);
+    let request_compression = body.as_ref().and_then(|snapshot| match snapshot {
+        PoolReplayBodySnapshot::Memory(body_bytes) => observe_request_compression_from_bytes(
+            body_bytes,
             headers
                 .get(header::CONTENT_ENCODING)
                 .and_then(|value| value.to_str().ok()),
-        )
+        ),
+        _ => None,
     });
     let mut approx_upload_bytes = 0usize;
     let mut approx_download_bytes_before_response_body = 0usize;
@@ -5357,10 +5608,14 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 outbound_headers.append(name.clone(), value.clone());
             }
         }
-        let transmitted_body_bytes = body.as_ref().map(Bytes::len).unwrap_or_default();
-        if let Some(body_bytes) = body.clone()
+        let transmitted_body_bytes = body
+            .as_ref()
+            .map(pool_request_snapshot_body_bytes)
+            .unwrap_or_default();
+        if let Some(body_bytes) = body.as_ref()
             && !outbound_headers.contains_key(header::CONTENT_LENGTH)
-            && let Ok(content_length) = HeaderValue::from_str(&body_bytes.len().to_string())
+            && let Ok(content_length) =
+                HeaderValue::from_str(&pool_request_snapshot_body_bytes(body_bytes).to_string())
         {
             outbound_headers.insert(header::CONTENT_LENGTH, content_length.clone());
         }
@@ -5373,7 +5628,11 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 method.clone(),
                 &target_url,
                 &outbound_headers,
-                body.clone().map(Body::from).unwrap_or_else(Body::empty),
+                body.as_ref()
+                    .map(|snapshot| {
+                        counted_http_body_from_snapshot(snapshot, ObservedByteCounter::default())
+                    })
+                    .unwrap_or_else(Body::empty),
                 selected_proxy.endpoint_url.as_ref(),
                 live_reporter.clone(),
             ),

@@ -484,6 +484,7 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
     Box::pin(async move {
         let capture_started = Instant::now();
         let state_for_terminal_capture = state.clone();
+        let body_for_terminal_capture = body.clone();
         let trace_for_terminal_capture = trace_context.clone();
         let runtime_context_for_terminal_capture = runtime_snapshot_context.clone();
         let result = send_pool_request_with_failover_and_binding_constraint_inner(
@@ -507,13 +508,14 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
         .await;
         if persist_terminal_invocation && let Err(error) = &result {
             persist_pool_failover_terminal_invocation(
-                state_for_terminal_capture.as_ref(),
+                state_for_terminal_capture,
                 proxy_request_id,
                 capture_started,
                 original_uri,
                 headers,
                 trace_for_terminal_capture.as_ref(),
                 runtime_context_for_terminal_capture.as_ref(),
+                body_for_terminal_capture.unwrap_or(PoolReplayBodySnapshot::Empty),
                 error,
             )
             .await;
@@ -523,13 +525,14 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
 }
 
 pub(crate) async fn persist_pool_failover_terminal_invocation(
-    state: &AppState,
+    state: Arc<AppState>,
     proxy_request_id: u64,
     capture_started: Instant,
     original_uri: &Uri,
     headers: &HeaderMap,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     runtime_snapshot_context: Option<&PoolAttemptRuntimeSnapshotContext>,
+    request_body_snapshot: PoolReplayBodySnapshot,
     error: &PoolUpstreamError,
 ) {
     let Some(trace) = trace_context else {
@@ -549,7 +552,7 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     let requester_ip = extract_requester_ip(headers, None);
     let request_chain_metadata = request_chain_metadata_from_headers(headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(headers);
-    let request_body = error.request_body_for_capture.clone().unwrap_or_default();
+    let request_body = error.request_body_for_capture.clone();
     let request_body_logging_enabled = state
         .proxy_model_settings
         .read()
@@ -566,7 +569,7 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     let response_envelope =
         build_proxy_error_response_envelope(&downstream_error, &trace.invoke_id);
     let terminal_request_compression_algorithm = resolve_terminal_request_compression_algorithm(
-        latest_pool_attempt_request_compression_algorithm(state, trace)
+        latest_pool_attempt_request_compression_algorithm(state.as_ref(), trace)
             .await
             .ok()
             .flatten(),
@@ -586,6 +589,7 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
         prompt_cache_key,
         &client_attribution_context,
         request_body,
+        request_body_snapshot,
         request_body_logging_enabled,
         runtime_snapshot_context
             .map(|context| context.t_req_read_ms)
@@ -1713,6 +1717,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 account.image_tool_rewrite_mode,
                 account.codex_imagegen_rewrite_mode,
                 codex_imagegen_protocol_from_headers(headers),
+                runtime_snapshot_context
+                    .as_ref()
+                    .map(|context| &context.request_info),
+                runtime_snapshot_context
+                    .as_ref()
+                    .and_then(|context| context.hosted_image_intent),
             )
             .await
             {

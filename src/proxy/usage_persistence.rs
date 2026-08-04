@@ -4322,22 +4322,18 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
                 truncated_reason: None,
             })
         }
-        snapshot @ PoolReplayBodySnapshot::File { .. } => {
+        PoolReplayBodySnapshot::File { temp_file, size } => {
+            let config = state.config.clone();
+            let semaphore = state.proxy_raw_async_semaphore.clone();
             let invoke_id = invoke_id.to_string();
+            let source_path = temp_file.path.clone();
             PendingRawPayloadWrite::Task(tokio::spawn(async move {
-                match snapshot.to_bytes().await {
-                    Ok(bytes) => {
-                        spawn_raw_payload_file_write(&state, &invoke_id, kind, bytes, true)
-                            .finish()
-                            .await
-                    }
-                    Err(err) => RawPayloadMeta {
-                        path: None,
-                        size_bytes: pool_request_snapshot_body_bytes(&snapshot) as i64,
-                        truncated: true,
-                        truncated_reason: Some(format!("write_failed:{err}")),
-                    },
-                }
+                let _temp_file_guard = temp_file;
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .expect("raw writer semaphore is live");
+                store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size).await
             }))
         }
     }
