@@ -9,4 +9,5 @@
 - SQLite writer accounting 必须跨 P1/P2 ownership transfer 原子守恒；下溢属于 degraded health，而不是可忽略的 telemetry 异常。
 - 先使用 glibc `MALLOC_ARENA_MAX=8` 限制 allocator 保留，不在本阶段引入 jemalloc。
 - System Status 的运行压力诊断只读取内存计数器，避免诊断面反向制造数据库压力。
+- Issue #738 将运行压力健康度作为 additive System Status 合同，并以缺失即 unknown 的方式保持旧后端兼容；诊断详情不得包含 payload、调用 ID 或原始 SQL。
 - 阶段目标为 RSS p95 `2 GiB`，`1 GiB` 保留为后续软目标；不得为了达标降低并发或丢数据。

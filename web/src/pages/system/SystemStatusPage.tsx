@@ -352,6 +352,78 @@ function ProjectionHealthSection({ status, t }: OverviewPanelProps) {
   );
 }
 
+function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
+  const health = status.runtimePressureHealth;
+  const state = health?.state ?? "unknown";
+  const stateLabel = t(`system.status.runtimePressure.states.${state}`);
+  const alertVariant = state === "healthy" ? "success" : state === "unknown" ? "info" : "warning";
+
+  return (
+    <section
+      className="surface-panel overflow-hidden"
+      data-testid="system-status-runtime-pressure-health"
+    >
+      <div className="surface-panel-body gap-4">
+        <div className="section-heading">
+          <h3 className="section-title">{t("system.status.runtimePressure.title")}</h3>
+          <p className="section-description max-w-[72ch]">
+            {t("system.status.runtimePressure.description")}
+          </p>
+        </div>
+        <Alert variant={alertVariant}>
+          {t("system.status.runtimePressure.summary", { state: stateLabel })}
+        </Alert>
+        {health ? (
+          <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
+            <summary className="cursor-pointer text-sm font-semibold text-base-content">
+              {t("system.status.runtimePressure.details")}
+            </summary>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <BreakdownRow
+                label={t("system.status.runtimePressure.rssAnon")}
+                value={formatBytes(health.process.rssAnonBytes)}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.swap")}
+                value={formatBytes(health.process.swapBytes)}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.managed")}
+                value={formatBytes(health.process.managedBytes)}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.unattributed")}
+                value={formatBytes(health.process.unattributedAnonBytes)}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.writerQueue")}
+                value={`${health.writerAccounting.pendingDepth.toLocaleString()} / ${formatBytes(health.writerAccounting.pendingBytes)}`}
+                hint={health.writerAccounting.degradedReason}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.dashboardProducer")}
+                value={health.dashboardProjection.producerState}
+                hint={
+                  health.dashboardProjection.lastDeferReason ??
+                  health.dashboardProjection.degradedReason
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.liveDbReads")}
+                value={health.dashboardProjection.livePathDbReadCount.toLocaleString()}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.allocatorArenas")}
+                value={health.allocator.mallocArenaMax}
+              />
+            </div>
+          </details>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export default function SystemStatusPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
@@ -473,6 +545,7 @@ export default function SystemStatusPage() {
           {status ? (
             <div className="space-y-4" data-testid="system-status-layout">
               <OverviewPanel status={status} t={t} />
+              <RuntimePressureHealthSection status={status} t={t} />
               <ProjectionHealthSection status={status} t={t} />
               <div className="grid gap-4 xl:grid-cols-2" data-testid="system-status-sections">
                 <MetricSection

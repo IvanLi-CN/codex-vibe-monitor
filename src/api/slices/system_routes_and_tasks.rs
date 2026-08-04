@@ -107,11 +107,12 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let dashboard_projection = state
         .proxy_runtime_invocations
         .health_snapshot(active_subscriber_count);
-    let state = if writer_accounting.state == "degraded"
-        || memory.pressure_level != "normal"
-        || dashboard_projection.state == "degraded"
-    {
+    let state = if writer_accounting.state == "degraded" {
+        "accounting_error".to_string()
+    } else if memory.pressure_level != "normal" || dashboard_projection.state == "degraded" {
         "degraded".to_string()
+    } else if dashboard_projection.last_defer_reason.is_some() {
+        "deferred".to_string()
     } else {
         "healthy".to_string()
     };
