@@ -569,8 +569,11 @@ impl PendingBatch {
     }
 
     fn push_accounted(&mut self, write: SqliteBatchWrite, accounting: &PendingQueueAccounting) {
-        let obsolete_bytes = self.push(write);
-        accounting.coalesce(obsolete_bytes);
+        let accounted_before = self
+            .estimated_memory_bytes()
+            .saturating_add(write.estimated_memory_bytes());
+        self.push(write);
+        accounting.replace(accounted_before, self.estimated_memory_bytes());
     }
 
     fn take(&mut self) -> Self {
@@ -2223,13 +2226,13 @@ mod tests {
         let mut batch = PendingBatch::default();
         let accounting = PendingQueueAccounting::default();
         let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
-        first.terminal_projection_event_ids.push(11);
+        first.terminal_projection_event_ids.extend(0..64);
         let first = SqliteBatchWrite::TerminalInvocation(first);
         accounting.enqueue(first.estimated_memory_bytes());
         accounting.dequeue_to_batch();
         batch.push_accounted(first, &accounting);
         let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
-        second.terminal_projection_event_ids.push(12);
+        second.terminal_projection_event_ids.extend(64..128);
         let second = SqliteBatchWrite::TerminalInvocation(second);
         accounting.enqueue(second.estimated_memory_bytes());
         accounting.dequeue_to_batch();
@@ -2241,7 +2244,10 @@ mod tests {
             .next()
             .expect("coalesced terminal");
         assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
-        assert_eq!(terminal.terminal_projection_event_ids, vec![11, 12]);
+        assert_eq!(
+            terminal.terminal_projection_event_ids,
+            (0..128).collect::<Vec<_>>()
+        );
         assert_eq!(batch.coalesced_rows, 1);
         assert_eq!(
             batch.estimated_memory_bytes(),
