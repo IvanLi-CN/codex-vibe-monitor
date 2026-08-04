@@ -2793,6 +2793,21 @@ describe("PromptCacheConversationTable", () => {
                 winnerReasonCode: "onlyEligibleCandidate",
                 comparedAccountId: null,
                 comparedAccountName: null,
+                selectedScore: {
+                  eligibility: "assignable",
+                  routeBindingFailurePenalty: 0,
+                  modelRoutePenalty: 0,
+                  modelRoutePenaltyCode: "normal",
+                  routingPriorityRank: 0,
+                  capacityLane: "primary",
+                  dispatchState: "readyOnOwnedNode",
+                  secondaryResetProximitySecs: null,
+                  primaryResetProximitySecs: null,
+                  scarcityScore: "0.000000",
+                  effectiveLoad: 0,
+                  lastSelectedAt: null,
+                },
+                comparedScore: null,
                 excludedCandidates: [
                   {
                     accountId: 43,

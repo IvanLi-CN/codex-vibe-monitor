@@ -967,4 +967,27 @@ describe("RecordsPage new data action", () => {
     expect(updateDraft).toHaveBeenNthCalledWith(2, "rangePreset", "7d");
     expect(search).toHaveBeenCalledTimes(1);
   });
+
+  it("uses an invocation-plus-attempt deep link to target one expanded call", async () => {
+    const resetDraft = vi.fn();
+    const updateDraft = vi.fn();
+    const search = vi.fn(() => Promise.resolve());
+    mockInvocationRecords({ resetDraft, updateDraft, search });
+
+    vi.useFakeTimers();
+    render(<RecordsPage />, ["/records?attemptId=attempt-target&invokeId=invoke-target"]);
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(search).toHaveBeenCalledTimes(1);
+    const searchDraft = search.mock.calls[0]?.[0]?.draft;
+    expect(searchDraft).toMatchObject({
+      invokeId: "invoke-target",
+      attemptId: "attempt-target",
+    });
+    expect(searchDraft?.rangePreset).toBe("today");
+    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-target");
+    expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-target");
+  });
 });

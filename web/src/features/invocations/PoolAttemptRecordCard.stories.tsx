@@ -14,17 +14,39 @@ const freshAssignmentAttempt: ApiPoolUpstreamRequestAttempt = {
   routingSelectionAudit: {
     selectedAccountId: 2890,
     selectedAccountName: "dzw",
-    eligibleCandidateCount: 1,
-    winnerReasonCode: "onlyEligibleCandidate",
-    comparedAccountId: null,
-    comparedAccountName: null,
-    excludedCandidates: [
-      {
-        accountId: 2805,
-        accountName: "CIII",
-        reasonCode: "modelNotAllowed",
-      },
-    ],
+    eligibleCandidateCount: 2,
+    winnerReasonCode: "lowerModelRoutePenalty",
+    comparedAccountId: 2805,
+    comparedAccountName: "CIII",
+    selectedScore: {
+      eligibility: "assignable",
+      routeBindingFailurePenalty: 0,
+      modelRoutePenalty: 0,
+      modelRoutePenaltyCode: "normal",
+      routingPriorityRank: 0,
+      capacityLane: "primary",
+      dispatchState: "readyOnOwnedNode",
+      secondaryResetProximitySecs: null,
+      primaryResetProximitySecs: null,
+      scarcityScore: "0.000000",
+      effectiveLoad: 0,
+      lastSelectedAt: null,
+    },
+    comparedScore: {
+      eligibility: "assignable",
+      routeBindingFailurePenalty: 0,
+      modelRoutePenalty: 1,
+      modelRoutePenaltyCode: "demoted",
+      routingPriorityRank: 0,
+      capacityLane: "primary",
+      dispatchState: "readyOnOwnedNode",
+      secondaryResetProximitySecs: null,
+      primaryResetProximitySecs: null,
+      scarcityScore: "0.000000",
+      effectiveLoad: 0,
+      lastSelectedAt: null,
+    },
+    excludedCandidates: [],
   },
   upstreamAccountId: 2890,
   upstreamAccountName: "dzw",
@@ -42,7 +64,7 @@ const freshAssignmentAttempt: ApiPoolUpstreamRequestAttempt = {
 function StoryCard() {
   const { t } = useTranslation();
   return (
-    <div className="max-w-3xl bg-base-200 p-6">
+    <div className="max-w-3xl bg-blue-200 p-6">
       <PoolAttemptRecordCard
         attempt={freshAssignmentAttempt}
         proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
@@ -75,10 +97,46 @@ export const FreshAssignmentRoutingDecision: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("pool-attempt-routing-selection-audit")).toBeVisible();
     await expect(
-      canvas.getByText(/dzw 是唯一合格候选|dzw was the only eligible candidate/i),
+      canvas.getByText(/在 2 个合格候选中选择了 dzw|dzw was selected from 2 eligible candidate/i),
     ).toBeVisible();
+    await expect(canvas.getByTestId("pool-attempt-routing-selection-score")).toHaveTextContent(
+      /model-route penalty 0|模型路由惩罚 0/i,
+    );
     await expect(
-      canvas.getByText(/CIII 不允许当前请求模型|CIII did not allow the requested model/i),
+      canvas.getByText(/CIII 评分：模型路由惩罚 1|CIII score: model-route penalty 1/i),
     ).toBeVisible();
   },
 };
+
+export const HistoricalDecisionWithoutScore: Story = {
+  render: HistoricalStoryCard,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("historical-routing-decision")).toBeVisible();
+    await expect(
+      canvas.getByText(/历史事件未保存候选评分|Candidate score details were not recorded/i),
+    ).toBeVisible();
+  },
+};
+
+function HistoricalStoryCard() {
+  const { t } = useTranslation();
+  return (
+    <div className="max-w-3xl bg-blue-200 p-6">
+      <PoolAttemptRecordCard
+        attempt={{
+          ...freshAssignmentAttempt,
+          attemptId: "HISTORICAL1",
+          routingSelectionAudit: {
+            ...freshAssignmentAttempt.routingSelectionAudit!,
+            selectedScore: null,
+            comparedScore: null,
+          },
+        }}
+        proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
+        t={t}
+        testId="historical-routing-decision"
+      />
+    </div>
+  );
+}

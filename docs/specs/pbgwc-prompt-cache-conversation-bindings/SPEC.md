@@ -154,7 +154,8 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
   - Returns `{ items, total, page, pageSize }`.
   - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext? }`.
-  - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, excludedCandidates[] }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
+  - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, selectedScore?, comparedScore?, excludedCandidates[] }`. Each score snapshot preserves the routing-time comparator inputs (`eligibility`, route-binding-failure penalty, model-route penalty plus code, priority rank, capacity lane, dispatch state, reset proximity, scarcity score, effective load, and last-selected timestamp). Missing context or score data on existing rows is rendered as historical reason unavailable and is never reconstructed from current account state.
+  - A routing attempt link includes both the public attempt ID and its invoke ID when available. Records uses that pair as an exact target and does not apply the default date window, so the linked attempt and its immutable selection audit are the first result and expanded detail.
   - Results are ordered by `occurredAt DESC, id DESC`.
   - `infoType` filters by any matching entry inside `infoTypes[]`.
 
@@ -351,6 +352,40 @@ PR: include
 - sensitive_exclusion: fixture-only conversation and attempt identifiers
 - submission_gate: approved
 - state: the audit summary and Records deep link remain readable without overlap or truncation.
+
+### Routing Decision Score Snapshot (Storybook)
+
+PR: include
+![Fresh routing decision with selected and compared scores](./assets/routing-decision-fresh.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: none
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Invocations/PoolAttemptRecordCard/FreshAssignmentRoutingDecision`
+- state: a fresh assignment shows dzw with model-route penalty `0 (normal)` and CIII with `1 (demoted)`, alongside the other routing comparator fields.
+- evidence_note: proves the winner label is backed by persisted numeric values rather than an unexplained assertion.
+
+PR: include
+![Historical routing decision without a score snapshot](./assets/routing-decision-historical.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: none
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Invocations/PoolAttemptRecordCard/HistoricalDecisionWithoutScore`
+- state: a legacy event explicitly says candidate scores were not recorded and the comparison cannot be verified.
+- evidence_note: proves historical data is not retroactively reconstructed from current account health.
 
 ### Dashboard Bulk Actions (Web Demo)
 

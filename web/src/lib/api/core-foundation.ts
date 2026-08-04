@@ -524,6 +524,21 @@ export interface PoolRoutingSelectionAuditExcludedCandidate {
   reasonCode: string;
 }
 
+export interface PoolRoutingSelectionScoreSnapshot {
+  eligibility: string;
+  routeBindingFailurePenalty: number;
+  modelRoutePenalty: number;
+  modelRoutePenaltyCode: string;
+  routingPriorityRank: number;
+  capacityLane: string;
+  dispatchState: string;
+  secondaryResetProximitySecs?: number | null;
+  primaryResetProximitySecs?: number | null;
+  scarcityScore: string;
+  effectiveLoad: number;
+  lastSelectedAt?: string | null;
+}
+
 export interface PoolRoutingSelectionAudit {
   selectedAccountId: number;
   selectedAccountName: string;
@@ -531,6 +546,8 @@ export interface PoolRoutingSelectionAudit {
   winnerReasonCode: string;
   comparedAccountId?: number | null;
   comparedAccountName?: string | null;
+  selectedScore?: PoolRoutingSelectionScoreSnapshot | null;
+  comparedScore?: PoolRoutingSelectionScoreSnapshot | null;
   excludedCandidates: PoolRoutingSelectionAuditExcludedCandidate[];
 }
 
@@ -3407,6 +3424,49 @@ function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionA
           : [{ accountId, accountName, reasonCode }];
       })
     : [];
+  const normalizeScore = (value: unknown): PoolRoutingSelectionScoreSnapshot | null => {
+    const score = (value ?? {}) as Record<string, unknown>;
+    const routeBindingFailurePenalty = normalizeFiniteNumber(score.routeBindingFailurePenalty);
+    const modelRoutePenalty = normalizeFiniteNumber(score.modelRoutePenalty);
+    const routingPriorityRank = normalizeFiniteNumber(score.routingPriorityRank);
+    const effectiveLoad = normalizeFiniteNumber(score.effectiveLoad);
+    const eligibility = typeof score.eligibility === "string" ? score.eligibility.trim() : "";
+    const modelRoutePenaltyCode =
+      typeof score.modelRoutePenaltyCode === "string" ? score.modelRoutePenaltyCode.trim() : "";
+    const capacityLane = typeof score.capacityLane === "string" ? score.capacityLane.trim() : "";
+    const dispatchState = typeof score.dispatchState === "string" ? score.dispatchState.trim() : "";
+    const scarcityScore = typeof score.scarcityScore === "string" ? score.scarcityScore.trim() : "";
+    if (
+      routeBindingFailurePenalty == null ||
+      modelRoutePenalty == null ||
+      routingPriorityRank == null ||
+      effectiveLoad == null ||
+      !eligibility ||
+      !modelRoutePenaltyCode ||
+      !capacityLane ||
+      !dispatchState ||
+      !scarcityScore
+    ) {
+      return null;
+    }
+    return {
+      eligibility,
+      routeBindingFailurePenalty,
+      modelRoutePenalty,
+      modelRoutePenaltyCode,
+      routingPriorityRank,
+      capacityLane,
+      dispatchState,
+      secondaryResetProximitySecs: normalizeFiniteNumber(score.secondaryResetProximitySecs),
+      primaryResetProximitySecs: normalizeFiniteNumber(score.primaryResetProximitySecs),
+      scarcityScore,
+      effectiveLoad,
+      lastSelectedAt:
+        typeof score.lastSelectedAt === "string" && score.lastSelectedAt.trim()
+          ? score.lastSelectedAt.trim()
+          : null,
+    };
+  };
   return {
     selectedAccountId,
     selectedAccountName,
@@ -3417,6 +3477,8 @@ function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionA
       typeof payload.comparedAccountName === "string" && payload.comparedAccountName.trim()
         ? payload.comparedAccountName.trim()
         : null,
+    selectedScore: normalizeScore(payload.selectedScore),
+    comparedScore: normalizeScore(payload.comparedScore),
     excludedCandidates,
   };
 }

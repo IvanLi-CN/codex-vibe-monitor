@@ -54,6 +54,7 @@ import type {
   InvocationRecordsResponse,
   InvocationRecordsSummaryResponse,
   PoolRoutingSelectionAudit,
+  PoolRoutingSelectionScoreSnapshot,
   PromptCacheConversation,
   PromptCacheConversationBindingKind,
   PromptCacheConversationBindingResponse,
@@ -472,6 +473,12 @@ function routingSelectionWinnerLabel(
   audit: PoolRoutingSelectionAudit,
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
+  if (!audit.selectedScore) {
+    return t("table.poolAttempts.routingDecision.auditUnavailable", {
+      account: audit.selectedAccountName,
+      comparedAccount: audit.comparedAccountName ?? "-",
+    });
+  }
   const key = `table.poolAttempts.routingDecision.winnerReasons.${audit.winnerReasonCode}`;
   const translated = t(key, {
     account: audit.selectedAccountName,
@@ -485,6 +492,24 @@ function routingSelectionWinnerLabel(
     : translated;
 }
 
+function routingSelectionScoreLabel(
+  account: string,
+  score: PoolRoutingSelectionScoreSnapshot,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  return t("table.poolAttempts.routingDecision.score", {
+    account,
+    modelPenalty: score.modelRoutePenalty,
+    modelPenaltyCode: score.modelRoutePenaltyCode,
+    routeFailurePenalty: score.routeBindingFailurePenalty,
+    priority: score.routingPriorityRank,
+    capacityLane: score.capacityLane,
+    dispatchState: score.dispatchState,
+    effectiveLoad: score.effectiveLoad,
+    scarcityScore: score.scarcityScore,
+  });
+}
+
 function routingSelectionExclusionLabel(
   account: string,
   reasonCode: string,
@@ -495,6 +520,14 @@ function routingSelectionExclusionLabel(
   return translated === key
     ? t("table.poolAttempts.routingDecision.exclusionReasons.unknown", { account })
     : translated;
+}
+
+function routingAttemptHref(event: PromptCacheConversationOperationEvent, attemptId: string) {
+  const search = new URLSearchParams({ attemptId });
+  if (event.invokeId && event.routingContext?.triggerAttemptId === attemptId) {
+    search.set("invokeId", event.invokeId);
+  }
+  return `/records?${search.toString()}`;
 }
 
 function conversationOperationShowsRoutingReason(event: PromptCacheConversationOperationEvent) {
@@ -3685,6 +3718,25 @@ export function PromptCacheConversationHistoryDrawer({
                   <p>
                     {routingSelectionWinnerLabel(event.routingContext.routingSelectionAudit, t)}
                   </p>
+                  {event.routingContext.routingSelectionAudit.selectedScore ? (
+                    <p data-testid="conversation-routing-selection-score">
+                      {routingSelectionScoreLabel(
+                        event.routingContext.routingSelectionAudit.selectedAccountName,
+                        event.routingContext.routingSelectionAudit.selectedScore,
+                        t,
+                      )}
+                    </p>
+                  ) : null}
+                  {event.routingContext.routingSelectionAudit.comparedScore &&
+                  event.routingContext.routingSelectionAudit.comparedAccountName ? (
+                    <p>
+                      {routingSelectionScoreLabel(
+                        event.routingContext.routingSelectionAudit.comparedAccountName,
+                        event.routingContext.routingSelectionAudit.comparedScore,
+                        t,
+                      )}
+                    </p>
+                  ) : null}
                   {event.routingContext.routingSelectionAudit.excludedCandidates.map(
                     (candidate) => (
                       <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
@@ -3701,7 +3753,7 @@ export function PromptCacheConversationHistoryDrawer({
               {event.routingContext?.causingAttemptId ? (
                 <Link
                   className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                  to={`/records?attemptId=${encodeURIComponent(event.routingContext.causingAttemptId)}`}
+                  to={routingAttemptHref(event, event.routingContext.causingAttemptId)}
                 >
                   {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
                     attemptId: event.routingContext.causingAttemptId,
@@ -3711,7 +3763,7 @@ export function PromptCacheConversationHistoryDrawer({
               {event.routingContext?.triggerAttemptId ? (
                 <Link
                   className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                  to={`/records?attemptId=${encodeURIComponent(event.routingContext.triggerAttemptId)}`}
+                  to={routingAttemptHref(event, event.routingContext.triggerAttemptId)}
                 >
                   {t(
                     event.routingContext.routingSelectionAudit
