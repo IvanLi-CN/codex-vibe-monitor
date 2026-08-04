@@ -97,10 +97,7 @@ pub(crate) struct SystemStatusResponse {
 }
 
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
-    let memory = state
-        .memory_diagnostics
-        .runtime_pressure_snapshot(state)
-        .await;
+    let memory = state.memory_diagnostics.runtime_pressure_snapshot();
     let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
     let state = if writer_accounting.state == "degraded" || memory.pressure_level != "normal" {
         "degraded".to_string()

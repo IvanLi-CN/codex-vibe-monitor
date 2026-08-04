@@ -120,6 +120,7 @@ pub(crate) struct MemoryOperationBaseline {
 pub(crate) struct MemoryDiagnosticsRuntime {
     mode: String,
     last_sample: Mutex<Option<ProcessMemorySnapshot>>,
+    sampled_managed_bytes: AtomicU64,
     peak_rss_bytes: AtomicU64,
     high_unattributed_samples: AtomicUsize,
     allocator_once_attempted: AtomicBool,
@@ -139,6 +140,7 @@ impl MemoryDiagnosticsRuntime {
                 .trim()
                 .to_ascii_lowercase(),
             last_sample: Mutex::new(Some(read_process_memory())),
+            sampled_managed_bytes: AtomicU64::new(0),
             peak_rss_bytes: AtomicU64::new(0),
             high_unattributed_samples: AtomicUsize::new(0),
             allocator_once_attempted: AtomicBool::new(false),
@@ -153,17 +155,14 @@ impl MemoryDiagnosticsRuntime {
         }
     }
 
-    pub(crate) async fn runtime_pressure_snapshot(
-        &self,
-        state: &AppState,
-    ) -> RuntimeMemoryPressureSnapshot {
+    pub(crate) fn runtime_pressure_snapshot(&self) -> RuntimeMemoryPressureSnapshot {
         let process = self
             .last_sample
             .lock()
             .ok()
             .and_then(|sample| *sample)
             .unwrap_or_default();
-        let managed_bytes = collect_component_snapshot(state).await.managed_bytes() as u64;
+        let managed_bytes = self.sampled_managed_bytes.load(Ordering::Relaxed);
         RuntimeMemoryPressureSnapshot {
             process,
             managed_bytes,
@@ -187,6 +186,8 @@ impl MemoryDiagnosticsRuntime {
         let process = read_process_memory();
         let components = collect_component_snapshot(state).await;
         let managed_bytes = components.managed_bytes();
+        self.sampled_managed_bytes
+            .store(managed_bytes as u64, Ordering::Relaxed);
         info!(
             operation,
             elapsed_ms = baseline.started_at.elapsed().as_millis() as u64,
@@ -211,6 +212,8 @@ impl MemoryDiagnosticsRuntime {
         let process = read_process_memory();
         let components = collect_component_snapshot(state).await;
         let managed_bytes = components.managed_bytes();
+        self.sampled_managed_bytes
+            .store(managed_bytes as u64, Ordering::Relaxed);
         let unattributed_bytes = process.rss_anon_bytes.saturating_sub(managed_bytes as u64);
         self.peak_rss_bytes
             .fetch_max(process.rss_bytes, Ordering::Relaxed);

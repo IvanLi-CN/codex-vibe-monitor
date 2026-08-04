@@ -396,6 +396,7 @@ pub(crate) struct PendingBatch {
     estimated_bytes: usize,
     terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
+    retained_for_retry: bool,
 }
 
 impl PendingBatch {
@@ -669,6 +670,13 @@ impl PendingBatch {
 pub(crate) struct RetainedBatch {
     batch: PendingBatch,
     failed: bool,
+}
+
+impl RetainedBatch {
+    fn new(mut batch: PendingBatch, failed: bool) -> Self {
+        batch.retained_for_retry = true;
+        Self { batch, failed }
+    }
 }
 
 fn estimated_option_string_bytes(value: &Option<String>) -> usize {
@@ -1590,6 +1598,9 @@ async fn flush_pending_batch_accounted(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
+    if batch.retained_for_retry {
+        accounting.retry_deferred();
+    }
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
     let result = flush_pending_batch(
@@ -1697,10 +1708,7 @@ pub(crate) async fn flush_pending_batch(
                 );
                 batch.terminal_invocations = p1_batch.terminal_invocations;
                 batch.recalculate_estimates();
-                return Some(RetainedBatch {
-                    batch,
-                    failed: true,
-                });
+                return Some(RetainedBatch::new(batch, true));
             }
         }
     }
@@ -1722,10 +1730,7 @@ pub(crate) async fn flush_pending_batch(
                     p2_deferred_count = batch.logical_rows(),
                     "sqlite batch writer deferred P2 flush because pressure gate is closed"
                 );
-                return Some(RetainedBatch {
-                    batch,
-                    failed: false,
-                });
+                return Some(RetainedBatch::new(batch, false));
             }
         }
     };
@@ -1754,10 +1759,7 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            return Some(RetainedBatch {
-                batch,
-                failed: true,
-            });
+            return Some(RetainedBatch::new(batch, true));
         }
     };
     drop(permit);
@@ -1797,10 +1799,7 @@ pub(crate) async fn flush_pending_batch(
     if deferred_batch.is_empty() {
         None
     } else {
-        Some(RetainedBatch {
-            batch: deferred_batch,
-            failed: false,
-        })
+        Some(RetainedBatch::new(deferred_batch, false))
     }
 }
 
@@ -2328,7 +2327,25 @@ mod tests {
         let snapshot = accounting.snapshot();
         assert_eq!(snapshot.pending_depth, retained.batch.logical_rows());
         assert_eq!(snapshot.pending_bytes, submitted_bytes);
+        assert_eq!(snapshot.retry_count, 0);
         assert_eq!(snapshot.state, "healthy");
+
+        let retried = flush_pending_batch_accounted(
+            &accounting,
+            &pool,
+            retained.batch,
+            FlushReason::Interval,
+            None,
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(std::sync::Mutex::new(None)),
+        )
+        .await
+        .expect("failed retained batch should remain available after retry");
+        assert!(retried.failed);
+        assert_eq!(accounting.snapshot().retry_count, 1);
     }
 
     #[tokio::test]
