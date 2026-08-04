@@ -387,6 +387,22 @@ PR: include
 - state: a legacy event explicitly says candidate scores were not recorded and the comparison cannot be verified.
 - evidence_note: proves historical data is not retroactively reconstructed from current account health.
 
+PR: include
+![Routing event with an explicit invocation-record link](./assets/routing-decision-invocation-link.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: none
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `PromptCacheConversationTable/DrawerOperations`
+- state: the routing event exposes a separate corresponding-invocation link carrying the exact attempt and invoke IDs.
+- evidence_note: proves the operator can distinguish the routing-decision link from the exact Records invocation target.
+
 ### Dashboard Bulk Actions (Web Demo)
 
 ![Dashboard bulk action bar and selected conversation card](./assets/dashboard-bulk-actions-selection-panel-web-demo.png)

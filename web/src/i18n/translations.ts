@@ -2327,6 +2327,8 @@ const baseTranslations = {
       "Trigger attempt: {{attemptId}}",
     "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
       "View routing decision: {{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecord":
+      "View corresponding invocation: {{id}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "First successful request established this Sticky target.",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
@@ -5141,6 +5143,8 @@ const baseTranslations = {
     "live.conversations.drawer.operations.routingContext.triggerAttempt": "触发尝试：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
       "查看选路决策：{{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.invocationRecord":
+      "查看对应调用记录：{{id}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "首个成功请求已建立此 Sticky 目标。",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":

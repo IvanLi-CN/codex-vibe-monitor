@@ -2487,6 +2487,11 @@ export const DrawerOperations: Story = {
       documentScope.getByRole("link", { name: /查看选路决策|View routing decision/i }),
     ).toHaveAttribute("href", "/records?attemptId=SUCCESS32&invokeId=invoke-short-32");
     await expect(
+      documentScope.getByRole("link", {
+        name: /查看对应调用记录：invoke-short-32|View corresponding invocation: invoke-short-32/i,
+      }),
+    ).toHaveAttribute("href", "/records?attemptId=SUCCESS32&invokeId=invoke-short-32");
+    await expect(
       documentScope.getAllByText(/Sticky 目标已切换|Sticky target changed/i).length,
     ).toBe(1);
     await expect(

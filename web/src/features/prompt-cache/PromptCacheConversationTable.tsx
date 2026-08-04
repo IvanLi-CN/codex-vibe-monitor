@@ -530,6 +530,14 @@ function routingAttemptHref(event: PromptCacheConversationOperationEvent, attemp
   return `/records?${search.toString()}`;
 }
 
+function routingInvocationRecordHref(event: PromptCacheConversationOperationEvent) {
+  const search = new URLSearchParams();
+  const triggerAttemptId = event.routingContext?.triggerAttemptId;
+  if (triggerAttemptId) search.set("attemptId", triggerAttemptId);
+  if (event.invokeId) search.set("invokeId", event.invokeId);
+  return search.toString() ? `/records?${search.toString()}` : null;
+}
+
 function conversationOperationShowsRoutingReason(event: PromptCacheConversationOperationEvent) {
   return (
     event.routingContext != null ||
@@ -3773,6 +3781,16 @@ export function PromptCacheConversationHistoryDrawer({
                       attemptId: event.routingContext.triggerAttemptId,
                     },
                   )}
+                </Link>
+              ) : null}
+              {routingInvocationRecordHref(event) ? (
+                <Link
+                  className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+                  to={routingInvocationRecordHref(event) ?? "#"}
+                >
+                  {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
+                    id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+                  })}
                 </Link>
               ) : null}
             </div>

@@ -2909,6 +2909,12 @@ describe("PromptCacheConversationTable", () => {
       link.textContent?.includes("查看选路决策：SUCCESS42"),
     );
     expect(routingDecisionLink?.getAttribute("href")).toContain("attemptId=SUCCESS42");
+    const invocationRecordLink = Array.from(document.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("查看对应调用记录：inv-op-42"),
+    );
+    expect(invocationRecordLink?.getAttribute("href")).toBe(
+      "/records?attemptId=SUCCESS42&invokeId=inv-op-42",
+    );
     expect(document.body.textContent).toContain("正向代理相关");
 
     const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>
