@@ -34,6 +34,15 @@ pub(crate) struct ProcessMemorySnapshot {
     pub(crate) cgroup_limit_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeMemoryPressureSnapshot {
+    pub(crate) process: ProcessMemorySnapshot,
+    pub(crate) managed_bytes: u64,
+    pub(crate) unattributed_anon_bytes: u64,
+    pub(crate) pressure_level: String,
+    pub(crate) malloc_arena_max: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MemoryComponentEstimate {
     pub(crate) entries: usize,
@@ -129,7 +138,7 @@ impl MemoryDiagnosticsRuntime {
                 .unwrap_or_else(|_| "summary".to_string())
                 .trim()
                 .to_ascii_lowercase(),
-            last_sample: Mutex::new(None),
+            last_sample: Mutex::new(Some(read_process_memory())),
             peak_rss_bytes: AtomicU64::new(0),
             high_unattributed_samples: AtomicUsize::new(0),
             allocator_once_attempted: AtomicBool::new(false),
@@ -141,6 +150,29 @@ impl MemoryDiagnosticsRuntime {
             started_at: Instant::now(),
             process: read_process_memory(),
             managed_bytes: collect_component_snapshot(state).await.managed_bytes(),
+        }
+    }
+
+    pub(crate) async fn runtime_pressure_snapshot(
+        &self,
+        state: &AppState,
+    ) -> RuntimeMemoryPressureSnapshot {
+        let process = self
+            .last_sample
+            .lock()
+            .ok()
+            .and_then(|sample| *sample)
+            .unwrap_or_default();
+        let managed_bytes = collect_component_snapshot(state).await.managed_bytes() as u64;
+        RuntimeMemoryPressureSnapshot {
+            process,
+            managed_bytes,
+            unattributed_anon_bytes: process.rss_anon_bytes.saturating_sub(managed_bytes),
+            pressure_level: memory_pressure_level(process, managed_bytes as usize).to_string(),
+            malloc_arena_max: env::var("MALLOC_ARENA_MAX")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "unknown".to_string()),
         }
     }
 

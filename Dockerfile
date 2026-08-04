@@ -85,6 +85,7 @@ ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
     STATIC_DIR=/srv/app/web \
     POLL_INTERVAL_SECS=10 \
     REQUEST_TIMEOUT_SECS=60 \
+    MALLOC_ARENA_MAX=8 \
     APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 
 LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
