@@ -418,7 +418,7 @@ fn build_local_capture_error_resp_raw(envelope: &ProxyErrorResponseEnvelope) -> 
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_pre_attempt_proxy_capture_error(
-    state: &AppState,
+    state: Arc<AppState>,
     proxy_request_id: u64,
     capture_started: Instant,
     invoke_id: &str,
@@ -430,7 +430,8 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     sticky_key: Option<&str>,
     prompt_cache_key: Option<&str>,
     client_attribution_context: &ClientPromptCacheAttributionContext,
-    request_body_for_capture: Bytes,
+    request_body_for_capture: Option<Bytes>,
+    request_body_snapshot: PoolReplayBodySnapshot,
     request_body_logging_enabled: bool,
     t_req_read_ms: f64,
     t_req_parse_ms: f64,
@@ -446,13 +447,22 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
 ) -> bool {
     let response_envelope = response_envelope_override
         .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
-    let req_raw = spawn_raw_payload_file_write(
-        state,
-        invoke_id,
-        "request",
-        request_body_for_capture,
-        request_body_logging_enabled,
-    )
+    let req_raw = match request_body_for_capture {
+        Some(bytes) => spawn_raw_payload_file_write(
+            state.as_ref(),
+            invoke_id,
+            "request",
+            bytes,
+            request_body_logging_enabled,
+        ),
+        None => spawn_raw_payload_snapshot_write(
+            state.clone(),
+            invoke_id,
+            "request",
+            request_body_snapshot,
+            request_body_logging_enabled,
+        ),
+    }
     .finish()
     .await;
     let usage = ParsedUsage::default();
@@ -582,7 +592,9 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             t_persist_ms: 0.0,
         },
     };
-    if let Err(err) = persist_and_broadcast_proxy_capture(state, capture_started, record).await {
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
+    {
         warn!(
             proxy_request_id,
             error = %err,
@@ -887,151 +899,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             "openai proxy capture request body read completed"
         );
     }
-    let request_body_bytes = match request_body_snapshot.into_vec().await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            drop(proxy_request_permit);
-            let status = StatusCode::BAD_GATEWAY;
-            let message = format!("failed to materialize captured request body: {err}");
-            let response_envelope =
-                build_local_capture_error_envelope(&invoke_id, status, &message);
-            let request_info = RequestCaptureInfo::default();
-            let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
-                &state.pricing_catalog,
-                None,
-                &usage,
-                None,
-                ProxyPricingMode::ResponseTier,
-            )
-            .await;
-            let req_raw = RawPayloadMeta::default();
-            let record = ProxyCaptureRecord {
-                invoke_id,
-                occurred_at,
-                model: None,
-                usage,
-                cost,
-                cost_breakdown: None,
-                cost_estimated,
-                price_version,
-                status: "http_502".to_string(),
-                error_message: Some(message.clone()),
-                failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
-                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
-                    target: capture_target,
-                    status,
-                    is_stream: request_info.is_stream,
-                    request_contains_encrypted_content: request_info.contains_encrypted_content,
-                    response_contains_encrypted_content: false,
-                    compaction_request_kind: request_info.compaction_request_kind,
-                    compaction_response_kind: None,
-                    image_intent: request_info.image_intent.as_deref(),
-                    request_model: request_info.model.as_deref(),
-                    requested_service_tier: request_info.requested_service_tier.as_deref(),
-                    billing_service_tier: None,
-                    reasoning_effort: request_info.reasoning_effort.as_deref(),
-                    response_model: None,
-                    usage_missing_reason: None,
-                    request_parse_error: Some("request_body_snapshot_materialize_failed"),
-                    request_compression_algorithm: None,
-                    request_compression_mode: None,
-                    request_compression_logical_body_bytes: None,
-                    request_compression_transmitted_body_bytes: None,
-                    request_compression_transmission_complete: None,
-                    failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
-                    requester_ip: requester_ip.as_deref(),
-                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                    upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-                    route_mode: INVOCATION_ROUTE_MODE_POOL,
-                    sticky_key: header_sticky_key.as_deref(),
-                    prompt_cache_key: header_prompt_cache_key.as_deref(),
-                    prompt_cache_key_attribution_source: header_prompt_cache_key
-                        .as_ref()
-                        .map(|_| "request"),
-                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                    client_header_fingerprints: Some(
-                        &client_attribution_context.header_fingerprints,
-                    )
-                    .filter(|fingerprints| !fingerprints.is_empty()),
-                    upstream_account_id: None,
-                    upstream_account_name: None,
-                    upstream_account_kind: None,
-                    upstream_base_url_host: None,
-                    oauth_account_header_attached: None,
-                    oauth_account_id_shape: None,
-                    oauth_forwarded_header_count: None,
-                    oauth_forwarded_header_names: None,
-                    oauth_fingerprint_version: None,
-                    oauth_forwarded_header_fingerprints: None,
-                    oauth_prompt_cache_header_forwarded: None,
-                    oauth_request_body_prefix_fingerprint: None,
-                    oauth_request_body_prefix_bytes: None,
-                    oauth_request_body_snapshot_kind: Some(request_body_snapshot_kind),
-                    oauth_responses_body_mode: None,
-                    oauth_responses_rewrite: None,
-                    service_tier: None,
-                    stream_terminal_event: None,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    downstream_status_code: Some(status),
-                    downstream_error_message: Some(message.as_str()),
-                    upstream_request_id: None,
-                    response_content_encoding: None,
-                    stream_failure_origin: None,
-                    upstream_read_error_kind: None,
-                    content_encoding_chain: None,
-                    forwarded_chunk_count: None,
-                    forwarded_bytes: None,
-                    usage_observed: None,
-                    downstream_close_phase: None,
-                    downstream_write_error_kind: None,
-                    last_upstream_chunk_gap_ms: None,
-                    upstream_approx_upload_bytes: None,
-                    upstream_approx_download_bytes: None,
-                    proxy_display_name: None,
-                    proxy_weight_delta: None,
-                    pool_attempt_count: None,
-                    pool_distinct_account_count: None,
-                    pool_attempt_terminal_reason: None,
-                    blocked_binding: None,
-                })),
-                raw_response: response_envelope.body_text.clone(),
-                response_body_preview_enabled: true,
-                req_raw,
-                resp_raw: build_local_capture_error_resp_raw(&response_envelope),
-                timings: StageTimings {
-                    t_total_ms: 0.0,
-                    t_req_read_ms,
-                    t_req_parse_ms: 0.0,
-                    t_upstream_connect_ms: 0.0,
-                    t_upstream_ttfb_ms: 0.0,
-                    first_token_ms: None,
-                    t_upstream_stream_ms: 0.0,
-                    t_resp_parse_ms: 0.0,
-                    t_persist_ms: 0.0,
-                },
-            };
-            let terminal_invocation_persisted =
-                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record)
-                    .await
-                    .is_ok();
-            if terminal_invocation_persisted {
-                disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
-            }
-            return Err((status, message));
-        }
-    };
-
     let req_parse_started = Instant::now();
-    let (upstream_body, mut request_info, body_rewritten) = prepare_target_request_body(
+    let semantic_projection = project_request_semantics(
+        proxy_request_id,
+        request_body_snapshot.clone(),
         capture_target,
-        request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
+    )
+    .await;
+    debug!(
+        proxy_request_id,
+        pipeline_mode = ?request_semantic_pipeline_mode(),
+        json_parse_count = semantic_projection.json_parse_count,
+        whole_body_materialization_count = semantic_projection.whole_body_materialization_count,
+        materialization_bytes = semantic_projection.materialization_bytes,
+        peak_business_buffer_bytes = semantic_projection.peak_business_buffer_bytes,
+        parse_elapsed_ms = semantic_projection.parse_elapsed_ms,
+        "proxy request semantic projection completed"
     );
+    let mut request_info = semantic_projection.request_info.clone();
+    let body_rewritten = semantic_projection.body_rewritten;
     let mut prompt_cache_key = request_info
         .prompt_cache_key
         .clone()
@@ -1084,7 +971,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let status = StatusCode::BAD_GATEWAY;
                 let message = format!("failed to resolve prompt cache conversation binding: {err}");
                 let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.as_ref(),
+                    state.clone(),
                     proxy_request_id,
                     capture_started,
                     &invoke_id,
@@ -1096,7 +983,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     &client_attribution_context,
-                    Bytes::from(upstream_body.clone()),
+                    semantic_projection.request_body_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                     t_req_read_ms,
                     elapsed_ms(req_parse_started),
@@ -1133,7 +1021,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let message =
                     format!("failed to resolve prompt cache conversation overrides: {err}");
                 let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.as_ref(),
+                    state.clone(),
                     proxy_request_id,
                     capture_started,
                     &invoke_id,
@@ -1145,7 +1033,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     &client_attribution_context,
-                    Bytes::from(upstream_body.clone()),
+                    semantic_projection.request_body_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                     t_req_read_ms,
                     elapsed_ms(req_parse_started),
@@ -1179,10 +1068,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         request_model: request_info.model.clone(),
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
-    let upstream_body_bytes = Bytes::from(upstream_body);
-    let base_request_bytes_for_capture = upstream_body_bytes.clone();
-    let upstream_body_snapshot =
-        pool_replay_snapshot_from_bytes(proxy_request_id, upstream_body_bytes.clone()).await;
+    let upstream_body_snapshot = semantic_projection.upstream_snapshot.clone();
 
     let initial_running_record = build_running_proxy_capture_record(
         &invoke_id,
@@ -1228,6 +1114,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         pool_route_active.then(|| PoolAttemptRuntimeSnapshotContext {
             capture_target,
             request_info: request_info.clone(),
+            hosted_image_intent: Some(semantic_projection.hosted_image_intent),
             prompt_cache_key: prompt_cache_key.clone(),
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
@@ -1317,17 +1204,22 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .requested_service_tier
                     .clone()
                     .or(request_info.requested_service_tier);
-                let request_body_for_capture = err
-                    .request_body_for_capture
-                    .clone()
-                    .unwrap_or_else(|| base_request_bytes_for_capture.clone());
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
-                    &invoke_id,
-                    "request",
-                    request_body_for_capture,
-                    proxy_settings.request_body_logging_enabled,
-                )
+                let req_raw = match err.request_body_for_capture.clone() {
+                    Some(bytes) => spawn_raw_payload_file_write(
+                        state.as_ref(),
+                        &invoke_id,
+                        "request",
+                        bytes,
+                        proxy_settings.request_body_logging_enabled,
+                    ),
+                    None => spawn_raw_payload_snapshot_write(
+                        state.clone(),
+                        &invoke_id,
+                        "request",
+                        semantic_projection.upstream_snapshot.clone(),
+                        proxy_settings.request_body_logging_enabled,
+                    ),
+                }
                 .finish()
                 .await;
                 let usage = ParsedUsage::default();
@@ -1554,7 +1446,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Method::POST,
             target_url,
             &upstream_headers,
-            Some(upstream_body_bytes.clone()),
+            Some(upstream_body_snapshot.clone()),
             Some(UpstreamTrafficReporter::new(
                 state.clone(),
                 invoke_id.as_str(),
@@ -1587,7 +1479,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.attempt_started_at),
                 None,
                 response.http_approx,
-                Some(base_request_bytes_for_capture.clone()),
+                semantic_projection.request_body_for_capture.clone(),
                 request_info.requested_service_tier.clone(),
                 None,
                 response.response,
@@ -1597,11 +1489,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let response_envelope =
                     build_local_capture_error_envelope(&invoke_id, err.status, &err.message);
                 drop(proxy_request_permit);
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
+                let req_raw = spawn_raw_payload_snapshot_write(
+                    state.clone(),
                     &invoke_id,
                     "request",
-                    base_request_bytes_for_capture.clone(),
+                    semantic_projection.upstream_snapshot.clone(),
                     proxy_settings.request_body_logging_enabled,
                 )
                 .finish()
@@ -1786,15 +1678,22 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             account.image_tool_rewrite_mode,
         )
     });
-    let mut req_raw_pending = Some(spawn_raw_payload_file_write(
-        state.as_ref(),
-        &invoke_id,
-        "request",
-        final_request_body_for_capture
-            .clone()
-            .unwrap_or_else(|| base_request_bytes_for_capture.clone()),
-        proxy_settings.request_body_logging_enabled,
-    ));
+    let mut req_raw_pending = Some(match final_request_body_for_capture.clone() {
+        Some(bytes) => spawn_raw_payload_file_write(
+            state.as_ref(),
+            &invoke_id,
+            "request",
+            bytes,
+            proxy_settings.request_body_logging_enabled,
+        ),
+        None => spawn_raw_payload_snapshot_write(
+            state.clone(),
+            &invoke_id,
+            "request",
+            semantic_projection.upstream_snapshot.clone(),
+            proxy_settings.request_body_logging_enabled,
+        ),
+    });
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(

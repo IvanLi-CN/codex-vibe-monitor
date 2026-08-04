@@ -4302,6 +4302,43 @@ pub(crate) fn spawn_raw_payload_file_write(
     }))
 }
 
+pub(crate) fn spawn_raw_payload_snapshot_write(
+    state: Arc<AppState>,
+    invoke_id: &str,
+    kind: &'static str,
+    snapshot: PoolReplayBodySnapshot,
+    enabled: bool,
+) -> PendingRawPayloadWrite {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => PendingRawPayloadWrite::Ready(RawPayloadMeta::default()),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            spawn_raw_payload_file_write(state.as_ref(), invoke_id, kind, bytes, enabled)
+        }
+        PoolReplayBodySnapshot::File { size, .. } if !enabled => {
+            PendingRawPayloadWrite::Ready(RawPayloadMeta {
+                path: None,
+                size_bytes: size as i64,
+                truncated: false,
+                truncated_reason: None,
+            })
+        }
+        PoolReplayBodySnapshot::File { temp_file, size } => {
+            let config = state.config.clone();
+            let semaphore = state.proxy_raw_async_semaphore.clone();
+            let invoke_id = invoke_id.to_string();
+            let source_path = temp_file.path.clone();
+            PendingRawPayloadWrite::Task(tokio::spawn(async move {
+                let _temp_file_guard = temp_file;
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .expect("raw writer semaphore is live");
+                store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size).await
+            }))
+        }
+    }
+}
+
 pub(crate) fn raw_payload_path_for_kind(
     raw_dir: &Path,
     invoke_id: &str,
