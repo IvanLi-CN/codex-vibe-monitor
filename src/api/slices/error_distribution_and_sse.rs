@@ -2159,6 +2159,32 @@ mod tests {
     }
 
     #[test]
+    fn runtime_projection_build_does_not_extend_next_fixed_deadline() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let started_at = Instant::now();
+        hub.mark_dashboard_dirty_at("runtime_upsert", started_at);
+        let pending = hub
+            .pending_dashboard_publish_window()
+            .expect("first mutation should establish a publish window");
+        let building = hub
+            .begin_dashboard_publish_window(pending)
+            .expect("pending window should begin building");
+        let mutation_during_build = started_at + Duration::from_millis(300);
+
+        hub.mark_dashboard_dirty_at("network_delta", mutation_during_build);
+        let next_deadline = hub
+            .pending_dashboard_deadline()
+            .expect("mutation during build should establish the next deadline");
+        hub.complete_dashboard_publish_window(building);
+
+        assert_eq!(
+            next_deadline,
+            mutation_during_build + DASHBOARD_RUNTIME_PROJECTION_COALESCE
+        );
+        assert_eq!(hub.pending_dashboard_deadline(), Some(next_deadline));
+    }
+
+    #[test]
     fn terminal_rollback_marks_runtime_projection_dirty() {
         let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
         let record = live_record("terminal-rollback", Some(42), "success", None, 1);
@@ -2170,6 +2196,19 @@ mod tests {
 
         assert!(hub.clear_terminal_tombstone(&invoke_id, &occurred_at));
         assert_eq!(hub.dashboard_generation(), generation_before_rollback + 1);
+    }
+
+    #[test]
+    fn persisted_terminal_tombstone_insert_and_refresh_mark_projection_dirty() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let generation_before_insert = hub.dashboard_generation();
+
+        assert!(!hub.remove_persisted_terminal_overlay("persisted", "2026-08-04 12:00:00"));
+        assert_eq!(hub.dashboard_generation(), generation_before_insert + 1);
+
+        let generation_before_refresh = hub.dashboard_generation();
+        assert!(!hub.remove_persisted_terminal_overlay("persisted", "2026-08-04 12:00:00"));
+        assert_eq!(hub.dashboard_generation(), generation_before_refresh + 1);
     }
 
     #[test]
@@ -2237,6 +2276,7 @@ mod tests {
                 wait_ms: restored.t_upstream_ttfb_ms,
             }],
             source_scope: InvocationSourceScope::All,
+            network_open_buckets: HashMap::new(),
         };
         hub.install_persistence_baseline_if_generation(
             baseline_snapshot,
@@ -2280,6 +2320,128 @@ mod tests {
             .expect("terminal delta should remove its restored row");
         assert_eq!(terminal.snapshot.in_progress_invocation_count, 1);
         assert_eq!(terminal.snapshot.in_progress_phase_counts.responding, 1);
+    }
+
+    #[test]
+    fn runtime_projection_merges_restored_network_bucket_without_double_counting() {
+        let now = Utc::now();
+        let cache = Arc::new(DashboardNetworkSpeedCache::new(now));
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.bind_dashboard_network_speed_cache(cache.clone())
+            .expect("bind dashboard network cache");
+        let global_at_install = cache.snapshot_open_bucket(DashboardNetworkScopeKey::Global, now);
+        let account_at_install =
+            cache.snapshot_open_bucket(DashboardNetworkScopeKey::Account(42), now);
+        let global_baseline_totals = DashboardNetworkByteTotals {
+            upload_bytes: 120,
+            download_bytes: 240,
+        };
+        let account_baseline_totals = DashboardNetworkByteTotals {
+            upload_bytes: 80,
+            download_bytes: 160,
+        };
+        let mut baseline_snapshot = build_dashboard_activity_live_snapshot(0, Vec::new());
+        baseline_snapshot.network_live_bucket =
+            Some(build_dashboard_network_timeseries_point_response(
+                global_at_install.bucket_start,
+                global_at_install.bucket_end,
+                global_baseline_totals,
+                ExactUtcRange {
+                    start: global_at_install.bucket_start,
+                    end: now,
+                },
+                true,
+            ));
+        let baseline = DashboardRuntimeProjectionBaseline {
+            records: Vec::new(),
+            source_scope: InvocationSourceScope::All,
+            network_open_buckets: HashMap::from([
+                (
+                    DashboardNetworkScopeKey::Global,
+                    DashboardRuntimeNetworkOpenBucketBaseline {
+                        bucket_start: global_at_install.bucket_start,
+                        bucket_end: global_at_install.bucket_end,
+                        baseline_totals: global_baseline_totals,
+                        memory_totals_at_install: global_at_install.totals,
+                    },
+                ),
+                (
+                    DashboardNetworkScopeKey::Account(42),
+                    DashboardRuntimeNetworkOpenBucketBaseline {
+                        bucket_start: account_at_install.bucket_start,
+                        bucket_end: account_at_install.bucket_end,
+                        baseline_totals: account_baseline_totals,
+                        memory_totals_at_install: account_at_install.totals,
+                    },
+                ),
+            ]),
+        };
+        hub.install_persistence_baseline_if_generation(
+            baseline_snapshot,
+            baseline,
+            "startup_restore",
+            hub.dashboard_generation(),
+        )
+        .expect("install startup baseline")
+        .expect("baseline generation should match");
+
+        cache.record_request_bytes(
+            "network-delta",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            30,
+            now,
+        );
+        cache.record_response_chunk_bytes(
+            "network-delta",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            60,
+            now,
+        );
+        hub.mark_dashboard_dirty_at("network_delta", Instant::now());
+
+        let first = hub
+            .capture_memory_snapshot()
+            .expect("merged network projection snapshot");
+        let second = hub
+            .capture_memory_snapshot()
+            .expect("unchanged merged network projection snapshot");
+
+        let global = first
+            .snapshot
+            .network_live_bucket
+            .as_ref()
+            .expect("global live bucket");
+        assert_eq!(global.upload_bytes, 150);
+        assert_eq!(global.download_bytes, 300);
+        let account = first
+            .snapshot
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(42))
+            .and_then(|account| account.network_live_bucket.as_ref())
+            .expect("account live bucket");
+        assert_eq!(account.upload_bytes, 110);
+        assert_eq!(account.download_bytes, 220);
+        let second_global = second
+            .snapshot
+            .network_live_bucket
+            .as_ref()
+            .expect("second global live bucket");
+        assert_eq!(second_global.upload_bytes, 150);
+        assert_eq!(second_global.download_bytes, 300);
+        let second_account = second
+            .snapshot
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(42))
+            .and_then(|account| account.network_live_bucket.as_ref())
+            .expect("second account live bucket");
+        assert_eq!(second_account.upload_bytes, 110);
+        assert_eq!(second_account.download_bytes, 220);
     }
 
     #[tokio::test]
@@ -2827,7 +2989,12 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     let pending_window = state
         .proxy_runtime_invocations
-        .pending_dashboard_publish_window();
+        .pending_dashboard_publish_window()
+        .and_then(|window| {
+            state
+                .proxy_runtime_invocations
+                .begin_dashboard_publish_window(window)
+        });
     let capture = capture_dashboard_activity_live_snapshot_with_outcome(state).await?;
     if let Some(window) = pending_window {
         state
@@ -3194,29 +3361,31 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
 ) -> DashboardActivityLiveSnapshot {
     let now = Utc::now();
-    let source_scope = baseline
-        .as_ref()
-        .map_or(InvocationSourceScope::All, |baseline| baseline.source_scope);
-    let mut projection_records = baseline
-        .map(|baseline| {
-            baseline
-                .records
-                .into_iter()
-                .map(|record| {
-                    (
-                        record.key,
-                        DashboardProjectionInvocation {
-                            upstream_account_id: record.upstream_account_id,
-                            upstream_account_name: record.upstream_account_name,
-                            is_retry: record.is_retry,
-                            live_phase: record.live_phase,
-                            wait_ms: record.wait_ms,
-                        },
-                    )
-                })
-                .collect::<HashMap<_, _>>()
+    let (source_scope, baseline_records, network_open_buckets) = baseline.map_or_else(
+        || (InvocationSourceScope::All, Vec::new(), HashMap::new()),
+        |baseline| {
+            (
+                baseline.source_scope,
+                baseline.records,
+                baseline.network_open_buckets,
+            )
+        },
+    );
+    let mut projection_records = baseline_records
+        .into_iter()
+        .map(|record| {
+            (
+                record.key,
+                DashboardProjectionInvocation {
+                    upstream_account_id: record.upstream_account_id,
+                    upstream_account_name: record.upstream_account_name,
+                    is_retry: record.is_retry,
+                    live_phase: record.live_phase,
+                    wait_ms: record.wait_ms,
+                },
+            )
         })
-        .unwrap_or_default();
+        .collect::<HashMap<_, _>>();
     for key in &terminal_tombstones {
         projection_records.remove(key);
     }
@@ -3277,6 +3446,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
         account.download_bytes_per_second = rate.download_bytes_per_second;
         account.network_live_bucket = Some(dashboard_network_live_bucket_from_memory(
             dashboard_network_speed_cache,
+            &network_open_buckets,
             DashboardNetworkScopeKey::account_scope(account.upstream_account_id),
             now,
         ));
@@ -3301,6 +3471,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
             download_bytes_per_second: rate.download_bytes_per_second,
             network_live_bucket: Some(dashboard_network_live_bucket_from_memory(
                 dashboard_network_speed_cache,
+                &network_open_buckets,
                 DashboardNetworkScopeKey::account_scope(upstream_account_id),
                 now,
             )),
@@ -3311,6 +3482,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
         .sort_by(|left, right| left.account_key.cmp(&right.account_key));
     snapshot.network_live_bucket = Some(dashboard_network_live_bucket_from_memory(
         dashboard_network_speed_cache,
+        &network_open_buckets,
         DashboardNetworkScopeKey::Global,
         now,
     ));
@@ -3324,14 +3496,39 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
 
 fn dashboard_network_live_bucket_from_memory(
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    network_open_buckets: &HashMap<
+        DashboardNetworkScopeKey,
+        DashboardRuntimeNetworkOpenBucketBaseline,
+    >,
     scope: DashboardNetworkScopeKey,
     now: DateTime<Utc>,
 ) -> DashboardNetworkTimeseriesPointResponse {
     let snapshot = dashboard_network_speed_cache.snapshot_open_bucket(scope, now);
+    let totals = network_open_buckets
+        .get(&scope)
+        .filter(|baseline| {
+            baseline.bucket_start == snapshot.bucket_start
+                && baseline.bucket_end == snapshot.bucket_end
+        })
+        .map(|baseline| {
+            let mut totals = baseline.baseline_totals;
+            totals.add_assign(DashboardNetworkByteTotals {
+                upload_bytes: snapshot
+                    .totals
+                    .upload_bytes
+                    .saturating_sub(baseline.memory_totals_at_install.upload_bytes),
+                download_bytes: snapshot
+                    .totals
+                    .download_bytes
+                    .saturating_sub(baseline.memory_totals_at_install.download_bytes),
+            });
+            totals
+        })
+        .unwrap_or(snapshot.totals);
     build_dashboard_network_timeseries_point_response(
         snapshot.bucket_start,
         snapshot.bucket_end,
-        snapshot.totals,
+        totals,
         ExactUtcRange {
             start: snapshot.bucket_start,
             end: now.min(snapshot.bucket_end),
@@ -3425,6 +3622,11 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                 }
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(window.deadline)) => {}
             }
+
+            let Some(window) = proxy_runtime_invocations.begin_dashboard_publish_window(window)
+            else {
+                continue;
+            };
 
             let sent_seq = latest_seq.load(Ordering::Acquire);
             let has_active_subscribers = subscription_hub

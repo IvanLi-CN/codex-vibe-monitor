@@ -146,6 +146,16 @@ pub(crate) struct DashboardRuntimeBaselineRecord {
 pub(crate) struct DashboardRuntimeProjectionBaseline {
     pub(crate) records: Vec<DashboardRuntimeBaselineRecord>,
     pub(crate) source_scope: InvocationSourceScope,
+    pub(crate) network_open_buckets:
+        HashMap<DashboardNetworkScopeKey, DashboardRuntimeNetworkOpenBucketBaseline>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DashboardRuntimeNetworkOpenBucketBaseline {
+    pub(crate) bucket_start: DateTime<Utc>,
+    pub(crate) bucket_end: DateTime<Utc>,
+    pub(crate) baseline_totals: DashboardNetworkByteTotals,
+    pub(crate) memory_totals_at_install: DashboardNetworkByteTotals,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -270,18 +280,27 @@ impl RuntimeProjectionHub {
         })
     }
 
+    pub(crate) fn begin_dashboard_publish_window(
+        &self,
+        window: DashboardProjectionPublishWindow,
+    ) -> Option<DashboardProjectionPublishWindow> {
+        let mut dashboard = self.dashboard.lock().ok()?;
+        if dashboard.pending_deadline != Some(window.deadline) {
+            return None;
+        }
+        dashboard.pending_deadline = None;
+        Some(DashboardProjectionPublishWindow {
+            deadline: window.deadline,
+            generation: dashboard.dirty_generation,
+        })
+    }
+
     pub(crate) fn complete_dashboard_publish_window(
         &self,
         window: DashboardProjectionPublishWindow,
     ) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        if dashboard.dirty_generation == window.generation {
-            dashboard.pending_deadline = None;
-        } else {
-            dashboard.pending_deadline =
-                Some(Instant::now() + DASHBOARD_RUNTIME_PROJECTION_COALESCE);
+        if let Ok(dashboard) = self.dashboard.lock() {
+            debug_assert!(dashboard.dirty_generation >= window.generation);
         }
     }
 
@@ -744,9 +763,7 @@ impl RuntimeProjectionHub {
         guard.terminal_tombstones.insert(key, now);
         let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
         drop(guard);
-        if removed {
-            self.mark_dashboard_dirty("terminal_persisted");
-        }
+        self.mark_dashboard_dirty("terminal_persisted");
         removed
     }
 

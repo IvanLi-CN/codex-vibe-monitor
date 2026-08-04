@@ -11719,6 +11719,7 @@ pub(crate) async fn query_dashboard_runtime_projection_baseline(
             })
             .collect(),
         source_scope,
+        network_open_buckets: HashMap::new(),
     })
 }
 
@@ -11872,7 +11873,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_with_baseline_from_ru
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
     flush_dashboard_network_socket_minute_rollups(pool, dashboard_network_speed_cache, now).await?;
-    let baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
+    let mut baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
     let counts = query_upstream_account_in_progress_counts_with_baseline(
         pool,
         proxy_runtime_invocations,
@@ -11959,6 +11960,47 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_with_baseline_from_ru
     }
     accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
 
+    let global_live_bucket = load_dashboard_network_live_bucket_point(
+        pool,
+        dashboard_network_speed_cache,
+        source_scope,
+        now,
+        DashboardNetworkScopeKey::Global,
+    )
+    .await?;
+    let mut network_open_buckets = HashMap::new();
+    for (upstream_account_id, live_bucket) in &live_buckets {
+        let scope = DashboardNetworkScopeKey::account_scope(*upstream_account_id);
+        let memory = dashboard_network_speed_cache.snapshot_open_bucket(scope, now);
+        network_open_buckets.insert(
+            scope,
+            DashboardRuntimeNetworkOpenBucketBaseline {
+                bucket_start: memory.bucket_start,
+                bucket_end: memory.bucket_end,
+                baseline_totals: DashboardNetworkByteTotals {
+                    upload_bytes: live_bucket.upload_bytes,
+                    download_bytes: live_bucket.download_bytes,
+                },
+                memory_totals_at_install: memory.totals,
+            },
+        );
+    }
+    let global_memory =
+        dashboard_network_speed_cache.snapshot_open_bucket(DashboardNetworkScopeKey::Global, now);
+    network_open_buckets.insert(
+        DashboardNetworkScopeKey::Global,
+        DashboardRuntimeNetworkOpenBucketBaseline {
+            bucket_start: global_memory.bucket_start,
+            bucket_end: global_memory.bucket_end,
+            baseline_totals: DashboardNetworkByteTotals {
+                upload_bytes: global_live_bucket.upload_bytes,
+                download_bytes: global_live_bucket.download_bytes,
+            },
+            memory_totals_at_install: global_memory.totals,
+        },
+    );
+    baseline.network_open_buckets = network_open_buckets;
+
     let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
     let mut in_progress_invocation_count = 0;
     let mut retry_invocation_count = 0;
@@ -11983,16 +12025,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_with_baseline_from_ru
             retry_invocation_count,
             in_progress_wait_sum_ms,
             in_progress_wait_sample_count,
-            network_live_bucket: Some(
-                load_dashboard_network_live_bucket_point(
-                    pool,
-                    dashboard_network_speed_cache,
-                    source_scope,
-                    now,
-                    DashboardNetworkScopeKey::Global,
-                )
-                .await?,
-            ),
+            network_live_bucket: Some(global_live_bucket),
             network_realtime_rate: Some(global_realtime_rate),
             accounts,
         },
