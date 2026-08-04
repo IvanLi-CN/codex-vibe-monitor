@@ -9,4 +9,5 @@
 - SQLite writer accounting 必须跨 P1/P2 ownership transfer 原子守恒；下溢属于 degraded health，而不是可忽略的 telemetry 异常。
 - 先使用 glibc `MALLOC_ARENA_MAX=8` 限制 allocator 保留，不在本阶段引入 jemalloc。
 - System Status 的运行压力诊断只读取内存计数器，避免诊断面反向制造数据库压力。
+- Issue #737 将 topic revision 固化为共享不可变 `Arc<SerializedTopicFrame>`；cache、replay、broadcast 与 subscriber 不再传递或深拷贝 JSON payload，且 byte-identical revision 不推进 cursor。
 - 阶段目标为 RSS p95 `2 GiB`，`1 GiB` 保留为后续软目标；不得为了达标降低并发或丢数据。

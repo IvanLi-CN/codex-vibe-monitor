@@ -15774,11 +15774,11 @@ fn dashboard_activity_topic_descriptor() -> SubscriptionTopicDescriptor {
 
 fn extract_subscription_snapshot_payload(prepared: PreparedSubscriptionConnection) -> Value {
     let mut initial = prepared.initial.into_iter();
-    match initial.next().expect("subscription snapshot event") {
-        SubscriptionEventEnvelope::Snapshot { payload, .. }
-        | SubscriptionEventEnvelope::Replay { payload, .. }
-        | SubscriptionEventEnvelope::Live { payload, .. } => payload,
-    }
+    initial
+        .next()
+        .expect("subscription snapshot event")
+        .frame
+        .payload_value()
 }
 
 #[tokio::test]

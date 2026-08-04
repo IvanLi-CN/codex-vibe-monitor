@@ -40,4 +40,11 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 - Runtime pressure health exposes projection mode/state, producer/subscriber state, live-path database reads, build count, revision, snapshot origin and last-good age without querying SQLite.
 - Tests cover 10,000 healthy mutations with zero live-path database reads, a current-state update p95 at or below 400 milliseconds, cold fallback and degraded last-good behavior.
 
+Immutable SSE delivery frames are implemented through `SerializedTopicFrame` for issue #737:
+
+- Each committed topic revision serializes its payload once and prebuilds compatible snapshot, replay and live envelope bytes.
+- Cache, replay retention, broadcaster and subscriber delivery share the same immutable `Arc<SerializedTopicFrame>`; subscriber count does not clone payload values or increase serialization count.
+- Byte-identical projections retain the current frame and cursor. Subscriber-free topics remain dirty and rebuild an authoritative snapshot when ownership returns.
+- Focused tests cover shared Arc identity, owner-count scaling, unchanged cursor suppression, replay compatibility and producer shutdown/reconnect behavior.
+
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
