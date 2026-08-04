@@ -51,6 +51,18 @@ impl MemoryComponentEstimate {
     }
 }
 
+fn signed_memory_delta(after: u64, before: u64) -> i64 {
+    if after >= before {
+        after.saturating_sub(before).try_into().unwrap_or(i64::MAX)
+    } else {
+        before
+            .saturating_sub(after)
+            .try_into()
+            .map(|delta: i64| -delta)
+            .unwrap_or(i64::MIN)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct MemoryComponentSnapshot {
     runtime_store: MemoryComponentEstimate,
@@ -147,11 +159,12 @@ impl MemoryDiagnosticsRuntime {
             operation,
             elapsed_ms = baseline.started_at.elapsed().as_millis() as u64,
             retained_bytes = managed_bytes,
-            retained_delta_bytes = managed_bytes.saturating_sub(baseline.managed_bytes),
+            retained_delta_bytes =
+                signed_memory_delta(managed_bytes as u64, baseline.managed_bytes as u64),
             peak_delta_bytes = process
                 .peak_rss_bytes
                 .saturating_sub(baseline.process.peak_rss_bytes),
-            rss_delta_bytes = process.rss_bytes.saturating_sub(baseline.process.rss_bytes),
+            rss_delta_bytes = signed_memory_delta(process.rss_bytes, baseline.process.rss_bytes),
             rss_bytes = process.rss_bytes,
             rss_anon_bytes = process.rss_anon_bytes,
             swap_bytes = process.swap_bytes,
@@ -200,7 +213,7 @@ impl MemoryDiagnosticsRuntime {
             managed_bytes,
             unattributed_anon_bytes = unattributed_bytes,
             rss_delta_bytes = sample_delta
-                .map(|previous| process.rss_bytes.saturating_sub(previous.rss_bytes))
+                .map(|previous| signed_memory_delta(process.rss_bytes, previous.rss_bytes))
                 .unwrap_or_default(),
             runtime_store_bytes = components.runtime_store.bytes,
             terminal_projection_bytes = components.terminal_projection.bytes,
@@ -520,5 +533,12 @@ mod tests {
             ..process
         };
         assert_eq!(memory_pressure_level(process, 0), "critical");
+    }
+
+    #[test]
+    fn signed_memory_delta_preserves_release_direction() {
+        assert_eq!(signed_memory_delta(20, 12), 8);
+        assert_eq!(signed_memory_delta(12, 20), -8);
+        assert_eq!(signed_memory_delta(12, 12), 0);
     }
 }

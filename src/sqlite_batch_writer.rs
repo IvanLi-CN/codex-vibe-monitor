@@ -164,6 +164,63 @@ pub(crate) struct PendingBatch {
 }
 
 impl PendingBatch {
+    fn add_estimate(&mut self, bytes: usize, is_terminal: bool) {
+        self.estimated_bytes = self.estimated_bytes.saturating_add(bytes);
+        if is_terminal {
+            self.terminal_estimated_bytes = self.terminal_estimated_bytes.saturating_add(bytes);
+        }
+    }
+
+    fn replace_estimate(&mut self, old_bytes: usize, new_bytes: usize, is_terminal: bool) {
+        self.estimated_bytes = self
+            .estimated_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        if is_terminal {
+            self.terminal_estimated_bytes = self
+                .terminal_estimated_bytes
+                .saturating_sub(old_bytes)
+                .saturating_add(new_bytes);
+        }
+    }
+
+    fn recalculate_estimates(&mut self) {
+        self.estimated_bytes = self
+            .terminal_invocations
+            .values()
+            .map(BatchedTerminalInvocationWrite::estimated_memory_bytes)
+            .sum::<usize>()
+            .saturating_add(
+                self.attempt_progress
+                    .values()
+                    .map(estimated_attempt_progress_memory_bytes)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.invocation_derived
+                    .values()
+                    .map(estimated_invocation_derived_memory_bytes)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.account_selected_touches
+                    .values()
+                    .map(estimated_account_selected_touch_memory_bytes)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.system_task_finishes
+                    .values()
+                    .map(estimated_system_task_finish_memory_bytes)
+                    .sum::<usize>(),
+            );
+        self.terminal_estimated_bytes = self
+            .terminal_invocations
+            .values()
+            .map(BatchedTerminalInvocationWrite::estimated_memory_bytes)
+            .sum();
+    }
+
     fn is_empty(&self) -> bool {
         self.terminal_invocations.is_empty()
             && self.attempt_progress.is_empty()
@@ -188,23 +245,19 @@ impl PendingBatch {
 
     fn push(&mut self, write: SqliteBatchWrite) {
         let now = Instant::now();
-        let is_terminal = matches!(&write, SqliteBatchWrite::TerminalInvocation(_));
         let write_bytes = write.estimated_memory_bytes();
-        self.estimated_bytes = self.estimated_bytes.saturating_add(write_bytes);
-        if is_terminal {
-            self.terminal_estimated_bytes =
-                self.terminal_estimated_bytes.saturating_add(write_bytes);
-        }
         self.oldest_at.get_or_insert(now);
         self.enqueued_rows += 1;
         match write {
             SqliteBatchWrite::TerminalInvocation(terminal) => {
                 let key = terminal.key();
-                match self.terminal_invocations.entry(key) {
+                let estimate_change = match self.terminal_invocations.entry(key) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(terminal);
+                        (0, write_bytes)
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let old_bytes = entry.get().estimated_memory_bytes();
                         let preserved_sequence = terminal
                             .dashboard_terminal_sequence
                             .or(entry.get().dashboard_terminal_sequence);
@@ -215,50 +268,82 @@ impl PendingBatch {
                             .extend(entry.get().terminal_projection_event_ids.iter().copied());
                         terminal.terminal_projection_event_ids.sort_unstable();
                         terminal.terminal_projection_event_ids.dedup();
+                        let new_bytes = terminal.estimated_memory_bytes();
                         entry.insert(terminal);
                         self.coalesced_rows += 1;
+                        (old_bytes, new_bytes)
                     }
+                };
+                if estimate_change.0 == 0 {
+                    self.add_estimate(estimate_change.1, true);
+                } else {
+                    self.replace_estimate(estimate_change.0, estimate_change.1, true);
                 }
             }
             SqliteBatchWrite::AttemptProgress(progress) => {
-                if self
-                    .attempt_progress
-                    .insert(progress.attempt_id, progress)
-                    .is_some()
-                {
+                let old = self.attempt_progress.insert(progress.attempt_id, progress);
+                if let Some(old) = old {
+                    self.replace_estimate(
+                        SqliteBatchWrite::AttemptProgress(old).estimated_memory_bytes(),
+                        write_bytes,
+                        false,
+                    );
                     self.coalesced_rows += 1;
+                } else {
+                    self.add_estimate(write_bytes, false);
                 }
             }
             SqliteBatchWrite::InvocationDerived(derived) => {
-                if self
+                let old = self
                     .invocation_derived
-                    .insert(derived.invocation_id, derived)
-                    .is_some()
-                {
+                    .insert(derived.invocation_id, derived);
+                if let Some(old) = old {
+                    self.replace_estimate(
+                        SqliteBatchWrite::InvocationDerived(old).estimated_memory_bytes(),
+                        write_bytes,
+                        false,
+                    );
                     self.coalesced_rows += 1;
+                } else {
+                    self.add_estimate(write_bytes, false);
                 }
             }
             SqliteBatchWrite::AccountSelectedTouch(touch) => {
+                let mut estimate_change = None;
                 match self.account_selected_touches.get_mut(&touch.account_id) {
                     Some(existing) => {
                         if existing.selected_at < touch.selected_at {
+                            let old_bytes = estimated_account_selected_touch_memory_bytes(existing);
                             *existing = touch;
+                            estimate_change = Some((old_bytes, write_bytes));
                         }
                         self.coalesced_rows += 1;
                     }
                     None => {
                         self.account_selected_touches
                             .insert(touch.account_id, touch);
+                        estimate_change = Some((0, write_bytes));
+                    }
+                }
+                if let Some((old_bytes, new_bytes)) = estimate_change {
+                    if old_bytes == 0 {
+                        self.add_estimate(new_bytes, false);
+                    } else {
+                        self.replace_estimate(old_bytes, new_bytes, false);
                     }
                 }
             }
             SqliteBatchWrite::SystemTaskFinish(finish) => {
-                if self
-                    .system_task_finishes
-                    .insert(finish.run_id, finish)
-                    .is_some()
-                {
+                let old = self.system_task_finishes.insert(finish.run_id, finish);
+                if let Some(old) = old {
+                    self.replace_estimate(
+                        SqliteBatchWrite::SystemTaskFinish(old).estimated_memory_bytes(),
+                        write_bytes,
+                        false,
+                    );
                     self.coalesced_rows += 1;
+                } else {
+                    self.add_estimate(write_bytes, false);
                 }
             }
         }
@@ -297,10 +382,7 @@ impl PendingBatch {
             .extend(other.system_task_finishes.drain());
         self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
         self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
-        self.estimated_bytes = self.estimated_bytes.saturating_add(other.estimated_bytes);
-        self.terminal_estimated_bytes = self
-            .terminal_estimated_bytes
-            .saturating_add(other.terminal_estimated_bytes);
+        self.recalculate_estimates();
         self.oldest_at = match (self.oldest_at, other.oldest_at) {
             (Some(current), Some(other)) => Some(current.min(other)),
             (current, other) => current.or(other),
@@ -353,34 +435,51 @@ impl SqliteBatchWrite {
     pub(crate) fn estimated_memory_bytes(&self) -> usize {
         match self {
             Self::TerminalInvocation(terminal) => terminal.estimated_memory_bytes(),
-            Self::AttemptProgress(progress) => std::mem::size_of::<BatchedAttemptProgress>()
-                .saturating_add(progress.phase.capacity())
-                .saturating_add(estimated_option_string_bytes(
-                    &progress.compact_support_status,
-                ))
-                .saturating_add(estimated_option_string_bytes(
-                    &progress.compact_support_reason,
-                )),
-            Self::InvocationDerived(derived) => {
-                std::mem::size_of::<BatchedInvocationDerivedWrites>()
-                    .saturating_add(derived.occurred_at.capacity())
-                    .saturating_add(estimated_option_string_bytes(&derived.payload))
-                    .saturating_add(derived.terminal_overlay_key.as_ref().map_or(
-                        0,
-                        |(invoke_id, occurred_at)| {
-                            invoke_id.capacity().saturating_add(occurred_at.capacity())
-                        },
-                    ))
+            Self::AttemptProgress(progress) => estimated_attempt_progress_memory_bytes(progress),
+            Self::InvocationDerived(derived) => estimated_invocation_derived_memory_bytes(derived),
+            Self::AccountSelectedTouch(touch) => {
+                estimated_account_selected_touch_memory_bytes(touch)
             }
-            Self::AccountSelectedTouch(touch) => std::mem::size_of::<BatchedAccountSelectedTouch>()
-                .saturating_add(touch.selected_at.capacity()),
-            Self::SystemTaskFinish(finish) => std::mem::size_of::<BatchedSystemTaskFinish>()
-                .saturating_add(finish.trigger_kind.capacity())
-                .saturating_add(estimated_option_string_bytes(&finish.summary))
-                .saturating_add(estimated_option_string_bytes(&finish.detail))
-                .saturating_add(finish.finished_at.capacity()),
+            Self::SystemTaskFinish(finish) => estimated_system_task_finish_memory_bytes(finish),
         }
     }
+}
+
+fn estimated_attempt_progress_memory_bytes(progress: &BatchedAttemptProgress) -> usize {
+    std::mem::size_of::<BatchedAttemptProgress>()
+        .saturating_add(progress.phase.capacity())
+        .saturating_add(estimated_option_string_bytes(
+            &progress.compact_support_status,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.compact_support_reason,
+        ))
+}
+
+fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedWrites) -> usize {
+    std::mem::size_of::<BatchedInvocationDerivedWrites>()
+        .saturating_add(derived.occurred_at.capacity())
+        .saturating_add(estimated_option_string_bytes(&derived.payload))
+        .saturating_add(
+            derived
+                .terminal_overlay_key
+                .as_ref()
+                .map_or(0, |(invoke_id, occurred_at)| {
+                    invoke_id.capacity().saturating_add(occurred_at.capacity())
+                }),
+        )
+}
+
+fn estimated_account_selected_touch_memory_bytes(touch: &BatchedAccountSelectedTouch) -> usize {
+    std::mem::size_of::<BatchedAccountSelectedTouch>().saturating_add(touch.selected_at.capacity())
+}
+
+fn estimated_system_task_finish_memory_bytes(finish: &BatchedSystemTaskFinish) -> usize {
+    std::mem::size_of::<BatchedSystemTaskFinish>()
+        .saturating_add(finish.trigger_kind.capacity())
+        .saturating_add(estimated_option_string_bytes(&finish.summary))
+        .saturating_add(estimated_option_string_bytes(&finish.detail))
+        .saturating_add(finish.finished_at.capacity())
 }
 
 impl PendingBatch {
@@ -1854,6 +1953,10 @@ mod tests {
         assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
         assert_eq!(terminal.terminal_projection_event_ids, vec![11, 12]);
         assert_eq!(batch.coalesced_rows, 1);
+        assert_eq!(
+            batch.estimated_memory_bytes(),
+            terminal.estimated_memory_bytes()
+        );
     }
 
     #[tokio::test]
