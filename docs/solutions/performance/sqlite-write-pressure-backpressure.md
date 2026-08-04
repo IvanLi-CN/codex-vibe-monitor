@@ -113,3 +113,10 @@
 - A terminal cursor ordered by row ID must not silently skip an older request that becomes terminal after a newer row. Mark that affected bucket for exact repair when the cursor has already crossed the row; normal in-order terminal finalization remains incremental.
 - Open-window timeseries must not persist full invocation JSON merely to preserve P95. Store minute aggregates plus exact latency sample blobs, use a terminal-delta overlay until the fixed P2 flush succeeds, and allow raw reads only for explicit leading/trailing minute tails or coverage warmup. A projection consumer must acknowledge individual persisted events, not advance by an unrelated maximum row ID, because SQLite row IDs can be sparse with respect to terminal writes.
 - A durable raw overflow spool needs a defined capacity boundary. At that boundary, choose and log a durability mode explicitly: retain in a bounded writer-backed memory queue for availability, or reject capture before it is accepted. Never relabel a capacity failure as an ordinary asynchronous backpressure drop.
+
+## Memory Attribution Before Remediation
+
+- SQLite 文件大小、`COUNT(*)` 行数和 `liveInvocationsCount` 都是磁盘/数据库事实，不能直接当作 Rust 进程内存对象数。性能调查应同时采集 RSS、匿名内存、文件映射、Swap、`VmHWM` 与 cgroup memory。
+- 已知组件只做无克隆估算：runtime store、terminal/projection pending、Dashboard snapshot、long-term interval index、timeseries staging、raw writer occupancy、prompt/network/routing cache 与 SQLite writer queue。timeseries 若复用 terminal pending bytes，必须避免重复计入 `managed_bytes`。
+- 每个高风险后台操作应记录 `retained_bytes`、`retained_delta_bytes`、`peak_delta_bytes`、`load_row_count`、`clone_avoided` 和 elapsed。`peak_delta_bytes` 使用 `VmHWM` 增量，不能用结束时 RSS 增量冒充。
+- `unattributed_anon_bytes` 是正式分类，不是默认故障结论。只有匿名内存未归因比例连续达到阈值时，才允许显式启用一次受限 allocator 诊断；诊断默认关闭且不改变业务并发、数据保留或回收行为。

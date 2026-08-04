@@ -110,6 +110,7 @@ mod forward_proxy;
 mod http_stream_tracking;
 mod long_term_stats;
 mod maintenance;
+mod memory_diagnostics;
 #[expect(
     clippy::too_many_arguments,
     reason = "OAuth bridge adapters preserve upstream request contracts."
@@ -149,6 +150,7 @@ use forward_proxy::*;
 use http_stream_tracking::*;
 pub(crate) use long_term_stats::*;
 pub(crate) use maintenance::*;
+pub(crate) use memory_diagnostics::*;
 pub(crate) use pricing::*;
 use proxy::*;
 pub(crate) use runtime::*;

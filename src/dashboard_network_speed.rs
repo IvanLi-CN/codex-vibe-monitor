@@ -277,6 +277,142 @@ pub(crate) struct DashboardNetworkSpeedCache {
 }
 
 impl DashboardNetworkSpeedCache {
+    pub(crate) fn memory_estimate(&self) -> MemoryComponentEstimate {
+        let Ok(inner) = self.inner.lock() else {
+            return MemoryComponentEstimate::default();
+        };
+        let second_bucket_count = inner
+            .second_buckets
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>()
+            .saturating_add(
+                inner
+                    .host_second_buckets
+                    .values()
+                    .map(VecDeque::len)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                inner
+                    .activity_second_buckets
+                    .values()
+                    .map(VecDeque::len)
+                    .sum::<usize>(),
+            );
+        let entries = inner
+            .second_buckets
+            .len()
+            .saturating_add(inner.host_second_buckets.len())
+            .saturating_add(inner.activity_second_buckets.len())
+            .saturating_add(inner.open_buckets.len())
+            .saturating_add(inner.host_open_buckets.len())
+            .saturating_add(inner.minute_buckets.len())
+            .saturating_add(inner.tracked_invocations.len());
+        let second_bucket_bytes = inner
+            .second_buckets
+            .values()
+            .map(|buckets| {
+                buckets
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<DashboardNetworkSecondBucket>())
+            })
+            .sum::<usize>()
+            .saturating_add(
+                inner
+                    .host_second_buckets
+                    .values()
+                    .map(|buckets| {
+                        buckets
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<DashboardNetworkSecondBucket>())
+                    })
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                inner
+                    .activity_second_buckets
+                    .values()
+                    .map(|buckets| {
+                        buckets
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<DashboardActivitySecondBucket>())
+                    })
+                    .sum::<usize>(),
+            );
+        let map_bytes = inner
+            .second_buckets
+            .capacity()
+            .saturating_mul(
+                std::mem::size_of::<DashboardNetworkScopeKey>()
+                    + std::mem::size_of::<VecDeque<DashboardNetworkSecondBucket>>(),
+            )
+            .saturating_add(inner.host_second_buckets.capacity().saturating_mul(
+                std::mem::size_of::<String>()
+                    + std::mem::size_of::<VecDeque<DashboardNetworkSecondBucket>>(),
+            ))
+            .saturating_add(inner.activity_second_buckets.capacity().saturating_mul(
+                std::mem::size_of::<DashboardNetworkScopeKey>()
+                    + std::mem::size_of::<VecDeque<DashboardActivitySecondBucket>>(),
+            ))
+            .saturating_add(inner.open_buckets.capacity().saturating_mul(
+                std::mem::size_of::<DashboardNetworkScopeKey>()
+                    + std::mem::size_of::<DashboardNetworkOpenBucketState>(),
+            ))
+            .saturating_add(inner.host_open_buckets.capacity().saturating_mul(
+                std::mem::size_of::<String>()
+                    + std::mem::size_of::<DashboardNetworkOpenBucketState>(),
+            ))
+            .saturating_add(inner.minute_buckets.capacity().saturating_mul(
+                std::mem::size_of::<DashboardNetworkMinuteBucketKey>()
+                    + std::mem::size_of::<DashboardNetworkByteTotals>(),
+            ))
+            .saturating_add(inner.tracked_invocations.capacity().saturating_mul(
+                std::mem::size_of::<(String, String)>()
+                    + std::mem::size_of::<DashboardTrackedInvocationTraffic>(),
+            ));
+        let key_bytes = inner
+            .host_second_buckets
+            .keys()
+            .map(String::capacity)
+            .sum::<usize>()
+            .saturating_add(inner.host_open_buckets.keys().map(String::capacity).sum())
+            .saturating_add(
+                inner
+                    .minute_buckets
+                    .keys()
+                    .map(|key| key.source.capacity() + key.upstream_base_url_host.capacity())
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                inner
+                    .tracked_invocations
+                    .keys()
+                    .map(|(invoke_id, occurred_at)| invoke_id.capacity() + occurred_at.capacity())
+                    .sum::<usize>(),
+            );
+        MemoryComponentEstimate {
+            entries,
+            bytes: second_bucket_bytes
+                .saturating_add(map_bytes)
+                .saturating_add(key_bytes)
+                .saturating_add(
+                    inner
+                        .minute_buckets
+                        .len()
+                        .saturating_mul(std::mem::size_of::<DashboardNetworkByteTotals>()),
+                )
+                .saturating_add(
+                    inner
+                        .tracked_invocations
+                        .values()
+                        .map(std::mem::size_of_val)
+                        .sum::<usize>(),
+                ),
+            detail_items: second_bucket_count,
+        }
+    }
+
     pub(crate) fn new(process_started_at_utc: DateTime<Utc>) -> Self {
         Self {
             process_started_at_utc,

@@ -290,6 +290,31 @@ struct LongTermProjectionEvent {
 }
 
 impl LongTermProjectionRuntime {
+    pub(crate) fn memory_estimate(&self) -> MemoryComponentEstimate {
+        let interval_bytes = self
+            .interval_index
+            .iter()
+            .map(|(key, union)| {
+                key.bucket_key.capacity()
+                    + key.dimension.capacity()
+                    + key.series_key.capacity()
+                    + union.intervals.len()
+                        * (std::mem::size_of::<(i64, i64)>() + std::mem::size_of::<usize>() * 2)
+            })
+            .sum::<usize>();
+        MemoryComponentEstimate {
+            entries: self.interval_index.len(),
+            bytes: interval_bytes
+                .saturating_add(self.loaded_interval_dates.len().saturating_mul(64))
+                .saturating_add(self.interval_index.capacity() * std::mem::size_of::<usize>() * 2),
+            detail_items: self
+                .interval_index
+                .values()
+                .map(|union| union.intervals.len())
+                .sum(),
+        }
+    }
+
     pub(crate) fn health(&self) -> LongTermProjectionHealth {
         LongTermProjectionHealth {
             state: if self.state.is_empty() {
@@ -1527,6 +1552,23 @@ async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
 }
 
 async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> Result<()> {
+    let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
+    let result = flush_long_term_projection_inner(state, trigger).await;
+    let load_row_count = result.as_ref().copied().unwrap_or_default();
+    state
+        .memory_diagnostics
+        .observe_operation(
+            state,
+            "long_term_projection_flush",
+            memory_baseline,
+            load_row_count,
+            true,
+        )
+        .await;
+    result.map(|_| ())
+}
+
+async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static str) -> Result<u64> {
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _permit = match gate.try_begin_background("long_term_projection_flush") {
         Ok(permit) => permit,
@@ -1535,7 +1577,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             runtime.state = "deferred".to_string();
             runtime.last_defer_reason = Some("writer_pressure".to_string());
             debug!(projection = "long_term", trigger, gate_outcome = "deferred", defer_reason = "writer_pressure", reason = %reason, "long-term projection flush deferred by database pressure gate");
-            return Ok(());
+            return Ok(0);
         }
     };
 
@@ -1570,6 +1612,7 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
 
     let mut repaired = Vec::new();
     let mut event_count = 0usize;
+    let mut loaded_row_count = 0u64;
     let mut deferred_repair_count = 0usize;
     let mut deferred_repair_backoff_count = 0usize;
     if let Some(baseline_cursor) = baseline_cursor {
@@ -1580,7 +1623,9 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             load_long_term_projection_dirty_buckets(&state.pool, &baseline_dates).await?;
         let mut rebuilds = Vec::with_capacity(baseline_dates.len());
         for date in &baseline_dates {
-            rebuilds.push(build_long_term_projection_date_rebuild(&state.pool, date).await?);
+            let rebuild = build_long_term_projection_date_rebuild(&state.pool, date).await?;
+            loaded_row_count = loaded_row_count.saturating_add(rebuild.source_row_count);
+            rebuilds.push(rebuild);
         }
         commit_long_term_projection_date_rebuilds(
             &state.pool,
@@ -1657,7 +1702,11 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
                 let mut rebuild_error = None;
                 for date in &repair_dates {
                     match build_long_term_projection_date_rebuild(&state.pool, date).await {
-                        Ok(rebuild) => rebuilds.push(rebuild),
+                        Ok(rebuild) => {
+                            loaded_row_count =
+                                loaded_row_count.saturating_add(rebuild.source_row_count);
+                            rebuilds.push(rebuild);
+                        }
                         Err(error) => {
                             rebuild_error = Some(error);
                             break;
@@ -1707,7 +1756,10 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             continue;
         }
         let rebuild = match build_long_term_projection_date_rebuild(&state.pool, &date).await {
-            Ok(rebuild) => rebuild,
+            Ok(rebuild) => {
+                loaded_row_count = loaded_row_count.saturating_add(rebuild.source_row_count);
+                rebuild
+            }
             Err(error) => {
                 defer_long_term_projection_repair(&state.pool, &date).await?;
                 deferred_repair_count = deferred_repair_count.saturating_add(1);
@@ -1806,7 +1858,8 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
         elapsed_ms,
         "long-term projection flush completed"
     );
-    Ok(())
+    drop(runtime);
+    Ok(loaded_row_count.saturating_add(event_count as u64))
 }
 
 async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {
@@ -1883,6 +1936,7 @@ struct LongTermProjectionDateRebuild {
     hourly: HashMap<(i64, String, String), LongTermBucket>,
     daily: HashMap<(String, String, String), LongTermBucket>,
     interval_segments: Vec<LongTermProjectionIntervalSegment>,
+    source_row_count: u64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -2071,6 +2125,7 @@ async fn build_long_term_projection_date_rebuild(
         hourly,
         daily,
         interval_segments,
+        source_row_count: rows.len() as u64,
     })
 }
 

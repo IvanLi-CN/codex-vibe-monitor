@@ -16,3 +16,5 @@
 
 - Targeted long-term repairs treat both invocation archives and attempt archives as durable input. A rewritten archive queues its old and new covered dates, and an unavailable archive source defers only that date while preserving the last accepted rollup.
 - Archive reads for a targeted repair are bounded to rows intersecting the repaired Shanghai natural day; a repair does not hydrate an entire archive batch merely to discard unrelated rows.
+
+- 内存问题先走观测门禁：进程匿名 RSS、已知组件估算和操作峰值必须分开记录，不能因为 `liveInvocationsCount` 或数据库行数较大就推断存在同等规模的内存对象。未归因占比达到阈值前不启用 allocator 诊断，也不以硬上限方式回收数据。

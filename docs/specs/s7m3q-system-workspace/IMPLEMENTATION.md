@@ -31,3 +31,8 @@
 - `spec_disposition=create`
 - `project_doc_disposition=none`
 - `solution_disposition=none`
+
+## Memory Diagnostics
+
+- `MemoryDiagnosticsRuntime` 在 runtime 启动后执行一次采样，之后每 30 秒采样一次；采样只访问 proc/cgroup 文件和现有内存容器，不增加 System Status 的 SQLite 读。
+- 已知组件估算包含 terminal hub/journal、runtime store、Dashboard cache、long-term interval、prompt/network/routing cache、raw writer occupancy 与 SQLite writer queue。timeseries staging 复用 terminal hub pending bytes，避免重复计算。

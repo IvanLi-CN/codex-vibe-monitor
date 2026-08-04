@@ -4189,6 +4189,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         long_term_projection_runtime: Arc::new(Mutex::new(
             crate::LongTermProjectionRuntime::default(),
         )),
+        memory_diagnostics: Arc::new(crate::MemoryDiagnosticsRuntime::default()),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

@@ -967,6 +967,7 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
         long_term_projection_runtime: Arc::new(Mutex::new(
             crate::LongTermProjectionRuntime::default(),
         )),
+        memory_diagnostics: Arc::new(crate::MemoryDiagnosticsRuntime::default()),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -1028,6 +1029,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         dashboard_activity_snapshot_cache: state.dashboard_activity_snapshot_cache.clone(),
         terminal_projection_hub: state.terminal_projection_hub.clone(),
         long_term_projection_runtime: state.long_term_projection_runtime.clone(),
+        memory_diagnostics: state.memory_diagnostics.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
@@ -1083,6 +1085,7 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         dashboard_activity_snapshot_cache: state.dashboard_activity_snapshot_cache.clone(),
         terminal_projection_hub: state.terminal_projection_hub.clone(),
         long_term_projection_runtime: state.long_term_projection_runtime.clone(),
+        memory_diagnostics: state.memory_diagnostics.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
@@ -1159,6 +1162,7 @@ pub(crate) async fn test_state_from_existing_pool(
         long_term_projection_runtime: Arc::new(Mutex::new(
             crate::LongTermProjectionRuntime::default(),
         )),
+        memory_diagnostics: Arc::new(crate::MemoryDiagnosticsRuntime::default()),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),

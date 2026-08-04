@@ -104,3 +104,9 @@ related_specs:
 - Dashboard 和长期统计可以共享 terminal admission/ACK Hub，但 5 秒 Dashboard publish 与 60 秒长期物化必须是独立 deadline；后者永远不能反向触发 Dashboard DB build。
 - `response_source=memory` 之外还应记录 projection trigger、cursor lag、dirty bucket、flush outcome 与 pressure defer，避免把后台物化成本误标为纯内存命中。
 - `stats.timeseries.open-window` is another projection consumer: full minutes read durable aggregates, unflushed terminal deltas are overlaid from the Hub, and only boundary minutes may use exact raw reads. Its 60-second P2 flush must not share the Dashboard publish deadline or force a topic rebuild.
+
+## Memory Attribution Guardrail
+
+- Dashboard、terminal projection 和长期统计的内存问题必须先分类再修复。5 秒/60 秒 cadence 不得被观测采样改变；采样应读取现有容器的容量、长度和 proc/cgroup 指标，不能克隆 snapshot 或为诊断发起 raw/SQLite 扫描。
+- `managed_bytes` 只能表示已知缓存的保守估算；匿名 RSS 中剩余部分记录为 `unattributed_anon_bytes`，用来区分 allocator、SQLite page cache 和尚未覆盖的组件。不得把数据库行数直接映射成 runtime memory。
+- 只有在连续生产采样证明某一组件达到 RSS 的主要占用阈值，或一次操作造成持久的 `VmHWM` 峰值，才单独设计分块、LRU 或临时对象生命周期修复；第一阶段不设置硬 RSS 上限、不丢事件、不降低并发。

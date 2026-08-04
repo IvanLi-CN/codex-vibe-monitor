@@ -103,3 +103,9 @@ PR: none
 - `/Users/ivan/.codex/worktrees/4032/codex-vibe-monitor/src/proxy.rs`
 - `/Users/ivan/.codex/worktrees/4032/codex-vibe-monitor/src/api/mod.rs`
 - `/Users/ivan/.codex/worktrees/4032/codex-vibe-monitor/docs/specs/n7c2r-proxy-hot-path-no-raw-reread/SPEC.md`
+
+## Memory Attribution Boundary
+
+- raw capture 诊断只能记录 writer occupancy、bounded ingress/spool 计数和阶段耗时，不改变 response/request logging 开关、writer 并发或 spool 可用性策略。
+- 进程级 RSS 归因将 raw writer 作为已知组件的保守估算；spool 物理文件不计入 RSS，内存诊断不得为盘上指标触发全量文件扫描。
+- response/request raw 的大小、数据库 invocation 行数和 runtime record 数量必须在 telemetry 中使用不同字段，避免把磁盘数据或 SQL 行数解释为进程内存对象。

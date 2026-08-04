@@ -130,6 +130,7 @@ pub(crate) async fn run() -> Result<()> {
         Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
     let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
     let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+    let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
     let sqlite_batch_writer = SqliteBatchWriter::spawn(
         pool.clone(),
         shutdown.clone(),
@@ -182,6 +183,7 @@ pub(crate) async fn run() -> Result<()> {
         dashboard_activity_snapshot_cache,
         terminal_projection_hub,
         long_term_projection_runtime,
+        memory_diagnostics,
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -193,6 +195,7 @@ pub(crate) async fn run() -> Result<()> {
     });
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
+    spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());

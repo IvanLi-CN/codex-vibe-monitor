@@ -102,6 +102,41 @@ pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS: usize = 10_000;
 pub(crate) const PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS: usize = 50_000;
 
 impl ProxyRuntimeInvocationStore {
+    pub(crate) fn runtime_record_count(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|guard| guard.records.len())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn memory_estimate(&self) -> MemoryComponentEstimate {
+        let Ok(guard) = self.inner.lock() else {
+            return MemoryComponentEstimate::default();
+        };
+        let record_bytes = guard
+            .records
+            .values()
+            .map(|entry| entry.record.estimated_memory_bytes())
+            .sum::<usize>();
+        let key_bytes = guard
+            .records
+            .keys()
+            .chain(guard.terminal_tombstones.keys())
+            .map(|key| key.invoke_id.capacity() + key.occurred_at.capacity())
+            .sum::<usize>();
+        MemoryComponentEstimate {
+            entries: guard
+                .records
+                .len()
+                .saturating_add(guard.terminal_tombstones.len()),
+            bytes: record_bytes.saturating_add(key_bytes).saturating_add(
+                (guard.records.capacity() + guard.terminal_tombstones.capacity())
+                    .saturating_mul(std::mem::size_of::<usize>() * 2),
+            ),
+            detail_items: guard.records.len(),
+        }
+    }
+
     pub(crate) fn upsert(&self, record: ApiInvocation) -> RuntimeInvocationStoreUpsertOutcome {
         let now = Instant::now();
         let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
@@ -310,6 +345,60 @@ impl ProxyRuntimeInvocationStore {
     }
 }
 
+impl ApiInvocation {
+    pub(crate) fn estimated_memory_bytes(&self) -> usize {
+        fn option_string_bytes(value: &Option<String>) -> usize {
+            value.as_ref().map_or(0, String::capacity)
+        }
+
+        self.invoke_id.capacity()
+            + self.occurred_at.capacity()
+            + self.source.capacity()
+            + self.detail_level.capacity()
+            + option_string_bytes(&self.proxy_display_name)
+            + option_string_bytes(&self.model)
+            + option_string_bytes(&self.request_model)
+            + option_string_bytes(&self.response_model)
+            + option_string_bytes(&self.reasoning_effort)
+            + option_string_bytes(&self.status)
+            + option_string_bytes(&self.live_phase)
+            + option_string_bytes(&self.error_message)
+            + option_string_bytes(&self.failure_kind)
+            + option_string_bytes(&self.blocked_binding_json)
+            + option_string_bytes(&self.stream_terminal_event)
+            + option_string_bytes(&self.upstream_error_code)
+            + option_string_bytes(&self.upstream_error_message)
+            + option_string_bytes(&self.downstream_error_message)
+            + option_string_bytes(&self.upstream_request_id)
+            + option_string_bytes(&self.failure_class)
+            + option_string_bytes(&self.endpoint)
+            + option_string_bytes(&self.compaction_request_kind)
+            + option_string_bytes(&self.compaction_response_kind)
+            + option_string_bytes(&self.image_intent)
+            + option_string_bytes(&self.requester_ip)
+            + option_string_bytes(&self.prompt_cache_key)
+            + option_string_bytes(&self.sticky_key)
+            + option_string_bytes(&self.route_mode)
+            + option_string_bytes(&self.upstream_account_name)
+            + option_string_bytes(&self.response_content_encoding)
+            + option_string_bytes(&self.request_compression_algorithm)
+            + option_string_bytes(&self.transport)
+            + option_string_bytes(&self.pool_attempt_terminal_reason)
+            + option_string_bytes(&self.requested_service_tier)
+            + option_string_bytes(&self.service_tier)
+            + option_string_bytes(&self.billing_service_tier)
+            + option_string_bytes(&self.price_version)
+            + option_string_bytes(&self.request_raw_path)
+            + option_string_bytes(&self.request_raw_truncated_reason)
+            + option_string_bytes(&self.response_raw_path)
+            + option_string_bytes(&self.response_raw_truncated_reason)
+            + option_string_bytes(&self.detail_pruned_at)
+            + option_string_bytes(&self.detail_prune_reason)
+            + self.created_at.capacity()
+            + std::mem::size_of::<Self>()
+    }
+}
+
 pub(crate) fn runtime_store_record_is_terminal(record: &ApiInvocation) -> bool {
     !matches!(
         record
@@ -421,6 +510,7 @@ pub(crate) struct AppState {
     pub(crate) dashboard_activity_snapshot_cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
     pub(crate) terminal_projection_hub: Arc<TerminalProjectionHub>,
     pub(crate) long_term_projection_runtime: Arc<Mutex<LongTermProjectionRuntime>>,
+    pub(crate) memory_diagnostics: Arc<MemoryDiagnosticsRuntime>,
     pub(crate) maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     pub(crate) system_status_cache: Arc<Mutex<SystemStatusCacheState>>,
     pub(crate) pool_routing_reservations:
