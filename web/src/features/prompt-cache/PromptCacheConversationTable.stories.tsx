@@ -2491,6 +2491,7 @@ export const DrawerOperations: Story = {
         name: /查看对应调用记录：invoke-short-32|View corresponding invocation: invoke-short-32/i,
       }),
     ).toHaveAttribute("href", "/records?attemptId=SUCCESS32&invokeId=invoke-short-32");
+    await expect(documentScope.getByText("invoke-short-32")).toBeInTheDocument();
     await expect(
       documentScope.getAllByText(/Sticky 目标已切换|Sticky target changed/i).length,
     ).toBe(1);

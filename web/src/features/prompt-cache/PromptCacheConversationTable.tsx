@@ -3788,6 +3788,18 @@ export function PromptCacheConversationHistoryDrawer({
                   <Link
                     className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
                     to={routingInvocationRecordHref(event) ?? "#"}
+                    aria-label={t(
+                      "live.conversations.drawer.operations.routingContext.invocationRecordLabel",
+                      {
+                        id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+                      },
+                    )}
+                    title={t(
+                      "live.conversations.drawer.operations.routingContext.invocationRecordLabel",
+                      {
+                        id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+                      },
+                    )}
                   >
                     {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
                       id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
