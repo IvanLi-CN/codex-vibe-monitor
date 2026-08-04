@@ -2159,6 +2159,20 @@ mod tests {
     }
 
     #[test]
+    fn terminal_rollback_marks_runtime_projection_dirty() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let record = live_record("terminal-rollback", Some(42), "success", None, 1);
+        let invoke_id = record.invoke_id.clone();
+        let occurred_at = record.occurred_at.clone();
+
+        hub.upsert_terminal(record);
+        let generation_before_rollback = hub.dashboard_generation();
+
+        assert!(hub.clear_terminal_tombstone(&invoke_id, &occurred_at));
+        assert_eq!(hub.dashboard_generation(), generation_before_rollback + 1);
+    }
+
+    #[test]
     fn healthy_runtime_projection_renders_ten_thousand_mutations_without_sql() {
         let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
         hub.bind_dashboard_network_speed_cache(Arc::new(DashboardNetworkSpeedCache::new(

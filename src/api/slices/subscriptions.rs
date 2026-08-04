@@ -614,7 +614,15 @@ impl SubscriptionHub {
             .active_topic_names
             .entry(topic_name.to_string())
             .or_insert(0) += 1;
-        let dashboard_live_topic_count = usize::from(topic_name == "dashboard.activity.current");
+        let dashboard_live_topic_count = usize::from(
+            topic_name == "dashboard.activity.current"
+                || guard.topics.values().any(|cached| {
+                    cached.topic.name() == topic_name
+                        && (cached.topic.uses_dashboard_activity_live_overlay()
+                            || cached.topic.uses_summary_live_overlay()
+                            || cached.topic.uses_dashboard_network_live_snapshot())
+                }),
+        );
         guard.dashboard_live_subscriber_count = guard
             .dashboard_live_subscriber_count
             .saturating_add(dashboard_live_topic_count);

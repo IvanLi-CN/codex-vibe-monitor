@@ -650,10 +650,15 @@ impl RuntimeProjectionHub {
         let Ok(mut guard) = self.inner.lock() else {
             return false;
         };
-        guard
+        let removed = guard
             .terminal_tombstones
             .remove(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-            .is_some()
+            .is_some();
+        drop(guard);
+        if removed {
+            self.mark_dashboard_dirty("terminal_rollback");
+        }
+        removed
     }
 
     pub(crate) fn contains_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
