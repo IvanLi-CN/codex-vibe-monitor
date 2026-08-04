@@ -470,7 +470,7 @@ fn capture_allocator_diagnostic() -> io::Result<PathBuf> {
             fs::remove_file(&path)?;
             return Err(io::Error::other("allocator diagnostic exceeded size limit"));
         }
-        return Ok(path);
+        Ok(path)
     }
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
