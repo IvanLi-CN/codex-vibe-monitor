@@ -2,6 +2,7 @@
 
 ## Key Decisions
 
+- 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while the entire captured HTTP snapshot, including page 1, remains frozen; cached Calls hydration survives direct opens, and away-from-top head refreshes retain existing visible rows while only new stable keys enter the reveal count. Overview builds its summary and samples through one SQLite read transaction plus captured runtime overlay with a fixed accepted page width. Its SSE-disabled HTTP fallback captures an unpinned head and re-reads it with the returned snapshot for summary, samples, and full-range bounds, while a cached binding fallback baseline remains scope-local. Records changes coalesce, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.
 - 2026-05-25: Created a dedicated topic spec because per-conversation routing bindings introduce a new stable runtime contract distinct from invocation observability.
 - 2026-05-25: Chose hard-constraint routing semantics so bound conversations never silently fall back to unrelated accounts or groups.
 - 2026-05-25: Added Storybook coverage and visual evidence for the drawer binding panel to keep the UI contract reviewable.
@@ -26,6 +27,7 @@
 - 2026-07-18: Deduplicated Storybook-local React Vite plugins so the `DrawerOperations` story can build and serve stable mock visual evidence for the new events tab.
 - 2026-07-22: Added sticky-affinity generation fencing so `clearAndResetAffinity` prevents stale in-flight success from reviving the old sticky target. Fresh reassignment after reset now emits one runtime `systemAuto stickyTargetChanged` event with `invokeId`, and Storybook evidence was tightened to show that exact sequence.
 - 2026-08-02: Extended affinity fencing to every actual Sticky mutation. The generation now prevents same-generation concurrent success overwrite and conditional automatic clears prevent a delayed failure from deleting a newer target; structured routing context makes new automatic events traceable without exposing raw upstream errors.
+- 2026-08-03: Preserved the missing fresh-selection evidence that made generic Sticky events unexplainable. New attempts now retain a bounded, safe candidate-decision snapshot and the event's Records link opens that same snapshot; existing events remain explicitly historical rather than reconstructing a false reason from current account state.
 - Upstream account bindings are operator-forced account assignments: they override sticky transfer policy only, not account health, quota, guard, concurrency, route-key, or forward-proxy readiness.
 - “切出” is a conversation-level permission to switch away from the original/sticky upstream account, preserving user-facing terminology from account settings without introducing a conversation-level cut-in permission.
 

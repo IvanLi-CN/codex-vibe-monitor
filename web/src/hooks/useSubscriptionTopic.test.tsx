@@ -26,6 +26,7 @@ function HookHarness(props: {
   enabled?: boolean;
   onRender: (snapshot: {
     data: { total: number } | null;
+    lastKind: "snapshot" | "replay" | "live" | null;
     isLoading: boolean;
     refresh: () => void;
   }) => void;
@@ -35,10 +36,11 @@ function HookHarness(props: {
   useEffect(() => {
     props.onRender({
       data: result.data,
+      lastKind: result.lastKind,
       isLoading: result.isLoading,
       refresh: result.refresh,
     });
-  }, [props, result.data, result.isLoading, result.refresh]);
+  }, [props, result.data, result.isLoading, result.lastKind, result.refresh]);
 
   return null;
 }
@@ -48,6 +50,7 @@ function renderHookHarness(props: {
   enabled?: boolean;
   onRender: (snapshot: {
     data: { total: number } | null;
+    lastKind: "snapshot" | "replay" | "live" | null;
     isLoading: boolean;
     refresh: () => void;
   }) => void;
@@ -78,17 +81,26 @@ describe("useSubscriptionTopic", () => {
   it("hydrates from live events and toggles loading around refresh", () => {
     const renders: Array<{
       data: { total: number } | null;
+      lastKind: "snapshot" | "replay" | "live" | null;
       isLoading: boolean;
       refresh: () => void;
     }> = [];
-    let listener: ((event: { payload: { total: number } }) => void) | null = null;
+    let listener:
+      | ((event: { type: "snapshot" | "replay" | "live"; payload: { total: number } }) => void)
+      | null = null;
     sseMocks.getCachedTopicState.mockReturnValue(null);
     sseMocks.getTopicDescriptorKey.mockImplementation(
       (descriptor: { topic: string; params?: Record<string, string> }) =>
         JSON.stringify(descriptor),
     );
     sseMocks.subscribeToTopic.mockImplementation(
-      (_descriptor: unknown, nextListener: (event: { payload: { total: number } }) => void) => {
+      (
+        _descriptor: unknown,
+        nextListener: (event: {
+          type: "snapshot" | "replay" | "live";
+          payload: { total: number };
+        }) => void,
+      ) => {
         listener = nextListener;
         return () => {};
       },
@@ -105,10 +117,11 @@ describe("useSubscriptionTopic", () => {
     expect(renders[0]?.isLoading).toBe(true);
 
     act(() => {
-      listener?.({ payload: { total: 11 } });
+      listener?.({ type: "live", payload: { total: 11 } });
     });
 
     expect(renders.at(-1)?.data).toEqual({ total: 11 });
+    expect(renders.at(-1)?.lastKind).toBe("live");
     expect(renders.at(-1)?.isLoading).toBe(false);
 
     act(() => {
@@ -188,5 +201,44 @@ describe("useSubscriptionTopic", () => {
 
     expect(unsubscribe).not.toHaveBeenCalled();
     expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose a cached payload from the previous descriptor while switching topics", () => {
+    const renders: Array<{ data: { total: number } | null }> = [];
+    sseMocks.getTopicDescriptorKey.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        JSON.stringify({ topic: descriptor.topic, params: descriptor.params ?? {} }),
+    );
+    sseMocks.getCachedTopicState.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        descriptor.params?.filter === "routing"
+          ? { payload: { total: 2 } }
+          : { payload: { total: 1 } },
+    );
+    sseMocks.subscribeToTopic.mockReturnValue(() => {});
+
+    renderHookHarness({
+      descriptor: { topic: "conversation.operations", params: { filter: "all" } },
+      onRender: (snapshot) => {
+        renders.push({ data: snapshot.data });
+      },
+    });
+    const renderCountBeforeSwitch = renders.length;
+
+    act(() => {
+      root?.render(
+        <HookHarness
+          descriptor={{ topic: "conversation.operations", params: { filter: "routing" } }}
+          onRender={(snapshot) => {
+            renders.push({ data: snapshot.data });
+          }}
+        />,
+      );
+    });
+
+    expect(renders.at(-1)?.data).toEqual({ total: 2 });
+    expect(renders.slice(renderCountBeforeSwitch).some((render) => render.data?.total === 1)).toBe(
+      false,
+    );
   });
 });

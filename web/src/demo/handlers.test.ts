@@ -291,6 +291,28 @@ describe("demo MSW handlers", () => {
     expect(account.recentActions.length).toBeGreaterThan(0);
   });
 
+  it("scopes invocation summaries to the same conversation filters as invocation lists", async () => {
+    const [summaryResponse, listResponse] = await Promise.all([
+      fetch("http://demo.invalid/api/invocations/summary?promptCacheKey=demo-conversation-a"),
+      fetch("http://demo.invalid/api/invocations?promptCacheKey=demo-conversation-a&pageSize=50"),
+    ]);
+    const summary = (await summaryResponse.json()) as {
+      totalCount: number;
+      token: { totalTokens: number };
+    };
+    const list = (await listResponse.json()) as {
+      total: number;
+      records: Array<{ totalTokens?: number }>;
+    };
+
+    expect(summaryResponse.ok).toBe(true);
+    expect(listResponse.ok).toBe(true);
+    expect(summary.totalCount).toBe(list.total);
+    expect(summary.token.totalTokens).toBe(
+      list.records.reduce((total, record) => total + (record.totalTokens ?? 0), 0),
+    );
+  });
+
   it("returns populated proxy and prompt-cache surfaces rather than empty placeholders", async () => {
     const [proxyResponse, cacheResponse, proxyHistoryResponse] = await Promise.all([
       fetch("http://demo.invalid/api/stats/forward-proxy"),

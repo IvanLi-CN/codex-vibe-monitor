@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import type { TranslationKey } from "../../i18n";
-import type { ApiPoolUpstreamRequestAttempt } from "../../lib/api";
+import type { ApiPoolUpstreamRequestAttempt, PoolRoutingSelectionAudit } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
 const FALLBACK_CELL = "—";
@@ -126,6 +126,29 @@ function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
   return attempt.status.trim().toLowerCase() !== "pending";
 }
 
+function routingSelectionWinnerLabel(audit: PoolRoutingSelectionAudit, t: Translator) {
+  const key =
+    `table.poolAttempts.routingDecision.winnerReasons.${audit.winnerReasonCode}` as TranslationKey;
+  const translated = t(key, {
+    account: audit.selectedAccountName,
+    comparedAccount: audit.comparedAccountName ?? FALLBACK_CELL,
+  });
+  return translated === key
+    ? t("table.poolAttempts.routingDecision.winnerReasons.unknown", {
+        account: audit.selectedAccountName,
+        comparedAccount: audit.comparedAccountName ?? FALLBACK_CELL,
+      })
+    : translated;
+}
+
+function routingSelectionExclusionLabel(account: string, reasonCode: string, t: Translator) {
+  const key = `table.poolAttempts.routingDecision.exclusionReasons.${reasonCode}` as TranslationKey;
+  const translated = t(key, { account });
+  return translated === key
+    ? t("table.poolAttempts.routingDecision.exclusionReasons.unknown", { account })
+    : translated;
+}
+
 export function PoolAttemptRecordCard({
   attempt,
   proxyDisplay,
@@ -176,6 +199,25 @@ export function PoolAttemptRecordCard({
         <span className="text-sm font-medium">{accountLabel}</span>
       </div>
       {summarySupplement ? <div className="mt-2">{summarySupplement}</div> : null}
+      {attempt.routingSelectionAudit ? (
+        <div
+          className="mt-2 space-y-1 rounded border border-info/25 bg-info/5 p-2 text-xs text-base-content/72"
+          data-testid="pool-attempt-routing-selection-audit"
+        >
+          <p className="font-medium text-base-content">
+            {t("table.poolAttempts.routingDecision.summary", {
+              account: attempt.routingSelectionAudit.selectedAccountName,
+              count: attempt.routingSelectionAudit.eligibleCandidateCount,
+            })}
+          </p>
+          <p>{routingSelectionWinnerLabel(attempt.routingSelectionAudit, t)}</p>
+          {attempt.routingSelectionAudit.excludedCandidates.map((candidate) => (
+            <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
+              {routingSelectionExclusionLabel(candidate.accountName, candidate.reasonCode, t)}
+            </p>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
         <div className="flex items-start gap-2">
           <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">

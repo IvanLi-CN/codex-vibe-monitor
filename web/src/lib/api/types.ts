@@ -145,6 +145,8 @@ export type {
   PerfStatsQuery,
   PerfStatsResponse,
   PoolRoutingMaintenanceSettings,
+  PoolRoutingSelectionAudit,
+  PoolRoutingSelectionAuditExcludedCandidate,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
   PricingEntry,

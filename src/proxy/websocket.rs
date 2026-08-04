@@ -744,12 +744,13 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         .host_str()
         .and_then(normalize_upstream_base_url_host_value);
     let pending_attempt_record = Some(
-        begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+        begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
             &state.pool,
             &attempt_trace,
             group_name_snapshot.as_deref(),
             proxy_binding_key_snapshot.as_deref(),
             Some(account.routing_source),
+            account.routing_selection_audit.as_ref(),
             account.account_id,
             account.upstream_route_key().as_str(),
             attempt_index as i64,
@@ -1036,8 +1037,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    if let Err(err) = record_pool_route_success_with_affinity_generation_for_attempt(
-        &state.pool,
+    if let Err(err) = record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         account.account_id,
         Utc::now(),
         trace.sticky_key.as_deref(),
@@ -2684,8 +2685,8 @@ pub(crate) async fn persist_ws_usage_event(
         )
         .await?
     {
-        promote_prompt_cache_group_binding_to_upstream_account(
-            &state.pool,
+        promote_prompt_cache_group_binding_to_upstream_account_and_broadcast(
+            state,
             prompt_cache_key,
             account.account_id,
         )
@@ -3321,6 +3322,7 @@ mod websocket_tests {
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
             sticky_affinity_generation: None,
+            routing_selection_audit: None,
         }
     }
 
@@ -3351,6 +3353,7 @@ mod websocket_tests {
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
             sticky_affinity_generation: None,
+            routing_selection_audit: None,
         }
     }
 

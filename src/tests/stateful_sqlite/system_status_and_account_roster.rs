@@ -895,6 +895,9 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePoolOptions::new()
+        // A shared in-memory database is destroyed when its final connection closes.
+        // Keep its schema alive while concurrent test tasks acquire and release connections.
+        .min_connections(1)
         .max_connections(4)
         .connect(&db_url)
         .await
@@ -1432,6 +1435,7 @@ pub(crate) async fn reserve_test_pool_routing_account(
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
+        routing_selection_audit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

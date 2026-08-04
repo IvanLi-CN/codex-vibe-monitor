@@ -9,7 +9,7 @@ use chrono::Timelike;
 use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::FromRow;
+use sqlx::{FromRow, SqliteConnection};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -683,6 +683,17 @@ pub(crate) struct InvocationSummaryResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationHistoryOverviewResponse {
+    pub(crate) summary: InvocationSummaryResponse,
+    pub(crate) records: Vec<ApiInvocation>,
+    pub(crate) chart_total: i64,
+    pub(crate) chart_is_sampled: bool,
+    pub(crate) chart_range_start: Option<String>,
+    pub(crate) chart_range_end: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationNewRecordsCountResponse {
     pub(crate) snapshot_id: i64,
     pub(crate) new_records_count: i64,
@@ -1244,6 +1255,14 @@ pub(crate) async fn resolve_invocation_snapshot_id(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
+    let mut connection = pool.acquire().await?;
+    resolve_invocation_snapshot_id_on_connection(&mut connection, source_scope).await
+}
+
+async fn resolve_invocation_snapshot_id_on_connection(
+    connection: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+) -> Result<i64> {
     #[derive(Debug, FromRow)]
     struct SnapshotRow {
         snapshot_id: Option<i64>,
@@ -1257,7 +1276,7 @@ pub(crate) async fn resolve_invocation_snapshot_id(
 
     let row = query
         .build_query_as::<SnapshotRow>()
-        .fetch_one(pool)
+        .fetch_one(connection)
         .await?;
     Ok(row.snapshot_id.unwrap_or(0))
 }
@@ -1766,6 +1785,17 @@ pub(crate) async fn query_current_runtime_db_keys(
     source_scope: InvocationSourceScope,
     snapshot: Option<SnapshotConstraint>,
 ) -> Result<HashSet<(String, String)>, ApiError> {
+    let mut connection = pool.acquire().await?;
+    query_current_runtime_db_keys_on_connection(&mut connection, filters, source_scope, snapshot)
+        .await
+}
+
+async fn query_current_runtime_db_keys_on_connection(
+    connection: &mut SqliteConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -1780,7 +1810,7 @@ pub(crate) async fn query_current_runtime_db_keys(
 
     Ok(query
         .build_query_as::<RuntimeKeyRow>()
-        .fetch_all(pool)
+        .fetch_all(connection)
         .await?
         .into_iter()
         .map(|row| (row.invoke_id, row.occurred_at))
@@ -1844,6 +1874,20 @@ pub(crate) async fn query_terminal_db_keys_for_runtime_records(
     runtime_records: &[ApiInvocation],
     snapshot: Option<SnapshotConstraint>,
 ) -> Result<HashSet<(String, String)>, ApiError> {
+    let mut connection = pool.acquire().await?;
+    query_terminal_db_keys_for_runtime_records_on_connection(
+        &mut connection,
+        runtime_records,
+        snapshot,
+    )
+    .await
+}
+
+async fn query_terminal_db_keys_for_runtime_records_on_connection(
+    connection: &mut SqliteConnection,
+    runtime_records: &[ApiInvocation],
+    snapshot: Option<SnapshotConstraint>,
+) -> Result<HashSet<(String, String)>, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -1892,7 +1936,7 @@ pub(crate) async fn query_terminal_db_keys_for_runtime_records(
         terminal_keys.extend(
             query
                 .build_query_as::<RuntimeKeyRow>()
-                .fetch_all(pool)
+                .fetch_all(&mut *connection)
                 .await?
                 .into_iter()
                 .map(|row| (row.invoke_id, row.occurred_at)),
@@ -2136,6 +2180,22 @@ pub(crate) async fn query_invocation_network_summary(
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
 ) -> Result<InvocationNetworkSummary> {
+    let mut connection = pool.acquire().await?;
+    query_invocation_network_summary_on_connection(
+        &mut connection,
+        filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await
+}
+
+async fn query_invocation_network_summary_on_connection(
+    connection: &mut SqliteConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationNetworkSummary> {
     #[derive(Debug, FromRow)]
     struct ValueRow {
         value: Option<f64>,
@@ -2162,11 +2222,11 @@ pub(crate) async fn query_invocation_network_summary(
     );
     let agg = agg_query
         .build_query_as::<InvocationNetworkAggRow>()
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?;
 
     async fn query_sorted_value(
-        pool: &Pool<Sqlite>,
+        connection: &mut SqliteConnection,
         filters: &InvocationRecordsFilters,
         source_scope: InvocationSourceScope,
         snapshot_id: i64,
@@ -2198,7 +2258,7 @@ pub(crate) async fn query_invocation_network_summary(
 
         Ok(query
             .build_query_as::<ValueRow>()
-            .fetch_optional(pool)
+            .fetch_optional(connection)
             .await?
             .and_then(|row| row.value))
     }
@@ -2219,7 +2279,7 @@ pub(crate) async fn query_invocation_network_summary(
     }
 
     async fn query_p95(
-        pool: &Pool<Sqlite>,
+        connection: &mut SqliteConnection,
         filters: &InvocationRecordsFilters,
         source_scope: InvocationSourceScope,
         snapshot_id: i64,
@@ -2230,8 +2290,15 @@ pub(crate) async fn query_invocation_network_summary(
             return Ok(None);
         };
 
-        let Some(lower_value) =
-            query_sorted_value(pool, filters, source_scope, snapshot_id, column, lower).await?
+        let Some(lower_value) = query_sorted_value(
+            connection,
+            filters,
+            source_scope,
+            snapshot_id,
+            column,
+            lower,
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -2240,8 +2307,15 @@ pub(crate) async fn query_invocation_network_summary(
             return Ok(Some(lower_value));
         }
 
-        let Some(upper_value) =
-            query_sorted_value(pool, filters, source_scope, snapshot_id, column, upper).await?
+        let Some(upper_value) = query_sorted_value(
+            connection,
+            filters,
+            source_scope,
+            snapshot_id,
+            column,
+            upper,
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -2252,7 +2326,7 @@ pub(crate) async fn query_invocation_network_summary(
     Ok(InvocationNetworkSummary {
         avg_ttfb_ms: agg.avg_ttfb_ms,
         p95_ttfb_ms: query_p95(
-            pool,
+            connection,
             filters,
             source_scope,
             snapshot_id,
@@ -2262,7 +2336,7 @@ pub(crate) async fn query_invocation_network_summary(
         .await?,
         avg_first_token_ms: agg.avg_first_token_ms,
         p95_first_token_ms: query_p95(
-            pool,
+            connection,
             filters,
             source_scope,
             snapshot_id,
@@ -2272,7 +2346,7 @@ pub(crate) async fn query_invocation_network_summary(
         .await?,
         avg_response_duration_ms: agg.avg_response_duration_ms,
         p95_response_duration_ms: query_p95(
-            pool,
+            connection,
             filters,
             source_scope,
             snapshot_id,
@@ -2282,7 +2356,7 @@ pub(crate) async fn query_invocation_network_summary(
         .await?,
         avg_total_ms: agg.avg_total_ms,
         p95_total_ms: query_p95(
-            pool,
+            connection,
             filters,
             source_scope,
             snapshot_id,
@@ -2296,6 +2370,22 @@ pub(crate) async fn query_invocation_network_summary(
 
 pub(crate) async fn query_invocation_new_records_count(
     pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<i64> {
+    let mut connection = pool.acquire().await?;
+    query_invocation_new_records_count_on_connection(
+        &mut connection,
+        filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await
+}
+
+async fn query_invocation_new_records_count_on_connection(
+    connection: &mut SqliteConnection,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
@@ -2316,7 +2406,7 @@ pub(crate) async fn query_invocation_new_records_count(
 
     Ok(new_count_query
         .build_query_as::<NewCountRow>()
-        .fetch_one(pool)
+        .fetch_one(connection)
         .await?
         .total)
 }
@@ -2630,6 +2720,22 @@ pub(crate) async fn query_invocation_exception_summary(
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
 ) -> Result<InvocationExceptionSummary> {
+    let mut connection = pool.acquire().await?;
+    query_invocation_exception_summary_on_connection(
+        &mut connection,
+        filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await
+}
+
+async fn query_invocation_exception_summary_on_connection(
+    connection: &mut SqliteConnection,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationExceptionSummary> {
     let mut query = QueryBuilder::new("SELECT ");
     query
         .push("COALESCE(SUM(CASE WHEN ")
@@ -2656,7 +2762,7 @@ pub(crate) async fn query_invocation_exception_summary(
     );
     let agg = query
         .build_query_as::<InvocationExceptionAggRow>()
-        .fetch_one(pool)
+        .fetch_one(connection)
         .await?;
     Ok(InvocationExceptionSummary {
         failure_count: agg.failure_count,
@@ -2675,7 +2781,7 @@ pub(crate) async fn list_invocations(
     list_invocations_with_runtime_overlay(state, params, runtime_overlay).await
 }
 
-async fn list_invocations_with_runtime_overlay(
+pub(crate) async fn list_invocations_with_runtime_overlay(
     state: Arc<AppState>,
     params: ListQuery,
     runtime_overlay_override: Option<Vec<ApiInvocation>>,
@@ -2897,6 +3003,170 @@ async fn list_invocations_with_runtime_overlay(
         page_size: request.page_size,
         records,
     }))
+}
+
+async fn list_invocation_page_with_runtime_overlay_on_connection(
+    request: &InvocationListRequest,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    runtime_overlay_records: &[ApiInvocation],
+    pricing_catalog: &PricingCatalog,
+    connection: &mut SqliteConnection,
+) -> Result<ListResponse, ApiError> {
+    let db_terminal_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_terminal_db_keys_for_runtime_records_on_connection(
+            connection,
+            runtime_overlay_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut count_query =
+        QueryBuilder::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut count_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let total = count_query
+        .build_query_as::<CountRow>()
+        .fetch_one(&mut *connection)
+        .await?
+        .total;
+    let db_runtime_keys = if runtime_overlay_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys_on_connection(
+            connection,
+            &request.filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+
+    let offset = (request.page - 1).saturating_mul(request.page_size);
+    #[derive(Debug, FromRow)]
+    struct PageIdRow {
+        id: i64,
+    }
+
+    let mut page_id_query = QueryBuilder::new("SELECT id FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut page_id_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    append_invocation_order_clause(&mut page_id_query, request.sort_by, request.sort_order);
+    let db_page_size = if runtime_overlay_records.is_empty() {
+        request.page_size
+    } else {
+        offset.saturating_add(request.page_size)
+    };
+    let db_offset = if runtime_overlay_records.is_empty() {
+        offset
+    } else {
+        0
+    };
+    page_id_query
+        .push(" LIMIT ")
+        .push_bind(db_page_size)
+        .push(" OFFSET ")
+        .push_bind(db_offset);
+    let page_ids = page_id_query
+        .build_query_as::<PageIdRow>()
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+
+    if page_ids.is_empty() {
+        let (mut records, total) = overlay_runtime_records_for_current_page(
+            request,
+            source_scope,
+            runtime_overlay_records.to_vec(),
+            &db_runtime_keys,
+            &db_terminal_keys,
+            true,
+            Vec::new(),
+            total,
+            "invocation_history_overview",
+        );
+        apply_invocation_cost_audits(&mut records, pricing_catalog);
+        return Ok(ListResponse {
+            snapshot_id,
+            total,
+            page: request.page,
+            page_size: request.page_size,
+            records,
+        });
+    }
+
+    let mut query = build_invocation_select_query();
+    apply_invocation_records_filters(
+        &mut query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    query.push(" AND id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for &id in &page_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(")");
+
+    let mut records = query
+        .build_query_as::<ApiInvocation>()
+        .fetch_all(&mut *connection)
+        .await?;
+    for record in &mut records {
+        hydrate_api_invocation_blocked_binding(record);
+    }
+    let page_positions = page_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect::<HashMap<_, _>>();
+    records.sort_by_key(|record| {
+        page_positions
+            .get(&record.id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    let (mut records, total) = overlay_runtime_records_for_current_page(
+        request,
+        source_scope,
+        runtime_overlay_records.to_vec(),
+        &db_runtime_keys,
+        &db_terminal_keys,
+        true,
+        records,
+        total,
+        "invocation_history_overview",
+    );
+    apply_invocation_cost_audits(&mut records, pricing_catalog);
+
+    Ok(ListResponse {
+        snapshot_id,
+        total,
+        page: request.page,
+        page_size: request.page_size,
+        records,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -3209,6 +3479,7 @@ struct InvocationWorkflowAttemptRow {
     endpoint: String,
     sticky_key: Option<String>,
     routing_source: Option<String>,
+    routing_selection_audit_json: Option<String>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
     upstream_route_key: Option<String>,
@@ -3310,6 +3581,8 @@ pub(crate) struct InvocationWorkflowAttempt {
     pub(crate) sticky_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) routing_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_account_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4129,6 +4402,10 @@ fn build_workflow_attempt_from_row(
         endpoint: attempt.endpoint.clone(),
         sticky_key: attempt.sticky_key.clone(),
         routing_source: attempt.routing_source.clone(),
+        routing_selection_audit: attempt
+            .routing_selection_audit_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok()),
         upstream_account_id: attempt.upstream_account_id,
         upstream_account_name: attempt.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4284,6 +4561,7 @@ fn build_synthetic_workflow_attempt(
         endpoint: record.endpoint.clone().unwrap_or_default(),
         sticky_key: record.sticky_key.clone(),
         routing_source: None,
+        routing_selection_audit: None,
         upstream_account_id: record.upstream_account_id,
         upstream_account_name: record.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4713,6 +4991,7 @@ async fn query_invocation_workflow_attempt_rows(
             attempts.endpoint,
             attempts.sticky_key,
             attempts.routing_source,
+            attempts.routing_selection_audit_json,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
@@ -5512,6 +5791,14 @@ pub(crate) async fn fetch_invocation_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSummaryResponse>, ApiError> {
+    fetch_invocation_summary_with_runtime_overlay(state, params, None).await
+}
+
+pub(crate) async fn fetch_invocation_summary_with_runtime_overlay(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_override: Option<Vec<ApiInvocation>>,
+) -> Result<Json<InvocationSummaryResponse>, ApiError> {
     let request = build_resolved_invocation_list_request(
         &state.pool,
         &params,
@@ -5519,9 +5806,12 @@ pub(crate) async fn fetch_invocation_summary(
     )
     .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let runtime_records =
+        runtime_overlay_override.unwrap_or_else(|| runtime_overlay_snapshot(state.as_ref()));
+    let mut tx = state.pool.begin().await?;
     let snapshot_id = request
         .snapshot_id
-        .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+        .unwrap_or(resolve_invocation_snapshot_id_on_connection(&mut tx, source_scope).await?);
 
     let totals_sql = format!(
         "SELECT \
@@ -5548,23 +5838,27 @@ pub(crate) async fn fetch_invocation_summary(
     );
     let totals = totals_query
         .build_query_as::<InvocationSummaryAggRow>()
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
-    let network =
-        query_invocation_network_summary(&state.pool, &request.filters, source_scope, snapshot_id)
-            .await?;
-
-    let exception = query_invocation_exception_summary(
-        &state.pool,
+    let network = query_invocation_network_summary_on_connection(
+        &mut tx,
         &request.filters,
         source_scope,
         snapshot_id,
     )
     .await?;
 
-    let new_records_count = query_invocation_new_records_count(
-        &state.pool,
+    let exception = query_invocation_exception_summary_on_connection(
+        &mut tx,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+
+    let new_records_count = query_invocation_new_records_count_on_connection(
+        &mut tx,
         &request.filters,
         source_scope,
         snapshot_id,
@@ -5572,16 +5866,15 @@ pub(crate) async fn fetch_invocation_summary(
     .await?;
 
     let runtime_overlay_delta = if request.snapshot_id.is_none() {
-        let db_runtime_keys = query_current_runtime_db_keys(
-            &state.pool,
+        let db_runtime_keys = query_current_runtime_db_keys_on_connection(
+            &mut tx,
             &request.filters,
             source_scope,
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         )
         .await?;
-        let runtime_records = runtime_overlay_snapshot(state.as_ref());
-        let db_terminal_keys = query_terminal_db_keys_for_runtime_records(
-            &state.pool,
+        let db_terminal_keys = query_terminal_db_keys_for_runtime_records_on_connection(
+            &mut tx,
             &runtime_records,
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         )
@@ -5651,7 +5944,7 @@ pub(crate) async fn fetch_invocation_summary(
             .max(0),
     };
 
-    Ok(Json(InvocationSummaryResponse {
+    let response = InvocationSummaryResponse {
         snapshot_id,
         new_records_count,
         total_count,
@@ -5674,7 +5967,260 @@ pub(crate) async fn fetch_invocation_summary(
             ..network
         },
         exception: exception_summary,
-    }))
+    };
+    tx.commit().await?;
+    Ok(Json(response))
+}
+
+async fn build_invocation_summary_on_connection(
+    request: &InvocationListRequest,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    runtime_records: &[ApiInvocation],
+    connection: &mut SqliteConnection,
+) -> Result<InvocationSummaryResponse, ApiError> {
+    let totals_sql = format!(
+        "SELECT \
+         COUNT(*) AS total_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+         COALESCE(SUM(cost), 0.0) AS total_cost, \
+         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
+         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM(output_tokens), 0) AS output_tokens, \
+         MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
+         FROM codex_invocations WHERE 1 = 1",
+        status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
+        resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+    );
+    let mut totals_query = QueryBuilder::new(totals_sql);
+    apply_invocation_records_filters(
+        &mut totals_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let totals = totals_query
+        .build_query_as::<InvocationSummaryAggRow>()
+        .fetch_one(&mut *connection)
+        .await?;
+    let network = query_invocation_network_summary_on_connection(
+        connection,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+    let exception = query_invocation_exception_summary_on_connection(
+        connection,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+    let new_records_count = query_invocation_new_records_count_on_connection(
+        connection,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+
+    let runtime_overlay_delta = if request.snapshot_id.is_none() {
+        let db_runtime_keys = query_current_runtime_db_keys_on_connection(
+            connection,
+            &request.filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
+        let db_terminal_keys = query_terminal_db_keys_for_runtime_records_on_connection(
+            connection,
+            runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?;
+        runtime_overlay_total_delta(
+            request,
+            source_scope,
+            runtime_records,
+            &db_runtime_keys,
+            &db_terminal_keys,
+        )
+        .0
+    } else {
+        RuntimeSummaryOverlayDelta::default()
+    };
+    let total_count = (totals.total_count + runtime_overlay_delta.total_count).max(0);
+    let success_count = (totals.success_count + runtime_overlay_delta.success_count).max(0);
+    let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
+    let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
+    let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
+    let cache_write_tokens =
+        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
+    let cache_input_tokens =
+        (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
+    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let max_tokens_per_request = match (
+        totals.max_total_tokens,
+        runtime_overlay_delta.max_total_tokens,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
+    let max_total_ms = match (network.max_total_ms, runtime_overlay_delta.max_total_ms) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
+    let avg_tokens_per_request = if total_count <= 0 {
+        0.0
+    } else {
+        total_tokens as f64 / total_count as f64
+    };
+    let exception = InvocationExceptionSummary {
+        failure_count: (exception.failure_count + runtime_overlay_delta.failure_count).max(0),
+        service_failure_count: (exception.service_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
+        client_failure_count: (exception.client_failure_count
+            + runtime_overlay_delta.client_failure_count)
+            .max(0),
+        client_abort_count: (exception.client_abort_count
+            + runtime_overlay_delta.client_abort_count)
+            .max(0),
+        actionable_failure_count: (exception.actionable_failure_count
+            + runtime_overlay_delta.service_failure_count)
+            .max(0),
+    };
+    Ok(InvocationSummaryResponse {
+        snapshot_id,
+        new_records_count,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        token: InvocationTokenSummary {
+            request_count: total_count,
+            total_tokens,
+            avg_tokens_per_request,
+            cache_write_tokens,
+            cache_input_tokens,
+            output_tokens,
+            total_cost,
+            max_tokens_per_request,
+        },
+        network: InvocationNetworkSummary {
+            max_total_ms,
+            ..network
+        },
+        exception,
+    })
+}
+
+pub(crate) async fn fetch_invocation_history_overview_with_runtime_overlay(
+    state: Arc<AppState>,
+    params: ListQuery,
+    runtime_overlay_records: Vec<ApiInvocation>,
+    max_records: usize,
+) -> Result<InvocationHistoryOverviewResponse, ApiError> {
+    let request = build_resolved_invocation_list_request(
+        &state.pool,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    let mut tx = state.pool.begin().await?;
+    let snapshot_id = request
+        .snapshot_id
+        .unwrap_or(resolve_invocation_snapshot_id_on_connection(&mut tx, source_scope).await?);
+    let summary = build_invocation_summary_on_connection(
+        &request,
+        source_scope,
+        snapshot_id,
+        &runtime_overlay_records,
+        &mut tx,
+    )
+    .await?;
+    let chart_total = summary.total_count;
+    let mut records = Vec::new();
+    let mut page = 1_i64;
+    while records.len() < max_records {
+        let mut page_request = request.clone();
+        page_request.page = page;
+        let response = list_invocation_page_with_runtime_overlay_on_connection(
+            &page_request,
+            source_scope,
+            snapshot_id,
+            &runtime_overlay_records,
+            &pricing_catalog,
+            &mut tx,
+        )
+        .await?;
+        let received_count = response.records.len();
+        if received_count == 0 {
+            break;
+        }
+        let remaining = max_records - records.len();
+        records.extend(response.records.into_iter().take(remaining));
+        if records.len() >= chart_total as usize || received_count < page_request.page_size as usize
+        {
+            break;
+        }
+        page += 1;
+    }
+    let mut chart_range_start = records
+        .iter()
+        .map(|record| record.occurred_at.clone())
+        .min();
+    let mut chart_range_end = records
+        .iter()
+        .map(|record| record.occurred_at.clone())
+        .max();
+    if chart_total as usize > records.len() {
+        let overview_page_size = request.page_size.max(1);
+        let oldest_page = (chart_total + overview_page_size - 1) / overview_page_size;
+        let mut oldest_request = request;
+        oldest_request.page = oldest_page.max(1);
+        let oldest_response = list_invocation_page_with_runtime_overlay_on_connection(
+            &oldest_request,
+            source_scope,
+            snapshot_id,
+            &runtime_overlay_records,
+            &pricing_catalog,
+            &mut tx,
+        )
+        .await?;
+        for record in oldest_response.records {
+            chart_range_start = Some(
+                chart_range_start.map_or(record.occurred_at.clone(), |current| {
+                    current.min(record.occurred_at.clone())
+                }),
+            );
+            chart_range_end = Some(
+                chart_range_end.map_or(record.occurred_at.clone(), |current| {
+                    current.max(record.occurred_at.clone())
+                }),
+            );
+        }
+    }
+    tx.commit().await?;
+    Ok(InvocationHistoryOverviewResponse {
+        summary,
+        chart_is_sampled: chart_total as usize > records.len(),
+        records,
+        chart_total,
+        chart_range_start,
+        chart_range_end,
+    })
 }
 
 pub(crate) async fn fetch_invocation_new_records_count(
@@ -19145,6 +19691,7 @@ mod invocation_cost_audit_tests {
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
             routing_source: None,
+            routing_selection_audit_json: None,
             upstream_account_id: Some(17),
             upstream_account_name: Some("Pool 17".to_string()),
             upstream_route_key: Some("route-17".to_string()),

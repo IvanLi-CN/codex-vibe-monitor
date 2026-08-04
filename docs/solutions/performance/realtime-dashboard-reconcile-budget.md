@@ -13,6 +13,7 @@ status: active
 related_specs:
   - docs/specs/5932d-sse-proxy-live-sync/SPEC.md
   - docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md
+  - docs/specs/pbgwc-prompt-cache-conversation-bindings/SPEC.md
 ---
 
 # Main-app pure SSE topic subscriptions
@@ -55,6 +56,7 @@ related_specs:
   - 否则直接发送新 snapshot
 - replay 窗口用有界内存实现即可；进程重启后直接以新 snapshot 恢复，不额外补 HTTP。
 - 闭合历史窗口、历史分页、非订阅页面继续走现有 HTTP，不必为了“纯 SSE”强行实时化。
+- 详情抽屉可以采用混合边界：仅用 scope-specific topic 推送最新可见窗口，历史深分页固定在首次 HTTP `snapshotId`。合并时按稳定键替换当前行，只有新的稳定键才算“新数据”；离开列表顶部时延迟插入，避免破坏阅读锚点。
 
 ## Guardrails / Reuse Notes
 
@@ -88,6 +90,7 @@ related_specs:
 - SSE envelope 字段名也必须在端到端 drill 中被校验。若后端真实发出的字段名与前端 registry 读取约定不一致，即便 topic 设计本身是纯推送，页面仍会静默丢弃 snapshot，看起来像“连接正常但数据不动”。
 - 主应用 shell 也属于订阅覆盖面的一部分。像版本信息这类看似外围的小数据，只要已声明为 `app.version` topic，就不应再额外保留 `/api/version` 首屏 bootstrap，否则网络面上仍然是混合推拉。
 - owner-facing 离线提示不能只说“断线了”。至少要暴露最近连接 `attempt`、触发 `reason`、active/resume/forced-snapshot topic 数量、最近消息时间与最近终态；否则“刷新能恢复但按钮不能”的问题在现场没有可判责证据。
+- 同一详情抽屉的不同区域应拆成独立 topic，并且仅订阅当前可见 tab：Records 只刷新匹配 scope 的调用/概览，提交后的配置变更只刷新绑定/事件。重型概览可以有固定短合并窗口；所有 topic 刷新失败都保留 last-good payload，恢复仍只走 replay 或 fresh snapshot。
 
 ## References
 

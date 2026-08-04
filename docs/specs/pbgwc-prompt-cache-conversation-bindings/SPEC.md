@@ -69,7 +69,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
 - Conversation event records are append-only per `promptCacheKey`.
 - Each operation record includes `action`, `origin`, `infoTypes[]`, `occurredAt`, `headline`, `changedFields[]`, and optional `bindingBefore/After`, `stickyBefore/After`, `invokeId`, and `routingContext`.
-- New automatic routing contexts contain only a safe reason code, selection source, HTTP status, and public attempt references; raw upstream messages remain available only through existing attempt detail access.
+- New automatic routing contexts contain only a safe reason code, selection source, HTTP status, public attempt references, and an optional immutable fresh-selection audit. The audit records the selected account, eligible-candidate count, decisive comparator, and a bounded list of safely normalized exclusions; raw upstream messages remain available only through existing attempt detail access.
 - `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
 - `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
 - Binding/sticky events remain split: if one action changes both the manual binding target and sticky target, the timeline records separate events.
@@ -81,6 +81,11 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Binding changes affect future requests only; in-flight requests are not rerouted.
 - Conversation detail history is loaded incrementally: the drawer requests an initial 50 retained invocation records and fetches later 50-record pages only when the drawer body scrolls near the bottom.
 - Conversation detail history tables must stay virtualized so the retained-record `total` does not linearly increase mounted DOM rows or block the binding controls.
+- Detail drawers subscribe only for their active tab, using `promptCacheKey` or the pair `stickyKey + upstreamAccountId` as the authoritative scope.
+- `invocation-history.window` supplies the current 50-row head window with `total` and `snapshotId`; after deep pagination starts, the entire captured HTTP snapshot, including page 1, remains frozen and is deduplicated against the live head by invocation stable key.
+- `invocation-history.overview` supplies the current summary and at most 1,000 chart samples; one topic build executes summary and every chart page through one SQLite read transaction plus one captured runtime overlay, and uses one fixed accepted page width so a non-divisor server limit cannot duplicate or skip samples. It may coalesce matching record changes for up to two seconds and retains last-good data on a refresh failure. When SSE is unavailable, an unpinned first HTTP page captures the snapshot and a pinned re-read of that first page supplies the summary, every bounded sample page, and the oldest boundary page used to retain the chart's full-history range.
+- `prompt-cache.conversation-binding.current` supplies the current binding/policy snapshot, while `prompt-cache.conversation-operations.window` supplies the newest 20 events for the selected filter. A local Settings draft is never overwritten by an external snapshot: the operator explicitly adopts it or saves the draft as last-write-wins. A cached binding payload captured when SSE fails is a fallback baseline only for that exact detail scope; changing scope resets the baseline.
+- When the Calls view is within 96px of its top edge, a newly keyed invocation is inserted immediately. Otherwise, the existing scroll anchor is preserved and a `Show N new` action reveals deferred rows; updates to an existing stable key never increase `N`.
 
 ## Interface Contract
 
@@ -149,9 +154,17 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
   - Returns `{ items, total, page, pageSize }`.
   - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext? }`.
-  - `routingContext` contains `{ reasonCode, routingSource?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
+  - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, excludedCandidates[] }`; missing context on existing rows is rendered as historical reason unavailable and is never reconstructed.
   - Results are ordered by `occurredAt DESC, id DESC`.
   - `infoType` filters by any matching entry inside `infoTypes[]`.
+
+### Detail-drawer topic subscriptions
+
+- `invocation-history.window` accepts exactly one detail scope and returns `{ records, total, snapshotId }` for the newest 50 retained calls.
+- `invocation-history.overview` accepts the same scope and returns `{ summary, records, chartTotal, chartIsSampled }`, where `records` contains at most 1,000 chart samples from one SQLite snapshot and one captured runtime overlay. Internal pagination keeps the server-accepted page width constant for every page. Its HTTP fallback first establishes a snapshot and reuses it for summary, samples, and the oldest page that supplies full-history chart bounds.
+- `prompt-cache.conversation-binding.current` and `prompt-cache.conversation-operations.window` accept the same scope; the operations topic also accepts the current `infoType` filter and returns the newest 20 rows.
+- A `Records` broadcast refreshes only the matching calls and overview topics. A committed conversation binding/policy change refreshes only the matching binding and operations topics.
+- Topic recovery follows the shared `snapshot/replay` contract. When replay is unavailable, the new snapshot replaces the live head while the entire captured HTTP snapshot, including page 1, remains frozen at its original snapshot.
 
 Timeout patch semantics are field-local:
 
@@ -189,6 +202,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - A conversation proxy override replaces the selected account/group/node-shunt forward-proxy dispatch scope with a prompt-cache-key scoped hard binding list. Account-level proxy lists still override group lists when no conversation proxy override is set.
 - A conversation “切出” override allows routing to move the conversation away from the original/sticky upstream account. It is not a cut-in override and does not force another account to accept otherwise invalid traffic.
 - Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
+- Every successful detail save, bulk binding action, affinity reset, automatic sticky mutation, and group promotion publishes a scope-specific conversation-configuration change after commit.
 - Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
 - Bulk bind reuses the single-key save path per selected `promptCacheKey`; successful upstream-account bulk binds also align each selected key's sticky route to the chosen account.
 - Bulk clear-and-reset affinity removes the manual binding row, sticky route, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
@@ -250,7 +264,16 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given two fresh selections share the same affinity generation and different accounts succeed out of order, the first success remains the Sticky target and the later success emits `stickyMutationSuppressed` without changing the client response.
 - Given an automatic scope-permission or single-account 429 clear completes after the Sticky target has changed, it requires both the captured generation and failed account to still match, and does not remove the newer target.
 - Given a new automatic Sticky event, the events tab shows its localized safe reason, routing source, and available cause/trigger attempt links; historical rows without context state that the reason was not recorded.
+- Given a fresh assignment establishes or attempts to establish a Sticky target, the selected attempt persists its immutable candidate-selection audit before dispatch; the event repeats that audit and its Records link opens the same snapshot, including the decisive winner rule and bounded excluded-account reasons.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
+- Given a matching new invocation arrives while the Calls view is at its top edge, the current 50-row topic window updates within about one second and a running row becomes terminal in place without being counted as a new row.
+- Given the Calls view is away from its top edge, a newly keyed row leaves the current scroll anchor unchanged, increments `Show N new`, and is merged only after the operator requests the newest rows; existing-row updates do not increment that count.
+- Given a detail topic replay misses after reconnect, the active tab adopts its fresh snapshot, retains last-good data during a refresh failure, and keeps the entire captured HTTP snapshot, including page 1, frozen and deduplicated.
+- Given the overview has more than one chart page and the configured server list limit is not a divisor of the sample cap, its snapshot contains every eligible sample at most once; an SSE-unavailable HTTP fallback follows the returned page width and first-page snapshot until the same bounded window is loaded, then reads the matching oldest page to retain the full-history chart range.
+- Given SSE is unavailable and the operator switches to a different conversation with a cached binding payload, the new conversation's fresh HTTP binding remains authoritative; the prior conversation's cached payload cannot invalidate that response.
+- Given the drawer opens directly on Calls with a cached topic payload, the current head remains visible after the open/scope reset without requiring a second topic event.
+- Given the reader is more than 96px from the Calls top and a fresh topic head no longer contains an existing visible row, that row remains in place until the reader reveals newly keyed records; only new stable keys contribute to the reveal count.
+- Given an external binding change arrives while Settings has a dirty draft, the inputs remain unchanged until the operator adopts the latest binding or explicitly saves the draft as last-write-wins.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
 - Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
@@ -299,11 +322,41 @@ PR: include
 - submission_gate: approved
 - state: the same causal chain is readable at the required mobile viewport without overlap or truncation.
 
+### Selection Audit (UI Demo)
+
+PR: include
+![Desktop event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-desktop.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: desktop default
+- viewport_strategy: Chrome default viewport
+- margin_policy: trim_only (no trim applied: ambiguous border)
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: the Sticky event names the selected account, decisive rule, bounded rejected candidate, cause attempt, and selected attempt whose Records detail contains the same immutable audit.
+
+PR: include
+![Mobile event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-mobile.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: 393x852
+- viewport_strategy: Chrome viewport override
+- margin_policy: trim_only (no trim applied: ambiguous border)
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and attempt identifiers
+- submission_gate: approved
+- state: the audit summary and Records deep link remain readable without overlap or truncation.
+
 ### Dashboard Bulk Actions (Web Demo)
 
 ![Dashboard bulk action bar and selected conversation card](./assets/dashboard-bulk-actions-selection-panel-web-demo.png)
 
-- source_type: web_demo
+- source_type: ui_demo
 - target_program: mock-only
 - capture_scope: page
 - requested_viewport: desktop1440
@@ -477,6 +530,40 @@ PR: include
 - story_id_or_title: `Account Pool/Components/Upstream Accounts Table/RecentStreamErrorsDegradedNarrow`
 - state: narrow account card shows the full localized reason on wrapped lines, normal health, degraded work status, and the recovery countdown.
 - evidence_note: narrow element capture confirms the localized reason and countdown fit without overlap or clipping.
+
+### Conversation Detail Realtime (Web Demo)
+
+PR: include
+![Conversation detail calls realtime on desktop](./assets/conversation-detail-realtime-desktop.png)
+
+- source_type: web_demo
+- target_program: mock-only
+- capture_scope: page
+- requested_viewport: desktop
+- viewport_strategy: default browser viewport
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation data
+- submission_gate: approved
+- demo_route: `/#/live`
+- state: `demo-conversation-a` drawer open on Calls, showing a live responding row and terminal rows from the current topic window
+- evidence_note: verifies that the detail drawer hydrates its Calls tab from the realtime window without the historical list loading state.
+
+PR: include
+![Conversation detail calls realtime on mobile](./assets/conversation-detail-realtime-mobile-393x852.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- requested_viewport: 393x852
+- viewport_strategy: browser viewport override
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation data
+- submission_gate: approved
+- demo_route: `/#/live?demoEmbed=1`
+- state: `demo-conversation-a` drawer open on Calls in the compact single-column record layout
+- evidence_note: verifies that the responding row and terminal cards remain readable without clipping at the required mobile viewport.
 
 ## Image Tool Override Boundary
 

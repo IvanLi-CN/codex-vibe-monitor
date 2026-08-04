@@ -89,6 +89,17 @@ pub(crate) fn hydrate_pool_attempt_request_compression_fields(
     }
 }
 
+pub(crate) fn hydrate_pool_attempt_routing_selection_audits(
+    records: &mut [ApiPoolUpstreamRequestAttempt],
+) {
+    for record in records {
+        record.routing_selection_audit = record
+            .routing_selection_audit_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiPoolUpstreamRequestAttempt {
@@ -103,6 +114,12 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) sticky_key: Option<String>,
     #[sqlx(default)]
     pub(crate) routing_source: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) routing_selection_audit_json: Option<String>,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     #[sqlx(default)]
     pub(crate) upstream_account_id: Option<i64>,
     #[sqlx(default)]

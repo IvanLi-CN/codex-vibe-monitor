@@ -1,9 +1,11 @@
 use super::*;
-use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
+use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
     load_sticky_affinity_generation, load_sticky_route,
-    record_pool_route_success_with_affinity_generation, upsert_sticky_route,
+    record_pool_route_success_with_affinity_generation,
+    record_pool_route_success_with_affinity_generation_and_broadcast,
+    record_pool_route_success_with_affinity_generation_for_attempt, upsert_sticky_route,
 };
 use serde_json::json;
 use tokio::time::{Duration, sleep};
@@ -820,6 +822,11 @@ async fn ensure_schema_creates_sticky_affinity_generation_and_routing_source_sto
         attempt_columns
             .iter()
             .any(|column| column == "routing_source")
+    );
+    assert!(
+        attempt_columns
+            .iter()
+            .any(|column| column == "routing_selection_audit_json")
     );
 }
 
@@ -5664,6 +5671,120 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
 }
 
 #[tokio::test]
+async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let selected_account_id =
+        insert_test_pool_api_key_account(&state, "Selected dzw", "upstream-selected").await;
+    let excluded_account_id =
+        insert_test_pool_api_key_account(&state, "Excluded CIII", "upstream-excluded").await;
+    let prompt_cache_key = "prompt-cache-selection-audit-key";
+    let invoke_id = "selection-audit-invoke";
+    let occurred_at = format_utc_iso(Utc::now());
+    let audit = PoolRoutingSelectionAudit {
+        selected_account_id,
+        selected_account_name: "Selected dzw".to_string(),
+        eligible_candidate_count: 1,
+        winner_reason_code: "onlyEligibleCandidate".to_string(),
+        compared_account_id: None,
+        compared_account_name: None,
+        excluded_candidates: vec![PoolRoutingSelectionAuditExcludedCandidate {
+            account_id: excluded_account_id,
+            account_name: "Excluded CIII".to_string(),
+            reason_code: "modelNotAllowed".to_string(),
+        }],
+    };
+    let attempt_id = sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key,
+            routing_source, routing_selection_audit_json, upstream_account_id,
+            upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
+            requester_ip, started_at, finished_at, status, phase, created_at
+        ) VALUES (
+            ?1, ?2, ?3, '/v1/responses', ?4, ?5, 'freshAssignment', ?6, ?7,
+            'route-selection-audit', 1, 1, 0, '203.0.113.15', ?3, ?3,
+            'success', 'completed', ?3
+        )
+        "#,
+    )
+    .bind("SELECTAUDIT1")
+    .bind(invoke_id)
+    .bind(&occurred_at)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(prompt_cache_key)
+    .bind(serde_json::to_string(&audit).expect("serialize selection audit"))
+    .bind(selected_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert attempt with selection audit")
+    .last_insert_rowid();
+    let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load empty sticky generation");
+
+    record_pool_route_success_with_affinity_generation_for_attempt(
+        &state.pool,
+        selected_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some(invoke_id),
+        Some(attempt_id),
+        Some(generation),
+    )
+    .await
+    .expect("persist fresh sticky success");
+
+    let Json(attempts) =
+        fetch_invocation_pool_attempts(State(state.clone()), AxumPath(invoke_id.to_string()))
+            .await
+            .expect("fetch attempt with selection audit");
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(
+        attempts[0]
+            .routing_selection_audit
+            .as_ref()
+            .map(|value| value.selected_account_name.as_str()),
+        Some("Selected dzw")
+    );
+    assert_eq!(
+        attempts[0]
+            .routing_selection_audit
+            .as_ref()
+            .map(|value| value.excluded_candidates[0].reason_code.as_str()),
+        Some("modelNotAllowed")
+    );
+
+    let Json(events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list sticky event with selection audit");
+    let event = events
+        .items
+        .iter()
+        .find(|event| event.action == "stickyTargetChanged")
+        .expect("fresh assignment should emit sticky target event");
+    assert_eq!(
+        event
+            .routing_context
+            .as_ref()
+            .and_then(|context| context.routing_selection_audit.as_ref())
+            .map(|value| value.winner_reason_code.as_str()),
+        Some("onlyEligibleCandidate")
+    );
+}
+
+#[tokio::test]
 async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_completion() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -5674,32 +5795,51 @@ async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_co
     let late_account_id =
         insert_test_pool_api_key_account(&state, "Late Sticky Loser", "upstream-late").await;
     let prompt_cache_key = "prompt-cache-first-success-lock-key";
+    let mut broadcast_receiver = state.broadcaster.subscribe();
     let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
         .await
         .expect("load empty sticky generation");
 
-    record_pool_route_success_with_affinity_generation(
-        &state.pool,
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         first_account_id,
         Utc::now(),
         Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some("first-success"),
+        None,
         Some(generation),
     )
     .await
     .expect("first success should establish sticky target");
-    record_pool_route_success_with_affinity_generation(
-        &state.pool,
+    assert!(matches!(
+        broadcast_receiver
+            .recv()
+            .await
+            .expect("first sticky mutation should broadcast"),
+        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+            if key == prompt_cache_key
+    ));
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
         late_account_id,
         Utc::now(),
         Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some("late-success"),
+        None,
         Some(generation),
     )
     .await
     .expect("late success remains a successful route outcome");
+    assert!(matches!(
+        broadcast_receiver
+            .recv()
+            .await
+            .expect("suppressed sticky mutation should broadcast"),
+        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+            if key == prompt_cache_key
+    ));
 
     let sticky = load_sticky_route(&state.pool, prompt_cache_key)
         .await
@@ -5737,6 +5877,86 @@ async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_co
             .as_ref()
             .map(|context| context.reason_code.as_str()),
         Some("staleConcurrentCompletion")
+    );
+}
+
+#[tokio::test]
+async fn runtime_sticky_route_change_broadcasts_previous_and_current_history_scopes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let previous_account_id =
+        insert_test_pool_api_key_account(&state, "Previous Sticky Target", "upstream-previous")
+            .await;
+    let current_account_id =
+        insert_test_pool_api_key_account(&state, "Current Sticky Target", "upstream-current").await;
+    let prompt_cache_key = "prompt-cache-sticky-history-invalidation";
+    upsert_sticky_route(
+        &state.pool,
+        prompt_cache_key,
+        previous_account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed previous sticky target");
+    let generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load seeded sticky generation");
+    let mut broadcast_receiver = state.broadcaster.subscribe();
+
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
+        current_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some("sticky-route-change"),
+        None,
+        Some(generation),
+    )
+    .await
+    .expect("route success should move sticky target");
+
+    let first = broadcast_receiver
+        .recv()
+        .await
+        .expect("sticky mutation should publish configuration change");
+    let second = broadcast_receiver
+        .recv()
+        .await
+        .expect("sticky mutation should publish history invalidation");
+    assert!(
+        matches!(
+            &first,
+            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+                if key == prompt_cache_key
+        ) || matches!(
+            &second,
+            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
+                if key == prompt_cache_key
+        )
+    );
+    assert!(
+        matches!(
+            &first,
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key,
+                previous_upstream_account_id,
+                upstream_account_id,
+            } if sticky_key == prompt_cache_key
+                && *previous_upstream_account_id == previous_account_id
+                && *upstream_account_id == current_account_id
+        ) || matches!(
+            &second,
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key,
+                previous_upstream_account_id,
+                upstream_account_id,
+            } if sticky_key == prompt_cache_key
+                && *previous_upstream_account_id == previous_account_id
+                && *upstream_account_id == current_account_id
+        )
     );
 }
 
@@ -5804,8 +6024,9 @@ async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock(
         .await
         .expect("join locked stale sticky write task")
         .expect("locked stale sticky write task should return result");
-    assert!(
-        !sticky_updated,
+    assert_eq!(
+        sticky_updated,
+        RuntimeStickyMutation::Suppressed,
         "stale sticky writeback must be rejected after the reset transaction commits"
     );
     assert!(

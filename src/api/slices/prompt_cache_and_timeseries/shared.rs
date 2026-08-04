@@ -241,6 +241,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.endpoint,
             attempts.sticky_key,
             attempts.routing_source,
+            attempts.routing_selection_audit_json,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
@@ -297,6 +298,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
     .fetch_all(pool)
     .await?;
     hydrate_pool_attempt_request_compression_fields(&mut records);
+    hydrate_pool_attempt_routing_selection_audits(&mut records);
     load_pool_attempt_account_names(pool, &mut records).await?;
     Ok(records)
 }

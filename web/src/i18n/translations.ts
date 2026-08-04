@@ -2241,6 +2241,7 @@ const baseTranslations = {
     "live.conversations.drawer.loadMore": "Load more records",
     "live.conversations.drawer.loadingMore": "Loading more records…",
     "live.conversations.drawer.empty": "No retained call records for this conversation.",
+    "live.conversations.drawer.calls.newRecords": "Show {{count}} new record(s)",
     "live.conversations.drawer.tabs.label": "Conversation drawer sections",
     "live.conversations.drawer.tabs.overview": "Overview",
     "live.conversations.drawer.tabs.calls": "Calls",
@@ -2256,6 +2257,10 @@ const baseTranslations = {
     "live.conversations.drawer.binding.account": "Account binding target",
     "live.conversations.drawer.binding.save": "Save",
     "live.conversations.drawer.binding.saving": "Saving…",
+    "live.conversations.drawer.binding.remoteConflict":
+      "This conversation binding changed elsewhere while you were editing.",
+    "live.conversations.drawer.binding.adoptLatest": "Use latest",
+    "live.conversations.drawer.binding.keepSaving": "Save mine",
     "live.conversations.drawer.binding.currentNone": "Current: no manual binding",
     "live.conversations.drawer.binding.currentGroup": "Current: group {{group}}",
     "live.conversations.drawer.binding.currentAccount": "Current: account {{account}}",
@@ -2320,6 +2325,8 @@ const baseTranslations = {
       "Cause attempt: {{attemptId}}",
     "live.conversations.drawer.operations.routingContext.triggerAttempt":
       "Trigger attempt: {{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
+      "View routing decision: {{attemptId}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "First successful request established this Sticky target.",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
@@ -2807,6 +2814,71 @@ const baseTranslations = {
     "table.poolAttempts.startedAt": "Started at",
     "table.poolAttempts.finishedAt": "Finished at",
     "table.poolAttempts.upstreamRequestId": "Upstream request ID",
+    "table.poolAttempts.routingDecision.summary":
+      "Routing decision: {{account}} was selected from {{count}} eligible candidate(s).",
+    "table.poolAttempts.routingDecision.winnerReasons.onlyEligibleCandidate":
+      "{{account}} was the only eligible candidate.",
+    "table.poolAttempts.routingDecision.winnerReasons.avoidsRetryOriginalNode":
+      "{{account}} avoided retrying the original unavailable node instead of {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerCapacityLane":
+      "{{account}} had the lower capacity lane than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerRouteBindingFailurePenalty":
+      "{{account}} had fewer recent route failures than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerModelRoutePenalty":
+      "{{account}} had a lower model-routing penalty than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.higherRoutingPriority":
+      "{{account}} had higher routing priority than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.higherEligibility":
+      "{{account}} had higher routing eligibility than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.preferredDispatchState":
+      "{{account}} had the preferred dispatch state over {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.secondaryResetProximity":
+      "{{account}} was preferred by secondary reset proximity over {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.primaryResetProximity":
+      "{{account}} was preferred by primary reset proximity over {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerScarcity":
+      "{{account}} had lower scarcity pressure than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerEffectiveLoad":
+      "{{account}} had lower effective load than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.leastRecentlySelected":
+      "{{account}} was selected less recently than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.stableAccountOrder":
+      "{{account}} won the stable account-order tie-break over {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.unknown":
+      "{{account}} won the recorded candidate comparison.",
+    "table.poolAttempts.routingDecision.exclusionReasons.bindingConstraint":
+      "{{account}} was excluded by the conversation binding.",
+    "table.poolAttempts.routingDecision.exclusionReasons.requiredRouteMismatch":
+      "{{account}} did not match the required route.",
+    "table.poolAttempts.routingDecision.exclusionReasons.recentTransportFailure":
+      "{{account}} had a recent transport failure.",
+    "table.poolAttempts.routingDecision.exclusionReasons.previousAttemptExcluded":
+      "{{account}} was already excluded by this request's prior attempt.",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyReuseUnavailable":
+      "{{account}} could not be reused as the Sticky target.",
+    "table.poolAttempts.routingDecision.exclusionReasons.rateLimited":
+      "{{account}} was rate limited.",
+    "table.poolAttempts.routingDecision.exclusionReasons.degraded": "{{account}} was degraded.",
+    "table.poolAttempts.routingDecision.exclusionReasons.notSelectableForFreshAssignment":
+      "{{account}} cannot receive a fresh assignment.",
+    "table.poolAttempts.routingDecision.exclusionReasons.unavailable":
+      "{{account}} was unavailable.",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelNotAllowed":
+      "{{account}} did not allow the requested model.",
+    "table.poolAttempts.routingDecision.exclusionReasons.capabilityUnsupported":
+      "{{account}} did not support the requested capability.",
+    "table.poolAttempts.routingDecision.exclusionReasons.concurrencyLimit":
+      "{{account}} had reached its concurrency limit.",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyPolicy":
+      "{{account}} was excluded by Sticky policy.",
+    "table.poolAttempts.routingDecision.exclusionReasons.forwardProxyUnavailable":
+      "{{account}} did not have an available forward proxy.",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelTemporarilyExcluded":
+      "{{account}} was temporarily excluded for this model.",
+    "table.poolAttempts.routingDecision.exclusionReasons.notAssignable":
+      "{{account}} was not assignable.",
+    "table.poolAttempts.routingDecision.exclusionReasons.unknown":
+      "{{account}} was excluded by a recorded routing rule.",
     "table.poolAttempts.upstreamErrorMessage": "Upstream error",
     "table.poolAttempts.downstreamErrorMessage": "Downstream-facing error",
     "table.poolAttempts.status.pending": "Pending",
@@ -4985,6 +5057,7 @@ const baseTranslations = {
     "live.conversations.drawer.loadMore": "继续加载更多记录",
     "live.conversations.drawer.loadingMore": "继续加载调用记录中…",
     "live.conversations.drawer.empty": "当前对话暂无可回放的调用记录。",
+    "live.conversations.drawer.calls.newRecords": "查看 {{count}} 条新记录",
     "live.conversations.drawer.tabs.label": "对话抽屉分区",
     "live.conversations.drawer.tabs.overview": "概览",
     "live.conversations.drawer.tabs.calls": "调用",
@@ -5000,6 +5073,10 @@ const baseTranslations = {
     "live.conversations.drawer.binding.account": "账号绑定目标",
     "live.conversations.drawer.binding.save": "保存",
     "live.conversations.drawer.binding.saving": "保存中…",
+    "live.conversations.drawer.binding.remoteConflict":
+      "编辑期间，此对话的路由绑定已在其他位置更新。",
+    "live.conversations.drawer.binding.adoptLatest": "采用最新配置",
+    "live.conversations.drawer.binding.keepSaving": "仍然保存",
     "live.conversations.drawer.binding.currentNone": "当前：无手工绑定",
     "live.conversations.drawer.binding.currentGroup": "当前：分组 {{group}}",
     "live.conversations.drawer.binding.currentAccount": "当前：账号 {{account}}",
@@ -5058,6 +5135,8 @@ const baseTranslations = {
     "live.conversations.drawer.operations.routingContext.sources.stickyReuse": "Sticky 复用",
     "live.conversations.drawer.operations.routingContext.causeAttempt": "起因尝试：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.triggerAttempt": "触发尝试：{{attemptId}}",
+    "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":
+      "查看选路决策：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.reasons.firstSuccessfulAssignment":
       "首个成功请求已建立此 Sticky 目标。",
     "live.conversations.drawer.operations.routingContext.reasons.freshAssignmentAfterFailure":
@@ -5521,6 +5600,70 @@ const baseTranslations = {
     "table.poolAttempts.startedAt": "开始时间",
     "table.poolAttempts.finishedAt": "结束时间",
     "table.poolAttempts.upstreamRequestId": "上游请求 ID",
+    "table.poolAttempts.routingDecision.summary":
+      "选路决策：在 {{count}} 个合格候选中选择了 {{account}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.onlyEligibleCandidate":
+      "{{account}} 是唯一合格候选。",
+    "table.poolAttempts.routingDecision.winnerReasons.avoidsRetryOriginalNode":
+      "{{account}} 避免重试原不可用节点，优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerCapacityLane":
+      "{{account}} 的容量档位优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerRouteBindingFailurePenalty":
+      "{{account}} 近期路由失败惩罚低于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerModelRoutePenalty":
+      "{{account}} 的模型路由惩罚低于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.higherRoutingPriority":
+      "{{account}} 的路由优先级高于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.higherEligibility":
+      "{{account}} 的路由资格高于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.preferredDispatchState":
+      "{{account}} 的分发状态优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.secondaryResetProximity":
+      "{{account}} 因次级重置临近度优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.primaryResetProximity":
+      "{{account}} 因主级重置临近度优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerScarcity":
+      "{{account}} 的稀缺压力低于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.lowerEffectiveLoad":
+      "{{account}} 的有效负载低于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.leastRecentlySelected":
+      "{{account}} 比 {{comparedAccount}} 更久未被选择。",
+    "table.poolAttempts.routingDecision.winnerReasons.stableAccountOrder":
+      "{{account}} 在稳定账号顺序的平局规则中优于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.unknown":
+      "{{account}} 赢得了已记录的候选比较。",
+    "table.poolAttempts.routingDecision.exclusionReasons.bindingConstraint":
+      "{{account}} 被当前会话绑定条件排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.requiredRouteMismatch":
+      "{{account}} 不符合要求的路由。",
+    "table.poolAttempts.routingDecision.exclusionReasons.recentTransportFailure":
+      "{{account}} 最近发生过传输失败。",
+    "table.poolAttempts.routingDecision.exclusionReasons.previousAttemptExcluded":
+      "{{account}} 已被本请求的先前尝试排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyReuseUnavailable":
+      "{{account}} 无法作为 Sticky 目标继续复用。",
+    "table.poolAttempts.routingDecision.exclusionReasons.rateLimited": "{{account}} 已被限流。",
+    "table.poolAttempts.routingDecision.exclusionReasons.degraded":
+      "{{account}} 当前处于降级状态。",
+    "table.poolAttempts.routingDecision.exclusionReasons.notSelectableForFreshAssignment":
+      "{{account}} 不允许接收重新分配。",
+    "table.poolAttempts.routingDecision.exclusionReasons.unavailable": "{{account}} 当前不可用。",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelNotAllowed":
+      "{{account}} 不允许当前请求模型。",
+    "table.poolAttempts.routingDecision.exclusionReasons.capabilityUnsupported":
+      "{{account}} 不支持当前请求能力。",
+    "table.poolAttempts.routingDecision.exclusionReasons.concurrencyLimit":
+      "{{account}} 已达到并发上限。",
+    "table.poolAttempts.routingDecision.exclusionReasons.stickyPolicy":
+      "{{account}} 被 Sticky 策略排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.forwardProxyUnavailable":
+      "{{account}} 没有可用的正向代理。",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelTemporarilyExcluded":
+      "{{account}} 被当前模型临时排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.notAssignable":
+      "{{account}} 当前不可分配。",
+    "table.poolAttempts.routingDecision.exclusionReasons.unknown":
+      "{{account}} 被已记录的路由规则排除。",
     "table.poolAttempts.upstreamErrorMessage": "上游错误",
     "table.poolAttempts.downstreamErrorMessage": "下游对外错误",
     "table.poolAttempts.status.pending": "进行中",
