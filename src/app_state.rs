@@ -128,7 +128,24 @@ struct DashboardRuntimeProjectionState {
     degraded_reason: Option<&'static str>,
     reconcile_error: Option<&'static str>,
     last_reconcile_defer_reason: Option<&'static str>,
+    persistence_baseline: Option<DashboardRuntimeProjectionBaseline>,
     memory_ready: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardRuntimeBaselineRecord {
+    pub(crate) key: RuntimeInvocationKey,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) is_retry: bool,
+    pub(crate) live_phase: Option<String>,
+    pub(crate) wait_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardRuntimeProjectionBaseline {
+    pub(crate) records: Vec<DashboardRuntimeBaselineRecord>,
+    pub(crate) source_scope: InvocationSourceScope,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -325,6 +342,7 @@ impl RuntimeProjectionHub {
     pub(crate) fn install_persistence_baseline_if_generation(
         &self,
         mut snapshot: DashboardActivityLiveSnapshot,
+        baseline: DashboardRuntimeProjectionBaseline,
         snapshot_origin: &'static str,
         expected_generation: u64,
     ) -> Result<Option<DashboardProjectionCapture>> {
@@ -354,6 +372,7 @@ impl RuntimeProjectionHub {
         dashboard.degraded_reason = None;
         dashboard.reconcile_error = None;
         dashboard.last_reconcile_defer_reason = None;
+        dashboard.persistence_baseline = Some(baseline);
         dashboard.memory_ready = false;
         Ok(Some(DashboardProjectionCapture {
             snapshot,
@@ -467,9 +486,19 @@ impl DashboardLiveProjection<'_> {
             .dashboard_network_speed_cache
             .get()
             .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
+        let persistence_baseline = self
+            .hub
+            .dashboard
+            .lock()
+            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?
+            .persistence_baseline
+            .clone();
+        let (runtime_records, terminal_tombstones) = self.hub.dashboard_projection_inputs();
         Ok(build_dashboard_activity_live_snapshot_from_memory(
             0,
-            self.hub.snapshot(),
+            persistence_baseline,
+            runtime_records,
+            terminal_tombstones,
             dashboard_network_speed_cache.as_ref(),
         ))
     }
@@ -726,6 +755,23 @@ impl RuntimeProjectionHub {
             .values()
             .map(|entry| entry.record.clone())
             .collect()
+    }
+
+    pub(crate) fn dashboard_projection_inputs(
+        &self,
+    ) -> (Vec<ApiInvocation>, HashSet<RuntimeInvocationKey>) {
+        let Ok(mut guard) = self.inner.lock() else {
+            return (Vec::new(), HashSet::new());
+        };
+        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        (
+            guard
+                .records
+                .values()
+                .map(|entry| entry.record.clone())
+                .collect(),
+            guard.terminal_tombstones.keys().cloned().collect(),
+        )
     }
 
     #[cfg(test)]

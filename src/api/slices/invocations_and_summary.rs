@@ -11653,6 +11653,20 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
+    let baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
+    query_upstream_account_in_progress_counts_with_baseline(
+        pool,
+        proxy_runtime_invocations,
+        source_scope,
+        &baseline,
+    )
+    .await
+}
+
+pub(crate) async fn query_dashboard_runtime_projection_baseline(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<DashboardRuntimeProjectionBaseline, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -11692,24 +11706,47 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .build_query_as::<RuntimeKeyRow>()
         .fetch_all(pool)
         .await?;
+    Ok(DashboardRuntimeProjectionBaseline {
+        records: db_rows
+            .into_iter()
+            .map(|row| DashboardRuntimeBaselineRecord {
+                key: RuntimeInvocationKey::new(row.invoke_id, row.occurred_at),
+                upstream_account_id: row.upstream_account_id,
+                upstream_account_name: None,
+                is_retry: row.retry_count > 0,
+                live_phase: row.live_phase,
+                wait_ms: row.upstream_ttfb_ms,
+            })
+            .collect(),
+        source_scope,
+    })
+}
+
+async fn query_upstream_account_in_progress_counts_with_baseline(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    source_scope: InvocationSourceScope,
+    baseline: &DashboardRuntimeProjectionBaseline,
+) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
-    for row in &db_rows {
+    for row in &baseline.records {
         counts.entry(row.upstream_account_id).or_default().add(
-            row.retry_count > 0,
+            row.is_retry,
             row.live_phase.as_deref(),
-            row.upstream_ttfb_ms,
+            row.wait_ms,
         );
     }
-    let db_runtime_keys = db_rows
-        .into_iter()
+    let db_runtime_keys = baseline
+        .records
+        .iter()
         .map(|row| {
             (
-                (row.invoke_id, row.occurred_at),
+                (row.key.invoke_id.clone(), row.key.occurred_at.clone()),
                 (
                     row.upstream_account_id,
-                    row.retry_count > 0,
-                    row.live_phase,
-                    row.upstream_ttfb_ms,
+                    row.is_retry,
+                    row.live_phase.clone(),
+                    row.wait_ms,
                 ),
             )
         })
@@ -11810,13 +11847,37 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
     revision: u64,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    query_dashboard_activity_live_snapshot_with_baseline_from_runtime(
+        pool,
+        proxy_runtime_invocations,
+        dashboard_network_speed_cache,
+        revision,
+    )
+    .await
+    .map(|(snapshot, _)| snapshot)
+}
+
+pub(crate) async fn query_dashboard_activity_live_snapshot_with_baseline_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    revision: u64,
+) -> Result<
+    (
+        DashboardActivityLiveSnapshot,
+        DashboardRuntimeProjectionBaseline,
+    ),
+    ApiError,
+> {
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
     flush_dashboard_network_socket_minute_rollups(pool, dashboard_network_speed_cache, now).await?;
-    let counts = query_upstream_account_in_progress_counts_from_runtime(
+    let baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
+    let counts = query_upstream_account_in_progress_counts_with_baseline(
         pool,
         proxy_runtime_invocations,
         source_scope,
+        &baseline,
     )
     .await?;
     let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
@@ -11913,27 +11974,30 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
     }
 
-    Ok(DashboardActivityLiveSnapshot {
-        revision,
-        generated_at: format_utc_iso(now),
-        in_progress_invocation_count,
-        in_progress_phase_counts,
-        retry_invocation_count,
-        in_progress_wait_sum_ms,
-        in_progress_wait_sample_count,
-        network_live_bucket: Some(
-            load_dashboard_network_live_bucket_point(
-                pool,
-                dashboard_network_speed_cache,
-                source_scope,
-                now,
-                DashboardNetworkScopeKey::Global,
-            )
-            .await?,
-        ),
-        network_realtime_rate: Some(global_realtime_rate),
-        accounts,
-    })
+    Ok((
+        DashboardActivityLiveSnapshot {
+            revision,
+            generated_at: format_utc_iso(now),
+            in_progress_invocation_count,
+            in_progress_phase_counts,
+            retry_invocation_count,
+            in_progress_wait_sum_ms,
+            in_progress_wait_sample_count,
+            network_live_bucket: Some(
+                load_dashboard_network_live_bucket_point(
+                    pool,
+                    dashboard_network_speed_cache,
+                    source_scope,
+                    now,
+                    DashboardNetworkScopeKey::Global,
+                )
+                .await?,
+            ),
+            network_realtime_rate: Some(global_realtime_rate),
+            accounts,
+        },
+        baseline,
+    ))
 }
 
 fn dashboard_live_snapshot_in_progress_counts(

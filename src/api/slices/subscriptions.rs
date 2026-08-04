@@ -631,8 +631,14 @@ impl SubscriptionHub {
 
     async fn register_topic_subscribers(
         self: &Arc<Self>,
+        state: &AppState,
         topics: &[SubscriptionTopic],
     ) -> Result<TopicSubscriptionLease, ApiError> {
+        let owns_dashboard_live = topics.iter().any(|topic| {
+            topic.uses_dashboard_activity_live_overlay()
+                || topic.uses_summary_live_overlay()
+                || topic.uses_dashboard_network_live_snapshot()
+        });
         let topic_keys = topics
             .iter()
             .map(SubscriptionTopic::cache_key)
@@ -658,6 +664,10 @@ impl SubscriptionHub {
                 .active_topic_names
                 .entry(topic_name.clone())
                 .or_insert(0) += 1;
+        }
+        drop(guard);
+        if owns_dashboard_live {
+            ensure_dashboard_activity_live_snapshot_producer(state);
         }
         Ok(TopicSubscriptionLease {
             hub: self.clone(),
@@ -2331,7 +2341,7 @@ pub(crate) async fn topic_sse_stream(
         .collect::<Result<HashSet<_>, _>>()?;
     let topic_lease = state
         .subscription_hub
-        .register_topic_subscribers(&selected_topics)
+        .register_topic_subscribers(state.as_ref(), &selected_topics)
         .await?;
     let prepared = state
         .subscription_hub
@@ -3506,6 +3516,67 @@ mod tests {
             limit: Some(20),
             upstream_account_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn first_dashboard_owner_starts_pending_runtime_projection_producer() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prime a disconnected dashboard topic");
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "network-before-owner",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+        schedule_dashboard_activity_live_snapshot(state.as_ref());
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .pending_dashboard_deadline()
+                .is_some()
+        );
+        let mut receiver = state.broadcaster.subscribe();
+
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(state.as_ref(), std::slice::from_ref(&topic))
+            .await
+            .expect("register first dashboard owner");
+        let snapshot = tokio::time::timeout(Duration::from_millis(600), async {
+            loop {
+                if let Ok(BroadcastPayload::DashboardActivityLive { snapshot }) =
+                    receiver.recv().await
+                {
+                    return snapshot;
+                }
+            }
+        })
+        .await
+        .expect("first owner should start pending projection producer");
+
+        assert_eq!(
+            snapshot
+                .network_live_bucket
+                .expect("global live bucket")
+                .upload_bytes,
+            128
+        );
     }
 
     #[tokio::test]

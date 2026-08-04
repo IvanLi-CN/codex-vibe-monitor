@@ -2201,6 +2201,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_projection_preserves_restored_rows_across_later_mutations() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.bind_dashboard_network_speed_cache(Arc::new(DashboardNetworkSpeedCache::new(
+            Utc::now(),
+        )))
+        .expect("bind dashboard network cache");
+        let restored = live_record("restored-only", Some(41), "running", Some("requesting"), 1);
+        let baseline_snapshot = build_dashboard_activity_live_snapshot(0, vec![restored.clone()]);
+        let baseline = DashboardRuntimeProjectionBaseline {
+            records: vec![DashboardRuntimeBaselineRecord {
+                key: RuntimeInvocationKey::new(
+                    restored.invoke_id.clone(),
+                    restored.occurred_at.clone(),
+                ),
+                upstream_account_id: restored.upstream_account_id,
+                upstream_account_name: restored.upstream_account_name.clone(),
+                is_retry: false,
+                live_phase: restored.live_phase.clone(),
+                wait_ms: restored.t_upstream_ttfb_ms,
+            }],
+            source_scope: InvocationSourceScope::All,
+        };
+        hub.install_persistence_baseline_if_generation(
+            baseline_snapshot,
+            baseline,
+            "startup_restore",
+            hub.dashboard_generation(),
+        )
+        .expect("install startup baseline")
+        .expect("baseline generation should match");
+
+        hub.upsert(live_record(
+            "runtime-only",
+            Some(42),
+            "running",
+            Some("responding"),
+            1,
+        ));
+        let capture = hub
+            .capture_memory_snapshot()
+            .expect("merged runtime projection snapshot");
+
+        assert_eq!(capture.snapshot.in_progress_invocation_count, 2);
+        assert_eq!(capture.snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(capture.snapshot.in_progress_phase_counts.responding, 1);
+        assert_eq!(hub.health_snapshot(1).live_path_db_read_count, 0);
+
+        let mut restored_update = restored.clone();
+        restored_update.live_phase = Some("responding".to_string());
+        hub.upsert(restored_update.clone());
+        let updated = hub
+            .capture_memory_snapshot()
+            .expect("runtime overlay should replace its restored row");
+        assert_eq!(updated.snapshot.in_progress_invocation_count, 2);
+        assert_eq!(updated.snapshot.in_progress_phase_counts.requesting, 0);
+        assert_eq!(updated.snapshot.in_progress_phase_counts.responding, 2);
+
+        restored_update.status = Some("completed".to_string());
+        hub.upsert_terminal(restored_update);
+        let terminal = hub
+            .capture_memory_snapshot()
+            .expect("terminal delta should remove its restored row");
+        assert_eq!(terminal.snapshot.in_progress_invocation_count, 1);
+        assert_eq!(terminal.snapshot.in_progress_phase_counts.responding, 1);
+    }
+
     #[tokio::test]
     async fn dashboard_runtime_projection_update_p95_stays_within_four_hundred_ms() {
         let state = crate::tests::test_state_with_openai_base(
@@ -2853,7 +2920,7 @@ async fn capture_dashboard_activity_live_snapshot_from_persistence(
         hub.record_live_path_db_read();
     }
     hub.record_build();
-    let snapshot = query_dashboard_activity_live_snapshot_from_runtime(
+    let (snapshot, baseline) = query_dashboard_activity_live_snapshot_with_baseline_from_runtime(
         pool,
         hub,
         dashboard_network_speed_cache,
@@ -2867,6 +2934,7 @@ async fn capture_dashboard_activity_live_snapshot_from_persistence(
     };
     if let Some(capture) = hub.install_persistence_baseline_if_generation(
         snapshot,
+        baseline,
         snapshot_origin,
         expected_generation,
     )? {
@@ -2995,18 +3063,21 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
     });
 }
 
-pub(crate) fn build_dashboard_activity_live_snapshot(
+#[derive(Debug, Clone)]
+struct DashboardProjectionInvocation {
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    is_retry: bool,
+    live_phase: Option<String>,
+    wait_ms: Option<f64>,
+}
+
+fn build_dashboard_activity_live_snapshot_from_projection_records(
     revision: u64,
-    records: impl IntoIterator<Item = ApiInvocation>,
+    records: impl IntoIterator<Item = DashboardProjectionInvocation>,
 ) -> DashboardActivityLiveSnapshot {
     let mut accounts = HashMap::<Option<i64>, DashboardActivityLiveAccount>::new();
     for record in records {
-        if !matches!(
-            normalized_runtime_text(record.status.as_deref()).as_str(),
-            "running" | "pending"
-        ) {
-            continue;
-        }
         let account_id = record.upstream_account_id;
         let account = accounts
             .entry(account_id)
@@ -3032,17 +3103,13 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 normalize_trimmed_optional_string_local(record.upstream_account_name.clone());
         }
         account.in_progress_invocation_count += 1;
-        let live_phase = record
-            .live_phase
-            .as_deref()
-            .or_else(|| runtime_invocation_live_phase(&record));
         account
             .in_progress_phase_counts
-            .increment_phase_name(live_phase);
-        if record.pool_attempt_count.unwrap_or_default() > 1 {
+            .increment_phase_name(record.live_phase.as_deref());
+        if record.is_retry {
             account.retry_invocation_count += 1;
         }
-        if let Some(wait_ms) = normalized_wait_ms(record.t_upstream_ttfb_ms) {
+        if let Some(wait_ms) = normalized_wait_ms(record.wait_ms) {
             account.in_progress_wait_sum_ms += wait_ms;
             account.in_progress_wait_sample_count += 1;
         }
@@ -3077,13 +3144,113 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
     }
 }
 
-pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
+pub(crate) fn build_dashboard_activity_live_snapshot(
     revision: u64,
     records: impl IntoIterator<Item = ApiInvocation>,
+) -> DashboardActivityLiveSnapshot {
+    build_dashboard_activity_live_snapshot_from_projection_records(
+        revision,
+        records.into_iter().filter_map(|record| {
+            matches!(
+                normalized_runtime_text(record.status.as_deref()).as_str(),
+                "running" | "pending"
+            )
+            .then(|| {
+                let live_phase = record
+                    .live_phase
+                    .clone()
+                    .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+                DashboardProjectionInvocation {
+                    upstream_account_id: record.upstream_account_id,
+                    upstream_account_name: record.upstream_account_name,
+                    is_retry: record.pool_attempt_count.unwrap_or_default() > 1,
+                    live_phase,
+                    wait_ms: record.t_upstream_ttfb_ms,
+                }
+            })
+        }),
+    )
+}
+
+pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
+    revision: u64,
+    baseline: Option<DashboardRuntimeProjectionBaseline>,
+    runtime_records: impl IntoIterator<Item = ApiInvocation>,
+    terminal_tombstones: HashSet<RuntimeInvocationKey>,
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
 ) -> DashboardActivityLiveSnapshot {
     let now = Utc::now();
-    let mut snapshot = build_dashboard_activity_live_snapshot(revision, records);
+    let source_scope = baseline
+        .as_ref()
+        .map_or(InvocationSourceScope::All, |baseline| baseline.source_scope);
+    let mut projection_records = baseline
+        .map(|baseline| {
+            baseline
+                .records
+                .into_iter()
+                .map(|record| {
+                    (
+                        record.key,
+                        DashboardProjectionInvocation {
+                            upstream_account_id: record.upstream_account_id,
+                            upstream_account_name: record.upstream_account_name,
+                            is_retry: record.is_retry,
+                            live_phase: record.live_phase,
+                            wait_ms: record.wait_ms,
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    for key in &terminal_tombstones {
+        projection_records.remove(key);
+    }
+    for record in runtime_records {
+        let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
+        if terminal_tombstones.contains(&key) {
+            projection_records.remove(&key);
+            continue;
+        }
+        if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+            continue;
+        }
+        if !matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        ) {
+            projection_records.remove(&key);
+            continue;
+        }
+        let baseline_record = projection_records.get(&key);
+        let upstream_account_id = record
+            .upstream_account_id
+            .or_else(|| baseline_record.and_then(|record| record.upstream_account_id));
+        let upstream_account_name = normalize_trimmed_optional_string_local(
+            record.upstream_account_name.clone(),
+        )
+        .or_else(|| baseline_record.and_then(|record| record.upstream_account_name.clone()));
+        let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
+            || baseline_record.is_some_and(|record| record.is_retry);
+        let live_phase = record
+            .live_phase
+            .clone()
+            .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+        projection_records.insert(
+            key,
+            DashboardProjectionInvocation {
+                upstream_account_id,
+                upstream_account_name,
+                is_retry,
+                live_phase,
+                wait_ms: record.t_upstream_ttfb_ms,
+            },
+        );
+    }
+    let mut snapshot = build_dashboard_activity_live_snapshot_from_projection_records(
+        revision,
+        projection_records.into_values(),
+    );
     let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
     let mut existing_account_keys = HashSet::new();
     for account in &mut snapshot.accounts {
@@ -3179,6 +3346,18 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     state
         .proxy_runtime_invocations
         .mark_dashboard_dirty("dashboard_live_schedule");
+    ensure_dashboard_activity_live_snapshot_producer(state);
+}
+
+pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState) {
+    if state.shutdown.is_cancelled()
+        || state
+            .proxy_runtime_invocations
+            .pending_dashboard_publish_window()
+            .is_none()
+    {
+        return;
+    }
     if !state
         .subscription_hub
         .has_active_dashboard_activity_live_topic_sync()
