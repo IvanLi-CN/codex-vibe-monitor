@@ -89,21 +89,20 @@ impl PendingQueueAccounting {
         );
     }
 
-    pub(crate) fn dequeue_to_batch(&self) {
-        self.subtract(&self.pending_depth, 1, "dequeue_to_batch", "pending_depth");
-    }
-
-    pub(crate) fn coalesce(&self, obsolete_bytes: usize) {
-        self.subtract(
-            &self.pending_bytes,
-            obsolete_bytes,
-            "coalesce",
-            "pending_bytes",
+    pub(crate) fn replace_batch(
+        &self,
+        admitted_depth: usize,
+        retained_depth: usize,
+        admitted_bytes: usize,
+        retained_bytes: usize,
+    ) {
+        self.replace_for(
+            "batch_replacement",
+            admitted_depth,
+            retained_depth,
+            admitted_bytes,
+            retained_bytes,
         );
-    }
-
-    pub(crate) fn replace(&self, old_bytes: usize, new_bytes: usize) {
-        self.replace_for("batch_replacement", old_bytes, new_bytes);
     }
 
     pub(crate) fn transfer_p1_to_p2(&self, bytes: usize) {
@@ -119,17 +118,20 @@ impl PendingQueueAccounting {
         self.retry_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn retain_to_queue(&self, depth: usize) {
-        self.add(
-            &self.pending_depth,
-            depth,
-            "retained_batch",
-            "pending_depth",
+    pub(crate) fn complete(
+        &self,
+        submitted_depth: usize,
+        retained_depth: usize,
+        submitted_bytes: usize,
+        retained_bytes: usize,
+    ) {
+        self.replace_for(
+            "completion",
+            submitted_depth,
+            retained_depth,
+            submitted_bytes,
+            retained_bytes,
         );
-    }
-
-    pub(crate) fn complete(&self, submitted_bytes: usize, retained_bytes: usize) {
-        self.replace_for("completion", submitted_bytes, retained_bytes);
     }
 
     pub(crate) fn snapshot(&self) -> PendingQueueAccountingSnapshot {
@@ -164,7 +166,16 @@ impl PendingQueueAccounting {
         }
     }
 
-    fn replace_for(&self, operation: &'static str, old_bytes: usize, new_bytes: usize) {
+    fn replace_for(
+        &self,
+        operation: &'static str,
+        old_depth: usize,
+        new_depth: usize,
+        old_bytes: usize,
+        new_bytes: usize,
+    ) {
+        self.subtract(&self.pending_depth, old_depth, operation, "pending_depth");
+        self.add(&self.pending_depth, new_depth, operation, "pending_depth");
         self.subtract(&self.pending_bytes, old_bytes, operation, "pending_bytes");
         self.add(&self.pending_bytes, new_bytes, operation, "pending_bytes");
     }
@@ -569,11 +580,17 @@ impl PendingBatch {
     }
 
     fn push_accounted(&mut self, write: SqliteBatchWrite, accounting: &PendingQueueAccounting) {
+        let accounted_depth_before = self.logical_rows().saturating_add(1);
         let accounted_before = self
             .estimated_memory_bytes()
             .saturating_add(write.estimated_memory_bytes());
         self.push(write);
-        accounting.replace(accounted_before, self.estimated_memory_bytes());
+        accounting.replace_batch(
+            accounted_depth_before,
+            self.logical_rows(),
+            accounted_before,
+            self.estimated_memory_bytes(),
+        );
     }
 
     fn take(&mut self) -> Self {
@@ -1049,7 +1066,10 @@ impl SqliteBatchWriter {
         }
 
         let (sender, receiver) = oneshot::channel();
-        let queued_depth_snapshot = self.accounting.snapshot().pending_depth;
+        let queued_depth_snapshot = self
+            .write_sender
+            .max_capacity()
+            .saturating_sub(self.write_sender.capacity());
         if let Err(err) = self
             .control_sender
             .try_send(SqliteBatchWriterControl::FlushNow {
@@ -1097,7 +1117,10 @@ impl SqliteBatchWriter {
             return;
         };
         let (sender, receiver) = oneshot::channel();
-        let queued_depth_snapshot = self.accounting.snapshot().pending_depth;
+        let queued_depth_snapshot = self
+            .write_sender
+            .max_capacity()
+            .saturating_sub(self.write_sender.capacity());
         if let Err(err) = self
             .control_sender
             .send(SqliteBatchWriterControl::Shutdown {
@@ -1171,22 +1194,19 @@ impl SqliteBatchWriter {
             .buffered_writes
             .as_ref()
             .and_then(|buffered_writes| {
-                buffered_writes.lock().ok().map(|mut guard| {
-                    let writes = guard.drain(..).collect::<Vec<_>>();
-                    for _ in &writes {
-                        self.accounting.dequeue_to_batch();
-                    }
-                    let bytes = writes
-                        .iter()
-                        .map(SqliteBatchWrite::estimated_memory_bytes)
-                        .sum::<usize>();
-                    self.accounting.complete(bytes, 0);
-                    writes
-                })
+                buffered_writes
+                    .lock()
+                    .ok()
+                    .map(|mut guard| guard.drain(..).collect::<Vec<_>>())
             })
             .unwrap_or_default();
 
         if !writes.is_empty() {
+            let submitted_count = writes.len();
+            let submitted_bytes = writes
+                .iter()
+                .map(SqliteBatchWrite::estimated_memory_bytes)
+                .sum::<usize>();
             let mut batch = PendingBatch::default();
             for write in writes {
                 batch.push(write);
@@ -1202,22 +1222,24 @@ impl SqliteBatchWriter {
             )
             .await
             .expect("flush buffered sqlite batch writes for test");
-            if !deferred.is_empty() {
-                let deferred_writes = deferred.into_writes();
-                if let Some(buffered_writes) = &self.buffered_writes {
-                    let retained_count = deferred_writes.len();
-                    let retained_bytes = deferred_writes
-                        .iter()
-                        .map(SqliteBatchWrite::estimated_memory_bytes)
-                        .sum::<usize>();
-                    self.accounting.transfer_p1_to_p2(retained_bytes);
-                    if let Ok(mut guard) = buffered_writes.lock() {
-                        guard.extend(deferred_writes);
-                        self.accounting.retain_to_queue(retained_count);
-                        self.accounting.replace(0, retained_bytes);
-                    }
-                }
-            }
+            let deferred_writes = deferred.into_writes();
+            let retained_count = deferred_writes.len();
+            let retained_bytes = deferred_writes
+                .iter()
+                .map(SqliteBatchWrite::estimated_memory_bytes)
+                .sum::<usize>();
+            self.accounting.transfer_p1_to_p2(retained_bytes);
+            let retained = self
+                .buffered_writes
+                .as_ref()
+                .and_then(|buffered_writes| buffered_writes.lock().ok())
+                .map(|mut guard| {
+                    guard.extend(deferred_writes);
+                    (retained_count, retained_bytes)
+                })
+                .unwrap_or_default();
+            self.accounting
+                .complete(submitted_count, retained.0, submitted_bytes, retained.1);
         }
     }
 }
@@ -1330,6 +1352,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 Some(retained) => {
                                     let logical_rows = retained.batch.logical_rows();
                                     accounting.complete(
+                                        retained.batch.logical_rows(),
+                                        0,
                                         retained.batch.estimated_memory_bytes(),
                                         0,
                                     );
@@ -1388,7 +1412,12 @@ pub(crate) async fn run_sqlite_batch_writer(
                         )
                         .await
                     {
-                        accounting.complete(retained.batch.estimated_memory_bytes(), 0);
+                        accounting.complete(
+                            retained.batch.logical_rows(),
+                            0,
+                            retained.batch.estimated_memory_bytes(),
+                            0,
+                        );
                         warn!(
                             retained_rows = retained.batch.logical_rows(),
                             retained_bytes = retained.batch.estimated_memory_bytes(),
@@ -1398,7 +1427,6 @@ pub(crate) async fn run_sqlite_batch_writer(
                     }
                     return;
                 };
-                accounting.dequeue_to_batch();
                 pending.push_accounted(write, &accounting);
                 if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
                     && let Some(retained) =
@@ -1520,7 +1548,6 @@ fn drain_terminal_journal_deferred_writes(
         for terminal in journal.take_deferred_writes(max_writes) {
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             accounting.enqueue(write.estimated_memory_bytes());
-            accounting.dequeue_to_batch();
             accounting.retry_deferred();
             pending.push_accounted(write, accounting);
         }
@@ -1536,7 +1563,6 @@ pub(crate) fn drain_queued_batch_writes(
     for _ in 0..max_messages {
         match write_receiver.try_recv() {
             Ok(write) => {
-                accounting.dequeue_to_batch();
                 pending.push_accounted(write, accounting);
             }
             Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
@@ -1564,6 +1590,7 @@ async fn flush_pending_batch_accounted(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
+    let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
     let result = flush_pending_batch(
         accounting,
@@ -1582,7 +1609,16 @@ async fn flush_pending_batch_accounted(
         .as_ref()
         .map(|retained| retained.batch.estimated_memory_bytes())
         .unwrap_or_default();
-    accounting.complete(submitted_bytes, retained_bytes);
+    let retained_depth = result
+        .as_ref()
+        .map(|retained| retained.batch.logical_rows())
+        .unwrap_or_default();
+    accounting.complete(
+        submitted_depth,
+        retained_depth,
+        submitted_bytes,
+        retained_bytes,
+    );
     result
 }
 
@@ -2088,7 +2124,7 @@ mod tests {
     fn pending_queue_accounting_clamps_underflow_and_degrades_health() {
         let accounting = PendingQueueAccounting::default();
 
-        accounting.complete(64, 0);
+        accounting.complete(0, 0, 64, 0);
 
         let snapshot = accounting.snapshot();
         assert_eq!(snapshot.pending_depth, 0);
@@ -2109,20 +2145,19 @@ mod tests {
 
         accounting.enqueue(120);
         accounting.retry_deferred();
-        accounting.dequeue_to_batch();
-        accounting.replace(120, 96);
+        accounting.replace_batch(1, 1, 120, 96);
         accounting.transfer_p1_to_p2(40);
-        accounting.complete(96, 40);
+        accounting.complete(1, 1, 96, 40);
 
         let snapshot = accounting.snapshot();
-        assert_eq!(snapshot.pending_depth, 0);
+        assert_eq!(snapshot.pending_depth, 1);
         assert_eq!(snapshot.pending_bytes, 40);
         assert_eq!(snapshot.transfer_bytes, 40);
         assert_eq!(snapshot.retry_count, 1);
         assert_eq!(snapshot.state, "healthy");
         assert!(snapshot.last_invariant_violation.is_none());
 
-        accounting.complete(40, 0);
+        accounting.complete(1, 0, 40, 0);
         let completed = accounting.snapshot();
         assert_eq!(completed.pending_depth, 0);
         assert_eq!(completed.pending_bytes, 0);
@@ -2229,13 +2264,11 @@ mod tests {
         first.terminal_projection_event_ids.extend(0..64);
         let first = SqliteBatchWrite::TerminalInvocation(first);
         accounting.enqueue(first.estimated_memory_bytes());
-        accounting.dequeue_to_batch();
         batch.push_accounted(first, &accounting);
         let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
         second.terminal_projection_event_ids.extend(64..128);
         let second = SqliteBatchWrite::TerminalInvocation(second);
         accounting.enqueue(second.estimated_memory_bytes());
-        accounting.dequeue_to_batch();
         batch.push_accounted(second, &accounting);
 
         let terminal = batch
@@ -2257,6 +2290,7 @@ mod tests {
             accounting.snapshot().pending_bytes,
             batch.estimated_memory_bytes()
         );
+        assert_eq!(accounting.snapshot().pending_depth, batch.logical_rows());
     }
 
     #[tokio::test]
@@ -2270,7 +2304,6 @@ mod tests {
             Some(9),
         ));
         accounting.enqueue(write.estimated_memory_bytes());
-        accounting.dequeue_to_batch();
         let mut batch = PendingBatch::default();
         batch.push_accounted(write, &accounting);
         let submitted_bytes = batch.estimated_memory_bytes();
@@ -2293,6 +2326,7 @@ mod tests {
         assert!(retained.failed);
         assert_eq!(retained.batch.estimated_memory_bytes(), submitted_bytes);
         let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, retained.batch.logical_rows());
         assert_eq!(snapshot.pending_bytes, submitted_bytes);
         assert_eq!(snapshot.state, "healthy");
     }
@@ -2898,7 +2932,7 @@ mod tests {
 
         assert_eq!(pending.terminal_invocations.len(), 1);
         let snapshot = accounting.snapshot();
-        assert_eq!(snapshot.pending_depth, 0);
+        assert_eq!(snapshot.pending_depth, 1);
         assert_eq!(snapshot.pending_bytes, pending.estimated_memory_bytes());
         assert_eq!(snapshot.retry_count, 1);
         assert_eq!(snapshot.state, "healthy");
