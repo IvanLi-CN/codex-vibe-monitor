@@ -30,6 +30,12 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 - 不新增长期统计 SSE、公开查询参数或 owner-facing 操作开关。
 - 不绕过 SQLite pressure gate，不扩大连接池，不以近似墙上时间换取吞吐。
 
+## Runtime Data Plane Boundary
+
+- `TerminalProjectionHub` 继续拥有 terminal durable cursor；current-state 由 [`RuntimeProjectionHub`](../high-frequency-runtime-data-plane/SPEC.md) 承担，二者不得合并为一个共享可变缓存。
+- Dashboard live render 只消费 Runtime/Terminal Projection 的不可变 snapshot，不得从 Terminal Projection 的订阅回调反向调用 SQLite builder。
+- SQLite writer P1 -> P2 派生工作必须通过统一 accounting ownership transfer，不能以裸原子减法跨越队列阶段。
+
 ## Verification
 
 - 空闲期不再存在按 60 秒无条件扫描近两天 raw invocation 的长期统计生产任务。

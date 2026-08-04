@@ -109,3 +109,9 @@ PR: none
 - raw capture 诊断只能记录 writer occupancy、bounded ingress/spool 计数和阶段耗时，不改变 response/request logging 开关、writer 并发或 spool 可用性策略。
 - 进程级 RSS 归因将 raw writer 作为已知组件的保守估算；spool 物理文件不计入 RSS，内存诊断不得为盘上指标触发全量文件扫描。
 - response/request raw 的大小、数据库 invocation 行数和 runtime record 数量必须在 telemetry 中使用不同字段，避免把磁盘数据或 SQL 行数解释为进程内存对象。
+
+## Runtime Data Plane Boundary
+
+- 本 topic 的 request body 语义受 [`high-frequency-runtime-data-plane`](../high-frequency-runtime-data-plane/SPEC.md) 约束：每个请求只允许一份 replay snapshot 与一次 `RequestSemanticProjection`。
+- `>1 MiB` 的 file-backed snapshot 不得在 dispatch、routing、rewrite 或 raw capture 中整体 `into_vec()`；需要转换时使用至多 `64 KiB` 业务缓冲。
+- legacy 模式只用于运维回退，不得被视为健康路径或性能验收证据。

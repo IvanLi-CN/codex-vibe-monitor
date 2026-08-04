@@ -83,6 +83,10 @@
 
 ### SHOULD
 
+- 每个 topic revision 应只生成一个共享不可变 serialized frame；cache、replay ring、broadcaster 与 subscriber 只共享引用，subscriber 数量不得放大 builder 或 serialization 次数。
+- Dashboard current-state producer 应以 `250ms` 固定 deadline 合并；revision 未变化时不发送 event 或推进 cursor。
+- 健康 Dashboard live producer 不得访问 SQLite；数据库只允许用于 startup、`60s` reconcile 与明确 cold fallback。
+
 - 后端 topic payload 尽量直接复用现有 authoritative 读路径，而不是重复实现一套只给 SSE 用的聚合逻辑。
 - 结构化日志或 diagnostics 至少覆盖：replay hit/miss、miss reason、snapshot build latency、fanout receivers、cursor gap、cache pruning。
 - owner-facing 离线提示应能暴露最小可判责信息：最近连接 `attempt`、触发 `reason`、active/resume/forced-snapshot topic 数量、最近消息时间与最近终态。
