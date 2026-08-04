@@ -15410,6 +15410,9 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
             },
             Utc::now(),
         );
+    reconcile_dashboard_runtime_projection_once(state.as_ref())
+        .await
+        .expect("reconcile dashboard runtime projection after direct database fixture writes");
 
     let Json(cached_response) = fetch_dashboard_activity(
         State(state.clone()),

@@ -7692,7 +7692,7 @@ impl UpstreamAccountInProgressSummary {
     }
 }
 
-fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
+pub(crate) fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
@@ -11653,6 +11653,20 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
+    let baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
+    query_upstream_account_in_progress_counts_with_baseline(
+        pool,
+        proxy_runtime_invocations,
+        source_scope,
+        &baseline,
+    )
+    .await
+}
+
+pub(crate) async fn query_dashboard_runtime_projection_baseline(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<DashboardRuntimeProjectionBaseline, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -11692,24 +11706,48 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .build_query_as::<RuntimeKeyRow>()
         .fetch_all(pool)
         .await?;
+    Ok(DashboardRuntimeProjectionBaseline {
+        records: db_rows
+            .into_iter()
+            .map(|row| DashboardRuntimeBaselineRecord {
+                key: RuntimeInvocationKey::new(row.invoke_id, row.occurred_at),
+                upstream_account_id: row.upstream_account_id,
+                upstream_account_name: None,
+                is_retry: row.retry_count > 0,
+                live_phase: row.live_phase,
+                wait_ms: row.upstream_ttfb_ms,
+            })
+            .collect(),
+        source_scope,
+        network_open_buckets: HashMap::new(),
+    })
+}
+
+async fn query_upstream_account_in_progress_counts_with_baseline(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    source_scope: InvocationSourceScope,
+    baseline: &DashboardRuntimeProjectionBaseline,
+) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
-    for row in &db_rows {
+    for row in &baseline.records {
         counts.entry(row.upstream_account_id).or_default().add(
-            row.retry_count > 0,
+            row.is_retry,
             row.live_phase.as_deref(),
-            row.upstream_ttfb_ms,
+            row.wait_ms,
         );
     }
-    let db_runtime_keys = db_rows
-        .into_iter()
+    let db_runtime_keys = baseline
+        .records
+        .iter()
         .map(|row| {
             (
-                (row.invoke_id, row.occurred_at),
+                (row.key.invoke_id.clone(), row.key.occurred_at.clone()),
                 (
                     row.upstream_account_id,
-                    row.retry_count > 0,
-                    row.live_phase,
-                    row.upstream_ttfb_ms,
+                    row.is_retry,
+                    row.live_phase.clone(),
+                    row.wait_ms,
                 ),
             )
         })
@@ -11810,13 +11848,37 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
     revision: u64,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    query_dashboard_activity_live_snapshot_with_baseline_from_runtime(
+        pool,
+        proxy_runtime_invocations,
+        dashboard_network_speed_cache,
+        revision,
+    )
+    .await
+    .map(|(snapshot, _)| snapshot)
+}
+
+pub(crate) async fn query_dashboard_activity_live_snapshot_with_baseline_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    revision: u64,
+) -> Result<
+    (
+        DashboardActivityLiveSnapshot,
+        DashboardRuntimeProjectionBaseline,
+    ),
+    ApiError,
+> {
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
     flush_dashboard_network_socket_minute_rollups(pool, dashboard_network_speed_cache, now).await?;
-    let counts = query_upstream_account_in_progress_counts_from_runtime(
+    let mut baseline = query_dashboard_runtime_projection_baseline(pool, source_scope).await?;
+    let counts = query_upstream_account_in_progress_counts_with_baseline(
         pool,
         proxy_runtime_invocations,
         source_scope,
+        &baseline,
     )
     .await?;
     let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
@@ -11859,6 +11921,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
                     .map(|id| format!("upstream:{id}"))
                     .unwrap_or_else(|| "unassigned".to_string()),
                 upstream_account_id,
+                upstream_account_name: None,
                 in_progress_invocation_count: summary.in_progress_count,
                 in_progress_phase_counts: summary.phase_counts,
                 retry_invocation_count: summary.retry_count,
@@ -11884,6 +11947,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         accounts.push(DashboardActivityLiveAccount {
             account_key,
             upstream_account_id,
+            upstream_account_name: None,
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
@@ -11895,6 +11959,47 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         });
     }
     accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+
+    let global_live_bucket = load_dashboard_network_live_bucket_point(
+        pool,
+        dashboard_network_speed_cache,
+        source_scope,
+        now,
+        DashboardNetworkScopeKey::Global,
+    )
+    .await?;
+    let mut network_open_buckets = HashMap::new();
+    for (upstream_account_id, live_bucket) in &live_buckets {
+        let scope = DashboardNetworkScopeKey::account_scope(*upstream_account_id);
+        let memory = dashboard_network_speed_cache.snapshot_open_bucket(scope, now);
+        network_open_buckets.insert(
+            scope,
+            DashboardRuntimeNetworkOpenBucketBaseline {
+                bucket_start: memory.bucket_start,
+                bucket_end: memory.bucket_end,
+                baseline_totals: DashboardNetworkByteTotals {
+                    upload_bytes: live_bucket.upload_bytes,
+                    download_bytes: live_bucket.download_bytes,
+                },
+                memory_totals_at_install: memory.totals,
+            },
+        );
+    }
+    let global_memory =
+        dashboard_network_speed_cache.snapshot_open_bucket(DashboardNetworkScopeKey::Global, now);
+    network_open_buckets.insert(
+        DashboardNetworkScopeKey::Global,
+        DashboardRuntimeNetworkOpenBucketBaseline {
+            bucket_start: global_memory.bucket_start,
+            bucket_end: global_memory.bucket_end,
+            baseline_totals: DashboardNetworkByteTotals {
+                upload_bytes: global_live_bucket.upload_bytes,
+                download_bytes: global_live_bucket.download_bytes,
+            },
+            memory_totals_at_install: global_memory.totals,
+        },
+    );
+    baseline.network_open_buckets = network_open_buckets;
 
     let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
     let mut in_progress_invocation_count = 0;
@@ -11911,27 +12016,21 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
     }
 
-    Ok(DashboardActivityLiveSnapshot {
-        revision,
-        generated_at: format_utc_iso(now),
-        in_progress_invocation_count,
-        in_progress_phase_counts,
-        retry_invocation_count,
-        in_progress_wait_sum_ms,
-        in_progress_wait_sample_count,
-        network_live_bucket: Some(
-            load_dashboard_network_live_bucket_point(
-                pool,
-                dashboard_network_speed_cache,
-                source_scope,
-                now,
-                DashboardNetworkScopeKey::Global,
-            )
-            .await?,
-        ),
-        network_realtime_rate: Some(global_realtime_rate),
-        accounts,
-    })
+    Ok((
+        DashboardActivityLiveSnapshot {
+            revision,
+            generated_at: format_utc_iso(now),
+            in_progress_invocation_count,
+            in_progress_phase_counts,
+            retry_invocation_count,
+            in_progress_wait_sum_ms,
+            in_progress_wait_sample_count,
+            network_live_bucket: Some(global_live_bucket),
+            network_realtime_rate: Some(global_realtime_rate),
+            accounts,
+        },
+        baseline,
+    ))
 }
 
 fn dashboard_live_snapshot_in_progress_counts(
@@ -14215,14 +14314,17 @@ pub(crate) fn dashboard_activity_account_from_live(
 ) -> DashboardActivityAccountResponse {
     let status_fields =
         meta.map(|row| build_upstream_account_activity_status_fields(row, Utc::now()));
-    let display_name_hint = recent_invocations.iter().find_map(|invocation| {
-        invocation
-            .upstream_account_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    });
+    let display_name_hint = recent_invocations
+        .iter()
+        .find_map(|invocation| {
+            invocation
+                .upstream_account_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| live_account.upstream_account_name.clone());
     let plan_type_hint = recent_invocations.iter().find_map(|invocation| {
         invocation
             .upstream_account_plan_type
@@ -14642,6 +14744,7 @@ async fn overlay_dashboard_activity_live_accounts(
                         .map(|id| format!("upstream:{id}"))
                         .unwrap_or_else(|| "unassigned".to_string()),
                     upstream_account_id,
+                    upstream_account_name: None,
                     in_progress_invocation_count: 0,
                     in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                     retry_invocation_count: 0,
@@ -17337,7 +17440,7 @@ fn dashboard_network_bucket_rate(
     total_bytes.max(0) as f64 / (effective_millis as f64 / 1000.0)
 }
 
-fn build_dashboard_network_realtime_rate_response(
+pub(crate) fn build_dashboard_network_realtime_rate_response(
     snapshot: DashboardNetworkRealtimeByteSnapshot,
 ) -> DashboardNetworkRealtimeRateResponse {
     DashboardNetworkRealtimeRateResponse {
@@ -17411,7 +17514,7 @@ fn build_dashboard_recent_network_window_response(
     }
 }
 
-fn build_dashboard_network_timeseries_point_response(
+pub(crate) fn build_dashboard_network_timeseries_point_response(
     bucket_start: DateTime<Utc>,
     bucket_end: DateTime<Utc>,
     totals: DashboardNetworkByteTotals,

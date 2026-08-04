@@ -1803,6 +1803,7 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
             &pending_attempt_record.occurred_at,
             "drop_guard",
         );
+        schedule_dashboard_activity_live_snapshot(state);
     }
 
     if should_clean_up_route {

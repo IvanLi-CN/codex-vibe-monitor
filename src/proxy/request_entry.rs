@@ -1355,6 +1355,9 @@ impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
             .state
             .proxy_runtime_invocations
             .remove_non_terminal_by_invoke_id(&self.invoke_id);
+        if removed_count > 0 {
+            schedule_dashboard_activity_live_snapshot(self.state.as_ref());
+        }
         debug!(
             invoke_id = %self.invoke_id,
             removed_count,
