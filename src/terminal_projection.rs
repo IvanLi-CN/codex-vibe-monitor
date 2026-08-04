@@ -21,6 +21,8 @@ pub(crate) const TERMINAL_PROJECTION_MAX_PENDING_BYTES: usize = 64 * 1024 * 1024
 pub(crate) struct TerminalProjectionHealth {
     pub(crate) pending_event_count: usize,
     pub(crate) pending_event_bytes: usize,
+    pub(crate) timeseries_pending_event_count: usize,
+    pub(crate) timeseries_pending_bytes: usize,
     pub(crate) last_persisted_row_id: i64,
     pub(crate) long_term_cursor_row_id: i64,
     pub(crate) timeseries_cursor_row_id: i64,
@@ -504,6 +506,18 @@ impl TerminalProjectionHub {
         TerminalProjectionHealth {
             pending_event_count: state.pending.len(),
             pending_event_bytes: state.pending_bytes,
+            timeseries_pending_event_count: state
+                .pending
+                .iter()
+                .filter(|event| event.timeseries.is_some() && !event.timeseries_flushed)
+                .count(),
+            timeseries_pending_bytes: state
+                .pending
+                .iter()
+                .filter(|event| event.timeseries.is_some() && !event.timeseries_flushed)
+                .filter_map(|event| event.timeseries.as_ref())
+                .map(TimeseriesTerminalDelta::estimated_bytes)
+                .sum(),
             last_persisted_row_id: state.last_persisted_row_id,
             long_term_cursor_row_id: state.long_term_cursor_row_id,
             timeseries_cursor_row_id: state.timeseries_cursor_row_id,
@@ -582,12 +596,20 @@ mod tests {
         hub.activate_timeseries_consumer(0);
         hub.acknowledge_persisted(Some(event), "invoke", "2026-07-30 10:00:00", 17);
         hub.advance_long_term_cursor(17);
-        assert_eq!(hub.health().pending_event_count, 1);
+        let health = hub.health();
+        assert_eq!(health.pending_event_count, 1);
+        assert_eq!(health.timeseries_pending_event_count, 1);
+        assert_eq!(
+            health.timeseries_pending_bytes,
+            timeseries_delta().estimated_bytes()
+        );
         assert_eq!(hub.pending_timeseries_deltas(10).len(), 1);
 
         hub.mark_timeseries_deltas_flushed(&[event]);
         let health = hub.health();
         assert_eq!(health.pending_event_count, 0);
+        assert_eq!(health.timeseries_pending_event_count, 0);
+        assert_eq!(health.timeseries_pending_bytes, 0);
         assert_eq!(health.timeseries_cursor_row_id, 17);
         assert!(health.timeseries_consumer_active);
         assert!(hub.pending_timeseries_deltas(10).is_empty());

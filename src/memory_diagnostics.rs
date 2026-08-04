@@ -326,14 +326,17 @@ async fn collect_component_snapshot(state: &AppState) -> MemoryComponentSnapshot
             entries: terminal_health.pending_event_count,
             bytes: terminal_health
                 .pending_event_bytes
+                .saturating_sub(terminal_health.timeseries_pending_bytes)
                 .saturating_add(terminal_health.pending_event_count.saturating_mul(128)),
             detail_items: terminal_journal.segment_count,
         },
         dashboard_activity,
         long_term,
-        // Hub pending bytes already include the timeseries delta payload. Keep this
-        // component separate in the log, but do not double-count it in managed_bytes.
-        timeseries: MemoryComponentEstimate::default(),
+        timeseries: MemoryComponentEstimate {
+            entries: terminal_health.timeseries_pending_event_count,
+            bytes: terminal_health.timeseries_pending_bytes,
+            detail_items: terminal_health.timeseries_pending_event_count,
+        },
         prompt_cache,
         network_cache,
         routing_cache,
