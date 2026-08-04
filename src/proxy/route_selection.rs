@@ -269,6 +269,385 @@ impl<'de> Deserialize<'de> for ReplaySnapshotRouteValue {
     }
 }
 
+#[derive(Debug, Default)]
+struct SelectiveRequestSemantics {
+    root_sticky_key: Option<String>,
+    root_sticky_key_alias: Option<String>,
+    root_prompt_cache_key: Option<String>,
+    root_prompt_cache_key_alias: Option<String>,
+    metadata_sticky_key: Option<String>,
+    metadata_sticky_key_alias: Option<String>,
+    metadata_prompt_cache_key: Option<String>,
+    metadata_prompt_cache_key_alias: Option<String>,
+    model: Option<String>,
+    stream: bool,
+    service_tier: Option<String>,
+    service_tier_alias: Option<String>,
+    reasoning_effort: Option<String>,
+    nested_reasoning_effort: Option<String>,
+    contains_encrypted_content: bool,
+    contains_image_generation: bool,
+    declares_remote_v2_compaction: bool,
+    stream_options_present: bool,
+    invalid_sticky_projection: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SelectiveSemanticScope {
+    Root,
+    Metadata,
+    Reasoning,
+    ContextManagement,
+    Nested,
+}
+
+#[derive(Default)]
+struct OptionalString {
+    value: Option<String>,
+    valid: bool,
+}
+
+impl<'de> Deserialize<'de> for OptionalString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct OptionalStringVisitor;
+        impl<'de> Visitor<'de> for OptionalStringVisitor {
+            type Value = OptionalString;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string or ignored JSON value")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: Some(value.to_string()),
+                    valid: true,
+                })
+            }
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: Some(value),
+                    valid: true,
+                })
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: true,
+                })
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OptionalString {
+                    value: None,
+                    valid: true,
+                })
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(OptionalString {
+                    value: None,
+                    valid: false,
+                })
+            }
+        }
+        deserializer.deserialize_any(OptionalStringVisitor)
+    }
+}
+
+struct SelectiveSemanticSeed<'a> {
+    projection: &'a mut SelectiveRequestSemantics,
+    scope: SelectiveSemanticScope,
+}
+
+impl<'de> DeserializeSeed<'de> for SelectiveSemanticSeed<'_> {
+    type Value = ();
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(SelectiveSemanticVisitor {
+            projection: self.projection,
+            scope: self.scope,
+        })
+    }
+}
+
+struct SelectiveSemanticVisitor<'a> {
+    projection: &'a mut SelectiveRequestSemantics,
+    scope: SelectiveSemanticScope,
+}
+
+impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
+    type Value = ();
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a request JSON value")
+    }
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_string<E>(self, _: String) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        Ok(())
+    }
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        if matches!(self.scope, SelectiveSemanticScope::Metadata) {
+            self.projection.invalid_sticky_projection = true;
+        }
+        let child_scope = if matches!(self.scope, SelectiveSemanticScope::ContextManagement) {
+            SelectiveSemanticScope::ContextManagement
+        } else {
+            SelectiveSemanticScope::Nested
+        };
+        while seq
+            .next_element_seed(SelectiveSemanticSeed {
+                projection: &mut *self.projection,
+                scope: child_scope,
+            })?
+            .is_some()
+        {}
+        Ok(())
+    }
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object_type = None;
+        let mut compact_threshold_present = false;
+        let mut seen_sticky_projection_bits = 0_u16;
+        while let Some(key) = map.next_key::<String>()? {
+            let is_sticky_projection_field = matches!(
+                (self.scope, key.as_str()),
+                (
+                    SelectiveSemanticScope::Root | SelectiveSemanticScope::Metadata,
+                    "sticky_key" | "stickyKey" | "prompt_cache_key" | "promptCacheKey"
+                )
+            );
+            let sticky_projection_bit = match (self.scope, key.as_str()) {
+                (SelectiveSemanticScope::Root, "sticky_key") => Some(1 << 0),
+                (SelectiveSemanticScope::Root, "stickyKey") => Some(1 << 1),
+                (SelectiveSemanticScope::Root, "prompt_cache_key") => Some(1 << 2),
+                (SelectiveSemanticScope::Root, "promptCacheKey") => Some(1 << 3),
+                (SelectiveSemanticScope::Root, "metadata") => Some(1 << 4),
+                (SelectiveSemanticScope::Metadata, "sticky_key") => Some(1 << 5),
+                (SelectiveSemanticScope::Metadata, "stickyKey") => Some(1 << 6),
+                (SelectiveSemanticScope::Metadata, "prompt_cache_key") => Some(1 << 7),
+                (SelectiveSemanticScope::Metadata, "promptCacheKey") => Some(1 << 8),
+                _ => None,
+            };
+            if let Some(bit) = sticky_projection_bit {
+                if seen_sticky_projection_bits & bit != 0 {
+                    self.projection.invalid_sticky_projection = true;
+                }
+                seen_sticky_projection_bits |= bit;
+            }
+            let string_slot = match (self.scope, key.as_str()) {
+                (SelectiveSemanticScope::Root, "model") => Some(&mut self.projection.model),
+                (SelectiveSemanticScope::Root, "sticky_key") => {
+                    Some(&mut self.projection.root_sticky_key)
+                }
+                (SelectiveSemanticScope::Root, "stickyKey") => {
+                    Some(&mut self.projection.root_sticky_key_alias)
+                }
+                (SelectiveSemanticScope::Root, "prompt_cache_key") => {
+                    Some(&mut self.projection.root_prompt_cache_key)
+                }
+                (SelectiveSemanticScope::Root, "promptCacheKey") => {
+                    Some(&mut self.projection.root_prompt_cache_key_alias)
+                }
+                (SelectiveSemanticScope::Root, "service_tier") => {
+                    Some(&mut self.projection.service_tier)
+                }
+                (SelectiveSemanticScope::Root, "serviceTier") => {
+                    Some(&mut self.projection.service_tier_alias)
+                }
+                (SelectiveSemanticScope::Root, "reasoning_effort") => {
+                    Some(&mut self.projection.reasoning_effort)
+                }
+                (SelectiveSemanticScope::Metadata, "sticky_key") => {
+                    Some(&mut self.projection.metadata_sticky_key)
+                }
+                (SelectiveSemanticScope::Metadata, "stickyKey") => {
+                    Some(&mut self.projection.metadata_sticky_key_alias)
+                }
+                (SelectiveSemanticScope::Metadata, "prompt_cache_key") => {
+                    Some(&mut self.projection.metadata_prompt_cache_key)
+                }
+                (SelectiveSemanticScope::Metadata, "promptCacheKey") => {
+                    Some(&mut self.projection.metadata_prompt_cache_key_alias)
+                }
+                (SelectiveSemanticScope::Reasoning, "effort") => {
+                    Some(&mut self.projection.nested_reasoning_effort)
+                }
+                _ => None,
+            };
+            if let Some(slot) = string_slot {
+                let parsed = map.next_value::<OptionalString>()?;
+                if is_sticky_projection_field && !parsed.valid {
+                    self.projection.invalid_sticky_projection = true;
+                }
+                *slot = parsed.value;
+                continue;
+            }
+            match (self.scope, key.as_str()) {
+                (SelectiveSemanticScope::Root, "stream") => {
+                    self.projection.stream = map.next_value::<bool>().unwrap_or(false);
+                }
+                (SelectiveSemanticScope::Root, "stream_options") => {
+                    self.projection.stream_options_present = true;
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                (SelectiveSemanticScope::Root, "metadata") => {
+                    map.next_value_seed(SelectiveSemanticSeed {
+                        projection: &mut *self.projection,
+                        scope: SelectiveSemanticScope::Metadata,
+                    })?
+                }
+                (SelectiveSemanticScope::Root, "reasoning") => {
+                    map.next_value_seed(SelectiveSemanticSeed {
+                        projection: &mut *self.projection,
+                        scope: SelectiveSemanticScope::Reasoning,
+                    })?
+                }
+                (SelectiveSemanticScope::Root, "context_management") => {
+                    map.next_value_seed(SelectiveSemanticSeed {
+                        projection: &mut *self.projection,
+                        scope: SelectiveSemanticScope::ContextManagement,
+                    })?
+                }
+                (_, "encrypted_content") => {
+                    self.projection.contains_encrypted_content = true;
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                (_, "type") => object_type = map.next_value::<OptionalString>()?.value,
+                (SelectiveSemanticScope::ContextManagement, "compact_threshold") => {
+                    compact_threshold_present = true;
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                _ => map.next_value_seed(SelectiveSemanticSeed {
+                    projection: &mut *self.projection,
+                    scope: if matches!(self.scope, SelectiveSemanticScope::ContextManagement) {
+                        SelectiveSemanticScope::ContextManagement
+                    } else {
+                        SelectiveSemanticScope::Nested
+                    },
+                })?,
+            }
+        }
+        if object_type.as_deref() == Some("encrypted_content") {
+            self.projection.contains_encrypted_content = true;
+        }
+        if object_type.as_deref() == Some("image_generation") {
+            self.projection.contains_image_generation = true;
+        }
+        if matches!(self.scope, SelectiveSemanticScope::ContextManagement)
+            && object_type.as_deref() == Some("compaction")
+            && compact_threshold_present
+        {
+            self.projection.declares_remote_v2_compaction = true;
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectiveRequestSemantics {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut projection = Self::default();
+        SelectiveSemanticSeed {
+            projection: &mut projection,
+            scope: SelectiveSemanticScope::Root,
+        }
+        .deserialize(deserializer)?;
+        Ok(projection)
+    }
+}
+
 fn extract_sticky_key_from_request_value_projection_semantics(value: &Value) -> Option<String> {
     fn projection_field<'a>(
         object: &'a serde_json::Map<String, Value>,
@@ -325,35 +704,95 @@ pub(crate) struct ReplaySnapshotRouteAnalysis {
     pub(crate) contains_encrypted_content: bool,
     pub(crate) image_intent: ImageIntent,
     pub(crate) compaction_kind: Option<CompactionKind>,
+    pub(crate) is_stream: bool,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) stream_options_present: bool,
     pub(crate) file_read_count: u8,
     pub(crate) json_parse_count: u8,
     pub(crate) parse_outcome: &'static str,
 }
 
 fn analyze_replay_snapshot_route_value(
-    parsed_value: Option<ReplaySnapshotRouteValue>,
+    parsed_value: Option<SelectiveRequestSemantics>,
     capture_target: Option<ProxyCaptureTarget>,
 ) -> ReplaySnapshotRouteAnalysis {
-    let sticky_projection_valid = parsed_value
-        .as_ref()
-        .is_none_or(|value| value.sticky_projection_valid);
-    let value = parsed_value.as_ref().map(|value| &value.value);
-    let image_intent = infer_request_image_intent(capture_target, value);
-    let compaction_kind = infer_request_compaction_kind(capture_target, value);
-    let sticky_key = sticky_projection_valid
-        .then(|| value.and_then(extract_sticky_key_from_request_value_projection_semantics))
+    let value = parsed_value.unwrap_or_default();
+    let normalize = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let sticky_key = (!value.invalid_sticky_projection)
+        .then(|| {
+            [
+                value.metadata_sticky_key,
+                value.metadata_sticky_key_alias,
+                value.metadata_prompt_cache_key.clone(),
+                value.metadata_prompt_cache_key_alias.clone(),
+                value.root_sticky_key,
+                value.root_sticky_key_alias,
+                value.root_prompt_cache_key.clone(),
+                value.root_prompt_cache_key_alias.clone(),
+            ]
+            .into_iter()
+            .find_map(normalize)
+        })
         .flatten();
-    let prompt_cache_key = value.and_then(extract_prompt_cache_key_from_request_body);
-    let requested_model = value.and_then(extract_model_from_payload);
-    let contains_encrypted_content = value.is_some_and(value_contains_encrypted_content);
+    let prompt_cache_key = [
+        value.metadata_prompt_cache_key,
+        value.metadata_prompt_cache_key_alias,
+        value.root_prompt_cache_key,
+        value.root_prompt_cache_key_alias,
+    ]
+    .into_iter()
+    .find_map(normalize);
+    let requested_model = normalize(value.model);
+    let image_intent = match capture_target {
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            ImageIntent::DirectImage
+        }
+        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
+            if requested_model
+                .as_deref()
+                .is_some_and(is_openai_image_generation_model)
+                || value.contains_image_generation
+            {
+                ImageIntent::Yes
+            } else {
+                ImageIntent::No
+            }
+        }
+        Some(ProxyCaptureTarget::ChatCompletions) | None => ImageIntent::Unknown,
+    };
+    let compaction_kind = match capture_target {
+        Some(ProxyCaptureTarget::ResponsesCompact) => Some(CompactionKind::Compact),
+        Some(ProxyCaptureTarget::Responses) if value.declares_remote_v2_compaction => {
+            Some(CompactionKind::RemoteV2)
+        }
+        _ => None,
+    };
+    let requested_service_tier = normalize(value.service_tier.or(value.service_tier_alias))
+        .and_then(|value| normalize_service_tier(&value));
+    let reasoning_effort = normalize(match capture_target {
+        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
+            value.nested_reasoning_effort
+        }
+        Some(ProxyCaptureTarget::ChatCompletions) => value.reasoning_effort,
+        _ => None,
+    });
 
     ReplaySnapshotRouteAnalysis {
         sticky_key,
         prompt_cache_key,
         requested_model,
-        contains_encrypted_content,
+        contains_encrypted_content: value.contains_encrypted_content,
         image_intent,
         compaction_kind,
+        is_stream: value.stream,
+        requested_service_tier,
+        reasoning_effort,
+        stream_options_present: value.stream_options_present,
         file_read_count: 0,
         json_parse_count: 0,
         parse_outcome: "empty",
@@ -383,7 +822,7 @@ pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
             let path = temp_file.path.clone();
             match tokio::task::spawn_blocking(move || {
                 let file = std::fs::File::open(path).map_err(|_| "read_failed")?;
-                serde_json::from_reader::<_, ReplaySnapshotRouteValue>(std::io::BufReader::new(
+                serde_json::from_reader::<_, SelectiveRequestSemantics>(std::io::BufReader::new(
                     file,
                 ))
                 .map(Some)

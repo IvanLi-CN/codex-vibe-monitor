@@ -4302,6 +4302,47 @@ pub(crate) fn spawn_raw_payload_file_write(
     }))
 }
 
+pub(crate) fn spawn_raw_payload_snapshot_write(
+    state: Arc<AppState>,
+    invoke_id: &str,
+    kind: &'static str,
+    snapshot: PoolReplayBodySnapshot,
+    enabled: bool,
+) -> PendingRawPayloadWrite {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => PendingRawPayloadWrite::Ready(RawPayloadMeta::default()),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            spawn_raw_payload_file_write(state.as_ref(), invoke_id, kind, bytes, enabled)
+        }
+        PoolReplayBodySnapshot::File { size, .. } if !enabled => {
+            PendingRawPayloadWrite::Ready(RawPayloadMeta {
+                path: None,
+                size_bytes: size as i64,
+                truncated: false,
+                truncated_reason: None,
+            })
+        }
+        snapshot @ PoolReplayBodySnapshot::File { .. } => {
+            let invoke_id = invoke_id.to_string();
+            PendingRawPayloadWrite::Task(tokio::spawn(async move {
+                match snapshot.to_bytes().await {
+                    Ok(bytes) => {
+                        spawn_raw_payload_file_write(&state, &invoke_id, kind, bytes, true)
+                            .finish()
+                            .await
+                    }
+                    Err(err) => RawPayloadMeta {
+                        path: None,
+                        size_bytes: pool_request_snapshot_body_bytes(&snapshot) as i64,
+                        truncated: true,
+                        truncated_reason: Some(format!("write_failed:{err}")),
+                    },
+                }
+            }))
+        }
+    }
+}
+
 pub(crate) fn raw_payload_path_for_kind(
     raw_dir: &Path,
     invoke_id: &str,

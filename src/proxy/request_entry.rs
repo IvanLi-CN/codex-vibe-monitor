@@ -1559,6 +1559,24 @@ pub(crate) fn disarm_pool_invocation_cleanup_guard(guard: &mut Option<PoolInvoca
 }
 pub(crate) const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 pub(crate) const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
+pub(crate) const REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const ENV_PROXY_REQUEST_SEMANTIC_PIPELINE_MODE: &str =
+    "PROXY_REQUEST_SEMANTIC_PIPELINE_MODE";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum RequestSemanticPipelineMode {
+    Projection,
+    Legacy,
+}
+
+pub(crate) fn request_semantic_pipeline_mode() -> RequestSemanticPipelineMode {
+    match std::env::var(ENV_PROXY_REQUEST_SEMANTIC_PIPELINE_MODE) {
+        Ok(value) if value.trim().eq_ignore_ascii_case("legacy") => {
+            RequestSemanticPipelineMode::Legacy
+        }
+        _ => RequestSemanticPipelineMode::Projection,
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct PoolReplayTempFile {
@@ -1602,6 +1620,26 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
+}
+
+/// Immutable request semantics derived from the single replay snapshot.
+///
+/// The snapshot remains the source of truth for forwarding and raw capture. The
+/// projection only owns bounded business metadata and an optional rewritten
+/// snapshot, so large request bodies never need to be copied into a `Vec`.
+#[derive(Debug, Clone)]
+pub(crate) struct RequestSemanticProjection {
+    pub(crate) snapshot: PoolReplayBodySnapshot,
+    pub(crate) request_info: RequestCaptureInfo,
+    pub(crate) upstream_snapshot: PoolReplayBodySnapshot,
+    pub(crate) request_body_for_capture: Option<Bytes>,
+    pub(crate) body_rewritten: bool,
+    pub(crate) parse_elapsed_ms: u64,
+    pub(crate) materialization_bytes: usize,
+    pub(crate) buffer_bytes: usize,
+    pub(crate) json_parse_count: u8,
+    pub(crate) whole_body_materialization_count: u8,
+    pub(crate) peak_business_buffer_bytes: usize,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -4249,6 +4287,205 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     })
 }
 
+const INCLUDE_USAGE_ROOT_INSERTION: &[u8] = br#","stream_options":{"include_usage":true}"#;
+
+async fn rewrite_snapshot_include_usage(
+    proxy_request_id: u64,
+    snapshot: &PoolReplayBodySnapshot,
+) -> io::Result<Option<PoolReplayBodySnapshot>> {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => Ok(None),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            let Some(close) = bytes.iter().rposition(|byte| !byte.is_ascii_whitespace()) else {
+                return Ok(None);
+            };
+            if bytes[close] != b'}' {
+                return Ok(None);
+            }
+            let mut rewritten =
+                Vec::with_capacity(bytes.len() + INCLUDE_USAGE_ROOT_INSERTION.len());
+            rewritten.extend_from_slice(&bytes[..close]);
+            rewritten.extend_from_slice(INCLUDE_USAGE_ROOT_INSERTION);
+            rewritten.extend_from_slice(&bytes[close..]);
+            Ok(Some(
+                pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(rewritten)).await,
+            ))
+        }
+        PoolReplayBodySnapshot::File { temp_file, size } => {
+            let source = temp_file.path.clone();
+            let destination = Arc::new(PoolReplayTempFile {
+                path: build_pool_replay_temp_path(proxy_request_id),
+            });
+            let destination_for_worker = destination.clone();
+            let source_size = *size;
+            let rewritten_size =
+                tokio::task::spawn_blocking(move || -> io::Result<Option<usize>> {
+                    let mut reader = std::fs::File::open(source)?;
+                    let tail_len = source_size.min(REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
+                    reader.seek(SeekFrom::End(-(tail_len as i64)))?;
+                    let mut tail = vec![0_u8; tail_len];
+                    reader.read_exact(&mut tail)?;
+                    let Some(tail_close) =
+                        tail.iter().rposition(|byte| !byte.is_ascii_whitespace())
+                    else {
+                        return Ok(None);
+                    };
+                    if tail[tail_close] != b'}' {
+                        return Ok(None);
+                    }
+                    let close_offset = source_size - tail_len + tail_close;
+                    reader.seek(SeekFrom::Start(0))?;
+                    let mut writer = std::io::BufWriter::with_capacity(
+                        REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES,
+                        std::fs::File::create(&destination_for_worker.path)?,
+                    );
+                    std::io::copy(&mut (&mut reader).take(close_offset as u64), &mut writer)?;
+                    writer.write_all(INCLUDE_USAGE_ROOT_INSERTION)?;
+                    std::io::copy(&mut reader, &mut writer)?;
+                    writer.flush()?;
+                    Ok(Some(source_size + INCLUDE_USAGE_ROOT_INSERTION.len()))
+                })
+                .await
+                .map_err(|err| io::Error::other(err.to_string()))??;
+            Ok(rewritten_size.map(|size| PoolReplayBodySnapshot::File {
+                temp_file: destination,
+                size,
+            }))
+        }
+    }
+}
+
+/// Build the semantic projection once, reusing the replay snapshot for routing,
+/// capture, and upstream preparation.
+pub(crate) async fn project_request_semantics(
+    proxy_request_id: u64,
+    snapshot: PoolReplayBodySnapshot,
+    target: ProxyCaptureTarget,
+    auto_include_usage: bool,
+) -> RequestSemanticProjection {
+    let started = Instant::now();
+    let body_len = pool_request_snapshot_body_bytes(&snapshot);
+    if request_semantic_pipeline_mode() == RequestSemanticPipelineMode::Legacy {
+        let Ok(original) = snapshot.to_bytes().await else {
+            return RequestSemanticProjection {
+                snapshot: snapshot.clone(),
+                request_info: RequestCaptureInfo::default(),
+                upstream_snapshot: snapshot,
+                request_body_for_capture: None,
+                body_rewritten: false,
+                parse_elapsed_ms: started.elapsed().as_millis() as u64,
+                materialization_bytes: 0,
+                buffer_bytes: 0,
+                json_parse_count: 0,
+                whole_body_materialization_count: 0,
+                peak_business_buffer_bytes: 0,
+            };
+        };
+        let (upstream, request_info, body_rewritten) =
+            prepare_target_request_body(target, original.to_vec(), auto_include_usage);
+        let json_parse_count = u8::from(!original.is_empty());
+        let upstream_snapshot =
+            pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await;
+        return RequestSemanticProjection {
+            snapshot,
+            request_info,
+            upstream_snapshot,
+            request_body_for_capture: Some(original),
+            body_rewritten,
+            parse_elapsed_ms: started.elapsed().as_millis() as u64,
+            materialization_bytes: body_len,
+            buffer_bytes: body_len,
+            json_parse_count,
+            whole_body_materialization_count: u8::from(body_len > 0),
+            peak_business_buffer_bytes: body_len,
+        };
+    }
+    let (request_info, upstream_snapshot, request_body_for_capture, body_rewritten, buffer_bytes) =
+        match &snapshot {
+            PoolReplayBodySnapshot::Empty => (
+                RequestCaptureInfo::default(),
+                PoolReplayBodySnapshot::Empty,
+                Some(Bytes::new()),
+                false,
+                0,
+            ),
+            PoolReplayBodySnapshot::Memory(bytes)
+                if bytes.len() <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES =>
+            {
+                let (upstream, info, rewritten) =
+                    prepare_target_request_body(target, bytes.to_vec(), auto_include_usage);
+                let capture = Some(bytes.clone());
+                let upstream_snapshot = if rewritten {
+                    pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await
+                } else {
+                    snapshot.clone()
+                };
+                (info, upstream_snapshot, capture, rewritten, bytes.len())
+            }
+            _ => {
+                let analysis = analyze_replay_snapshot_for_pool_routing(
+                    &snapshot,
+                    Some(target),
+                    proxy_request_id,
+                    "request_semantic_projection",
+                )
+                .await;
+                let request_info = RequestCaptureInfo {
+                    model: analysis.requested_model,
+                    sticky_key: analysis.sticky_key,
+                    prompt_cache_key: analysis.prompt_cache_key,
+                    prompt_cache_key_attribution_source: None,
+                    contains_encrypted_content: analysis.contains_encrypted_content,
+                    image_intent: Some(analysis.image_intent.as_str().to_string()),
+                    requested_service_tier: analysis.requested_service_tier,
+                    reasoning_effort: analysis.reasoning_effort,
+                    compaction_request_kind: analysis.compaction_kind,
+                    is_stream: analysis.is_stream,
+                    parse_error: (analysis.parse_outcome != "parsed")
+                        .then(|| format!("request_json_{}", analysis.parse_outcome)),
+                };
+                let should_rewrite = target.should_auto_include_usage()
+                    && auto_include_usage
+                    && request_info.is_stream
+                    && !analysis.stream_options_present;
+                let rewritten_snapshot = if should_rewrite {
+                    rewrite_snapshot_include_usage(proxy_request_id, &snapshot)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                let body_rewritten = rewritten_snapshot.is_some();
+                (
+                    request_info,
+                    rewritten_snapshot.unwrap_or_else(|| snapshot.clone()),
+                    None,
+                    body_rewritten,
+                    if should_rewrite {
+                        REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES.min(body_len)
+                    } else {
+                        0
+                    },
+                )
+            }
+        };
+
+    RequestSemanticProjection {
+        snapshot,
+        request_info,
+        upstream_snapshot,
+        request_body_for_capture,
+        body_rewritten,
+        parse_elapsed_ms: started.elapsed().as_millis() as u64,
+        materialization_bytes: 0,
+        buffer_bytes,
+        json_parse_count: u8::from(body_len > 0),
+        whole_body_materialization_count: 0,
+        peak_business_buffer_bytes: buffer_bytes,
+    }
+}
+
 pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     let mut path = env::temp_dir();
     let unique_id = NEXT_POOL_REPLAY_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
@@ -5418,5 +5655,151 @@ mod tests {
             ),
             CapabilitySupport::Unsupported
         );
+    }
+
+    #[tokio::test]
+    async fn request_semantic_projection_rewrites_small_stream_body_without_changing_capture() {
+        let original = Bytes::from_static(br#"{"model":"gpt-5","stream":true}"#);
+        let snapshot = pool_replay_snapshot_from_bytes(90_001, original.clone()).await;
+
+        let projection =
+            project_request_semantics(90_001, snapshot, ProxyCaptureTarget::ChatCompletions, true)
+                .await;
+
+        assert!(projection.body_rewritten);
+        assert_eq!(projection.request_body_for_capture, Some(original));
+        let rewritten = projection
+            .upstream_snapshot
+            .to_bytes()
+            .await
+            .expect("read rewritten body");
+        let value: Value = serde_json::from_slice(&rewritten).expect("parse rewritten body");
+        assert_eq!(value["stream_options"]["include_usage"], true);
+        assert!(projection.buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
+    }
+
+    #[tokio::test]
+    async fn request_semantic_projection_keeps_large_bodies_file_backed() {
+        for (request_id, size, target) in [
+            (
+                90_016,
+                16 * 1024 * 1024,
+                ProxyCaptureTarget::ChatCompletions,
+            ),
+            (90_064, 64 * 1024 * 1024, ProxyCaptureTarget::Responses),
+        ] {
+            let prefix = match target {
+                ProxyCaptureTarget::ChatCompletions => br#"{"model":"gpt-5","stream":true,"metadata":{"sticky_key":"sticky-16","prompt_cache_key":"cache-16"},"service_tier":"priority","reasoning_effort":"high","nested":{"encrypted_content":"cipher"},"input":""#.as_slice(),
+                ProxyCaptureTarget::Responses => br#"{"model":"gpt-5","stream":true,"metadata":{"sticky_key":"sticky-64","prompt_cache_key":"cache-64"},"serviceTier":"priority","reasoning":{"effort":"medium"},"nested":{"type":"encrypted_content"},"tools":[{"type":"image_generation"}],"context_management":[{"type":"compaction","compact_threshold":1000}],"input":""#.as_slice(),
+                _ => unreachable!(),
+            };
+            let suffix = br#""}"#;
+            let mut body = Vec::with_capacity(size);
+            body.extend_from_slice(prefix);
+            body.resize(size - suffix.len(), b'x');
+            body.extend_from_slice(suffix);
+            let original_digest = Sha256::digest(&body);
+            let snapshot = pool_replay_snapshot_from_bytes(request_id, Bytes::from(body)).await;
+            assert!(matches!(&snapshot, PoolReplayBodySnapshot::File { .. }));
+
+            let projection = project_request_semantics(request_id, snapshot, target, true).await;
+
+            assert!(matches!(
+                &projection.snapshot,
+                PoolReplayBodySnapshot::File { .. }
+            ));
+            assert!(matches!(
+                &projection.upstream_snapshot,
+                PoolReplayBodySnapshot::File { .. }
+            ));
+            assert_eq!(projection.request_info.model.as_deref(), Some("gpt-5"));
+            assert!(projection.request_info.is_stream);
+            assert!(projection.request_info.contains_encrypted_content);
+            assert_eq!(
+                projection.request_info.requested_service_tier.as_deref(),
+                Some("priority")
+            );
+            let suffix = if size == 16 * 1024 * 1024 { "16" } else { "64" };
+            assert_eq!(
+                projection.request_info.sticky_key.as_deref(),
+                Some(format!("sticky-{suffix}").as_str())
+            );
+            assert_eq!(
+                projection.request_info.prompt_cache_key.as_deref(),
+                Some(format!("cache-{suffix}").as_str())
+            );
+            assert_eq!(projection.request_body_for_capture, None);
+            assert_eq!(
+                Sha256::digest(
+                    projection
+                        .snapshot
+                        .to_bytes()
+                        .await
+                        .expect("read original replay snapshot")
+                ),
+                original_digest
+            );
+            if target == ProxyCaptureTarget::ChatCompletions {
+                assert!(projection.body_rewritten);
+                assert_eq!(
+                    projection.buffer_bytes,
+                    REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES
+                );
+                assert_eq!(
+                    projection.request_info.reasoning_effort.as_deref(),
+                    Some("high")
+                );
+            } else {
+                assert!(!projection.body_rewritten);
+                assert_eq!(projection.buffer_bytes, 0);
+                assert_eq!(
+                    projection.request_info.reasoning_effort.as_deref(),
+                    Some("medium")
+                );
+                assert_eq!(projection.request_info.image_intent.as_deref(), Some("yes"));
+                assert_eq!(
+                    projection.request_info.compaction_request_kind,
+                    Some(CompactionKind::RemoteV2)
+                );
+                assert_eq!(
+                    Sha256::digest(
+                        projection
+                            .upstream_snapshot
+                            .to_bytes()
+                            .await
+                            .expect("read forwarded replay snapshot")
+                    ),
+                    original_digest
+                );
+            }
+            assert_eq!(projection.json_parse_count, 1);
+            assert_eq!(projection.whole_body_materialization_count, 0);
+            assert_eq!(projection.materialization_bytes, 0);
+            assert!(
+                projection.peak_business_buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn request_semantic_projection_fails_open_for_invalid_large_json() {
+        let original = Bytes::from(vec![b'!'; 2 * 1024 * 1024]);
+        let snapshot = pool_replay_snapshot_from_bytes(90_002, original.clone()).await;
+        let projection =
+            project_request_semantics(90_002, snapshot, ProxyCaptureTarget::ChatCompletions, true)
+                .await;
+
+        assert!(!projection.body_rewritten);
+        assert!(projection.request_info.parse_error.is_some());
+        assert_eq!(
+            projection
+                .upstream_snapshot
+                .to_bytes()
+                .await
+                .expect("read fail-open body"),
+            original
+        );
+        assert_eq!(projection.whole_body_materialization_count, 0);
+        assert_eq!(projection.materialization_bytes, 0);
     }
 }
