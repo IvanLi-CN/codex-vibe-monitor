@@ -1302,6 +1302,289 @@ async fn capture_target_pool_route_persists_attempt_rows_and_summary_fields() {
 }
 
 #[tokio::test]
+async fn capture_target_pool_standalone_search_records_one_invocation_and_rollup() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        model: Option<String>,
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        cost: Option<f64>,
+        payload: Option<String>,
+        request_raw_path: Option<String>,
+        response_raw_path: Option<String>,
+        t_total_ms: Option<f64>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/alpha/search?cursor=next"
+                .parse()
+                .expect("valid standalone search uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(br#"{"model":"gpt-5.4","query":"hello","results":[]}"#.to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read standalone search response"),
+    )
+    .expect("decode standalone search response");
+    assert_eq!(response_payload["path"], "/v1/alpha/search");
+    assert_eq!(response_payload["query"], "cursor=next");
+    assert_eq!(response_payload["attempt"], 3);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    let invocation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("count standalone search invocations");
+    assert_eq!(invocation_count, 1);
+
+    let invocation = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT model, status, input_tokens, output_tokens, total_tokens, cost, payload,
+               request_raw_path, response_raw_path, t_total_ms
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load standalone search invocation");
+    assert_eq!(invocation.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(invocation.status.as_deref(), Some("success"));
+    assert!(invocation.input_tokens.is_none());
+    assert!(invocation.output_tokens.is_none());
+    assert!(invocation.total_tokens.is_none());
+    assert!(invocation.cost.is_none());
+    assert!(invocation.t_total_ms.is_some_and(|value| value >= 0.0));
+    assert!(invocation.request_raw_path.is_some());
+    assert!(invocation.response_raw_path.is_some());
+    let payload: Value = serde_json::from_str(
+        invocation
+            .payload
+            .as_deref()
+            .expect("standalone search payload should be present"),
+    )
+    .expect("decode standalone search payload");
+    assert_eq!(payload["endpoint"], "/v1/alpha/search");
+    assert_eq!(payload["isStream"], false);
+    assert_eq!(payload["requestModel"], "gpt-5.4");
+    assert!(payload["inputTokens"].is_null());
+    assert!(payload["outputTokens"].is_null());
+    assert!(payload["totalTokens"].is_null());
+
+    backfill_invocation_rollup_hourly_from_sources(&state.pool)
+        .await
+        .expect("rebuild standalone search rollup");
+    backfill_invocation_rollup_hourly_from_sources(&state.pool)
+        .await
+        .expect("replay standalone search rollup without duplication");
+    let rollup = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        r#"
+        SELECT COALESCE(SUM(total_count), 0),
+               COALESCE(SUM(success_count), 0),
+               COALESCE(SUM(failure_count), 0),
+               COALESCE(SUM(terminal_count), 0)
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load standalone search rollup");
+    assert_eq!(rollup, (1, 1, 0, 1));
+
+    assert_eq!(
+        attempts
+            .lock()
+            .expect("lock standalone search attempts")
+            .get("Bearer upstream-primary")
+            .copied(),
+        Some(3)
+    );
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_standalone_search_records_upstream_404_as_failure() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::NOT_FOUND)],
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/alpha/search"
+                .parse()
+                .expect("valid standalone search uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(br#"{"model":"gpt-5.4","query":"hello"}"#.to_vec()),
+    )
+    .await;
+    assert!(!response.status().is_success());
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read standalone search upstream 404 response");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let (status, failure_kind, error_message, payload): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT status, failure_kind, error_message, payload FROM codex_invocations ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load standalone search 404 invocation");
+    assert_ne!(status.as_deref(), Some("success"));
+    assert!(
+        failure_kind.is_some(),
+        "404 failure kind missing: {error_message:?}"
+    );
+    assert_ne!(failure_kind.as_deref(), Some("oauth_unsupported_route"));
+    assert!(
+        error_message
+            .as_deref()
+            .is_some_and(|message| message.to_ascii_lowercase().contains("upstream")),
+        "404 error message should identify upstream failure: {error_message:?}"
+    );
+    let payload: Value = payload
+        .parse()
+        .expect("decode standalone search 404 payload");
+    assert_eq!(payload["endpoint"], "/v1/alpha/search");
+    assert_ne!(payload["failureKind"], "oauth_unsupported_route");
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_standalone_search_keeps_structured_record_when_raw_logging_disabled() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        payload: Option<String>,
+        request_raw_path: Option<String>,
+        response_raw_path: Option<String>,
+        t_total_ms: Option<f64>,
+    }
+
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let _ = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
+            upstream_429_max_retries: None,
+            websocket_enabled: None,
+            upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: Some(false),
+            response_body_logging_enabled: Some(false),
+            encrypted_session_owner_routing_enabled: None,
+            enabled_models: default_enabled_preset_models(),
+        }),
+    )
+    .await
+    .expect("disable standalone search raw logging");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/alpha/search"
+                .parse()
+                .expect("valid standalone search uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(br#"{"model":"gpt-5.4","query":"hello"}"#.to_vec()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read standalone search no-raw response");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let invocation = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, payload, request_raw_path, response_raw_path, t_total_ms
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load standalone search no-raw invocation");
+    assert_eq!(invocation.status.as_deref(), Some("success"));
+    assert!(invocation.request_raw_path.is_none());
+    assert!(invocation.response_raw_path.is_none());
+    assert!(invocation.t_total_ms.is_some_and(|value| value >= 0.0));
+    let payload: Value = serde_json::from_str(
+        invocation
+            .payload
+            .as_deref()
+            .expect("standalone search no-raw payload should be present"),
+    )
+    .expect("decode standalone search no-raw payload");
+    assert_eq!(payload["endpoint"], "/v1/alpha/search");
+    assert_eq!(payload["statusCode"], 200);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptStatusRow {

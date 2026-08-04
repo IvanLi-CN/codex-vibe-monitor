@@ -586,7 +586,9 @@ fn infer_image_intent_from_request_body_with_codex_namespace(
         ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
             ImageIntent::DirectImage
         }
-        ProxyCaptureTarget::ChatCompletions => ImageIntent::Unknown,
+        ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch => {
+            ImageIntent::Unknown
+        }
         ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact => {
             if value
                 .get("model")

@@ -23,6 +23,8 @@
 - `/api/invocations` 与 SSE `records` 在不改 schema 的前提下额外返回 `compactionRequestKind` / `compactionResponseKind`，把原始 endpoint 与压缩语义解耦。
 - `/api/invocations`、SSE `records` 与 Prompt Cache / Dashboard preview 在不改 schema 的前提下额外返回 `imageIntent`，使图片请求语义脱离 endpoint 和历史 raw body 存活状态而独立存在。
 - `/api/invocations`、SSE `records`、Prompt Cache preview 与 Dashboard working conversations 在不改 schema 的前提下额外返回 `requestModel` / `responseModel`，用于区分请求模型与实际响应模型。
+- Codex standalone search 的 `POST /v1/alpha/search` 必须进入与其他代理请求相同的 invocation capture、attempt、实时展示与 source-level hourly rollup 链路。
+- Standalone search 记录沿用普通请求的 raw body logging 开关与状态/延迟字段；搜索响应中的 `output`、`results` 与 `encrypted_output` 不被推断为 usage、token 或 cost。
 - 复用 invocation preview wire shape 的 owner-facing 列表在需要稳定对话关联时，必须继续返回真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行不得再把 `invokeId` 当成对话键替代。
 - Records 与 Dashboard 两个 owner-facing 列表同时显示独立“图片工具”徽标，避免同一条 invocation 在不同列表面出现语义漂移。
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
@@ -50,6 +52,7 @@
 - 不改费用、token 明细和既有时序聚合的归集语义；本规格只定义 `modelPerformance` 的成功已计费完整周期口径，以及该口径在 Dashboard 性能明细入口中的展示语义，不再驱动顶部实时 KPI。
 - 不新增“总日志开关”。
 - 不对历史 `.gz` / raw 文件做立即删除、迁移或重压缩。
+- 不新增 endpoint 维度的 rollup、搜索 query/result 专属字段或搜索专属 Dashboard。
 
 ## 范围（Scope）
 
@@ -63,6 +66,7 @@
 - `proxy_model_settings` 单例新增 request/response body logging 持久化字段与 settings 页面双开关 UI。
 - request raw / response raw / response preview 按设置开关 fail-soft 退化，详情页与历史回填接受“新记录没有 raw body”为正常状态。
 - `GET /api/stats/dashboard-activity` 的全局与账号活动返回模型性能分组；Dashboard 总览与账号卡复用同一个桌面浮层/窄屏抽屉入口。
+- `POST /v1/alpha/search` 只按精确 method/path 接入；普通号池 capture 与 OAuth bridge 的普通/counted passthrough 都必须保留原始 path、query、body、headers 与响应状态。
 
 ### Out of scope
 
@@ -86,6 +90,10 @@
 - `requestBodyLoggingEnabled=false` 时，新请求不再写入 `request_raw_path` / request raw 文件；相关 size/truncation 字段维持空值或零值语义，不把该情况视为损坏。
 - `responseBodyLoggingEnabled=false` 时，新响应不再写入 `response_raw_path` / response raw 文件，同时 `raw_response` inline preview 也不再持久化。
 - `responseBodyLoggingEnabled=false` 时，调用详情读取响应 body、异常 drawer 与历史回填链路必须返回既有 unavailable/fallback 语义，而不是 500 或“缺文件即损坏”语义。
+- `POST /v1/alpha/search` 必须被识别为独立的非流式 capture target；不得退化为 `Responses` target，也不得启用 Responses SSE、fast-mode、自动 usage、图片或 compaction 专属逻辑。
+- Standalone search 必须记录请求 endpoint/model、终态 status、failure kind、timing 与既有 attempt 信息；缺少明确 usage 证据时 token/cost 保持空值。
+- 一个下游 standalone search 请求只能产生一个父 invocation；upstream retry/failover 只增加既有 attempt 记录，不重复增加 invocation rollup 请求量。
+- OAuth bridge 的普通与 counted passthrough 都必须允许 `/v1/alpha/search`，不得返回 `oauth_unsupported_route`。
 - `/v1/responses/compact` 继续视为 `Compact`；不把它改名成 `V1`，也不把 `/v1/responses` 内的 V2 语义挤占到 endpoint 字段。
 - `/v1/responses` 请求体含 `context_management[type=compaction][compact_threshold]` 时，运行态记录必须写入 `compactionRequestKind="remote_v2"`，且不依赖 request body raw logging。
 - `/v1/responses` 终态只有在响应中实际检测到 compaction item 时才写入 `compactionResponseKind="remote_v2"`；“请求启用了 V2 但响应未触发”不得在终态列表误显示为 `远程压缩V2`。
@@ -129,6 +137,9 @@
 ### Core flows
 
 - 请求进入 `/v1/chat/completions` 或 `/v1/responses` 采集路径时，后端提取 IP 与 prompt cache key，并随 payload 一并落库。
+- 请求进入 `POST /v1/alpha/search` 时，后端使用与其他非流式 capture target 相同的结构化 invocation、raw body、终态和 attempt 记录路径；搜索协议字段只作为原始请求/响应内容保留。
+- 号池 standalone search 的 hourly rollup 以父 invocation 终态增量计数；归档 replay 继续读取相同的 `codex_invocations` source，不创建搜索专用 rollup 维度。
+- OAuth bridge standalone search 在普通与 counted passthrough 中都保留 `/v1/alpha/search` 的 upstream path，并沿用当前 OAuth 请求 accounting/终态记录路径。
 - `/api/invocations` 通过 `json_extract(payload, ...)` 投影扩展字段，不依赖新增列。
 - Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局、账号、模型与账号+模型四级的墙钟并集与累计时长，并在全局和账号级 `modelPerformance` 响应里显式返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`；原始费用、token 明细和调用列表聚合保持不变。
 - Dashboard 性能明细入口继续展示当前选择范围的完整周期总计；顶部实时 KPI 与账号标题实时指标改由 `z6ysw` 的最近完整 1 分钟 bucket 提供，不再把 `modelPerformance` 总计当作当前值。
@@ -155,6 +166,7 @@
 - 若阶段耗时缺失（旧记录），前端逐项显示 `—`。
 - 若号池达到不同账号尝试上限，前端应明确说明终态记录未发起新的上游请求，并可保留上一失败账号与上一错误状态作为诊断上下文。
 - 当 body logging 开关关闭导致新记录没有 raw 路径或 preview 时，详情页、回填与异常查看都要把它当作“未保留 body”，不是“raw 文件丢失”。
+- 上游返回 standalone search 的 HTTP 404/5xx 时，网关必须将其作为 upstream failure 记录并透传既有错误语义；不得把它误记为本地不支持路由。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -166,6 +178,14 @@
 - `endpoint?: string`
 - `failureKind?: string`
 - `costAudit?: { recorded?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number }; local?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number }; mismatch: boolean; reason?: string | null; absoluteDiffUsd?: number | null; recordedPriceVersion?: string | null; localPriceVersion?: string | null }`
+
+### Codex standalone search invocation
+
+- 入站合同为精确 `POST /v1/alpha/search`；`GET`、trailing slash 与其他 `/v1/alpha/*` 路径不属于本合同。
+- `endpoint` 对外保持 `/v1/alpha/search`；`model` 从既有请求字段提取，`requestModel` / `responseModel` 继续遵循现有通用投影。
+- 搜索响应不会因为包含 `output`、`results` 或 `encrypted_output` 而生成 token/cost/usage；没有明确 usage 证据时对应字段保持 unavailable。
+- request/response raw 文件与 inline preview 完全遵循 `requestBodyLoggingEnabled` / `responseBodyLoggingEnabled`。
+- 号池重试按一个父 invocation 和多个既有 upstream attempts 记录，source-level hourly rollup 只计一次父 invocation。
 
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 
@@ -289,6 +309,11 @@
 - Given 一条调用的请求体使用 `zstd` 压缩而上游响应 `Content-Encoding` 为 `identity`，When owner 查看调用列表或展开详情，Then “响应耗时 / HTTP 请求压缩”和“HTTP 请求压缩”均显示 `zstd`；响应值明确标为“HTTP 响应压缩”。
 - Given 历史记录没有持久化 `requestCompressionAlgorithm`，When owner 查看调用列表或详情，Then 请求压缩显示 `—`，不得用响应 `Content-Encoding` 回退填充。
 - Given 调用发生重试，When owner 查看调用列表、Prompt Cache 会话展开、账号活动预览或对应的归档历史，Then 请求压缩显示最终 attempt 的真实请求压缩算法。
+- Given `POST /v1/alpha/search` 进入普通号池，When mock upstream 返回成功 JSON，Then upstream 收到原始 path/body，invocation 的 endpoint 为 `/v1/alpha/search`，记录包含 model/status/timing，并进入现有 hourly rollup。
+- Given standalone search 的 mock upstream 返回 404/5xx，When 请求终止，Then 响应按 upstream failure 透传并持久化失败 invocation，不返回本地 `oauth_unsupported_route` 或 generic unsupported capture 结果。
+- Given standalone search 触发 upstream retry/failover，When 最终请求完成，Then 只有一个父 invocation 进入 total/success/failure rollup，各次真实尝试分别出现在既有 attempt 记录中。
+- Given OAuth bridge 使用普通或 counted passthrough 处理 standalone search，When 请求发往 OAuth upstream，Then `/v1/alpha/search`、query、body、forwardable headers 与响应状态保持不变，且不被 route whitelist 拒绝。
+- Given standalone search 没有 usage 字段，When 查询 invocation、summary 与 rollup，Then token/cost 不被搜索输出内容伪造，通用调用量/成功率/延迟统计仍正确。
 
 ### Manual verification
 

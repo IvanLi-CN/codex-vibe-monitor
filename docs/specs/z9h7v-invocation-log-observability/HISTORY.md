@@ -1,5 +1,7 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
+- 2026-08-04: Implemented Codex standalone search recording as an exact `POST /v1/alpha/search` non-streaming capture target. It reuses pool and OAuth passthrough accounting, records one parent invocation per downstream request, and enters the existing source-level hourly rollup without inventing search usage or adding an endpoint rollup dimension.
+
 ## Account upstream attempt observability
 
 - 账号详情从最终调用记录切换为 7 天主库尝试请求表，修复失败账号事件链接到最终成功账号调用而无法定位的问题；每行只显示本次尝试请求的请求/响应模型、结果、代理、三段延迟和错误，不显示 endpoint，也不混入重试序号或最终调用 usage。

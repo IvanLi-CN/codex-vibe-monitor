@@ -2118,6 +2118,70 @@ fn parse_target_response_payload_reads_service_tier_from_response_object() {
 }
 
 #[test]
+fn standalone_search_response_does_not_infer_usage_from_results() {
+    let parsed = parse_target_response_payload(
+        ProxyCaptureTarget::StandaloneSearch,
+        br#"{
+            "model": "gpt-5.4",
+            "results": [{"title": "result", "content": "hello"}]
+        }"#,
+        false,
+        None,
+    );
+
+    assert_eq!(parsed.model.as_deref(), Some("gpt-5.4"));
+    assert!(parsed.usage.input_tokens.is_none());
+    assert!(parsed.usage.output_tokens.is_none());
+    assert!(parsed.usage.total_tokens.is_none());
+    assert_eq!(
+        parsed.usage_missing_reason.as_deref(),
+        Some("usage_missing_in_response")
+    );
+
+    let sse_like = parse_target_response_payload(
+        ProxyCaptureTarget::StandaloneSearch,
+        b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+        false,
+        None,
+    );
+    assert!(sse_like.stream_terminal_event.is_none());
+    assert_eq!(
+        sse_like.usage_missing_reason.as_deref(),
+        Some("response_not_json")
+    );
+
+    let mut search_stream_parser =
+        StreamResponsePayloadChunkParser::for_target(ProxyCaptureTarget::StandaloneSearch);
+    search_stream_parser.ingest_bytes(
+        b"event: response.failed\ndata: {\"type\":\"response.failed\",\"object\":\"response.compaction\"}\n\n",
+    );
+    let search_stream_outcome = search_stream_parser.finish();
+    assert!(!search_stream_outcome.saw_stream_fields);
+    assert!(!search_stream_outcome.successful_terminal_seen);
+    assert!(
+        search_stream_outcome
+            .response_info
+            .compaction_response_kind
+            .is_none()
+    );
+    assert!(
+        search_stream_outcome
+            .response_info
+            .stream_terminal_event
+            .is_none()
+    );
+
+    let forced_stream_hint = parse_target_response_payload(
+        ProxyCaptureTarget::StandaloneSearch,
+        br#"{"object":"response.compaction","results":[]}"#,
+        true,
+        None,
+    );
+    assert!(forced_stream_hint.compaction_response_kind.is_none());
+    assert!(forced_stream_hint.stream_terminal_event.is_none());
+}
+
+#[test]
 fn parse_target_response_payload_detects_remote_v2_compaction_stream_events() {
     let raw = [
         "event: response.output_item.added",

@@ -80,7 +80,7 @@ pub(crate) fn parse_target_response_payload_from_raw_file(
     is_stream_hint: bool,
     content_encoding: Option<&str>,
 ) -> std::result::Result<ResponseCaptureInfo, String> {
-    if is_stream_hint {
+    if is_stream_hint && target != ProxyCaptureTarget::StandaloneSearch {
         let reader = open_decoded_response_reader(path, content_encoding)?;
         parse_stream_response_payload_from_reader(reader).map_err(|err| err.to_string())
     } else {
