@@ -11,6 +11,34 @@ pub(crate) struct LivePoolCandidateEvaluation {
 pub(crate) const POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS: i64 = 300;
 const POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT: usize = 12;
 
+fn model_route_penalty_code(score: u8) -> &'static str {
+    match score {
+        0 => "normal",
+        1 => "demoted",
+        2 => "excluded",
+        _ => "unknown",
+    }
+}
+
+fn routing_selection_score_snapshot(
+    score: &PoolRoutingCandidateScore,
+) -> PoolRoutingSelectionScoreSnapshot {
+    PoolRoutingSelectionScoreSnapshot {
+        eligibility: score.eligibility.as_persisted_str().to_string(),
+        route_binding_failure_penalty: score.route_binding_failure_penalty,
+        model_route_penalty: score.model_route_penalty,
+        model_route_penalty_code: model_route_penalty_code(score.model_route_penalty).to_string(),
+        routing_priority_rank: score.routing_priority_rank,
+        capacity_lane: score.capacity_lane.as_persisted_str().to_string(),
+        dispatch_state: score.dispatch_state.as_persisted_str().to_string(),
+        secondary_reset_proximity_secs: score.secondary_reset_proximity_secs,
+        primary_reset_proximity_secs: score.primary_reset_proximity_secs,
+        scarcity_score: format!("{:.6}", score.scarcity_score),
+        effective_load: score.effective_load,
+        last_selected_at: score.last_selected_at.clone(),
+    }
+}
+
 fn push_routing_selection_audit_exclusion(
     exclusions: &mut Vec<PoolRoutingSelectionAuditExcludedCandidate>,
     row: &UpstreamAccountRow,
@@ -1608,6 +1636,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             .to_string(),
             compared_account_id: runner_up.map(|candidate| candidate.account_id),
             compared_account_name: runner_up.map(|candidate| candidate.display_name.clone()),
+            selected_score: Some(routing_selection_score_snapshot(&winner.score)),
+            compared_score: resolved_candidates
+                .get(1)
+                .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
             excluded_candidates: selection_audit_exclusions,
         })
     });
@@ -1745,6 +1777,31 @@ mod tests {
             pool_routing_selection_winner_reason(&winner, Some(&runner_up)),
             "stableAccountOrder"
         );
+    }
+
+    #[test]
+    fn routing_selection_score_snapshot_preserves_the_compared_penalties() {
+        let mut winner = routing_score(1);
+        winner.model_route_penalty = 0;
+        let mut runner_up = routing_score(2);
+        runner_up.model_route_penalty = 1;
+
+        let audit = PoolRoutingSelectionAudit {
+            selected_account_id: winner.account_id,
+            selected_account_name: "dzw".to_string(),
+            eligible_candidate_count: 2,
+            winner_reason_code: "lowerModelRoutePenalty".to_string(),
+            compared_account_id: Some(runner_up.account_id),
+            compared_account_name: Some("CIII".to_string()),
+            selected_score: Some(routing_selection_score_snapshot(&winner)),
+            compared_score: Some(routing_selection_score_snapshot(&runner_up)),
+            excluded_candidates: Vec::new(),
+        };
+        let value = serde_json::to_value(audit).expect("serialize routing selection audit");
+        assert_eq!(value["selectedScore"]["modelRoutePenalty"], 0);
+        assert_eq!(value["selectedScore"]["modelRoutePenaltyCode"], "normal");
+        assert_eq!(value["comparedScore"]["modelRoutePenalty"], 1);
+        assert_eq!(value["comparedScore"]["modelRoutePenaltyCode"], "demoted");
     }
 
     fn effective_rule(

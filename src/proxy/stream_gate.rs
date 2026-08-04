@@ -371,10 +371,14 @@ pub(crate) fn prepare_target_request_body_with_hosted_intent(
         }
         _ => None,
     };
-    info.is_stream = value
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    info.is_stream = if target == ProxyCaptureTarget::StandaloneSearch {
+        false
+    } else {
+        value
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
     info.image_intent = Some(
         infer_image_intent_from_request_body(target, &value)
             .as_str()
@@ -464,7 +468,7 @@ pub(crate) fn proxy_capture_target_stream_timeout(
     match capture_target {
         ProxyCaptureTarget::Responses => Some(timeouts.responses_stream_timeout),
         ProxyCaptureTarget::ResponsesCompact => Some(timeouts.compact_stream_timeout),
-        ProxyCaptureTarget::ChatCompletions => None,
+        ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch => None,
         ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => None,
     }
 }
@@ -787,7 +791,9 @@ pub(crate) fn extract_reasoning_effort_from_request_body(
         ProxyCaptureTarget::ChatCompletions => {
             value.get("reasoning_effort").and_then(|v| v.as_str())
         }
-        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => None,
+        ProxyCaptureTarget::ImageGenerations
+        | ProxyCaptureTarget::ImageEdits
+        | ProxyCaptureTarget::StandaloneSearch => None,
     }?;
 
     let normalized = raw.trim();
@@ -802,6 +808,22 @@ pub(crate) fn build_response_capture_info_from_bytes(
     bytes: &[u8],
     request_is_stream: bool,
     decode_failure_reason: Option<String>,
+) -> ResponseCaptureInfo {
+    build_response_capture_info_from_bytes_with_sse_detection(
+        bytes,
+        request_is_stream,
+        decode_failure_reason,
+        true,
+        true,
+    )
+}
+
+fn build_response_capture_info_from_bytes_with_sse_detection(
+    bytes: &[u8],
+    request_is_stream: bool,
+    decode_failure_reason: Option<String>,
+    allow_sse_detection: bool,
+    allow_compaction_detection: bool,
 ) -> ResponseCaptureInfo {
     if bytes.is_empty() {
         return ResponseCaptureInfo {
@@ -818,7 +840,8 @@ pub(crate) fn build_response_capture_info_from_bytes(
         };
     }
 
-    let looks_like_stream = request_is_stream || response_payload_looks_like_sse(bytes);
+    let looks_like_stream =
+        request_is_stream || (allow_sse_detection && response_payload_looks_like_sse(bytes));
     let mut response_info = if looks_like_stream {
         parse_stream_response_payload(bytes)
     } else {
@@ -841,8 +864,11 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     usage_missing_reason,
                     contains_encrypted_content: value_contains_encrypted_content(&value),
                     service_tier,
-                    compaction_response_kind: response_value_indicates_remote_v2_compaction(&value)
-                        .then_some(CompactionKind::RemoteV2),
+                    compaction_response_kind: allow_compaction_detection
+                        .then(|| response_value_indicates_remote_v2_compaction(&value))
+                        .and_then(|is_compaction| {
+                            is_compaction.then_some(CompactionKind::RemoteV2)
+                        }),
                     stream_terminal_event: None,
                     upstream_error_code: extract_upstream_error_code(&value),
                     upstream_error_message: extract_upstream_error_message(&value),
@@ -892,31 +918,35 @@ pub(crate) fn build_response_capture_info_from_bytes(
 }
 
 pub(crate) fn parse_target_response_payload(
-    _target: ProxyCaptureTarget,
+    target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
     content_encoding: Option<&str>,
 ) -> ResponseCaptureInfo {
     let (decoded_bytes, decode_failure_reason) =
         decode_response_payload_for_parse(bytes, content_encoding);
-    build_response_capture_info_from_bytes(
+    build_response_capture_info_from_bytes_with_sse_detection(
         decoded_bytes.as_ref(),
-        request_is_stream,
+        request_is_stream && target != ProxyCaptureTarget::StandaloneSearch,
         decode_failure_reason,
+        target != ProxyCaptureTarget::StandaloneSearch,
+        target != ProxyCaptureTarget::StandaloneSearch,
     )
 }
 pub(crate) fn parse_target_response_preview_payload(
-    _target: ProxyCaptureTarget,
+    target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
     content_encoding: Option<&str>,
 ) -> ResponseCaptureInfo {
     let (decoded_bytes, decode_failure_reason) =
         decode_response_payload_for_preview_parse(bytes, content_encoding);
-    build_response_capture_info_from_bytes(
+    build_response_capture_info_from_bytes_with_sse_detection(
         decoded_bytes.as_ref(),
-        request_is_stream,
+        request_is_stream && target != ProxyCaptureTarget::StandaloneSearch,
         decode_failure_reason,
+        target != ProxyCaptureTarget::StandaloneSearch,
+        target != ProxyCaptureTarget::StandaloneSearch,
     )
 }
 
@@ -1076,8 +1106,8 @@ pub(crate) fn decode_single_content_encoding_lossy(
     }
 }
 
-#[derive(Default)]
 pub(crate) struct StreamResponsePayloadParser {
+    stream_semantics_enabled: bool,
     model: Option<String>,
     usage: ParsedUsage,
     service_tier: Option<String>,
@@ -1096,8 +1126,35 @@ pub(crate) struct StreamResponsePayloadParser {
     first_token_observed: bool,
 }
 
+impl Default for StreamResponsePayloadParser {
+    fn default() -> Self {
+        Self {
+            stream_semantics_enabled: true,
+            model: None,
+            usage: ParsedUsage::default(),
+            service_tier: None,
+            service_tier_rank: 0,
+            contains_encrypted_content: false,
+            compaction_response_kind: None,
+            stream_terminal_event: None,
+            successful_terminal_seen: false,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            usage_found: false,
+            parse_error_seen: false,
+            pending_event_name: None,
+            saw_stream_fields: false,
+            first_token_observed: false,
+        }
+    }
+}
+
 impl StreamResponsePayloadParser {
     fn ingest_line(&mut self, line: &str) {
+        if !self.stream_semantics_enabled {
+            return;
+        }
         let trimmed = line.trim();
         if trimmed.starts_with("event:") {
             self.saw_stream_fields = true;
@@ -1449,6 +1506,12 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
+    pub(crate) fn for_target(target: ProxyCaptureTarget) -> Self {
+        let mut parser = Self::default();
+        parser.parser.stream_semantics_enabled = target != ProxyCaptureTarget::StandaloneSearch;
+        parser
+    }
+
     fn line_bytes_look_like_stream_field(line: &[u8]) -> bool {
         let decoded = String::from_utf8_lossy(line);
         let trimmed = decoded.trim_start();
@@ -1468,10 +1531,14 @@ impl StreamResponsePayloadChunkParser {
     }
 
     fn start_discarding_oversized_line(&mut self) {
-        if Self::line_bytes_look_like_stream_field(&self.line_buffer) {
+        if self.parser.stream_semantics_enabled
+            && Self::line_bytes_look_like_stream_field(&self.line_buffer)
+        {
             self.parser.saw_stream_fields = true;
         }
-        self.parser.parse_error_seen = true;
+        if self.parser.stream_semantics_enabled {
+            self.parser.parse_error_seen = true;
+        }
         self.discarded_oversized_line = true;
         self.line_buffer.clear();
         self.discarding_oversized_line = true;
@@ -1519,7 +1586,8 @@ impl StreamResponsePayloadChunkParser {
     }
 
     pub(crate) fn successful_terminal_seen(&self) -> bool {
-        self.parser.successful_terminal_seen || self.pending_line_is_successful_terminal()
+        self.parser.stream_semantics_enabled
+            && (self.parser.successful_terminal_seen || self.pending_line_is_successful_terminal())
     }
 
     fn pending_line_is_successful_terminal(&self) -> bool {
@@ -1543,7 +1611,9 @@ impl StreamResponsePayloadChunkParser {
     }
 
     pub(crate) fn flush_pending_line(&mut self) {
-        if self.discarding_oversized_line {
+        if !self.parser.stream_semantics_enabled {
+            self.line_buffer.clear();
+        } else if self.discarding_oversized_line {
             self.parser.parse_error_seen = true;
         } else {
             self.flush_line();

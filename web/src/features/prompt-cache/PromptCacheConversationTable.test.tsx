@@ -2793,6 +2793,21 @@ describe("PromptCacheConversationTable", () => {
                 winnerReasonCode: "onlyEligibleCandidate",
                 comparedAccountId: null,
                 comparedAccountName: null,
+                selectedScore: {
+                  eligibility: "assignable",
+                  routeBindingFailurePenalty: 0,
+                  modelRoutePenalty: 0,
+                  modelRoutePenaltyCode: "normal",
+                  routingPriorityRank: 0,
+                  capacityLane: "primary",
+                  dispatchState: "readyOnOwnedNode",
+                  secondaryResetProximitySecs: null,
+                  primaryResetProximitySecs: null,
+                  scarcityScore: "0.000000",
+                  effectiveLoad: 0,
+                  lastSelectedAt: null,
+                },
+                comparedScore: null,
                 excludedCandidates: [
                   {
                     accountId: 43,
@@ -2889,11 +2904,21 @@ describe("PromptCacheConversationTable", () => {
     const causeAttemptLink = Array.from(document.querySelectorAll("a")).find((link) =>
       link.textContent?.includes("起因尝试：FAILED41"),
     );
-    expect(causeAttemptLink?.getAttribute("href")).toContain("attemptId=FAILED41");
+    expect(causeAttemptLink?.getAttribute("href")).toBe("/records?attemptId=FAILED41");
     const routingDecisionLink = Array.from(document.querySelectorAll("a")).find((link) =>
       link.textContent?.includes("查看选路决策：SUCCESS42"),
     );
-    expect(routingDecisionLink?.getAttribute("href")).toContain("attemptId=SUCCESS42");
+    expect(routingDecisionLink?.getAttribute("href")).toBe(
+      "/records?attemptId=SUCCESS42&invokeId=inv-op-42",
+    );
+    const invocationRecordLink = Array.from(document.querySelectorAll("a")).find(
+      (link) => link.textContent?.trim() === "inv-op-42",
+    );
+    expect(invocationRecordLink?.getAttribute("href")).toBe(
+      "/records?attemptId=SUCCESS42&invokeId=inv-op-42",
+    );
+    expect(invocationRecordLink?.getAttribute("aria-label")).toBe("查看对应调用记录：inv-op-42");
+    expect(invocationRecordLink?.getAttribute("title")).toBe("查看对应调用记录：inv-op-42");
     expect(document.body.textContent).toContain("正向代理相关");
 
     const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>

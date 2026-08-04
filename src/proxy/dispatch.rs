@@ -385,6 +385,7 @@ pub(crate) fn capture_target_for_request(
         "/v1/chat/completions" => Some(ProxyCaptureTarget::ChatCompletions),
         "/v1/responses" => Some(ProxyCaptureTarget::Responses),
         "/v1/responses/compact" => Some(ProxyCaptureTarget::ResponsesCompact),
+        "/v1/alpha/search" => Some(ProxyCaptureTarget::StandaloneSearch),
         "/v1/images/generations" => Some(ProxyCaptureTarget::ImageGenerations),
         "/v1/images/edits" => Some(ProxyCaptureTarget::ImageEdits),
         _ => None,
@@ -1895,11 +1896,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
-    let response_is_event_stream = upstream_response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
+    let response_is_event_stream = capture_target != ProxyCaptureTarget::StandaloneSearch
+        && upstream_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"));
     let upstream_content_encoding = upstream_response
         .headers()
         .get(header::CONTENT_ENCODING)
@@ -2055,7 +2057,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         // Capture the bytes once and attach the finalized payload to both records below.
         let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
             && pending_pool_attempt_record_for_task.is_some();
-        let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
+        let mut stream_response_parser =
+            StreamResponsePayloadChunkParser::for_target(capture_target);
         let mut stream_response_decoder =
             IncrementalResponsePayloadDecoder::new(upstream_content_encoding_for_task.as_deref());
         let mut first_token_ms: Option<f64> = None;
@@ -2678,9 +2681,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             &preview_bytes,
             upstream_content_encoding_for_task.as_deref(),
         );
-        let response_is_stream_hint = response_is_event_stream_for_task
-            || streamed_response_outcome.saw_stream_fields
-            || preview_looks_like_sse;
+        let response_is_stream_hint = capture_target != ProxyCaptureTarget::StandaloneSearch
+            && (response_is_event_stream_for_task
+                || streamed_response_outcome.saw_stream_fields
+                || preview_looks_like_sse);
         let resp_parse_started = Instant::now();
         let mut response_info = if response_is_stream_hint {
             if streamed_response_outcome.saw_stream_fields {
@@ -3753,7 +3757,9 @@ pub(crate) fn resolve_compaction_response_kind_for_payload(
     capture_target: ProxyCaptureTarget,
     parsed_kind: Option<CompactionKind>,
 ) -> Option<CompactionKind> {
-    if capture_target == ProxyCaptureTarget::ResponsesCompact {
+    if capture_target == ProxyCaptureTarget::StandaloneSearch {
+        None
+    } else if capture_target == ProxyCaptureTarget::ResponsesCompact {
         Some(CompactionKind::Compact)
     } else {
         parsed_kind

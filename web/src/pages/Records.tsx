@@ -213,22 +213,35 @@ export default function RecordsPage() {
 
   useEffect(() => {
     const requestKey = `${requestedInvokeId}:${requestedRangePreset ?? ""}`;
-    if (!requestedInvokeId || appliedInvokeIdRef.current === requestKey) return;
+    if (!requestedInvokeId || requestedAttemptId || appliedInvokeIdRef.current === requestKey)
+      return;
     appliedInvokeIdRef.current = requestKey;
     setAutoExpandInvokeId(requestedInvokeId);
     setFocusedAttemptId(null);
+    const nextDraft: InvocationRecordsDraftFilters = {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+      invokeId: requestedInvokeId,
+      rangePreset: requestedRangePreset ?? "today",
+    };
     resetDraft();
     updateDraft("invokeId", requestedInvokeId);
-    if (requestedRangePreset) {
-      updateDraft("rangePreset", requestedRangePreset);
-    }
-    const timer = window.setTimeout(() => void search(), 0);
+    if (requestedRangePreset) updateDraft("rangePreset", requestedRangePreset);
+    const timer = window.setTimeout(() => void search({ draft: nextDraft }), 0);
     return () => window.clearTimeout(timer);
-  }, [requestedInvokeId, requestedRangePreset, resetDraft, search, updateDraft]);
+  }, [
+    requestedAttemptId,
+    requestedInvokeId,
+    requestedRangePreset,
+    resetDraft,
+    search,
+    updateDraft,
+  ]);
 
   useEffect(() => {
     const requestKey = [
       requestedAttemptId ?? "",
+      requestedInvokeId ?? "",
       requestedUpstreamAccountId ?? "",
       requestedRangePreset ?? "",
     ].join(":");
@@ -237,6 +250,28 @@ export default function RecordsPage() {
     setAutoExpandInvokeId(null);
     setFocusedAttemptId(requestedAttemptId);
     let cancelled = false;
+
+    if (requestedInvokeId) {
+      const nextDraft: InvocationRecordsDraftFilters = {
+        ...createDefaultInvocationRecordsDraft(),
+        ...createDefaultCustomRange(),
+        invokeId: requestedInvokeId,
+        attemptId: requestedAttemptId,
+        rangePreset: requestedRangePreset ?? "today",
+      };
+      setAutoExpandInvokeId(requestedInvokeId);
+      resetDraft();
+      updateDraft("invokeId", requestedInvokeId);
+      updateDraft("attemptId", requestedAttemptId);
+      if (requestedRangePreset) updateDraft("rangePreset", requestedRangePreset);
+      const timer = window.setTimeout(() => {
+        void search({ draft: nextDraft });
+      }, 0);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
 
     void fetchInvocationRecordLocation({
       attemptId: requestedAttemptId,
@@ -251,17 +286,22 @@ export default function RecordsPage() {
           response.records[response.targetIndex]?.invokeId?.trim() ||
           "";
         if (!resolvedInvokeId) return;
+        const nextDraft: InvocationRecordsDraftFilters = {
+          ...createDefaultInvocationRecordsDraft(),
+          ...createDefaultCustomRange(),
+          invokeId: resolvedInvokeId,
+          attemptId: requestedAttemptId,
+          rangePreset: requestedRangePreset ?? "today",
+        };
         resetDraft();
+        updateDraft("invokeId", resolvedInvokeId);
         updateDraft("attemptId", requestedAttemptId);
         if (requestedRangePreset) {
           updateDraft("rangePreset", requestedRangePreset);
         }
         setAutoExpandInvokeId(resolvedInvokeId);
         setFocusedAttemptId(response.attemptId?.trim() || requestedAttemptId);
-        await search();
-        if (!cancelled && response.page > 1) {
-          await setPage(response.page);
-        }
+        await search({ draft: nextDraft });
       })
       .catch(() => {
         if (cancelled) return;
@@ -274,6 +314,7 @@ export default function RecordsPage() {
   }, [
     pageSize,
     requestedAttemptId,
+    requestedInvokeId,
     requestedRangePreset,
     requestedUpstreamAccountId,
     resetDraft,

@@ -12,6 +12,8 @@ Conversation Sticky routing can receive multiple in-flight attempts that were se
 - Preserve request delivery and account-health handling when a completion loses the compare-and-swap. Suppress only the Sticky mutation and append an audit event.
 - Make automatic clear conditional on both the captured generation and failed account still owning the Sticky row, then advance the generation in the same transaction when it removes that row.
 - Persist structured causal evidence in operation events: reason code, routing source, status, and public attempt IDs. For fresh assignment, persist the immutable candidate-decision snapshot on the attempt before dispatch and copy it to the Sticky event: selected account, eligible count, first decisive comparator, and bounded normalized exclusions. Keep raw upstream messages in the existing protected attempt detail surface.
+- Persist the actual selected and runner-up score snapshot used by the comparator, including model-route penalty values and safe state codes. Do not infer missing values from later account health state; historical events must say that the comparison is unavailable.
+- Treat an attempt link as a compound public reference (`attemptId` plus `invokeId`) and resolve it as an exact Records target with no default date window, so the operator lands on the invocation containing the routing audit. Label that target as a corresponding invocation link in the event UI instead of making the operator infer it from a routing-decision label; legacy attempt-only links still resolve through the attempt locator.
 
 ## Verification
 

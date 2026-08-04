@@ -293,7 +293,7 @@ pub(crate) async fn send_oauth_upstream_request(
             )
             .await
         }
-        path if is_supported_oauth_passthrough_route(path) => {
+        path if is_supported_oauth_passthrough_route(&method, path) => {
             oauth_passthrough(
                 client,
                 method,
@@ -379,7 +379,7 @@ pub(crate) async fn send_counted_oauth_upstream_request(
             )
             .await
         }
-        path if is_supported_oauth_passthrough_route(path) => {
+        path if is_supported_oauth_passthrough_route(&method, path) => {
             counted_oauth_passthrough(
                 method,
                 original_uri,
@@ -989,8 +989,12 @@ async fn read_counted_oauth_upstream_bytes_with_timeout(
     }
 }
 
-fn is_supported_oauth_passthrough_route(path: &str) -> bool {
-    matches!(path, "/v1/responses/compact" | "/v1/chat/completions")
+fn is_supported_oauth_passthrough_route(method: &Method, path: &str) -> bool {
+    *method == Method::POST
+        && matches!(
+            path,
+            "/v1/responses/compact" | "/v1/chat/completions" | "/v1/alpha/search"
+        )
 }
 
 async fn oauth_models(
@@ -2073,11 +2077,132 @@ mod tests {
 
     #[test]
     fn unsupported_oauth_route_returns_explicit_error() {
-        assert!(!is_supported_oauth_passthrough_route("/v1/embeddings"));
+        assert!(!is_supported_oauth_passthrough_route(
+            &Method::POST,
+            "/v1/embeddings"
+        ));
         assert!(is_supported_oauth_passthrough_route(
+            &Method::POST,
             "/v1/responses/compact"
         ));
-        assert!(is_supported_oauth_passthrough_route("/v1/chat/completions"));
+        assert!(is_supported_oauth_passthrough_route(
+            &Method::POST,
+            "/v1/chat/completions"
+        ));
+        assert!(is_supported_oauth_passthrough_route(
+            &Method::POST,
+            "/v1/alpha/search"
+        ));
+        assert!(!is_supported_oauth_passthrough_route(
+            &Method::GET,
+            "/v1/alpha/search"
+        ));
+        assert!(!is_supported_oauth_passthrough_route(
+            &Method::PUT,
+            "/v1/alpha/search"
+        ));
+    }
+
+    #[tokio::test]
+    async fn standalone_search_passthrough_supports_ordinary_and_counted_requests() {
+        async fn search_upstream(request: axum::extract::Request) -> Response {
+            let body = to_bytes(request.into_body(), usize::MAX)
+                .await
+                .expect("read search request body");
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "path": "/backend-api/codex/alpha/search",
+                    "query": "cursor=next",
+                    "body": String::from_utf8(body.to_vec()).expect("search body is utf8"),
+                })),
+            )
+                .into_response()
+        }
+
+        let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+        let app = Router::new().route("/backend-api/codex/alpha/search", post(search_upstream));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind standalone search oauth upstream");
+        let addr = listener
+            .local_addr()
+            .expect("standalone search oauth upstream addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("standalone search oauth upstream should run");
+        });
+        set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid standalone search oauth base url"),
+        )
+        .await;
+
+        let headers = HeaderMap::from_iter([(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]);
+        let request_body = Bytes::from_static(br#"{"model":"gpt-5.4","query":"hello"}"#);
+        let ordinary = send_oauth_upstream_request(
+            &Client::new(),
+            Method::POST,
+            &"/v1/alpha/search?cursor=next"
+                .parse()
+                .expect("valid search uri"),
+            &headers,
+            OauthUpstreamRequestBody::Bytes(request_body.clone()),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Some(7),
+            "oauth-search-ordinary",
+            Some("org_search"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(ordinary.response.status(), StatusCode::ACCEPTED);
+        let ordinary_body = to_bytes(ordinary.response.into_body(), usize::MAX)
+            .await
+            .expect("read ordinary search response");
+        let ordinary_payload: Value =
+            serde_json::from_slice(&ordinary_body).expect("decode ordinary search response");
+        assert_eq!(ordinary_payload["path"], "/backend-api/codex/alpha/search");
+        assert_eq!(ordinary_payload["query"], "cursor=next");
+        assert_eq!(
+            ordinary_payload["body"],
+            "{\"model\":\"gpt-5.4\",\"query\":\"hello\"}"
+        );
+
+        let counted = send_counted_oauth_upstream_request(
+            Method::POST,
+            &"/v1/alpha/search?cursor=next"
+                .parse()
+                .expect("valid search uri"),
+            &headers,
+            CountedOauthUpstreamRequestBody::Bytes(request_body),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Some(7),
+            "oauth-search-counted",
+            Some("org_search"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(counted.response.status(), StatusCode::ACCEPTED);
+        let counted_body = to_bytes(counted.response.into_body(), usize::MAX)
+            .await
+            .expect("read counted search response");
+        let counted_payload: Value =
+            serde_json::from_slice(&counted_body).expect("decode counted search response");
+        assert_eq!(counted_payload["path"], "/backend-api/codex/alpha/search");
+        assert_eq!(counted_payload["query"], "cursor=next");
+
+        handle.abort();
+        reset_test_oauth_codex_upstream_base_url().await;
     }
 
     #[test]

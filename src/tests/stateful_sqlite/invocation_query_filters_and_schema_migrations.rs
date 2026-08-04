@@ -5690,6 +5690,8 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
         winner_reason_code: "onlyEligibleCandidate".to_string(),
         compared_account_id: None,
         compared_account_name: None,
+        selected_score: None,
+        compared_score: None,
         excluded_candidates: vec![PoolRoutingSelectionAuditExcludedCandidate {
             account_id: excluded_account_id,
             account_name: "Excluded CIII".to_string(),
@@ -5731,7 +5733,7 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
         Utc::now(),
         Some(prompt_cache_key),
         Some(prompt_cache_key),
-        Some(invoke_id),
+        None,
         Some(attempt_id),
         Some(generation),
     )
@@ -5782,6 +5784,7 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
             .map(|value| value.winner_reason_code.as_str()),
         Some("onlyEligibleCandidate")
     );
+    assert_eq!(event.invoke_id.as_deref(), Some(invoke_id));
 }
 
 #[tokio::test]

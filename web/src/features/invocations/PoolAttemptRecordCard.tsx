@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import type { TranslationKey } from "../../i18n";
-import type { ApiPoolUpstreamRequestAttempt, PoolRoutingSelectionAudit } from "../../lib/api";
+import type {
+  ApiPoolUpstreamRequestAttempt,
+  PoolRoutingSelectionAudit,
+  PoolRoutingSelectionScoreSnapshot,
+} from "../../lib/api";
 import { cn } from "../../lib/utils";
 
 const FALLBACK_CELL = "—";
@@ -127,6 +131,12 @@ function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
 }
 
 function routingSelectionWinnerLabel(audit: PoolRoutingSelectionAudit, t: Translator) {
+  if (!audit.selectedScore) {
+    return t("table.poolAttempts.routingDecision.auditUnavailable", {
+      account: audit.selectedAccountName,
+      comparedAccount: audit.comparedAccountName ?? FALLBACK_CELL,
+    });
+  }
   const key =
     `table.poolAttempts.routingDecision.winnerReasons.${audit.winnerReasonCode}` as TranslationKey;
   const translated = t(key, {
@@ -139,6 +149,24 @@ function routingSelectionWinnerLabel(audit: PoolRoutingSelectionAudit, t: Transl
         comparedAccount: audit.comparedAccountName ?? FALLBACK_CELL,
       })
     : translated;
+}
+
+function routingSelectionScoreLabel(
+  account: string,
+  score: PoolRoutingSelectionScoreSnapshot,
+  t: Translator,
+) {
+  return t("table.poolAttempts.routingDecision.score", {
+    account,
+    modelPenalty: score.modelRoutePenalty,
+    modelPenaltyCode: score.modelRoutePenaltyCode,
+    routeFailurePenalty: score.routeBindingFailurePenalty,
+    priority: score.routingPriorityRank,
+    capacityLane: score.capacityLane,
+    dispatchState: score.dispatchState,
+    effectiveLoad: score.effectiveLoad,
+    scarcityScore: score.scarcityScore,
+  });
 }
 
 function routingSelectionExclusionLabel(account: string, reasonCode: string, t: Translator) {
@@ -211,6 +239,25 @@ export function PoolAttemptRecordCard({
             })}
           </p>
           <p>{routingSelectionWinnerLabel(attempt.routingSelectionAudit, t)}</p>
+          {attempt.routingSelectionAudit.selectedScore ? (
+            <p data-testid="pool-attempt-routing-selection-score">
+              {routingSelectionScoreLabel(
+                attempt.routingSelectionAudit.selectedAccountName,
+                attempt.routingSelectionAudit.selectedScore,
+                t,
+              )}
+            </p>
+          ) : null}
+          {attempt.routingSelectionAudit.comparedScore &&
+          attempt.routingSelectionAudit.comparedAccountName ? (
+            <p>
+              {routingSelectionScoreLabel(
+                attempt.routingSelectionAudit.comparedAccountName,
+                attempt.routingSelectionAudit.comparedScore,
+                t,
+              )}
+            </p>
+          ) : null}
           {attempt.routingSelectionAudit.excludedCandidates.map((candidate) => (
             <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
               {routingSelectionExclusionLabel(candidate.accountName, candidate.reasonCode, t)}

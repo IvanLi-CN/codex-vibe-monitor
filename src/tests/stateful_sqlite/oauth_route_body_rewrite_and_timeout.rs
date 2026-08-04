@@ -169,6 +169,102 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
 }
 
 #[tokio::test]
+async fn pool_route_oauth_standalone_search_is_forwarded_and_recorded() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        payload: Option<String>,
+    }
+
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Standalone Search OAuth", "oauth-search").await;
+    let request_body = br#"{"model":"gpt-5.4","query":"hello","results":[]}"#;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/alpha/search?cursor=next"
+                .parse()
+                .expect("valid standalone search uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body.to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let forwarded: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth standalone search response"),
+    )
+    .expect("decode oauth standalone search response");
+    assert_eq!(forwarded["path"], "/backend-api/codex/alpha/search");
+    assert_eq!(forwarded["query"], "cursor=next");
+    assert_eq!(
+        forwarded["body"],
+        String::from_utf8_lossy(request_body).as_ref()
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let invocation = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, input_tokens, output_tokens, total_tokens, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth standalone search invocation");
+    assert_eq!(invocation.status.as_deref(), Some("success"));
+    assert!(invocation.input_tokens.is_none());
+    assert!(invocation.output_tokens.is_none());
+    assert!(invocation.total_tokens.is_none());
+    let payload: Value = serde_json::from_str(
+        invocation
+            .payload
+            .as_deref()
+            .expect("oauth standalone search payload should be present"),
+    )
+    .expect("decode oauth standalone search payload");
+    assert_eq!(payload["endpoint"], "/v1/alpha/search");
+    assert_eq!(payload["upstreamAccountId"], account_id);
+    assert_ne!(payload["failureKind"], "oauth_unsupported_route");
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
 async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {

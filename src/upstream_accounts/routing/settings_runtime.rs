@@ -1029,6 +1029,23 @@ impl PoolResolvedAccount {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingSelectionScoreSnapshot {
+    pub(crate) eligibility: String,
+    pub(crate) route_binding_failure_penalty: i64,
+    pub(crate) model_route_penalty: u8,
+    pub(crate) model_route_penalty_code: String,
+    pub(crate) routing_priority_rank: u8,
+    pub(crate) capacity_lane: String,
+    pub(crate) dispatch_state: String,
+    pub(crate) secondary_reset_proximity_secs: Option<i64>,
+    pub(crate) primary_reset_proximity_secs: Option<i64>,
+    pub(crate) scarcity_score: String,
+    pub(crate) effective_load: i64,
+    pub(crate) last_selected_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PoolRoutingSelectionAudit {
     pub(crate) selected_account_id: i64,
     pub(crate) selected_account_name: String,
@@ -1036,6 +1053,10 @@ pub(crate) struct PoolRoutingSelectionAudit {
     pub(crate) winner_reason_code: String,
     pub(crate) compared_account_id: Option<i64>,
     pub(crate) compared_account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) selected_score: Option<PoolRoutingSelectionScoreSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) compared_score: Option<PoolRoutingSelectionScoreSnapshot>,
     pub(crate) excluded_candidates: Vec<PoolRoutingSelectionAuditExcludedCandidate>,
 }
 
@@ -1077,6 +1098,14 @@ impl PoolRoutingCandidateEligibility {
             Self::HardBlocked => 2,
         }
     }
+
+    pub(crate) fn as_persisted_str(self) -> &'static str {
+        match self {
+            Self::Assignable => "assignable",
+            Self::SoftDegraded => "softDegraded",
+            Self::HardBlocked => "hardBlocked",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1090,6 +1119,13 @@ impl PoolRoutingCandidateCapacityLane {
         match self {
             Self::Primary => 0,
             Self::Overflow => 1,
+        }
+    }
+
+    pub(crate) fn as_persisted_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Overflow => "overflow",
         }
     }
 }
@@ -1109,6 +1145,15 @@ impl PoolRoutingCandidateDispatchState {
             Self::ReadyAfterMigration => 1,
             Self::RetryOriginalNode => 2,
             Self::HardBlocked => 3,
+        }
+    }
+
+    pub(crate) fn as_persisted_str(self) -> &'static str {
+        match self {
+            Self::ReadyOnOwnedNode => "readyOnOwnedNode",
+            Self::ReadyAfterMigration => "readyAfterMigration",
+            Self::RetryOriginalNode => "retryOriginalNode",
+            Self::HardBlocked => "hardBlocked",
         }
     }
 }

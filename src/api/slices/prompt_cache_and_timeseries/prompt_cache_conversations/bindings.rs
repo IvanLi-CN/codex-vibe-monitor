@@ -1082,31 +1082,33 @@ async fn load_runtime_attempt_routing_context_executor<'e, E>(
     Option<String>,
     Option<String>,
     Option<PoolRoutingSelectionAudit>,
+    Option<String>,
 )>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let Some(attempt_id) = attempt_id else {
-        return Ok((None, None, None));
+        return Ok((None, None, None, None));
     };
-    sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
-        "SELECT attempt_public_id, routing_source, routing_selection_audit_json FROM pool_upstream_request_attempts WHERE id = ?1",
+    sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT attempt_public_id, routing_source, routing_selection_audit_json, invoke_id FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(executor)
     .await
     .map(|value| {
         value
-            .map(|(attempt_public_id, routing_source, routing_selection_audit_json)| {
+            .map(|(attempt_public_id, routing_source, routing_selection_audit_json, invoke_id)| {
                 (
                     attempt_public_id,
                     routing_source,
                     routing_selection_audit_json
                         .as_deref()
                         .and_then(|raw| serde_json::from_str(raw).ok()),
+                    invoke_id,
                 )
             })
-            .unwrap_or((None, None, None))
+            .unwrap_or((None, None, None, None))
     })
     .map_err(Into::into)
 }
@@ -1210,7 +1212,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .context("failed to acquire runtime sticky event write lock")?;
 
     let write_outcome: Result<RuntimeStickyMutation> = async {
-        let (trigger_attempt_id, routing_source, routing_selection_audit) =
+        let (trigger_attempt_id, routing_source, routing_selection_audit, trigger_invoke_id) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
         let pending_clear_cause =
             load_pending_sticky_clear_cause_executor(conn.as_mut(), sticky_key).await?;
@@ -1244,7 +1246,9 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                         binding_after: None,
                         sticky_before: sticky_before.clone(),
                         sticky_after: sticky_before,
-                        invoke_id: invoke_id.map(ToOwned::to_owned),
+                        invoke_id: invoke_id
+                            .map(ToOwned::to_owned)
+                            .or_else(|| trigger_invoke_id.clone()),
                     },
                     Some(PromptCacheConversationOperationRoutingContext {
                         reason_code: "staleConcurrentCompletion".to_string(),
@@ -1304,7 +1308,9 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                         binding_after: None,
                         sticky_before,
                         sticky_after: Some(sticky_after),
-                        invoke_id: invoke_id.map(ToOwned::to_owned),
+                        invoke_id: invoke_id
+                            .map(ToOwned::to_owned)
+                            .or_else(|| trigger_invoke_id.clone()),
                     },
                     Some(PromptCacheConversationOperationRoutingContext {
                         reason_code: if causing_attempt_id.is_some() {

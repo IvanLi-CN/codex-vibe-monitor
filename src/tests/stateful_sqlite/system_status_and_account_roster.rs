@@ -708,6 +708,10 @@ fn write_backfill_request_payload_with_fields(
             }
             payload
         }
+        ProxyCaptureTarget::StandaloneSearch => json!({
+            "model": "gpt-5.3-codex",
+            "query": "hello",
+        }),
         ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
             let mut payload = json!({
                 "model": "gpt-image-1",
