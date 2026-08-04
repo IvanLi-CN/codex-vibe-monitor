@@ -48,6 +48,34 @@ pub(crate) struct SystemRawMetricsHealth {
     pub(crate) updated_age_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemRuntimePressureProcess {
+    pub(crate) rss_bytes: u64,
+    pub(crate) rss_anon_bytes: u64,
+    pub(crate) swap_bytes: u64,
+    pub(crate) peak_rss_bytes: u64,
+    pub(crate) threads: u64,
+    pub(crate) managed_bytes: u64,
+    pub(crate) unattributed_anon_bytes: u64,
+    pub(crate) pressure_level: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemRuntimePressureAllocator {
+    pub(crate) malloc_arena_max: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SystemRuntimePressureHealth {
+    pub(crate) state: String,
+    pub(crate) process: SystemRuntimePressureProcess,
+    pub(crate) allocator: SystemRuntimePressureAllocator,
+    pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusResponse {
@@ -63,7 +91,36 @@ pub(crate) struct SystemStatusResponse {
     pub(crate) other_files_bytes: u64,
     pub(crate) projection_health: SystemProjectionHealth,
     pub(crate) raw_metrics_health: SystemRawMetricsHealth,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime_pressure_health: Option<SystemRuntimePressureHealth>,
     pub(crate) refreshed_at: String,
+}
+
+pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
+    let memory = state.memory_diagnostics.runtime_pressure_snapshot();
+    let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
+    let state = if writer_accounting.state == "degraded" || memory.pressure_level != "normal" {
+        "degraded".to_string()
+    } else {
+        "healthy".to_string()
+    };
+    SystemRuntimePressureHealth {
+        state,
+        process: SystemRuntimePressureProcess {
+            rss_bytes: memory.process.rss_bytes,
+            rss_anon_bytes: memory.process.rss_anon_bytes,
+            swap_bytes: memory.process.swap_bytes,
+            peak_rss_bytes: memory.process.peak_rss_bytes,
+            threads: memory.process.threads,
+            managed_bytes: memory.managed_bytes,
+            unattributed_anon_bytes: memory.unattributed_anon_bytes,
+            pressure_level: memory.pressure_level,
+        },
+        allocator: SystemRuntimePressureAllocator {
+            malloc_arena_max: memory.malloc_arena_max,
+        },
+        writer_accounting,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -668,6 +725,7 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
 }
 
 pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+    let runtime_pressure_health = load_runtime_pressure_health(state).await;
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
         SELECT
@@ -799,20 +857,22 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
             inventory_cursor: raw_metrics.inventory_cursor,
             updated_age_ms: None,
         },
+        runtime_pressure_health: Some(runtime_pressure_health),
         refreshed_at: format_utc_iso(Utc::now()),
     })
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
     loop {
+        let mut cached_response = None;
         let wait_for = {
             let mut cache = state.system_status_cache.lock().await;
             if let Some(entry) = cache.latest.as_ref()
                 && entry.cached_at.elapsed() < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
             {
-                return Ok(entry.response.clone());
-            }
-            if let Some(signal) = cache.in_flight.clone() {
+                cached_response = Some(entry.response.clone());
+                None
+            } else if let Some(signal) = cache.in_flight.clone() {
                 cache.waiter_count = cache.waiter_count.saturating_add(1);
                 Some(signal.subscribe())
             } else {
@@ -821,6 +881,11 @@ pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<System
                 None
             }
         };
+
+        if let Some(mut response) = cached_response {
+            response.runtime_pressure_health = Some(load_runtime_pressure_health(state).await);
+            return Ok(response);
+        }
 
         if let Some(mut signal) = wait_for {
             let _ = signal.changed().await;

@@ -30,6 +30,241 @@ pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
 pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
 pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingQueueInvariantViolation {
+    pub(crate) operation: String,
+    pub(crate) counter: String,
+    pub(crate) expected_value: usize,
+    pub(crate) actual_value: usize,
+    pub(crate) expected_bytes: usize,
+    pub(crate) actual_bytes: usize,
+    pub(crate) pending_depth: usize,
+    pub(crate) pending_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingQueueAccountingSnapshot {
+    pub(crate) state: String,
+    pub(crate) pending_depth: usize,
+    pub(crate) pending_bytes: usize,
+    pub(crate) transfer_bytes: usize,
+    pub(crate) retry_count: u64,
+    pub(crate) invariant_violation_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) degraded_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_invariant_violation: Option<PendingQueueInvariantViolation>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingQueueAccounting {
+    pending_depth: AtomicUsize,
+    pending_bytes: AtomicUsize,
+    transfer_bytes: AtomicUsize,
+    retry_count: AtomicU64,
+    invariant_violation_count: AtomicU64,
+    last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
+}
+
+impl PendingQueueAccounting {
+    pub(crate) fn enqueue(&self, bytes: usize) {
+        self.add(&self.pending_bytes, bytes, "enqueue", "pending_bytes");
+        self.add(&self.pending_depth, 1, "enqueue", "pending_depth");
+    }
+
+    pub(crate) fn rollback_enqueue(&self, bytes: usize) {
+        self.subtract(
+            &self.pending_depth,
+            1,
+            "sender_failure_rollback",
+            "pending_depth",
+        );
+        self.subtract(
+            &self.pending_bytes,
+            bytes,
+            "sender_failure_rollback",
+            "pending_bytes",
+        );
+    }
+
+    pub(crate) fn replace_batch(
+        &self,
+        admitted_depth: usize,
+        retained_depth: usize,
+        admitted_bytes: usize,
+        retained_bytes: usize,
+    ) {
+        self.replace_for(
+            "batch_replacement",
+            admitted_depth,
+            retained_depth,
+            admitted_bytes,
+            retained_bytes,
+        );
+    }
+
+    pub(crate) fn transfer_p1_to_p2(&self, bytes: usize) {
+        self.add(
+            &self.transfer_bytes,
+            bytes,
+            "p1_to_p2_transfer",
+            "transfer_bytes",
+        );
+    }
+
+    pub(crate) fn retry_deferred(&self) {
+        self.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn complete(
+        &self,
+        submitted_depth: usize,
+        retained_depth: usize,
+        submitted_bytes: usize,
+        retained_bytes: usize,
+    ) {
+        self.replace_for(
+            "completion",
+            submitted_depth,
+            retained_depth,
+            submitted_bytes,
+            retained_bytes,
+        );
+    }
+
+    pub(crate) fn snapshot(&self) -> PendingQueueAccountingSnapshot {
+        let last_invariant_violation = self
+            .last_invariant_violation
+            .lock()
+            .ok()
+            .and_then(|violation| violation.clone());
+        let invariant_violation_count = self.invariant_violation_count.load(Ordering::Relaxed);
+        let degraded_reason = last_invariant_violation.as_ref().map(|violation| {
+            format!(
+                "{} {} invariant: expected {}, actual {}",
+                violation.operation,
+                violation.counter,
+                violation.expected_value,
+                violation.actual_value
+            )
+        });
+        PendingQueueAccountingSnapshot {
+            state: if invariant_violation_count == 0 {
+                "healthy".to_string()
+            } else {
+                "degraded".to_string()
+            },
+            pending_depth: self.pending_depth.load(Ordering::Relaxed),
+            pending_bytes: self.pending_bytes.load(Ordering::Relaxed),
+            transfer_bytes: self.transfer_bytes.load(Ordering::Relaxed),
+            retry_count: self.retry_count.load(Ordering::Relaxed),
+            invariant_violation_count,
+            degraded_reason,
+            last_invariant_violation,
+        }
+    }
+
+    fn replace_for(
+        &self,
+        operation: &'static str,
+        old_depth: usize,
+        new_depth: usize,
+        old_bytes: usize,
+        new_bytes: usize,
+    ) {
+        self.subtract(&self.pending_depth, old_depth, operation, "pending_depth");
+        self.add(&self.pending_depth, new_depth, operation, "pending_depth");
+        self.subtract(&self.pending_bytes, old_bytes, operation, "pending_bytes");
+        self.add(&self.pending_bytes, new_bytes, operation, "pending_bytes");
+    }
+
+    fn add(
+        &self,
+        counter: &AtomicUsize,
+        amount: usize,
+        operation: &'static str,
+        counter_name: &'static str,
+    ) {
+        if amount == 0 {
+            return;
+        }
+        let previous = counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(amount))
+            })
+            .expect("accounting update always returns a value");
+        if previous.checked_add(amount).is_none() {
+            self.record_invariant(operation, counter_name, amount, previous);
+        }
+    }
+
+    fn subtract(
+        &self,
+        counter: &AtomicUsize,
+        amount: usize,
+        operation: &'static str,
+        counter_name: &'static str,
+    ) {
+        if amount == 0 {
+            return;
+        }
+        let previous = counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(amount))
+            })
+            .expect("accounting update always returns a value");
+        if previous < amount {
+            self.record_invariant(operation, counter_name, amount, previous);
+        }
+    }
+
+    fn record_invariant(
+        &self,
+        operation: &'static str,
+        counter: &'static str,
+        expected_value: usize,
+        actual_value: usize,
+    ) {
+        let pending_depth = self.pending_depth.load(Ordering::Relaxed);
+        let pending_bytes = self.pending_bytes.load(Ordering::Relaxed);
+        let (expected_bytes, actual_bytes) = if counter == "pending_bytes" {
+            (expected_value, actual_value)
+        } else {
+            (pending_bytes, pending_bytes)
+        };
+        let violation = PendingQueueInvariantViolation {
+            operation: operation.to_string(),
+            counter: counter.to_string(),
+            expected_value,
+            actual_value,
+            expected_bytes,
+            actual_bytes,
+            pending_depth,
+            pending_bytes,
+        };
+        let invariant_violation_count = self
+            .invariant_violation_count
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if let Ok(mut last) = self.last_invariant_violation.lock() {
+            *last = Some(violation.clone());
+        }
+        warn!(
+            accounting_invariant = true,
+            operation,
+            counter,
+            expected_value,
+            actual_value,
+            pending_depth,
+            pending_bytes,
+            invariant_violation_count,
+            "sqlite pending queue accounting invariant violated"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FlushReason {
     RowLimit,
@@ -161,6 +396,7 @@ pub(crate) struct PendingBatch {
     estimated_bytes: usize,
     terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
+    retained_for_retry: bool,
 }
 
 impl PendingBatch {
@@ -344,9 +580,18 @@ impl PendingBatch {
         }
     }
 
-    fn push_accounted(&mut self, write: SqliteBatchWrite, pending_bytes: &Arc<AtomicUsize>) {
-        let obsolete_bytes = self.push(write);
-        pending_bytes.fetch_sub(obsolete_bytes, Ordering::Relaxed);
+    fn push_accounted(&mut self, write: SqliteBatchWrite, accounting: &PendingQueueAccounting) {
+        let accounted_depth_before = self.logical_rows().saturating_add(1);
+        let accounted_before = self
+            .estimated_memory_bytes()
+            .saturating_add(write.estimated_memory_bytes());
+        self.push(write);
+        accounting.replace_batch(
+            accounted_depth_before,
+            self.logical_rows(),
+            accounted_before,
+            self.estimated_memory_bytes(),
+        );
     }
 
     fn take(&mut self) -> Self {
@@ -427,6 +672,13 @@ pub(crate) struct RetainedBatch {
     failed: bool,
 }
 
+impl RetainedBatch {
+    fn new(mut batch: PendingBatch, failed: bool) -> Self {
+        batch.retained_for_retry = true;
+        Self { batch, failed }
+    }
+}
+
 fn estimated_option_string_bytes(value: &Option<String>) -> usize {
     value.as_ref().map_or(0, String::capacity)
 }
@@ -492,8 +744,7 @@ impl PendingBatch {
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
-    pending_depth: Arc<AtomicUsize>,
-    pending_bytes: Arc<AtomicUsize>,
+    accounting: Arc<PendingQueueAccounting>,
     dropped_writes: Arc<AtomicU64>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache:
@@ -521,8 +772,7 @@ impl SqliteBatchWriter {
     ) -> Arc<Self> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel(128);
-        let pending_depth = Arc::new(AtomicUsize::new(0));
-        let pending_bytes = Arc::new(AtomicUsize::new(0));
+        let accounting = Arc::new(PendingQueueAccounting::default());
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
@@ -553,8 +803,7 @@ impl SqliteBatchWriter {
             pool,
             write_receiver,
             control_receiver,
-            pending_depth.clone(),
-            pending_bytes.clone(),
+            accounting.clone(),
             Some(cache_for_task),
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
@@ -565,8 +814,7 @@ impl SqliteBatchWriter {
         let writer = Arc::new(Self {
             write_sender,
             control_sender,
-            pending_depth,
-            pending_bytes,
+            accounting,
             dropped_writes,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
@@ -613,8 +861,7 @@ impl SqliteBatchWriter {
         Arc::new(Self {
             write_sender,
             control_sender,
-            pending_depth: Arc::new(AtomicUsize::new(0)),
-            pending_bytes: Arc::new(AtomicUsize::new(0)),
+            accounting: Arc::new(PendingQueueAccounting::default()),
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
@@ -676,9 +923,7 @@ impl SqliteBatchWriter {
             match buffered_writes.lock() {
                 Ok(mut guard) => {
                     guard.push(write);
-                    self.pending_depth.fetch_add(1, Ordering::Relaxed);
-                    self.pending_bytes
-                        .fetch_add(estimated_bytes, Ordering::Relaxed);
+                    self.accounting.enqueue(estimated_bytes);
                     return true;
                 }
                 Err(err) => {
@@ -693,19 +938,15 @@ impl SqliteBatchWriter {
             }
         }
 
-        self.pending_depth.fetch_add(1, Ordering::Relaxed);
-        self.pending_bytes
-            .fetch_add(estimated_bytes, Ordering::Relaxed);
+        self.accounting.enqueue(estimated_bytes);
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(err) => {
-                self.pending_depth.fetch_sub(1, Ordering::Relaxed);
-                self.pending_bytes
-                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
+                self.accounting.rollback_enqueue(estimated_bytes);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     error = %err,
-                    queue_depth = self.pending_depth.load(Ordering::Relaxed),
+                    queue_depth = self.accounting.snapshot().pending_depth,
                     dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
                     "sqlite batch writer queue full; dropped derived write"
                 );
@@ -768,15 +1009,11 @@ impl SqliteBatchWriter {
         durability_mode: TerminalJournalDurabilityMode,
     ) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
-        self.pending_depth.fetch_add(1, Ordering::Relaxed);
-        self.pending_bytes
-            .fetch_add(estimated_bytes, Ordering::Relaxed);
+        self.accounting.enqueue(estimated_bytes);
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(write)) => {
-                self.pending_depth.fetch_sub(1, Ordering::Relaxed);
-                self.pending_bytes
-                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
+                self.accounting.rollback_enqueue(estimated_bytes);
                 let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
                     && self
                         .terminal_journal
@@ -800,9 +1037,7 @@ impl SqliteBatchWriter {
                 deferred
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.pending_depth.fetch_sub(1, Ordering::Relaxed);
-                self.pending_bytes
-                    .fetch_sub(estimated_bytes, Ordering::Relaxed);
+                self.accounting.rollback_enqueue(estimated_bytes);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!("terminal journal-backed retry could not reach closed sqlite batch writer");
                 false
@@ -819,11 +1054,16 @@ impl SqliteBatchWriter {
     }
 
     pub(crate) fn telemetry_snapshot(&self) -> (usize, usize, u64) {
+        let accounting = self.accounting.snapshot();
         (
-            self.pending_depth.load(Ordering::Relaxed),
-            self.pending_bytes.load(Ordering::Relaxed),
+            accounting.pending_depth,
+            accounting.pending_bytes,
             self.dropped_writes.load(Ordering::Relaxed),
         )
+    }
+
+    pub(crate) fn accounting_snapshot(&self) -> PendingQueueAccountingSnapshot {
+        self.accounting.snapshot()
     }
 
     pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
@@ -834,7 +1074,10 @@ impl SqliteBatchWriter {
         }
 
         let (sender, receiver) = oneshot::channel();
-        let queued_depth_snapshot = self.pending_depth.load(Ordering::Relaxed);
+        let queued_depth_snapshot = self
+            .write_sender
+            .max_capacity()
+            .saturating_sub(self.write_sender.capacity());
         if let Err(err) = self
             .control_sender
             .try_send(SqliteBatchWriterControl::FlushNow {
@@ -845,7 +1088,7 @@ impl SqliteBatchWriter {
             self.dropped_writes.fetch_add(1, Ordering::Relaxed);
             warn!(
                 error = %err,
-                queue_depth = self.pending_depth.load(Ordering::Relaxed),
+                queue_depth = self.accounting.snapshot().pending_depth,
                 dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
                 "sqlite batch writer flush barrier could not be queued"
             );
@@ -882,7 +1125,10 @@ impl SqliteBatchWriter {
             return;
         };
         let (sender, receiver) = oneshot::channel();
-        let queued_depth_snapshot = self.pending_depth.load(Ordering::Relaxed);
+        let queued_depth_snapshot = self
+            .write_sender
+            .max_capacity()
+            .saturating_sub(self.write_sender.capacity());
         if let Err(err) = self
             .control_sender
             .send(SqliteBatchWriterControl::Shutdown {
@@ -909,7 +1155,7 @@ impl SqliteBatchWriter {
     #[cfg(test)]
     pub(crate) fn stats_snapshot(&self) -> (usize, u64) {
         (
-            self.pending_depth.load(Ordering::Relaxed),
+            self.accounting.snapshot().pending_depth,
             self.dropped_writes.load(Ordering::Relaxed),
         )
     }
@@ -956,21 +1202,19 @@ impl SqliteBatchWriter {
             .buffered_writes
             .as_ref()
             .and_then(|buffered_writes| {
-                buffered_writes.lock().ok().map(|mut guard| {
-                    let writes = guard.drain(..).collect::<Vec<_>>();
-                    self.pending_depth
-                        .fetch_sub(writes.len(), Ordering::Relaxed);
-                    let bytes = writes
-                        .iter()
-                        .map(SqliteBatchWrite::estimated_memory_bytes)
-                        .sum::<usize>();
-                    self.pending_bytes.fetch_sub(bytes, Ordering::Relaxed);
-                    writes
-                })
+                buffered_writes
+                    .lock()
+                    .ok()
+                    .map(|mut guard| guard.drain(..).collect::<Vec<_>>())
             })
             .unwrap_or_default();
 
         if !writes.is_empty() {
+            let submitted_count = writes.len();
+            let submitted_bytes = writes
+                .iter()
+                .map(SqliteBatchWrite::estimated_memory_bytes)
+                .sum::<usize>();
             let mut batch = PendingBatch::default();
             for write in writes {
                 batch.push(write);
@@ -986,23 +1230,24 @@ impl SqliteBatchWriter {
             )
             .await
             .expect("flush buffered sqlite batch writes for test");
-            if !deferred.is_empty() {
-                let deferred_writes = deferred.into_writes();
-                if let Some(buffered_writes) = &self.buffered_writes {
-                    let retained_count = deferred_writes.len();
-                    let retained_bytes = deferred_writes
-                        .iter()
-                        .map(SqliteBatchWrite::estimated_memory_bytes)
-                        .sum::<usize>();
-                    if let Ok(mut guard) = buffered_writes.lock() {
-                        guard.extend(deferred_writes);
-                        self.pending_depth
-                            .fetch_add(retained_count, Ordering::Relaxed);
-                        self.pending_bytes
-                            .fetch_add(retained_bytes, Ordering::Relaxed);
-                    }
-                }
-            }
+            let deferred_writes = deferred.into_writes();
+            let retained_count = deferred_writes.len();
+            let retained_bytes = deferred_writes
+                .iter()
+                .map(SqliteBatchWrite::estimated_memory_bytes)
+                .sum::<usize>();
+            self.accounting.transfer_p1_to_p2(retained_bytes);
+            let retained = self
+                .buffered_writes
+                .as_ref()
+                .and_then(|buffered_writes| buffered_writes.lock().ok())
+                .map(|mut guard| {
+                    guard.extend(deferred_writes);
+                    (retained_count, retained_bytes)
+                })
+                .unwrap_or_default();
+            self.accounting
+                .complete(submitted_count, retained.0, submitted_bytes, retained.1);
         }
     }
 }
@@ -1012,8 +1257,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
-    pending_depth: Arc<AtomicUsize>,
-    pending_bytes: Arc<AtomicUsize>,
+    accounting: Arc<PendingQueueAccounting>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache: Arc<
@@ -1043,18 +1287,17 @@ pub(crate) async fn run_sqlite_batch_writer(
                         drain_queued_batch_writes(
                             &mut write_receiver,
                             &mut pending,
-                            &pending_depth,
-                            &pending_bytes,
+                            &accounting,
                             queued_depth_snapshot,
                         );
                         drain_terminal_journal_deferred_writes(
                             &terminal_journal,
                             &mut pending,
-                            &pending_bytes,
+                            &accounting,
                             usize::MAX,
                         );
                         let result = match flush_pending_batch_accounted(
-                            &pending_bytes,
+                            &accounting,
                             &pool,
                             pending.take(),
                             FlushReason::Barrier,
@@ -1083,28 +1326,25 @@ pub(crate) async fn run_sqlite_batch_writer(
                         };
                         let _ = responder.send(result);
                     }
-                    SqliteBatchWriterControl::Shutdown {
-                        queued_depth_snapshot,
-                        responder,
-                    } => {
+                    SqliteBatchWriterControl::Shutdown { responder, .. } => {
+                        write_receiver.close();
                         drain_queued_batch_writes(
                             &mut write_receiver,
                             &mut pending,
-                            &pending_depth,
-                            &pending_bytes,
-                            queued_depth_snapshot,
+                            &accounting,
+                            usize::MAX,
                         );
                         drain_terminal_journal_deferred_writes(
                             &terminal_journal,
                             &mut pending,
-                            &pending_bytes,
+                            &accounting,
                             usize::MAX,
                         );
                         let result = if pending.is_empty() {
                             Ok(())
                         } else {
                             match flush_pending_batch_accounted(
-                                &pending_bytes,
+                                &accounting,
                                 &pool,
                                 pending.take(),
                                 FlushReason::Shutdown,
@@ -1119,6 +1359,12 @@ pub(crate) async fn run_sqlite_batch_writer(
                             {
                                 Some(retained) => {
                                     let logical_rows = retained.batch.logical_rows();
+                                    accounting.complete(
+                                        retained.batch.logical_rows(),
+                                        0,
+                                        retained.batch.estimated_memory_bytes(),
+                                        0,
+                                    );
                                     if retained.failed {
                                         Err(format!(
                                             "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
@@ -1147,7 +1393,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 drain_terminal_journal_deferred_writes(
                     &terminal_journal,
                     &mut pending,
-                    &pending_bytes,
+                    &accounting,
                     deferred_capacity,
                 );
             }
@@ -1156,12 +1402,12 @@ pub(crate) async fn run_sqlite_batch_writer(
                     drain_terminal_journal_deferred_writes(
                         &terminal_journal,
                         &mut pending,
-                        &pending_bytes,
+                        &accounting,
                         usize::MAX,
                     );
-                    if !pending.is_empty() {
-                        let _ = flush_pending_batch_accounted(
-                            &pending_bytes,
+                    if !pending.is_empty()
+                        && let Some(retained) = flush_pending_batch_accounted(
+                            &accounting,
                             &pool,
                             pending.take(),
                             FlushReason::Shutdown,
@@ -1172,16 +1418,28 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &dashboard_reconcile_gate,
                             &terminal_journal,
                         )
-                        .await;
+                        .await
+                    {
+                        accounting.complete(
+                            retained.batch.logical_rows(),
+                            0,
+                            retained.batch.estimated_memory_bytes(),
+                            0,
+                        );
+                        warn!(
+                            retained_rows = retained.batch.logical_rows(),
+                            retained_bytes = retained.batch.estimated_memory_bytes(),
+                            failed = retained.failed,
+                            "sqlite batch writer released retained memory accounting after receiver shutdown"
+                        );
                     }
                     return;
                 };
-                pending_depth.fetch_sub(1, Ordering::Relaxed);
-                pending.push_accounted(write, &pending_bytes);
+                pending.push_accounted(write, &accounting);
                 if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
                     && let Some(retained) =
                         flush_pending_batch_accounted(
-                            &pending_bytes,
+                            &accounting,
                             &pool,
                             pending.take(),
                             FlushReason::RowLimit,
@@ -1225,7 +1483,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                     };
                     if let Some(retained) =
                         flush_pending_batch_accounted(
-                            &pending_bytes,
+                            &accounting,
                             &pool,
                             pending.take(),
                             flush_reason,
@@ -1286,7 +1544,7 @@ async fn run_terminal_journal_sync(
 fn drain_terminal_journal_deferred_writes(
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     pending: &mut PendingBatch,
-    pending_bytes: &Arc<AtomicUsize>,
+    accounting: &PendingQueueAccounting,
     max_writes: usize,
 ) {
     if max_writes == 0 {
@@ -1297,8 +1555,9 @@ fn drain_terminal_journal_deferred_writes(
     {
         for terminal in journal.take_deferred_writes(max_writes) {
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
-            pending_bytes.fetch_add(write.estimated_memory_bytes(), Ordering::Relaxed);
-            pending.push_accounted(write, pending_bytes);
+            accounting.enqueue(write.estimated_memory_bytes());
+            accounting.retry_deferred();
+            pending.push_accounted(write, accounting);
         }
     }
 }
@@ -1306,15 +1565,13 @@ fn drain_terminal_journal_deferred_writes(
 pub(crate) fn drain_queued_batch_writes(
     write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
     pending: &mut PendingBatch,
-    pending_depth: &Arc<AtomicUsize>,
-    pending_bytes: &Arc<AtomicUsize>,
+    accounting: &PendingQueueAccounting,
     max_messages: usize,
 ) {
     for _ in 0..max_messages {
         match write_receiver.try_recv() {
             Ok(write) => {
-                pending_depth.fetch_sub(1, Ordering::Relaxed);
-                pending.push_accounted(write, pending_bytes);
+                pending.push_accounted(write, accounting);
             }
             Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
                 break;
@@ -1328,7 +1585,7 @@ pub(crate) fn drain_queued_batch_writes(
     reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
 )]
 async fn flush_pending_batch_accounted(
-    pending_bytes: &Arc<AtomicUsize>,
+    accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     batch: PendingBatch,
     reason: FlushReason,
@@ -1341,8 +1598,13 @@ async fn flush_pending_batch_accounted(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
+    if batch.retained_for_retry {
+        accounting.retry_deferred();
+    }
+    let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
     let result = flush_pending_batch(
+        accounting,
         pool,
         batch,
         reason,
@@ -1358,9 +1620,15 @@ async fn flush_pending_batch_accounted(
         .as_ref()
         .map(|retained| retained.batch.estimated_memory_bytes())
         .unwrap_or_default();
-    pending_bytes.fetch_sub(
-        submitted_bytes.saturating_sub(retained_bytes),
-        Ordering::Relaxed,
+    let retained_depth = result
+        .as_ref()
+        .map(|retained| retained.batch.logical_rows())
+        .unwrap_or_default();
+    accounting.complete(
+        submitted_depth,
+        retained_depth,
+        submitted_bytes,
+        retained_bytes,
     );
     result
 }
@@ -1370,6 +1638,7 @@ async fn flush_pending_batch_accounted(
     reason = "Flush dependencies mirror the single-writer ownership boundaries."
 )]
 pub(crate) async fn flush_pending_batch(
+    accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     mut batch: PendingBatch,
     reason: FlushReason,
@@ -1411,6 +1680,7 @@ pub(crate) async fn flush_pending_batch(
         .await
         {
             Ok(deferred) => {
+                accounting.transfer_p1_to_p2(deferred.estimated_memory_bytes());
                 if let Ok(mut journal) = terminal_journal.lock()
                     && let Some(journal) = journal.as_mut()
                 {
@@ -1437,10 +1707,8 @@ pub(crate) async fn flush_pending_batch(
                     "sqlite batch writer P1 terminal flush failed"
                 );
                 batch.terminal_invocations = p1_batch.terminal_invocations;
-                return Some(RetainedBatch {
-                    batch,
-                    failed: true,
-                });
+                batch.recalculate_estimates();
+                return Some(RetainedBatch::new(batch, true));
             }
         }
     }
@@ -1462,10 +1730,7 @@ pub(crate) async fn flush_pending_batch(
                     p2_deferred_count = batch.logical_rows(),
                     "sqlite batch writer deferred P2 flush because pressure gate is closed"
                 );
-                return Some(RetainedBatch {
-                    batch,
-                    failed: false,
-                });
+                return Some(RetainedBatch::new(batch, false));
             }
         }
     };
@@ -1494,10 +1759,7 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            return Some(RetainedBatch {
-                batch,
-                failed: true,
-            });
+            return Some(RetainedBatch::new(batch, true));
         }
     };
     drop(permit);
@@ -1537,10 +1799,7 @@ pub(crate) async fn flush_pending_batch(
     if deferred_batch.is_empty() {
         None
     } else {
-        Some(RetainedBatch {
-            batch: deferred_batch,
-            failed: false,
-        })
+        Some(RetainedBatch::new(deferred_batch, false))
     }
 }
 
@@ -1859,6 +2118,64 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_queue_accounting_clamps_underflow_and_degrades_health() {
+        let accounting = PendingQueueAccounting::default();
+
+        accounting.complete(0, 0, 64, 0);
+
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, 0);
+        assert_eq!(snapshot.pending_bytes, 0);
+        assert_eq!(snapshot.state, "degraded");
+        assert_eq!(snapshot.invariant_violation_count, 1);
+        let violation = snapshot
+            .last_invariant_violation
+            .expect("underflow should retain actionable telemetry");
+        assert_eq!(violation.operation, "completion");
+        assert_eq!(violation.expected_bytes, 64);
+        assert_eq!(violation.actual_bytes, 0);
+    }
+
+    #[test]
+    fn pending_queue_accounting_preserves_retry_transfer_and_retained_bytes() {
+        let accounting = PendingQueueAccounting::default();
+
+        accounting.enqueue(120);
+        accounting.retry_deferred();
+        accounting.replace_batch(1, 1, 120, 96);
+        accounting.transfer_p1_to_p2(40);
+        accounting.complete(1, 1, 96, 40);
+
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, 1);
+        assert_eq!(snapshot.pending_bytes, 40);
+        assert_eq!(snapshot.transfer_bytes, 40);
+        assert_eq!(snapshot.retry_count, 1);
+        assert_eq!(snapshot.state, "healthy");
+        assert!(snapshot.last_invariant_violation.is_none());
+
+        accounting.complete(1, 0, 40, 0);
+        let completed = accounting.snapshot();
+        assert_eq!(completed.pending_depth, 0);
+        assert_eq!(completed.pending_bytes, 0);
+        assert_eq!(completed.state, "healthy");
+    }
+
+    #[test]
+    fn pending_queue_accounting_rolls_back_failed_sender_admission() {
+        let accounting = PendingQueueAccounting::default();
+
+        accounting.enqueue(72);
+        accounting.rollback_enqueue(72);
+
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, 0);
+        assert_eq!(snapshot.pending_bytes, 0);
+        assert_eq!(snapshot.state, "healthy");
+        assert_eq!(snapshot.invariant_violation_count, 0);
+    }
     use axum::http::StatusCode;
     use sqlx::SqlitePool;
 
@@ -1941,17 +2258,17 @@ mod tests {
     #[test]
     fn terminal_batch_coalescing_preserves_the_persistence_ack_sequence() {
         let mut batch = PendingBatch::default();
-        let pending_bytes = Arc::new(AtomicUsize::new(0));
+        let accounting = PendingQueueAccounting::default();
         let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
-        first.terminal_projection_event_ids.push(11);
+        first.terminal_projection_event_ids.extend(0..64);
         let first = SqliteBatchWrite::TerminalInvocation(first);
-        pending_bytes.fetch_add(first.estimated_memory_bytes(), Ordering::Relaxed);
-        batch.push_accounted(first, &pending_bytes);
+        accounting.enqueue(first.estimated_memory_bytes());
+        batch.push_accounted(first, &accounting);
         let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
-        second.terminal_projection_event_ids.push(12);
+        second.terminal_projection_event_ids.extend(64..128);
         let second = SqliteBatchWrite::TerminalInvocation(second);
-        pending_bytes.fetch_add(second.estimated_memory_bytes(), Ordering::Relaxed);
-        batch.push_accounted(second, &pending_bytes);
+        accounting.enqueue(second.estimated_memory_bytes());
+        batch.push_accounted(second, &accounting);
 
         let terminal = batch
             .terminal_invocations
@@ -1959,16 +2276,76 @@ mod tests {
             .next()
             .expect("coalesced terminal");
         assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
-        assert_eq!(terminal.terminal_projection_event_ids, vec![11, 12]);
+        assert_eq!(
+            terminal.terminal_projection_event_ids,
+            (0..128).collect::<Vec<_>>()
+        );
         assert_eq!(batch.coalesced_rows, 1);
         assert_eq!(
             batch.estimated_memory_bytes(),
             terminal.estimated_memory_bytes()
         );
         assert_eq!(
-            pending_bytes.load(Ordering::Relaxed),
+            accounting.snapshot().pending_bytes,
             batch.estimated_memory_bytes()
         );
+        assert_eq!(accounting.snapshot().pending_depth, batch.logical_rows());
+    }
+
+    #[tokio::test]
+    async fn failed_p1_flush_retains_the_full_accounted_batch() {
+        let pool = test_pool().await;
+        pool.close().await;
+
+        let accounting = PendingQueueAccounting::default();
+        let write = SqliteBatchWrite::TerminalInvocation(terminal_write_for_coalescing(
+            "failed-p1-accounting",
+            Some(9),
+        ));
+        accounting.enqueue(write.estimated_memory_bytes());
+        let mut batch = PendingBatch::default();
+        batch.push_accounted(write, &accounting);
+        let submitted_bytes = batch.estimated_memory_bytes();
+
+        let retained = flush_pending_batch_accounted(
+            &accounting,
+            &pool,
+            batch,
+            FlushReason::Barrier,
+            None,
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(std::sync::Mutex::new(None)),
+        )
+        .await
+        .expect("failed P1 flush should retain its batch");
+
+        assert!(retained.failed);
+        assert_eq!(retained.batch.estimated_memory_bytes(), submitted_bytes);
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, retained.batch.logical_rows());
+        assert_eq!(snapshot.pending_bytes, submitted_bytes);
+        assert_eq!(snapshot.retry_count, 0);
+        assert_eq!(snapshot.state, "healthy");
+
+        let retried = flush_pending_batch_accounted(
+            &accounting,
+            &pool,
+            retained.batch,
+            FlushReason::Interval,
+            None,
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(std::sync::Mutex::new(None)),
+        )
+        .await
+        .expect("failed retained batch should remain available after retry");
+        assert!(retried.failed);
+        assert_eq!(accounting.snapshot().retry_count, 1);
     }
 
     #[tokio::test]
@@ -2165,6 +2542,10 @@ mod tests {
         assert_eq!(row.1, Some(21.0));
         assert_eq!(row.2, Some(34.0));
         assert_eq!(writer.stats_snapshot(), (0, 0));
+        let accounting = writer.accounting_snapshot();
+        assert_eq!(accounting.pending_depth, 0);
+        assert_eq!(accounting.pending_bytes, 0);
+        assert_eq!(accounting.state, "healthy");
     }
 
     #[tokio::test]
@@ -2491,6 +2872,11 @@ mod tests {
             .flush_now(&pool)
             .await
             .expect("P1 terminal flush should not fail because P2 derived work was deferred");
+        let retained = writer.accounting_snapshot();
+        assert_eq!(retained.state, "healthy");
+        assert!(retained.pending_bytes > 0);
+        assert!(retained.pending_depth > 0);
+        assert!(retained.transfer_bytes > 0);
 
         let persisted_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-terminal-flush-now-deferred-derived' AND status = 'success'",
@@ -2529,6 +2915,10 @@ mod tests {
             runtime_store.snapshot().is_empty(),
             "terminal overlay should be removed after derived writes flush"
         );
+        let completed = writer.accounting_snapshot();
+        assert_eq!(completed.pending_depth, 0);
+        assert_eq!(completed.pending_bytes, 0);
+        assert_eq!(completed.state, "healthy");
 
         writer.shutdown_and_drain().await;
     }
@@ -2554,10 +2944,15 @@ mod tests {
         let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
         let mut pending = PendingBatch::default();
 
-        let pending_bytes = Arc::new(AtomicUsize::new(0));
-        drain_terminal_journal_deferred_writes(&journal, &mut pending, &pending_bytes, usize::MAX);
+        let accounting = PendingQueueAccounting::default();
+        drain_terminal_journal_deferred_writes(&journal, &mut pending, &accounting, usize::MAX);
 
         assert_eq!(pending.terminal_invocations.len(), 1);
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.pending_depth, 1);
+        assert_eq!(snapshot.pending_bytes, pending.estimated_memory_bytes());
+        assert_eq!(snapshot.retry_count, 1);
+        assert_eq!(snapshot.state, "healthy");
         assert!(
             journal
                 .lock()
