@@ -48,3 +48,9 @@ Immutable SSE delivery frames are implemented through `SerializedTopicFrame` for
 - Focused tests cover shared Arc identity, owner-count scaling, unchanged cursor suppression, replay compatibility and producer shutdown/reconnect behavior.
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
+
+Runtime pressure diagnostics are implemented for issue #738:
+
+- `GET /api/system/status` exposes additive `runtimePressureHealth` assembled from existing in-memory projection, request-pipeline, process-memory and writer-accounting counters without adding status-page SQL.
+- The System Status workspace treats a missing field as unknown and presents healthy, deferred, degraded and accounting-error summaries with expandable, non-sensitive details.
+- Storybook and the mock-only Web Demo provide deterministic states for contract, responsive and visual regression coverage.

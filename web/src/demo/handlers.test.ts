@@ -13,6 +13,24 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it.each([
+    ["runtime-pressure-healthy", "healthy"],
+    ["runtime-pressure-deferred", "deferred"],
+    ["runtime-pressure-degraded", "degraded"],
+    ["runtime-pressure-accounting-error", "accounting_error"],
+  ] as const)("serves the %s System Status scene", async (scene, expectedState) => {
+    demoModel.setScene(scene);
+    const response = await fetch("http://demo.invalid/api/system/status");
+    const payload = (await response.json()) as {
+      runtimePressureHealth: {
+        state: string;
+        dashboardProjection: { livePathDbReadCount: number };
+      };
+    };
+    expect(payload.runtimePressureHealth.state).toBe(expectedState);
+    expect(payload.runtimePressureHealth.dashboardProjection.livePathDbReadCount).toBe(0);
+  });
+
   it("serves deterministic dashboard activity in the shape used by the production normalizer", async () => {
     const response = await fetch("http://demo.invalid/api/stats/dashboard-activity?range=today");
     const payload = (await response.json()) as {

@@ -37,6 +37,13 @@ describe("demo runtime selection", () => {
     expect(sceneFromLocation(location)).toBe("progressive-loading");
   });
 
+  it("accepts runtime pressure evidence scenes", () => {
+    const location = new URL(
+      "https://demo.invalid/#/system/status?demoScene=runtime-pressure-accounting-error",
+    ) as unknown as Location;
+    expect(sceneFromLocation(location)).toBe("runtime-pressure-accounting-error");
+  });
+
   it("parses the mobile viewport wrapper state from hash query params", () => {
     const outerLocation = new URL(
       "https://demo.invalid/#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=mobile390",

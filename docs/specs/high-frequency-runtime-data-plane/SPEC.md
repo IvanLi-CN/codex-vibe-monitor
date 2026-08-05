@@ -91,4 +91,12 @@
 
 ## Visual Evidence
 
-System Status 的 healthy、deferred、degraded 与 accounting-error 状态必须由 mock-only `ui_demo` 在桌面和移动浏览器视口生成证据。截图在 owner 明确批准前不得提交或推送。
+以下证据由 mock-only `ui_demo` 在真实浏览器视口生成，不依赖生产数据或登录状态。
+
+PR: include
+
+![System Status runtime pressure degraded state on desktop](assets/runtime-pressure-desktop.png)
+
+PR: include
+
+![System Status runtime pressure accounting error state on mobile](assets/runtime-pressure-mobile.png)
