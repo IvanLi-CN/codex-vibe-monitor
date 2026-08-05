@@ -811,6 +811,34 @@ describe("InvocationTable", () => {
     expect(highlightedCard?.className).toContain("border-primary/55");
   });
 
+  it("auto-expands a located card and clears its highlight after interaction", async () => {
+    vi.useFakeTimers();
+    const record = createInvocationRecord(0);
+    await renderInteractiveTable([record], {
+      scrollTarget: { invokeId: record.invokeId, attemptId: "attempt-target", version: 1 },
+    });
+
+    const card = document.querySelector('[data-testid="invocation-card"]');
+    expect(card?.getAttribute("data-expanded")).toBe("true");
+    expect(card?.querySelector("[data-invocation-detail]")).toBeTruthy();
+    expect(card?.getAttribute("aria-current")).toBe("true");
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(card?.getAttribute("aria-current")).toBe("true");
+
+    await act(async () => {
+      card?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      vi.advanceTimersByTime(1_499);
+    });
+    expect(card?.getAttribute("aria-current")).toBe("true");
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(card?.getAttribute("aria-current")).toBeNull();
+  });
+
   it("renders the WS transport badge for websocket records", () => {
     const websocketHtml = renderTable([
       {

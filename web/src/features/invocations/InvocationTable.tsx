@@ -214,6 +214,18 @@ export function InvocationCardList({
   const highlightTimeoutRef = useRef<number | null>(null);
   const focusFrameRefs = useRef<number[]>([]);
 
+  const scheduleHighlightClear = useCallback(() => {
+    if (!highlightedInvokeId || typeof window === "undefined") return;
+    if (highlightTimeoutRef.current != null) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    const invokeId = highlightedInvokeId;
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedInvokeId((current) => (current === invokeId ? null : current));
+      highlightTimeoutRef.current = null;
+    }, 1_500);
+  }, [highlightedInvokeId]);
+
   const toggleLabels = useMemo(() => {
     if (locale === "zh") {
       return {
@@ -520,6 +532,7 @@ export function InvocationCardList({
 
     handledScrollTargetVersionRef.current = scrollTarget.version;
     rowVirtualizer.scrollToIndex(targetIndex, { align: "center" });
+    setExpandedId(rows[targetIndex]?.rowKey ?? null);
     setHighlightedInvokeId(scrollTarget.invokeId);
 
     focusFrameRefs.current.forEach((frame) => {
@@ -533,13 +546,6 @@ export function InvocationCardList({
       focusFrameRefs.current.push(secondFrame);
     });
     focusFrameRefs.current.push(firstFrame);
-    if (highlightTimeoutRef.current != null) {
-      window.clearTimeout(highlightTimeoutRef.current);
-    }
-    highlightTimeoutRef.current = window.setTimeout(() => {
-      setHighlightedInvokeId((current) => (current === scrollTarget.invokeId ? null : current));
-      highlightTimeoutRef.current = null;
-    }, 2_000);
   }, [rowVirtualizer, rows, scrollTarget]);
 
   useEffect(
@@ -623,6 +629,7 @@ export function InvocationCardList({
     const isInsideInvocationDetail = (target: EventTarget | null) =>
       target instanceof Element && target.closest("[data-invocation-detail]") != null;
     const handleCardClick = (event: MouseEvent<HTMLElement>) => {
+      if (event.target instanceof Node && !event.currentTarget.contains(event.target)) return;
       if (isInsideInvocationDetail(event.target)) return;
       handleToggle();
     };
@@ -645,11 +652,16 @@ export function InvocationCardList({
         : row.livePhase
           ? formatElapsed(row.record.occurredAt, FALLBACK_CELL)
           : FALLBACK_CELL;
+    const cacheReadTokens = Math.max(0, row.record.cacheInputTokens ?? 0);
+    const cacheWriteTokens = Math.max(
+      0,
+      row.record.cacheWriteTokens ?? Math.max(0, (row.record.inputTokens ?? 0) - cacheReadTokens),
+    );
+    const outputTokens = Math.max(0, row.record.outputTokens ?? 0);
+    const cacheHitDenominator = cacheWriteTokens + cacheReadTokens + outputTokens;
     const cacheHitRate =
-      row.record.inputTokens != null &&
-      row.record.inputTokens > 0 &&
-      row.record.cacheInputTokens != null
-        ? `${Math.round((row.record.cacheInputTokens / row.record.inputTokens) * 100)}%`
+      cacheHitDenominator > 0
+        ? `${Math.round((cacheReadTokens / cacheHitDenominator) * 100)}%`
         : FALLBACK_CELL;
 
     return (
@@ -682,6 +694,7 @@ export function InvocationCardList({
       >
         <button
           type="button"
+          tabIndex={-1}
           className="sr-only"
           aria-expanded={isExpanded}
           aria-controls={cardDetailId}
@@ -873,7 +886,13 @@ export function InvocationCardList({
   };
 
   return (
-    <div className="space-y-3" ref={setContainerElement} data-testid="invocation-table-scroll">
+    <div
+      className="space-y-3"
+      ref={setContainerElement}
+      data-testid="invocation-table-scroll"
+      onPointerDownCapture={scheduleHighlightClear}
+      onKeyDownCapture={scheduleHighlightClear}
+    >
       <div className="space-y-3" data-testid="invocation-card-list" data-invocation-card-list>
         {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
         {fallbackVirtualRows.map((virtualRow) => {

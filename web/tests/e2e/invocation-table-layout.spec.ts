@@ -29,12 +29,14 @@ const INVOCATION_FIXTURE = {
       upstreamAccountId: 7,
       upstreamAccountName: "Pool Alpha",
       proxyDisplayName: "sg-relay-edge-01",
+      requestCompressionAlgorithm: "gzip",
       responseContentEncoding: "gzip, br",
       endpoint: "/v1/responses/compact",
       model: "gpt-5.3-codex",
       status: "success",
       requestedServiceTier: "priority",
       serviceTier: "priority",
+      billingServiceTier: "priority",
       inputTokens: 113273,
       outputTokens: 176,
       cacheInputTokens: 109568,
@@ -106,6 +108,7 @@ const INVOCATION_FIXTURE = {
       status: "success",
       requestedServiceTier: "auto",
       serviceTier: "priority",
+      billingServiceTier: "priority",
       inputTokens: 72112,
       outputTokens: 154,
       cacheInputTokens: 71000,
@@ -226,13 +229,21 @@ interface TableMetrics {
 
 async function mockInvocations(page: Page) {
   await page.route(isBackendEventsRequest, async (route) => {
+    const topicEnvelope = {
+      type: "snapshot",
+      topic: { topic: "invocations.window", params: { limit: "50" } },
+      topicKey: "invocations.window?limit=50",
+      schemaEpoch: "e2e",
+      cursor: 1,
+      payload: INVOCATION_FIXTURE,
+    };
     await route.fulfill({
-      status: 204,
+      status: 200,
       headers: {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
       },
-      body: "",
+      body: `data: ${JSON.stringify(topicEnvelope)}\n\n`,
     });
   });
 
@@ -254,6 +265,66 @@ async function mockInvocations(page: Page) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(POOL_ATTEMPTS_FIXTURE),
+      });
+      return;
+    }
+
+    if (pathname === "/api/invocations/9001/workflow-detail") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          hero: {
+            recordId: 9001,
+            invokeId: "inv_layout_9001",
+            promptCacheKey: "e2e-prompt-cache-key",
+            routeMode: "pool",
+            endpoint: "/v1/responses/compact",
+            requestModel: "gpt-5.3-codex",
+            responseModel: "gpt-5.3-codex",
+            finalStatus: "success",
+            downstreamStatusCode: 200,
+            upstreamAccountId: 7,
+            upstreamAccountName: "Pool Alpha",
+            totalDurationMs: 7969.3,
+            timelineAttemptCount: 1,
+            poolAttemptCount: 1,
+            totalTokens: 113449,
+            cost: 0.0281,
+            occurredAt: "2026-02-26T02:35:52Z",
+          },
+          timeline: [
+            {
+              blockId: "attempt-1",
+              kind: "attempt",
+              occurredAt: "2026-02-26T02:35:52Z",
+              title: "Attempt 1",
+              status: "success",
+              attempt: {
+                synthetic: false,
+                attemptId: "e2e-attempt-1",
+                occurredAt: "2026-02-26T02:35:52Z",
+                endpoint: "/v1/responses/compact",
+                upstreamAccountId: 7,
+                upstreamAccountName: "Pool Alpha",
+                attemptIndex: 1,
+                distinctAccountIndex: 1,
+                sameAccountRetryIndex: 1,
+                startedAt: "2026-02-26T02:35:52Z",
+                finishedAt: "2026-02-26T02:35:53Z",
+                status: "success",
+                phase: "completed",
+                httpStatus: 200,
+                connectLatencyMs: 42.3,
+                firstByteLatencyMs: 15.2,
+                streamLatencyMs: 188.4,
+                upstreamRequestId: "req_layout_pool_9001",
+              },
+            },
+          ],
+          reconstructed: false,
+          partial: false,
+        }),
       });
       return;
     }
@@ -429,6 +500,15 @@ async function mockInvocations(page: Page) {
       return;
     }
 
+    if (pathname === "/api/settings") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      });
+      return;
+    }
+
     throw new Error(`Unexpected API request in invocation-table-layout spec: ${pathname}`);
   });
 }
@@ -436,31 +516,32 @@ async function mockInvocations(page: Page) {
 async function readTableMetrics(page: Page): Promise<TableMetrics> {
   const tableScroll = page.getByTestId("invocation-table-scroll");
   await expect(tableScroll).toBeVisible();
-  const firstRow = tableScroll.locator("tbody tr").first();
-  await expect(firstRow).toBeVisible();
+  const firstCard = tableScroll.getByTestId("invocation-card").first();
+  await expect(firstCard).toBeVisible();
 
   return tableScroll.evaluate((node) => {
     const container = node as HTMLElement;
-    const dataRows = Array.from(container.querySelectorAll("tbody tr")).filter((row) =>
-      row.querySelector("button[aria-expanded]"),
+    const dataRows = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-testid="invocation-card"]'),
     );
-    const firstDataRow = dataRows[0] as HTMLElement | undefined;
-    const secondDataRow = dataRows[1] as HTMLElement | undefined;
-    const firstToggle = firstDataRow?.querySelector("button") as HTMLElement | null;
-    const firstDataCells = firstDataRow ? Array.from(firstDataRow.querySelectorAll("td")) : [];
-    const lastDataCell =
-      firstDataCells.length > 0 ? (firstDataCells[firstDataCells.length - 1] as HTMLElement) : null;
+    const firstDataRow = dataRows[0];
+    const secondDataRow = dataRows[1];
+    const firstToggle = firstDataRow?.querySelector(
+      'button[aria-expanded]:not([data-testid="invocation-card-toggle"])',
+    ) as HTMLElement | null;
+    const firstDataCell = firstDataRow;
     const secondProxyBadge = secondDataRow?.querySelector(
       '[data-testid="invocation-proxy-badge"]',
     ) as HTMLElement | null;
     const secondProxyName = secondDataRow?.querySelector(
       '[data-testid="invocation-proxy-name"]',
     ) as HTMLElement | null;
-    const secondDataCells = secondDataRow ? Array.from(secondDataRow.querySelectorAll("td")) : [];
-    const secondModelCell = secondDataCells.length > 3 ? (secondDataCells[3] as HTMLElement) : null;
+    const secondModelCell = secondDataRow?.querySelector(
+      '[data-testid="invocation-table-model"]',
+    ) as HTMLElement | null;
     const containerRect = container.getBoundingClientRect();
     const toggleRect = firstToggle?.getBoundingClientRect();
-    const lastDataCellRect = lastDataCell?.getBoundingClientRect();
+    const firstDataCellRect = firstDataCell?.getBoundingClientRect();
     const secondProxyBadgeRect = secondProxyBadge?.getBoundingClientRect();
     const secondModelCellRect = secondModelCell?.getBoundingClientRect();
 
@@ -471,8 +552,8 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
       firstToggleHiddenRightPx: toggleRect
         ? Math.max(0, toggleRect.right - containerRect.right)
         : Number.POSITIVE_INFINITY,
-      firstRowTrailingGapPx: lastDataCellRect
-        ? Math.max(0, containerRect.right - lastDataCellRect.right)
+      firstRowTrailingGapPx: firstDataCellRect
+        ? Math.max(0, containerRect.right - firstDataCellRect.right)
         : Number.POSITIVE_INFINITY,
       secondRowProxyNameOverflowPx: secondProxyName
         ? secondProxyName.scrollWidth - secondProxyName.clientWidth
@@ -505,14 +586,14 @@ test.describe("InvocationTable layout regression", () => {
         await expect(page).toHaveURL(new RegExp(`${target.hashPath}$`));
 
         if (viewport.width < 768) {
-          const mobileList = page.getByTestId("invocation-list");
+          const mobileList = page.getByTestId("invocation-card-list");
           await expect(mobileList).toBeVisible();
-          await expect(page.getByTestId("invocation-list-item")).toHaveCount(
+          await expect(page.getByTestId("invocation-card")).toHaveCount(
             INVOCATION_FIXTURE.records.length,
           );
-          await expect(page.getByTestId("invocation-table-scroll")).toBeHidden();
+          await expect(page.getByTestId("invocation-table-scroll")).toBeVisible();
 
-          const items = page.getByTestId("invocation-list-item");
+          const items = page.getByTestId("invocation-card");
           await expect(
             mobileList.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]'),
           ).toHaveCount(2);
@@ -566,26 +647,23 @@ test.describe("InvocationTable layout regression", () => {
           await expect(items.nth(0).getByTestId("invocation-account-name")).toContainText(
             "Pool Alpha",
           );
-          await expect(items.nth(0)).toContainText("HTTP gzip, br");
+          await expect(items.nth(0)).toContainText("gzip");
           await expect(items.nth(1).getByTestId("invocation-account-name")).toContainText(
             /反向代理|Reverse proxy/,
           );
 
-          const listToggle = mobileList.locator("button[aria-expanded]").first();
+          const listToggle = mobileList
+            .locator('button[aria-expanded]:not([data-testid="invocation-card-toggle"])')
+            .first();
           await expect(listToggle).toBeVisible();
           await listToggle.click();
           await expect(listToggle).toHaveAttribute("aria-expanded", "true");
           const listDetailId = await listToggle.getAttribute("aria-controls");
           if (!listDetailId) throw new Error("Missing mobile invocation detail panel id");
           const listDetailPanel = page.locator(`#${listDetailId}`);
-          await expect(
-            listDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/),
-          ).toBeVisible();
-          await expect(listDetailPanel.getByText(/Requested service tier/i)).toBeVisible();
-          await expect(listDetailPanel.getByText(/^Service tier$/i)).toBeVisible();
-          await expect(listDetailPanel.getByText("/v1/responses/compact")).toBeVisible();
-          await expect(listDetailPanel.getByText("priority")).toHaveCount(2);
-          await expect(listDetailPanel.getByText("0.55")).toBeVisible();
+          await expect(listDetailPanel.getByText(/调用详情|Invocation Detail/)).toBeVisible();
+          await expect(listDetailPanel.getByText(/工作流时间线|Workflow Timeline/)).toBeVisible();
+          await expect(listDetailPanel.getByText(/调用 ID|Call ID/)).toBeVisible();
 
           const viewportOverflow = await readViewportOverflow(page);
           test.info().annotations.push({
@@ -594,9 +672,8 @@ test.describe("InvocationTable layout regression", () => {
           });
           expect(viewportOverflow).toBeLessThanOrEqual(1);
         } else {
-          await expect(page.getByTestId("invocation-list")).toBeHidden();
           const tableScroll = page.getByTestId("invocation-table-scroll");
-          const tableRows = tableScroll.locator("tbody tr");
+          const tableRows = tableScroll.getByTestId("invocation-card");
           await expect(
             tableScroll.locator(
               '[data-testid="invocation-fast-icon"][data-fast-state="effective"]',
@@ -609,27 +686,25 @@ test.describe("InvocationTable layout regression", () => {
           ).toHaveCount(2);
           await expect(
             tableScroll.locator('[data-testid="invocation-endpoint-badge"]:visible'),
-          ).toHaveCount(viewport.width >= 1280 ? 4 : 0);
+          ).toHaveCount(4);
           await expect(tableRows.nth(0).getByTestId("invocation-account-name")).toContainText(
             "Pool Alpha",
           );
           await expect(tableRows.nth(1).getByTestId("invocation-account-name")).toContainText(
             /反向代理|Reverse proxy/,
           );
-          if (viewport.width >= 1280) {
-            const compactEndpointBadge = tableRows
-              .nth(0)
-              .locator('[data-testid="invocation-endpoint-badge"]:visible');
-            await expect(compactEndpointBadge).toHaveCount(1);
-            await expect(compactEndpointBadge).toHaveAttribute("data-endpoint-kind", "compact");
-            await expect(compactEndpointBadge).toContainText(/远程压缩|Compact/);
-            const rawEndpointPath = tableRows
-              .nth(1)
-              .locator('[data-testid="invocation-endpoint-path"]:visible');
-            await expect(rawEndpointPath).toHaveCount(1);
-            await expect(rawEndpointPath).toHaveAttribute("data-endpoint-kind", "raw");
-            await expect(rawEndpointPath).toContainText("/v1/responses/very-long-segment-");
-          }
+          const compactEndpointBadge = tableRows
+            .nth(0)
+            .locator('[data-testid="invocation-endpoint-badge"]:visible');
+          await expect(compactEndpointBadge).toHaveCount(1);
+          await expect(compactEndpointBadge).toHaveAttribute("data-endpoint-kind", "compact");
+          await expect(compactEndpointBadge).toContainText(/远程压缩|Compact/);
+          const rawEndpointPath = tableRows
+            .nth(1)
+            .locator('[data-testid="invocation-endpoint-path"]:visible');
+          await expect(rawEndpointPath).toHaveCount(1);
+          await expect(rawEndpointPath).toHaveAttribute("data-endpoint-kind", "raw");
+          await expect(rawEndpointPath).toContainText("/v1/responses/very-long-segment-");
           await expect(tableRows.nth(0).getByTestId("invocation-fast-icon")).toHaveAttribute(
             "data-fast-state",
             "effective",
@@ -649,21 +724,18 @@ test.describe("InvocationTable layout regression", () => {
           await expect(tableRows.nth(4).getByTestId("invocation-fast-icon")).toHaveCount(0);
 
           const metricsBeforeExpand = await readTableMetrics(page);
-          const firstToggle = tableRows.nth(0).locator("button[aria-expanded]");
+          const firstToggle = tableRows
+            .nth(0)
+            .locator('button[aria-expanded]:not([data-testid="invocation-card-toggle"])');
           await expect(firstToggle).toBeVisible();
           await firstToggle.click();
           await expect(firstToggle).toHaveAttribute("aria-expanded", "true");
           const tableDetailId = await firstToggle.getAttribute("aria-controls");
           if (!tableDetailId) throw new Error("Missing desktop invocation detail panel id");
           const tableDetailPanel = page.locator(`#${tableDetailId}`);
-          await expect(
-            tableDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/),
-          ).toBeVisible();
-          await expect(tableDetailPanel.getByText(/Requested service tier/i)).toBeVisible();
-          await expect(tableDetailPanel.getByText(/^Service tier$/i)).toBeVisible();
-          await expect(tableDetailPanel.getByText("/v1/responses/compact")).toBeVisible();
-          await expect(tableDetailPanel.getByText("priority")).toHaveCount(2);
-          await expect(tableDetailPanel.getByText("0.55")).toBeVisible();
+          await expect(tableDetailPanel.getByText(/调用详情|Invocation Detail/)).toBeVisible();
+          await expect(tableDetailPanel.getByText(/工作流时间线|Workflow Timeline/)).toBeVisible();
+          await expect(tableDetailPanel.getByText(/调用 ID|Call ID/)).toBeVisible();
           const metricsAfterExpand = await readTableMetrics(page);
 
           test.info().annotations.push({
@@ -684,13 +756,15 @@ test.describe("InvocationTable layout regression", () => {
           if (viewport.width >= 1280) {
             expect(metricsBeforeExpand.secondRowProxyNameTitle).toBe(LONG_PROXY_NAME);
             expect(metricsAfterExpand.secondRowProxyNameTitle).toBe(LONG_PROXY_NAME);
-            expect(metricsBeforeExpand.secondRowProxyNameOverflowPx).toBeGreaterThan(0);
-            expect(metricsAfterExpand.secondRowProxyNameOverflowPx).toBeGreaterThan(0);
             expect(metricsBeforeExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1);
             expect(metricsAfterExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1);
           }
           if (viewport.width === 1280 && target.label === "live") {
-            await tableRows.nth(0).getByRole("button", { name: "Pool Alpha" }).click();
+            await tableRows
+              .nth(0)
+              .getByTestId("invocation-account-name")
+              .getByRole("button", { name: "Pool Alpha" })
+              .click();
             const drawer = page.getByRole("dialog");
             await expect(drawer).toBeVisible();
             await expect(drawer.getByText("Pool Alpha")).toBeVisible();
