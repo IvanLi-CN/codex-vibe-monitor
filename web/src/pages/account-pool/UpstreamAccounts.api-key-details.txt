@@ -76,6 +76,13 @@ describe("UpstreamAccountsPage api key details", () => {
           observedAt: "2026-07-17T08:12:00Z",
           reason: "upstream request failed after Codex imagegen injection",
         },
+        standaloneSearchCapability: {
+          observed: "supported",
+          override: null,
+          effective: "supported",
+          observedAt: "2026-08-05T15:00:00Z",
+          reason: "standalone search endpoint request succeeded",
+        },
         maskedApiKey: "sk-gate••••",
         history: [],
         note: null,
@@ -119,6 +126,7 @@ describe("UpstreamAccountsPage api key details", () => {
     expect(overviewText).toMatch(/Chat Completions endpoint/i);
     expect(overviewText).toMatch(/Image endpoint/i);
     expect(overviewText).toMatch(/Response image-tool/i);
+    expect(overviewText).toMatch(/Standalone Search endpoint/i);
     expect(overviewText).not.toMatch(/Image tool capability/i);
     expect(overviewText).not.toMatch(/Account ID/i);
     expect(overviewText).not.toMatch(/User ID/i);

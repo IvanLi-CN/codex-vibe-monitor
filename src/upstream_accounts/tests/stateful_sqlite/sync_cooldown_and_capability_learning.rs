@@ -1591,6 +1591,233 @@ async fn chat_completions_route_learning_stays_on_chat_axis() {
 }
 
 #[tokio::test]
+async fn standalone_search_learning_is_api_key_only_and_route_specific() {
+    let pool = test_pool().await;
+    let supported_id = insert_api_key_account(&pool, "Search Success Learns Supported").await;
+    record_pool_route_success_for_endpoint_with_image_intent(
+        &pool,
+        supported_id,
+        Utc::now(),
+        None,
+        Some("invk_search_supported"),
+        "/v1/alpha/search",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record search route success");
+    let supported = load_upstream_account_row(&pool, supported_id)
+        .await
+        .expect("load supported search row")
+        .expect("supported search row exists");
+    assert_eq!(
+        supported.standalone_search_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        supported.response_endpoint_capability.as_deref(),
+        Some("unknown")
+    );
+
+    let unsupported_id = insert_api_key_account(&pool, "Search 404 Learns Unsupported").await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
+        &pool,
+        unsupported_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::NOT_FOUND,
+        "pool upstream responded with 404",
+        Some("invk_search_unsupported"),
+        "/v1/alpha/search",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record bare search 404");
+    let unsupported = load_upstream_account_row(&pool, unsupported_id)
+        .await
+        .expect("load unsupported search row")
+        .expect("unsupported search row exists");
+    assert_eq!(
+        unsupported.standalone_search_capability.as_deref(),
+        Some("unsupported")
+    );
+
+    let ambiguous_id = insert_api_key_account(&pool, "Search 400 Keeps Unknown").await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
+        &pool,
+        ambiguous_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: request body is invalid",
+        Some("invk_search_ambiguous"),
+        "/v1/alpha/search",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record ambiguous search 400");
+    let ambiguous = load_upstream_account_row(&pool, ambiguous_id)
+        .await
+        .expect("load ambiguous search row")
+        .expect("ambiguous search row exists");
+    assert_eq!(
+        ambiguous.standalone_search_capability.as_deref(),
+        Some("unknown")
+    );
+
+    let oauth_id = insert_oauth_account(&pool, "OAuth Search Does Not Learn").await;
+    record_pool_route_success_for_endpoint_with_image_intent(
+        &pool,
+        oauth_id,
+        Utc::now(),
+        None,
+        Some("invk_oauth_search"),
+        "/v1/alpha/search",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record OAuth search route success");
+    let oauth = load_upstream_account_row(&pool, oauth_id)
+        .await
+        .expect("load OAuth search row")
+        .expect("OAuth search row exists");
+    assert_eq!(
+        oauth.standalone_search_capability.as_deref(),
+        Some("unknown")
+    );
+}
+
+#[tokio::test]
+async fn standalone_search_override_round_trips_through_account_detail() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Search Override Round Trip").await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET standalone_search_capability = 'unsupported',
+            standalone_search_capability_observed_at = '2026-08-05T15:00:00Z',
+            standalone_search_capability_reason = 'pool upstream responded with 404'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed unsupported search capability");
+
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Value(
+                    "supported".to_string(),
+                ),
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect("save search capability override");
+
+    assert_eq!(
+        detail.summary.standalone_search_capability.observed,
+        CapabilitySupport::Unsupported
+    );
+    assert_eq!(
+        detail.summary.standalone_search_capability.override_value,
+        Some(CapabilitySupport::Supported)
+    );
+    assert_eq!(
+        detail.summary.standalone_search_capability.effective,
+        CapabilitySupport::Supported
+    );
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account after search override")
+        .expect("account exists after search override");
+    assert_eq!(
+        row.policy_standalone_search_capability_override.as_deref(),
+        Some("supported")
+    );
+
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Null,
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect("clear search capability override");
+
+    assert_eq!(
+        detail.summary.standalone_search_capability.override_value,
+        None
+    );
+    assert_eq!(
+        detail.summary.standalone_search_capability.effective,
+        CapabilitySupport::Unsupported
+    );
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account after clearing search override")
+        .expect("account exists after clearing search override");
+    assert_eq!(row.policy_standalone_search_capability_override, None);
+}
+
+#[tokio::test]
+async fn standalone_search_override_is_rejected_for_oauth_accounts() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_oauth_account(&state.pool, "OAuth Search Override Rejected").await;
+
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Value(
+                    "supported".to_string(),
+                ),
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("only supported for API key accounts"));
+
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Null,
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject clearing standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load OAuth account after rejected override")
+        .expect("OAuth account exists after rejected override");
+    assert_eq!(row.policy_standalone_search_capability_override, None);
+}
+
+#[tokio::test]
 async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;

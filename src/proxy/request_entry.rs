@@ -2089,6 +2089,39 @@ pub(crate) fn chat_completions_capability_negative_signal(message: &str) -> bool
             .any(|needle| normalized.contains(needle))
 }
 
+pub(crate) fn standalone_search_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    capability_support_failure_signal(&normalized)
+        && ["/v1/alpha/search", "alpha/search", "standalone search"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn classify_standalone_search_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> CapabilitySupport {
+    if status.is_success() {
+        return CapabilitySupport::Supported;
+    }
+    if matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) {
+        return CapabilitySupport::Unsupported;
+    }
+    if status == StatusCode::BAD_REQUEST
+        && message
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some_and(standalone_search_capability_negative_signal)
+    {
+        CapabilitySupport::Unsupported
+    } else {
+        CapabilitySupport::Unknown
+    }
+}
+
 pub(crate) fn response_image_tool_capability_negative_signal(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     if is_responses_lite_top_level_image_tool_shape_error(&normalized) {
@@ -5466,6 +5499,54 @@ mod tests {
             ),
             CapabilitySupport::Unknown
         );
+    }
+
+    #[test]
+    fn classify_standalone_search_capability_observation_uses_route_specific_failures() {
+        assert_eq!(
+            classify_standalone_search_capability_observation(StatusCode::OK, None),
+            CapabilitySupport::Supported
+        );
+        assert_eq!(
+            classify_standalone_search_capability_observation(StatusCode::NOT_FOUND, None),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            classify_standalone_search_capability_observation(
+                StatusCode::METHOD_NOT_ALLOWED,
+                Some("method not allowed"),
+            ),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            classify_standalone_search_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("unsupported endpoint: /v1/alpha/search"),
+            ),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            classify_standalone_search_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("request body is invalid"),
+            ),
+            CapabilitySupport::Unknown
+        );
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            assert_eq!(
+                classify_standalone_search_capability_observation(
+                    status,
+                    Some("standalone search request failed"),
+                ),
+                CapabilitySupport::Unknown
+            );
+        }
     }
 
     #[test]

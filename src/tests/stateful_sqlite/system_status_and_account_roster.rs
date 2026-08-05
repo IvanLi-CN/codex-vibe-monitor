@@ -1516,6 +1516,7 @@ pub(crate) async fn reserve_test_pool_routing_account(
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }

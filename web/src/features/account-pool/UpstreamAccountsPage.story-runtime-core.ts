@@ -1633,6 +1633,13 @@ export function createApiKeyAccount(
     chatgptUserId: null,
     planType: "local",
     maskedApiKey: "sk-live••••••c9f2",
+    standaloneSearchCapability: {
+      observed: "supported",
+      override: null,
+      effective: "supported",
+      observedAt: "2026-03-11T12:20:00.000Z",
+      reason: "standalone search endpoint request succeeded",
+    },
     hasRefreshToken: true,
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
