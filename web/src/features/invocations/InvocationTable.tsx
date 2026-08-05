@@ -48,7 +48,6 @@ interface InvocationTableProps {
   emptyLabel?: string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
-  showInvokeId?: boolean;
   scrollTarget?: { invokeId: string; attemptId?: string | null; version: number } | null;
 }
 
@@ -192,7 +191,6 @@ export function InvocationCardList({
   emptyLabel,
   onOpenUpstreamAccount,
   scrollElement,
-  showInvokeId: _showInvokeId = false,
   scrollTarget,
 }: InvocationTableProps) {
   const { t, locale } = useTranslation();
@@ -413,15 +411,6 @@ export function InvocationCardList({
     ],
   );
 
-  const hasInFlightRows = useMemo(() => rows.some((row) => row.livePhase != null), [rows]);
-
-  useEffect(() => {
-    if (!hasInFlightRows) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [hasInFlightRows]);
-
   const estimateRowSize = useCallback(
     (index: number) =>
       expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 154 : 250,
@@ -471,6 +460,18 @@ export function InvocationCardList({
           end: (index + 1) * estimateRowSize(index),
           lane: 0,
         }));
+  const hasVisibleInFlightRows = useMemo(
+    () => fallbackVirtualRows.some((virtualRow) => rows[virtualRow.index]?.livePhase != null),
+    [fallbackVirtualRows, rows],
+  );
+
+  useEffect(() => {
+    if (!hasVisibleInFlightRows) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [hasVisibleInFlightRows]);
+
   const totalVirtualSize =
     virtualRows.length > 0
       ? rowVirtualizer.getTotalSize()
@@ -687,8 +688,7 @@ export function InvocationCardList({
         onClick={handleCardClick}
         onKeyDown={handleKeyDown}
         className={cn(
-          "min-w-0 overflow-hidden rounded-lg border border-base-300/75 bg-base-100/55 px-3 py-3.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-4",
-          virtualIndex % 2 === 0 ? "shadow-sm" : "bg-base-200/16",
+          "surface-card min-w-0 overflow-hidden rounded-lg px-3 py-3.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-4",
           isHighlighted && "border-primary/55 bg-primary/10",
         )}
       >

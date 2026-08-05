@@ -1905,7 +1905,7 @@ export const Recent20StreamingSimulation: Story = {
 
     await waitFor(
       async () => {
-        const rowCount = canvasElement.querySelectorAll("tbody > tr").length;
+        const rowCount = canvasElement.querySelectorAll('[data-testid="invocation-card"]').length;
         expect(rowCount).toBeGreaterThanOrEqual(12);
       },
       { timeout: 3000 },

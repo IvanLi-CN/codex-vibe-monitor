@@ -764,7 +764,6 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable(
       Array.from({ length: 20 }, (_, index) => createInvocationRecord(index)),
-      { showInvokeId: true },
     );
 
     expect(document.querySelector('[data-testid="invocation-card-list"]')).toBeTruthy();
