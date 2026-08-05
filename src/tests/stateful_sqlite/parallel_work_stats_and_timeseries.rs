@@ -15410,6 +15410,9 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
             },
             Utc::now(),
         );
+    reconcile_dashboard_runtime_projection_once(state.as_ref())
+        .await
+        .expect("reconcile dashboard runtime projection after direct database fixture writes");
 
     let Json(cached_response) = fetch_dashboard_activity(
         State(state.clone()),
@@ -15771,11 +15774,11 @@ fn dashboard_activity_topic_descriptor() -> SubscriptionTopicDescriptor {
 
 fn extract_subscription_snapshot_payload(prepared: PreparedSubscriptionConnection) -> Value {
     let mut initial = prepared.initial.into_iter();
-    match initial.next().expect("subscription snapshot event") {
-        SubscriptionEventEnvelope::Snapshot { payload, .. }
-        | SubscriptionEventEnvelope::Replay { payload, .. }
-        | SubscriptionEventEnvelope::Live { payload, .. } => payload,
-    }
+    initial
+        .next()
+        .expect("subscription snapshot event")
+        .frame
+        .payload_value()
 }
 
 #[tokio::test]

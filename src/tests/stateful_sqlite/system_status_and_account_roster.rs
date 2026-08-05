@@ -248,6 +248,19 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     assert_eq!(response.response_raw_bodies.count, 2);
     assert_eq!(response.response_raw_bodies.bytes, 28);
     assert_eq!(response.raw_metrics_health.state, "ready");
+    let response_json = serde_json::to_value(&response).expect("serialize system status");
+    assert_eq!(
+        response_json["runtimePressureHealth"]["writerAccounting"]["state"],
+        "healthy"
+    );
+    assert!(response_json["runtimePressureHealth"]["process"]["rssAnonBytes"].is_u64());
+    assert_eq!(
+        response_json["runtimePressureHealth"]["requestPipeline"]["mode"],
+        "projection"
+    );
+    assert!(
+        response_json["runtimePressureHealth"]["requestPipeline"]["semanticParseCount"].is_u64()
+    );
     assert!(
         response.database_bytes > 0,
         "database bytes should include sqlite files"
@@ -340,6 +353,51 @@ async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write(
     assert_eq!(recovered.raw_metrics_health.state, "ready");
 
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn runtime_pressure_health_serializes_without_sql() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state.proxy_runtime_invocations.record_request_pipeline(
+        "file",
+        1,
+        0,
+        REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES,
+        Some("request_json_invalid"),
+    );
+    state.pool.close().await;
+
+    let health = load_runtime_pressure_health(state.as_ref()).await;
+    let payload = serde_json::to_value(health).expect("serialize runtime pressure health");
+
+    assert!(payload["state"].is_string());
+    assert!(payload["process"]["rssAnonBytes"].is_u64());
+    assert!(payload["process"]["swapBytes"].is_u64());
+    assert!(payload["process"]["managedBytes"].is_u64());
+    assert!(payload["process"]["unattributedAnonBytes"].is_u64());
+    assert!(payload["allocator"]["mallocArenaMax"].is_string());
+    assert_eq!(payload["writerAccounting"]["state"], "healthy");
+    assert_eq!(payload["dashboardProjection"]["mode"], "auto");
+    assert_eq!(payload["dashboardProjection"]["livePathDbReadCount"], 0);
+    assert!(payload["dashboardProjection"]["buildCount"].is_u64());
+    assert!(payload["dashboardProjection"]["activeSubscriberCount"].is_u64());
+    assert_eq!(payload["requestPipeline"]["lastSnapshotKind"], "file");
+    assert_eq!(payload["requestPipeline"]["semanticParseCount"], 1);
+    assert_eq!(
+        payload["requestPipeline"]["wholeBodyMaterializationCount"],
+        0
+    );
+    assert_eq!(
+        payload["requestPipeline"]["rewriteBufferPeakBytes"],
+        REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES
+    );
+    assert_eq!(
+        payload["requestPipeline"]["lastFallbackReason"],
+        "request_json_invalid"
+    );
 }
 
 #[tokio::test]

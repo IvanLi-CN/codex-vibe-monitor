@@ -85,15 +85,855 @@ pub(crate) struct RuntimeInvocationStoreRemoveOutcome {
     pub(crate) already_terminal: bool,
 }
 
+pub(crate) const DASHBOARD_RUNTIME_PROJECTION_MODE_ENV: &str = "DASHBOARD_RUNTIME_PROJECTION_MODE";
+pub(crate) const DASHBOARD_RUNTIME_PROJECTION_COALESCE: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeProjectionMode {
+    Auto,
+    Legacy,
+}
+
+impl RuntimeProjectionMode {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("auto") => Ok(Self::Auto),
+            Some("legacy") => Ok(Self::Legacy),
+            Some(value) => bail!(
+                "invalid {DASHBOARD_RUNTIME_PROJECTION_MODE_ENV} value `{value}`; expected `auto` or `legacy`"
+            ),
+        }
+    }
+
+    pub(crate) fn from_env() -> Result<Self> {
+        let value = std::env::var(DASHBOARD_RUNTIME_PROJECTION_MODE_ENV).ok();
+        Self::parse(value.as_deref())
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DashboardRuntimeProjectionState {
+    dirty_generation: u64,
+    pending_deadline: Option<Instant>,
+    last_good: Option<DashboardActivityLiveSnapshot>,
+    last_good_at: Option<Instant>,
+    last_snapshot_origin: Option<&'static str>,
+    degraded_reason: Option<&'static str>,
+    reconcile_error: Option<&'static str>,
+    last_reconcile_defer_reason: Option<&'static str>,
+    persistence_baseline: Option<DashboardRuntimeProjectionBaseline>,
+    baseline_records: HashMap<RuntimeInvocationKey, DashboardRuntimeBaselineRecord>,
+    projection_records: HashMap<RuntimeInvocationKey, DashboardRuntimeBaselineRecord>,
+    live_core: Option<DashboardActivityLiveSnapshot>,
+    source_scope: InvocationSourceScope,
+    memory_ready: bool,
+}
+
+impl Default for DashboardRuntimeProjectionState {
+    fn default() -> Self {
+        Self {
+            dirty_generation: 0,
+            pending_deadline: None,
+            last_good: None,
+            last_good_at: None,
+            last_snapshot_origin: None,
+            degraded_reason: None,
+            reconcile_error: None,
+            last_reconcile_defer_reason: None,
+            persistence_baseline: None,
+            baseline_records: HashMap::new(),
+            projection_records: HashMap::new(),
+            live_core: None,
+            source_scope: InvocationSourceScope::All,
+            memory_ready: false,
+        }
+    }
+}
+
+fn empty_dashboard_live_core() -> DashboardActivityLiveSnapshot {
+    DashboardActivityLiveSnapshot {
+        revision: 0,
+        generated_at: String::new(),
+        in_progress_invocation_count: 0,
+        in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+        retry_invocation_count: 0,
+        in_progress_wait_sum_ms: 0.0,
+        in_progress_wait_sample_count: 0,
+        network_live_bucket: None,
+        network_realtime_rate: None,
+        accounts: Vec::new(),
+    }
+}
+
+fn dashboard_projection_record_from_invocation(
+    key: RuntimeInvocationKey,
+    record: &ApiInvocation,
+    previous: Option<&DashboardRuntimeBaselineRecord>,
+) -> Option<DashboardRuntimeBaselineRecord> {
+    if !matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "running" | "pending"
+    ) {
+        return None;
+    }
+    Some(DashboardRuntimeBaselineRecord {
+        key,
+        upstream_account_id: record
+            .upstream_account_id
+            .or_else(|| previous.and_then(|record| record.upstream_account_id)),
+        upstream_account_name: normalize_trimmed_optional_string_local(
+            record.upstream_account_name.clone(),
+        )
+        .or_else(|| previous.and_then(|record| record.upstream_account_name.clone())),
+        is_retry: record.pool_attempt_count.unwrap_or_default() > 1
+            || previous.is_some_and(|record| record.is_retry),
+        live_phase: record
+            .live_phase
+            .clone()
+            .or_else(|| runtime_invocation_live_phase(record).map(str::to_string)),
+        wait_ms: normalized_wait_ms(record.t_upstream_ttfb_ms),
+    })
+}
+
+fn update_dashboard_live_core(
+    core: &mut DashboardActivityLiveSnapshot,
+    record: &DashboardRuntimeBaselineRecord,
+    add: bool,
+) {
+    let delta = if add { 1 } else { -1 };
+    core.in_progress_invocation_count = (core.in_progress_invocation_count + delta).max(0);
+    if add {
+        core.in_progress_phase_counts
+            .increment_phase_name(record.live_phase.as_deref());
+    } else {
+        core.in_progress_phase_counts
+            .decrement_phase_name(record.live_phase.as_deref());
+    }
+    if record.is_retry {
+        core.retry_invocation_count = (core.retry_invocation_count + delta).max(0);
+    }
+    if let Some(wait_ms) = normalized_wait_ms(record.wait_ms) {
+        core.in_progress_wait_sum_ms =
+            (core.in_progress_wait_sum_ms + if add { wait_ms } else { -wait_ms }).max(0.0);
+        core.in_progress_wait_sample_count = (core.in_progress_wait_sample_count + delta).max(0);
+    }
+
+    let account_key = record
+        .upstream_account_id
+        .map(|id| format!("upstream:{id}"))
+        .unwrap_or_else(|| "unassigned".to_string());
+    let account_index = core
+        .accounts
+        .iter()
+        .position(|account| account.account_key == account_key);
+    let account_index = match (account_index, add) {
+        (Some(index), _) => index,
+        (None, true) => {
+            core.accounts.push(DashboardActivityLiveAccount {
+                account_key,
+                upstream_account_id: record.upstream_account_id,
+                upstream_account_name: record.upstream_account_name.clone(),
+                in_progress_invocation_count: 0,
+                in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+                retry_invocation_count: 0,
+                in_progress_wait_sum_ms: 0.0,
+                in_progress_wait_sample_count: 0,
+                upload_bytes_per_second: 0.0,
+                download_bytes_per_second: 0.0,
+                network_live_bucket: None,
+            });
+            core.accounts.len() - 1
+        }
+        (None, false) => return,
+    };
+    let account = &mut core.accounts[account_index];
+    if account.upstream_account_name.is_none() {
+        account.upstream_account_name = record.upstream_account_name.clone();
+    }
+    account.in_progress_invocation_count = (account.in_progress_invocation_count + delta).max(0);
+    if add {
+        account
+            .in_progress_phase_counts
+            .increment_phase_name(record.live_phase.as_deref());
+    } else {
+        account
+            .in_progress_phase_counts
+            .decrement_phase_name(record.live_phase.as_deref());
+    }
+    if record.is_retry {
+        account.retry_invocation_count = (account.retry_invocation_count + delta).max(0);
+    }
+    if let Some(wait_ms) = normalized_wait_ms(record.wait_ms) {
+        account.in_progress_wait_sum_ms =
+            (account.in_progress_wait_sum_ms + if add { wait_ms } else { -wait_ms }).max(0.0);
+        account.in_progress_wait_sample_count =
+            (account.in_progress_wait_sample_count + delta).max(0);
+    }
+    if !add && account.in_progress_invocation_count == 0 {
+        core.accounts.swap_remove(account_index);
+    }
+}
+
+fn mark_dashboard_state_dirty(
+    dashboard: &mut DashboardRuntimeProjectionState,
+    _trigger: &'static str,
+    now: Instant,
+) {
+    dashboard.dirty_generation = dashboard.dirty_generation.saturating_add(1);
+    dashboard.memory_ready = true;
+    if dashboard.pending_deadline.is_none() {
+        dashboard.pending_deadline = Some(now + DASHBOARD_RUNTIME_PROJECTION_COALESCE);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardRuntimeBaselineRecord {
+    pub(crate) key: RuntimeInvocationKey,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) is_retry: bool,
+    pub(crate) live_phase: Option<String>,
+    pub(crate) wait_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardRuntimeProjectionBaseline {
+    pub(crate) records: Vec<DashboardRuntimeBaselineRecord>,
+    pub(crate) source_scope: InvocationSourceScope,
+    pub(crate) network_open_buckets:
+        HashMap<DashboardNetworkScopeKey, DashboardRuntimeNetworkOpenBucketBaseline>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DashboardRuntimeNetworkOpenBucketBaseline {
+    pub(crate) bucket_start: DateTime<Utc>,
+    pub(crate) bucket_end: DateTime<Utc>,
+    pub(crate) baseline_totals: DashboardNetworkByteTotals,
+    pub(crate) memory_totals_at_install: DashboardNetworkByteTotals,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DashboardProjectionPublishWindow {
+    pub(crate) deadline: Instant,
+    pub(crate) generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardProjectionCapture {
+    pub(crate) snapshot: DashboardActivityLiveSnapshot,
+    pub(crate) changed: bool,
+    pub(crate) snapshot_origin: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeProjectionHealthSnapshot {
+    pub(crate) mode: String,
+    pub(crate) state: String,
+    pub(crate) producer_state: String,
+    pub(crate) active_subscriber_count: u64,
+    pub(crate) live_path_db_read_count: u64,
+    pub(crate) build_count: u64,
+    pub(crate) revision: u64,
+    pub(crate) snapshot_origin: String,
+    pub(crate) last_good_age_ms: Option<u64>,
+    pub(crate) degraded_reason: Option<String>,
+    pub(crate) last_defer_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestPipelineHealthSnapshot {
+    pub(crate) mode: String,
+    pub(crate) last_snapshot_kind: String,
+    pub(crate) semantic_parse_count: u64,
+    pub(crate) whole_body_materialization_count: u64,
+    pub(crate) rewrite_buffer_peak_bytes: u64,
+    pub(crate) last_fallback_reason: Option<String>,
+}
+
 #[derive(Debug, Default)]
-pub(crate) struct ProxyRuntimeInvocationStore {
+struct RequestPipelineLastState {
+    snapshot_kind: String,
+    fallback_reason: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RuntimeProjectionHub {
     pub(crate) inner: std::sync::Mutex<ProxyRuntimeInvocationStoreInner>,
+    mode: RuntimeProjectionMode,
+    dashboard_network_speed_cache: std::sync::OnceLock<Arc<DashboardNetworkSpeedCache>>,
+    dashboard: std::sync::Mutex<DashboardRuntimeProjectionState>,
+    live_path_db_read_count: AtomicU64,
+    build_count: AtomicU64,
+    producer_running: AtomicBool,
+    request_semantic_parse_count: AtomicU64,
+    request_whole_body_materialization_count: AtomicU64,
+    request_rewrite_buffer_peak_bytes: AtomicU64,
+    request_pipeline_last: std::sync::Mutex<RequestPipelineLastState>,
+}
+
+pub(crate) type ProxyRuntimeInvocationStore = RuntimeProjectionHub;
+
+impl Default for RuntimeProjectionHub {
+    fn default() -> Self {
+        Self::new(RuntimeProjectionMode::Auto)
+    }
+}
+
+impl RuntimeProjectionHub {
+    pub(crate) fn new(mode: RuntimeProjectionMode) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(ProxyRuntimeInvocationStoreInner::default()),
+            mode,
+            dashboard_network_speed_cache: std::sync::OnceLock::new(),
+            dashboard: std::sync::Mutex::new(DashboardRuntimeProjectionState::default()),
+            live_path_db_read_count: AtomicU64::new(0),
+            build_count: AtomicU64::new(0),
+            producer_running: AtomicBool::new(false),
+            request_semantic_parse_count: AtomicU64::new(0),
+            request_whole_body_materialization_count: AtomicU64::new(0),
+            request_rewrite_buffer_peak_bytes: AtomicU64::new(0),
+            request_pipeline_last: std::sync::Mutex::new(RequestPipelineLastState::default()),
+        }
+    }
+
+    pub(crate) fn mode(&self) -> RuntimeProjectionMode {
+        self.mode
+    }
+
+    pub(crate) fn bind_dashboard_network_speed_cache(
+        &self,
+        cache: Arc<DashboardNetworkSpeedCache>,
+    ) -> Result<()> {
+        if let Some(existing) = self.dashboard_network_speed_cache.get() {
+            return if Arc::ptr_eq(existing, &cache) {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "runtime projection hub is already bound to another dashboard network cache"
+                ))
+            };
+        }
+        self.dashboard_network_speed_cache
+            .set(cache)
+            .map_err(|_| anyhow!("dashboard network speed cache is already bound"))
+    }
+
+    pub(crate) fn dashboard_live_projection(&self) -> DashboardLiveProjection<'_> {
+        DashboardLiveProjection { hub: self }
+    }
+
+    fn update_dashboard_runtime_record(
+        &self,
+        key: RuntimeInvocationKey,
+        record: Option<&ApiInvocation>,
+        trigger: &'static str,
+    ) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        if record.is_none() {
+            dashboard.baseline_records.remove(&key);
+        }
+        let previous = dashboard.projection_records.remove(&key);
+        if let Some(previous) = previous.as_ref() {
+            update_dashboard_live_core(
+                dashboard
+                    .live_core
+                    .get_or_insert_with(empty_dashboard_live_core),
+                previous,
+                false,
+            );
+        }
+        let next = record.and_then(|record| {
+            if dashboard.source_scope == InvocationSourceScope::ProxyOnly
+                && record.source != SOURCE_PROXY
+            {
+                None
+            } else {
+                dashboard_projection_record_from_invocation(key.clone(), record, previous.as_ref())
+            }
+        });
+        if let Some(next) = next {
+            update_dashboard_live_core(
+                dashboard
+                    .live_core
+                    .get_or_insert_with(empty_dashboard_live_core),
+                &next,
+                true,
+            );
+            dashboard.projection_records.insert(key, next);
+        }
+        dashboard
+            .live_core
+            .get_or_insert_with(empty_dashboard_live_core)
+            .accounts
+            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
+    }
+
+    fn sync_dashboard_runtime_key(&self, key: &RuntimeInvocationKey, trigger: &'static str) {
+        let Ok(runtime) = self.inner.lock() else {
+            return;
+        };
+        let record = runtime.records.get(key).map(|entry| &entry.record);
+        self.update_dashboard_runtime_record(key.clone(), record, trigger);
+    }
+
+    fn rebuild_dashboard_runtime_records(&self, trigger: &'static str) {
+        let Ok(runtime) = self.inner.lock() else {
+            return;
+        };
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        let source_scope = dashboard.source_scope;
+        let mut records = dashboard.baseline_records.clone();
+        for key in runtime.terminal_tombstones.keys() {
+            records.remove(key);
+        }
+        for key in runtime.projection_tombstones.keys() {
+            records.remove(key);
+        }
+        for (key, entry) in &runtime.records {
+            if runtime.terminal_tombstones.contains_key(key) {
+                records.remove(key);
+                continue;
+            }
+            if source_scope == InvocationSourceScope::ProxyOnly
+                && entry.record.source != SOURCE_PROXY
+            {
+                continue;
+            }
+            let previous = records.get(key);
+            match dashboard_projection_record_from_invocation(key.clone(), &entry.record, previous)
+            {
+                Some(projected) => {
+                    records.insert(key.clone(), projected);
+                }
+                None => {
+                    records.remove(key);
+                }
+            }
+        }
+        let mut core = empty_dashboard_live_core();
+        for record in records.values() {
+            update_dashboard_live_core(&mut core, record, true);
+        }
+        core.accounts
+            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        dashboard.projection_records = records;
+        dashboard.live_core = Some(core);
+        mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
+    }
+
+    pub(crate) fn mark_dashboard_dirty(&self, trigger: &'static str) {
+        self.mark_dashboard_dirty_at(trigger, Instant::now());
+    }
+
+    pub(crate) fn mark_dashboard_dirty_at(&self, _trigger: &'static str, now: Instant) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        mark_dashboard_state_dirty(&mut dashboard, _trigger, now);
+    }
+
+    pub(crate) fn pending_dashboard_deadline(&self) -> Option<Instant> {
+        self.dashboard
+            .lock()
+            .ok()
+            .and_then(|dashboard| dashboard.pending_deadline)
+    }
+
+    pub(crate) fn pending_dashboard_publish_window(
+        &self,
+    ) -> Option<DashboardProjectionPublishWindow> {
+        self.dashboard.lock().ok().and_then(|dashboard| {
+            dashboard
+                .pending_deadline
+                .map(|deadline| DashboardProjectionPublishWindow {
+                    deadline,
+                    generation: dashboard.dirty_generation,
+                })
+        })
+    }
+
+    pub(crate) fn begin_dashboard_publish_window(
+        &self,
+        window: DashboardProjectionPublishWindow,
+    ) -> Option<DashboardProjectionPublishWindow> {
+        let mut dashboard = self.dashboard.lock().ok()?;
+        if dashboard.pending_deadline != Some(window.deadline) {
+            return None;
+        }
+        dashboard.pending_deadline = None;
+        Some(DashboardProjectionPublishWindow {
+            deadline: window.deadline,
+            generation: dashboard.dirty_generation,
+        })
+    }
+
+    pub(crate) fn complete_dashboard_publish_window(
+        &self,
+        window: DashboardProjectionPublishWindow,
+    ) {
+        if let Ok(dashboard) = self.dashboard.lock() {
+            debug_assert!(dashboard.dirty_generation >= window.generation);
+        }
+    }
+
+    pub(crate) fn is_memory_ready(&self) -> bool {
+        self.dashboard
+            .lock()
+            .map(|dashboard| dashboard.memory_ready && dashboard.degraded_reason.is_none())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn dashboard_generation(&self) -> u64 {
+        self.dashboard
+            .lock()
+            .map(|dashboard| dashboard.dirty_generation)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn capture_memory_snapshot(&self) -> Result<DashboardProjectionCapture> {
+        let candidate = self.dashboard_live_projection().snapshot()?;
+        self.build_count.fetch_add(1, Ordering::Relaxed);
+        let mut dashboard = self
+            .dashboard
+            .lock()
+            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+        let changed = dashboard
+            .last_good
+            .as_ref()
+            .is_none_or(|current| !dashboard_live_snapshot_content_eq(current, &candidate));
+        if !changed {
+            let snapshot = dashboard
+                .last_good
+                .clone()
+                .expect("unchanged projection has a last-good snapshot");
+            dashboard.memory_ready = true;
+            dashboard.degraded_reason = None;
+            dashboard.last_snapshot_origin = Some("memory");
+            return Ok(DashboardProjectionCapture {
+                snapshot,
+                changed: false,
+                snapshot_origin: "memory",
+            });
+        }
+
+        let mut snapshot = candidate;
+        snapshot.revision = reserve_dashboard_activity_live_revision();
+        dashboard.last_good = Some(snapshot.clone());
+        dashboard.last_good_at = Some(Instant::now());
+        dashboard.last_snapshot_origin = Some("memory");
+        dashboard.degraded_reason = None;
+        dashboard.memory_ready = true;
+        Ok(DashboardProjectionCapture {
+            snapshot,
+            changed: true,
+            snapshot_origin: "memory",
+        })
+    }
+
+    pub(crate) fn install_persistence_baseline_if_generation(
+        &self,
+        _snapshot: DashboardActivityLiveSnapshot,
+        mut baseline: DashboardRuntimeProjectionBaseline,
+        snapshot_origin: &'static str,
+        _expected_generation: u64,
+    ) -> Result<Option<DashboardProjectionCapture>> {
+        let mut projection_records = baseline
+            .records
+            .iter()
+            .cloned()
+            .map(|record| (record.key.clone(), record))
+            .collect::<HashMap<_, _>>();
+        let baseline_records = projection_records.clone();
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("runtime invocation store lock is poisoned"))?;
+        for key in runtime.terminal_tombstones.keys() {
+            projection_records.remove(key);
+        }
+        for key in runtime.projection_tombstones.keys() {
+            projection_records.remove(key);
+        }
+        for (key, entry) in &runtime.records {
+            if runtime.terminal_tombstones.contains_key(key) {
+                projection_records.remove(key);
+                continue;
+            }
+            if baseline.source_scope == InvocationSourceScope::ProxyOnly
+                && entry.record.source != SOURCE_PROXY
+            {
+                continue;
+            }
+            let previous = projection_records.get(key);
+            match dashboard_projection_record_from_invocation(key.clone(), &entry.record, previous)
+            {
+                Some(record) => {
+                    projection_records.insert(key.clone(), record);
+                }
+                None => {
+                    projection_records.remove(key);
+                }
+            }
+        }
+        let mut dashboard = self
+            .dashboard
+            .lock()
+            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+        let mut core = empty_dashboard_live_core();
+        for record in projection_records.values() {
+            update_dashboard_live_core(&mut core, record, true);
+        }
+        core.accounts
+            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        let dashboard_network_speed_cache = self
+            .dashboard_network_speed_cache
+            .get()
+            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
+        let mut snapshot = overlay_dashboard_network_live_snapshot(
+            core.clone(),
+            &baseline.network_open_buckets,
+            dashboard_network_speed_cache.as_ref(),
+        );
+        let changed = dashboard
+            .last_good
+            .as_ref()
+            .is_none_or(|current| !dashboard_live_snapshot_content_eq(current, &snapshot));
+        let snapshot = if changed {
+            snapshot.revision = reserve_dashboard_activity_live_revision();
+            dashboard.last_good = Some(snapshot.clone());
+            dashboard.last_good_at = Some(Instant::now());
+            snapshot
+        } else {
+            dashboard
+                .last_good
+                .clone()
+                .expect("unchanged baseline has a last-good snapshot")
+        };
+        dashboard.last_snapshot_origin = Some(snapshot_origin);
+        dashboard.degraded_reason = None;
+        dashboard.reconcile_error = None;
+        dashboard.last_reconcile_defer_reason = None;
+        dashboard.source_scope = baseline.source_scope;
+        dashboard.baseline_records = baseline_records;
+        dashboard.projection_records = projection_records;
+        dashboard.live_core = Some(core);
+        baseline.records.clear();
+        dashboard.persistence_baseline = Some(baseline);
+        dashboard.memory_ready = false;
+        Ok(Some(DashboardProjectionCapture {
+            snapshot,
+            changed,
+            snapshot_origin,
+        }))
+    }
+
+    pub(crate) fn last_good_capture(
+        &self,
+        snapshot_origin: &'static str,
+    ) -> Option<DashboardProjectionCapture> {
+        let mut dashboard = self.dashboard.lock().ok()?;
+        let snapshot = dashboard.last_good.clone()?;
+        dashboard.last_snapshot_origin = Some(snapshot_origin);
+        Some(DashboardProjectionCapture {
+            snapshot,
+            changed: false,
+            snapshot_origin,
+        })
+    }
+
+    pub(crate) fn mark_degraded(&self, reason: &'static str) {
+        if let Ok(mut dashboard) = self.dashboard.lock() {
+            dashboard.degraded_reason = Some(reason);
+        }
+    }
+
+    pub(crate) fn record_reconcile_failure(&self, reason: &'static str) {
+        if let Ok(mut dashboard) = self.dashboard.lock() {
+            dashboard.reconcile_error = Some(reason);
+            dashboard.last_reconcile_defer_reason = None;
+        }
+    }
+
+    pub(crate) fn record_reconcile_deferred(&self, reason: &'static str) {
+        if let Ok(mut dashboard) = self.dashboard.lock() {
+            dashboard.last_reconcile_defer_reason = Some(reason);
+        }
+    }
+
+    pub(crate) fn record_live_path_db_read(&self) {
+        self.live_path_db_read_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_build(&self) {
+        self.build_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_producer_running(&self, running: bool) {
+        self.producer_running.store(running, Ordering::Release);
+    }
+
+    pub(crate) fn record_request_pipeline(
+        &self,
+        snapshot_kind: &str,
+        semantic_parse_count: u8,
+        whole_body_materialization_count: u8,
+        rewrite_buffer_bytes: usize,
+        fallback_reason: Option<&str>,
+    ) {
+        self.request_semantic_parse_count
+            .fetch_add(u64::from(semantic_parse_count), Ordering::Relaxed);
+        self.request_whole_body_materialization_count.fetch_add(
+            u64::from(whole_body_materialization_count),
+            Ordering::Relaxed,
+        );
+        self.request_rewrite_buffer_peak_bytes
+            .fetch_max(rewrite_buffer_bytes as u64, Ordering::Relaxed);
+        if let Ok(mut last) = self.request_pipeline_last.lock() {
+            last.snapshot_kind.clear();
+            last.snapshot_kind.push_str(snapshot_kind);
+            last.fallback_reason = fallback_reason.map(str::to_string);
+        }
+    }
+
+    pub(crate) fn request_pipeline_health_snapshot(&self) -> RequestPipelineHealthSnapshot {
+        let last = self.request_pipeline_last.lock().ok();
+        RequestPipelineHealthSnapshot {
+            mode: request_semantic_pipeline_mode().as_str().to_string(),
+            last_snapshot_kind: last
+                .as_ref()
+                .map(|last| last.snapshot_kind.as_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("none")
+                .to_string(),
+            semantic_parse_count: self.request_semantic_parse_count.load(Ordering::Relaxed),
+            whole_body_materialization_count: self
+                .request_whole_body_materialization_count
+                .load(Ordering::Relaxed),
+            rewrite_buffer_peak_bytes: self
+                .request_rewrite_buffer_peak_bytes
+                .load(Ordering::Relaxed),
+            last_fallback_reason: last.and_then(|last| last.fallback_reason.clone()),
+        }
+    }
+
+    pub(crate) fn health_snapshot(
+        &self,
+        active_subscriber_count: usize,
+    ) -> RuntimeProjectionHealthSnapshot {
+        let dashboard = self.dashboard.lock().ok();
+        let last_good_age_ms = dashboard
+            .as_ref()
+            .and_then(|state| state.last_good_at)
+            .map(|captured_at| captured_at.elapsed().as_millis() as u64);
+        let state = match dashboard.as_ref() {
+            Some(state) if state.degraded_reason.is_some() || state.reconcile_error.is_some() => {
+                "degraded"
+            }
+            Some(state) if state.memory_ready || state.last_good.is_some() => "healthy",
+            _ => "cold",
+        };
+        RuntimeProjectionHealthSnapshot {
+            mode: self.mode.as_str().to_string(),
+            state: state.to_string(),
+            producer_state: if self.producer_running.load(Ordering::Acquire) {
+                "running".to_string()
+            } else {
+                "idle".to_string()
+            },
+            active_subscriber_count: active_subscriber_count as u64,
+            live_path_db_read_count: self.live_path_db_read_count.load(Ordering::Relaxed),
+            build_count: self.build_count.load(Ordering::Relaxed),
+            revision: dashboard
+                .as_ref()
+                .and_then(|state| state.last_good.as_ref())
+                .map_or(0, |snapshot| snapshot.revision),
+            snapshot_origin: dashboard
+                .as_ref()
+                .and_then(|state| state.last_snapshot_origin)
+                .unwrap_or("none")
+                .to_string(),
+            last_good_age_ms,
+            degraded_reason: dashboard
+                .as_ref()
+                .and_then(|state| state.degraded_reason.or(state.reconcile_error))
+                .map(str::to_string),
+            last_defer_reason: dashboard
+                .as_ref()
+                .and_then(|state| state.last_reconcile_defer_reason)
+                .map(str::to_string),
+        }
+    }
+}
+
+pub(crate) struct DashboardLiveProjection<'a> {
+    hub: &'a RuntimeProjectionHub,
+}
+
+impl DashboardLiveProjection<'_> {
+    pub(crate) fn snapshot(&self) -> Result<DashboardActivityLiveSnapshot> {
+        let dashboard_network_speed_cache = self
+            .hub
+            .dashboard_network_speed_cache
+            .get()
+            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
+        let (core, network_open_buckets) = {
+            let dashboard = self
+                .hub
+                .dashboard
+                .lock()
+                .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+            let core = dashboard
+                .live_core
+                .clone()
+                .unwrap_or_else(empty_dashboard_live_core);
+            let network_open_buckets = dashboard
+                .persistence_baseline
+                .as_ref()
+                .map(|baseline| baseline.network_open_buckets.clone())
+                .unwrap_or_default();
+            (core, network_open_buckets)
+        };
+        Ok(overlay_dashboard_network_live_snapshot(
+            core,
+            &network_open_buckets,
+            dashboard_network_speed_cache.as_ref(),
+        ))
+    }
+}
+
+fn dashboard_live_snapshot_content_eq(
+    left: &DashboardActivityLiveSnapshot,
+    right: &DashboardActivityLiveSnapshot,
+) -> bool {
+    left.in_progress_invocation_count == right.in_progress_invocation_count
+        && left.in_progress_phase_counts == right.in_progress_phase_counts
+        && left.retry_invocation_count == right.retry_invocation_count
+        && left.in_progress_wait_sum_ms == right.in_progress_wait_sum_ms
+        && left.in_progress_wait_sample_count == right.in_progress_wait_sample_count
+        && left.network_live_bucket == right.network_live_bucket
+        && left.network_realtime_rate == right.network_realtime_rate
+        && left.accounts == right.accounts
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ProxyRuntimeInvocationStoreInner {
     pub(crate) records: HashMap<RuntimeInvocationKey, RuntimeInvocationEntry>,
     pub(crate) terminal_tombstones: HashMap<RuntimeInvocationKey, Instant>,
+    projection_tombstones: HashMap<RuntimeInvocationKey, Instant>,
 }
 
 pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE: Duration =
@@ -101,7 +941,7 @@ pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE: Duration =
 pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS: usize = 10_000;
 pub(crate) const PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS: usize = 50_000;
 
-impl ProxyRuntimeInvocationStore {
+impl RuntimeProjectionHub {
     pub(crate) fn runtime_record_count(&self) -> usize {
         self.inner
             .lock()
@@ -122,16 +962,20 @@ impl ProxyRuntimeInvocationStore {
             .records
             .keys()
             .chain(guard.terminal_tombstones.keys())
+            .chain(guard.projection_tombstones.keys())
             .map(|key| key.invoke_id.capacity() + key.occurred_at.capacity())
             .sum::<usize>();
         MemoryComponentEstimate {
             entries: guard
                 .records
                 .len()
-                .saturating_add(guard.terminal_tombstones.len()),
+                .saturating_add(guard.terminal_tombstones.len())
+                .saturating_add(guard.projection_tombstones.len()),
             bytes: record_bytes.saturating_add(key_bytes).saturating_add(
-                (guard.records.capacity() + guard.terminal_tombstones.capacity())
-                    .saturating_mul(std::mem::size_of::<usize>() * 2),
+                (guard.records.capacity()
+                    + guard.terminal_tombstones.capacity()
+                    + guard.projection_tombstones.capacity())
+                .saturating_mul(std::mem::size_of::<usize>() * 2),
             ),
             detail_items: guard.records.len(),
         }
@@ -153,14 +997,20 @@ impl ProxyRuntimeInvocationStore {
             .get(&key)
             .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
         if guard.terminal_tombstones.contains_key(&key) || terminal_overlay_exists {
-            return RuntimeInvocationStoreUpsertOutcome {
+            let outcome = RuntimeInvocationStoreUpsertOutcome {
                 running_count: guard.records.len(),
                 pruned_count,
                 skipped_terminal: true,
             };
+            drop(guard);
+            if pruned_count > 0 {
+                self.rebuild_dashboard_runtime_records("runtime_prune");
+            }
+            return outcome;
         }
+        guard.projection_tombstones.remove(&key);
         guard.records.insert(
-            key,
+            key.clone(),
             RuntimeInvocationEntry {
                 record,
                 updated_at: now,
@@ -168,11 +1018,18 @@ impl ProxyRuntimeInvocationStore {
         );
         let pruned_count =
             pruned_count + prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        RuntimeInvocationStoreUpsertOutcome {
+        let outcome = RuntimeInvocationStoreUpsertOutcome {
             running_count: guard.records.len(),
             pruned_count,
             skipped_terminal: false,
+        };
+        drop(guard);
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
+        } else {
+            self.sync_dashboard_runtime_key(&key, "runtime_upsert");
         }
+        outcome
     }
 
     pub(crate) fn upsert_terminal(
@@ -189,7 +1046,11 @@ impl ProxyRuntimeInvocationStore {
         let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
         let already_terminal = guard.terminal_tombstones.contains_key(&key);
         if already_terminal {
-            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+            let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+            drop(guard);
+            if pruned_count > 0 {
+                self.rebuild_dashboard_runtime_records("runtime_prune");
+            }
             return RuntimeInvocationStoreRemoveOutcome {
                 removed: false,
                 already_terminal: true,
@@ -205,22 +1066,37 @@ impl ProxyRuntimeInvocationStore {
                 },
             )
             .is_some();
-        guard.terminal_tombstones.insert(key, now);
-        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        RuntimeInvocationStoreRemoveOutcome {
+        guard.terminal_tombstones.insert(key.clone(), now);
+        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        let outcome = RuntimeInvocationStoreRemoveOutcome {
             removed,
             already_terminal: false,
+        };
+        drop(guard);
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
+        } else {
+            self.update_dashboard_runtime_record(key, None, "terminal_delta");
         }
+        outcome
     }
 
     pub(crate) fn clear_terminal_tombstone(&self, invoke_id: &str, occurred_at: &str) -> bool {
         let Ok(mut guard) = self.inner.lock() else {
             return false;
         };
-        guard
+        let removed = guard
             .terminal_tombstones
             .remove(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-            .is_some()
+            .is_some();
+        drop(guard);
+        if removed {
+            self.sync_dashboard_runtime_key(
+                &RuntimeInvocationKey::new(invoke_id, occurred_at),
+                "terminal_rollback",
+            );
+        }
+        removed
     }
 
     pub(crate) fn contains_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
@@ -234,7 +1110,11 @@ impl ProxyRuntimeInvocationStore {
                 .records
                 .get(&key)
                 .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
-        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        drop(guard);
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
+        }
         contains_terminal
     }
 
@@ -257,7 +1137,21 @@ impl ProxyRuntimeInvocationStore {
             None
         };
         if removed.is_some() {
-            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+            guard
+                .projection_tombstones
+                .insert(key.clone(), Instant::now());
+        }
+        let pruned_count = if removed.is_some() {
+            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
+        } else {
+            0
+        };
+        drop(guard);
+        if removed.is_some() {
+            self.update_dashboard_runtime_record(key, None, "runtime_remove");
+        }
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
         }
         removed
     }
@@ -275,11 +1169,28 @@ impl ProxyRuntimeInvocationStore {
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         let removed_count = keys
-            .into_iter()
+            .iter()
             .filter(|key| guard.records.remove(key).is_some())
             .count();
         if removed_count > 0 {
-            let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+            let now = Instant::now();
+            for key in &keys {
+                guard.projection_tombstones.insert(key.clone(), now);
+            }
+        }
+        let pruned_count = if removed_count > 0 {
+            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
+        } else {
+            0
+        };
+        drop(guard);
+        if removed_count > 0 {
+            for key in keys {
+                self.update_dashboard_runtime_record(key, None, "runtime_remove");
+            }
+        }
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
         }
         removed_count
     }
@@ -295,8 +1206,14 @@ impl ProxyRuntimeInvocationStore {
         let now = Instant::now();
         let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
         let removed = guard.records.remove(&key).is_some();
-        guard.terminal_tombstones.insert(key, now);
-        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        guard.terminal_tombstones.insert(key.clone(), now);
+        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
+        drop(guard);
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
+        } else {
+            self.update_dashboard_runtime_record(key, None, "terminal_persisted");
+        }
         removed
     }
 
@@ -304,12 +1221,18 @@ impl ProxyRuntimeInvocationStore {
         let Ok(mut guard) = self.inner.lock() else {
             return Vec::new();
         };
-        let _ = prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
-        guard
+        let pruned_count =
+            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
+        let snapshot = guard
             .records
             .values()
             .map(|entry| entry.record.clone())
-            .collect()
+            .collect();
+        drop(guard);
+        if pruned_count > 0 {
+            self.rebuild_dashboard_runtime_records("runtime_prune");
+        }
+        snapshot
     }
 
     #[cfg(test)]
@@ -416,17 +1339,29 @@ pub(crate) fn prune_bounded_runtime_invocation_store_locked(
     store: &mut ProxyRuntimeInvocationStoreInner,
     now: Instant,
 ) -> usize {
-    prune_bounded_runtime_invocations_locked(
+    let pruned_keys = prune_bounded_runtime_invocations_locked(
         &mut store.records,
         now,
         PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
         PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS,
-    ) + prune_bounded_runtime_tombstones_locked(
-        &mut store.terminal_tombstones,
-        now,
-        PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
-        PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
-    )
+    );
+    let pruned_count = pruned_keys.len();
+    for key in pruned_keys {
+        store.projection_tombstones.insert(key, now);
+    }
+    pruned_count
+        + prune_bounded_runtime_tombstones_locked(
+            &mut store.terminal_tombstones,
+            now,
+            PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
+            PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
+        )
+        + prune_bounded_runtime_tombstones_locked(
+            &mut store.projection_tombstones,
+            now,
+            PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
+            PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
+        )
 }
 
 pub(crate) fn prune_bounded_runtime_invocations_locked(
@@ -434,9 +1369,15 @@ pub(crate) fn prune_bounded_runtime_invocations_locked(
     now: Instant,
     max_age: Duration,
     max_records: usize,
-) -> usize {
-    let before = records.len();
-    records.retain(|_, entry| now.duration_since(entry.updated_at) <= max_age);
+) -> Vec<RuntimeInvocationKey> {
+    let mut pruned_keys = Vec::new();
+    records.retain(|key, entry| {
+        let retain = now.duration_since(entry.updated_at) <= max_age;
+        if !retain {
+            pruned_keys.push(key.clone());
+        }
+        retain
+    });
     if records.len() > max_records {
         let mut ranked_keys = records
             .iter()
@@ -446,9 +1387,10 @@ pub(crate) fn prune_bounded_runtime_invocations_locked(
         let excess = records.len().saturating_sub(max_records);
         for (key, _) in ranked_keys.into_iter().take(excess) {
             records.remove(&key);
+            pruned_keys.push(key);
         }
     }
-    before.saturating_sub(records.len())
+    pruned_keys
 }
 
 pub(crate) fn prune_bounded_runtime_tombstones_locked(
@@ -480,7 +1422,7 @@ pub(crate) struct AppState {
     pub(crate) process_started_at_utc: DateTime<Utc>,
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
     pub(crate) pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
-    pub(crate) proxy_runtime_invocations: Arc<ProxyRuntimeInvocationStore>,
+    pub(crate) proxy_runtime_invocations: Arc<RuntimeProjectionHub>,
     pub(crate) dashboard_network_speed_cache: Arc<DashboardNetworkSpeedCache>,
     pub(crate) oauth_installation_seed: [u8; 32],
     pub(crate) hourly_rollup_sync_lock: Arc<Mutex<()>>,

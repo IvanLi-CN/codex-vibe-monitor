@@ -49,6 +49,39 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       lastFlushAgeMs: 1_812,
     },
   },
+  runtimePressureHealth: {
+    state: "healthy",
+    process: {
+      rssBytes: 1_073_741_824,
+      rssAnonBytes: 805_306_368,
+      swapBytes: 0,
+      peakRssBytes: 1_342_177_280,
+      threads: 18,
+      managedBytes: 536_870_912,
+      unattributedAnonBytes: 268_435_456,
+      pressureLevel: "normal",
+    },
+    allocator: { mallocArenaMax: "8" },
+    writerAccounting: {
+      state: "healthy",
+      pendingDepth: 3,
+      pendingBytes: 524_288,
+      transferBytes: 67_108_864,
+      retryCount: 0,
+      invariantViolationCount: 0,
+    },
+    dashboardProjection: {
+      mode: "auto",
+      state: "healthy",
+      producerState: "running",
+      activeSubscriberCount: 2,
+      livePathDbReadCount: 0,
+      buildCount: 418,
+      revision: 771,
+      snapshotOrigin: "runtime_projection",
+      lastGoodAgeMs: 320,
+    },
+  },
   refreshedAt: "2026-06-22T09:28:00Z",
 };
 
@@ -372,6 +405,71 @@ export const Status: Story = {
       "数量",
     );
   },
+};
+
+function runtimePressureStatus(
+  state: "healthy" | "deferred" | "degraded" | "accounting_error",
+): SystemStatusResponse {
+  const base = STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!;
+  return {
+    ...STORYBOOK_SYSTEM_STATUS,
+    runtimePressureHealth: {
+      ...base,
+      state,
+      process: {
+        ...base.process,
+        swapBytes: state === "degraded" ? 268_435_456 : 0,
+        pressureLevel: state === "degraded" ? "elevated" : "normal",
+      },
+      writerAccounting: {
+        ...base.writerAccounting,
+        state: state === "accounting_error" ? "degraded" : "healthy",
+        invariantViolationCount: state === "accounting_error" ? 1 : 0,
+        degradedReason: state === "accounting_error" ? "pending_bytes_underflow" : undefined,
+      },
+      dashboardProjection: {
+        ...base.dashboardProjection,
+        state: state === "degraded" ? "degraded" : "healthy",
+        producerState: state === "deferred" ? "idle" : "running",
+        degradedReason: state === "degraded" ? "projection_stale" : undefined,
+        lastDeferReason: state === "deferred" ? "writer_pressure" : undefined,
+      },
+    },
+  };
+}
+
+const runtimePressurePlay =
+  (label: string) =>
+  async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("system-status-runtime-pressure-health")).toBeVisible();
+    await expect(canvas.getByText(`运行压力：${label}`)).toBeVisible();
+    await userEvent.click(canvas.getByText("运行压力详情"));
+    await expect(canvas.getByText("实时路径数据库读取")).toBeVisible();
+  };
+
+export const StatusRuntimePressureHealthy: Story = {
+  render: () => renderWorkspace("/system/status"),
+  parameters: { systemStatusOverride: runtimePressureStatus("healthy") },
+  play: runtimePressurePlay("健康"),
+};
+
+export const StatusRuntimePressureDeferred: Story = {
+  render: () => renderWorkspace("/system/status"),
+  parameters: { systemStatusOverride: runtimePressureStatus("deferred") },
+  play: runtimePressurePlay("已延后"),
+};
+
+export const StatusRuntimePressureDegraded: Story = {
+  render: () => renderWorkspace("/system/status"),
+  parameters: { systemStatusOverride: runtimePressureStatus("degraded") },
+  play: runtimePressurePlay("已降级"),
+};
+
+export const StatusRuntimePressureAccountingError: Story = {
+  render: () => renderWorkspace("/system/status"),
+  parameters: { systemStatusOverride: runtimePressureStatus("accounting_error") },
+  play: runtimePressurePlay("核算异常"),
 };
 
 export const StatusRequestHeavy: Story = {

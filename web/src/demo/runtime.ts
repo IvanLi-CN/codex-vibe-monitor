@@ -3,7 +3,11 @@ export type DemoScene =
   | "attention"
   | "empty"
   | "progressive-loading"
-  | "network-failure";
+  | "network-failure"
+  | "runtime-pressure-healthy"
+  | "runtime-pressure-deferred"
+  | "runtime-pressure-degraded"
+  | "runtime-pressure-accounting-error";
 export type DemoTheme = "light" | "dark";
 export type DemoViewport = "default" | "mobile390" | "mobile393";
 
@@ -14,6 +18,10 @@ const SCENE_VALUES = new Set<DemoScene>([
   "empty",
   "progressive-loading",
   "network-failure",
+  "runtime-pressure-healthy",
+  "runtime-pressure-deferred",
+  "runtime-pressure-degraded",
+  "runtime-pressure-accounting-error",
 ]);
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
 const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390", "mobile393"]);

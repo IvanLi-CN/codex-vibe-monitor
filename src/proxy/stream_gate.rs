@@ -302,6 +302,22 @@ pub(crate) fn prepare_target_request_body(
     body: Vec<u8>,
     auto_include_usage: bool,
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
+    let (body, info, rewritten, _) =
+        prepare_target_request_body_with_hosted_intent(target, body, auto_include_usage);
+    (body, info, rewritten)
+}
+
+pub(crate) fn prepare_target_request_body_with_hosted_intent(
+    target: ProxyCaptureTarget,
+    body: Vec<u8>,
+    auto_include_usage: bool,
+) -> (Vec<u8>, RequestCaptureInfo, bool, ImageIntent) {
+    let mut hosted_image_intent = match target {
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
+            ImageIntent::DirectImage
+        }
+        _ => ImageIntent::Unknown,
+    };
     let mut info = RequestCaptureInfo {
         model: None,
         sticky_key: None,
@@ -326,14 +342,14 @@ pub(crate) fn prepare_target_request_body(
     };
 
     if body.is_empty() {
-        return (body, info, false);
+        return (body, info, false, hosted_image_intent);
     }
 
     let mut value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(err) => {
             info.parse_error = Some(format!("request_json_parse_error:{err}"));
-            return (body, info, false);
+            return (body, info, false, hosted_image_intent);
         }
     };
 
@@ -368,6 +384,7 @@ pub(crate) fn prepare_target_request_body(
             .as_str()
             .to_string(),
     );
+    hosted_image_intent = infer_hosted_image_intent_from_request_body(target, &value);
 
     let mut rewritten = false;
     if target.should_auto_include_usage()
@@ -394,15 +411,15 @@ pub(crate) fn prepare_target_request_body(
 
     if rewritten {
         match serde_json::to_vec(&value) {
-            Ok(rewritten_body) => (rewritten_body, info, true),
+            Ok(rewritten_body) => (rewritten_body, info, true, hosted_image_intent),
             Err(err) => {
                 let mut fallback = info;
                 fallback.parse_error = Some(format!("request_json_rewrite_error:{err}"));
-                (body, fallback, false)
+                (body, fallback, false, hosted_image_intent)
             }
         }
     } else {
-        (body, info, false)
+        (body, info, false, hosted_image_intent)
     }
 }
 

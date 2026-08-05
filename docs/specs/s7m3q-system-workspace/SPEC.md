@@ -16,6 +16,7 @@
 - 在 `系统` 下稳定提供 `状态 / 任务 / 设置 / 代理` 四个子界面。
 - 新增系统状态读接口，展示调用成功数、非成功数、归档 body 数量/体积、raw payload 总量/体积、request raw payload、response raw payload、数据库体积、其他文件体积，并按 60 秒轮询刷新。
 - raw payload 指标读取持久快照；首次升级或 retention 后通过 additive `rawMetricsHealth=preparing|ready|deferred|error` 明确盘点状态。ready 后状态读取不得查询全部 raw path 或逐文件读取元数据。
+- `GET /api/system/status` additive 暴露 `runtimePressureHealth`，覆盖 Dashboard producer、request semantic pipeline、RSS/Swap 与 writer accounting；该 health 只读取内存计数器，不得新增状态页 SQL。
 - 新增系统后台任务记录读接口，至少覆盖 scheduler、retention/archive（含 raw compression 摘要）、startup backfill、forward-proxy subscription refresh。
 - 保持现有 `/api/settings*` 写接口契约不变；原设置能力按职责拆到 `系统/设置` 与 `系统/代理`。
 

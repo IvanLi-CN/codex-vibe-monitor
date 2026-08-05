@@ -583,6 +583,89 @@ pub(crate) async fn store_raw_payload_file(
     meta
 }
 
+pub(crate) async fn store_raw_payload_snapshot_file(
+    config: &AppConfig,
+    invoke_id: &str,
+    kind: &str,
+    source_path: PathBuf,
+    source_size: usize,
+) -> RawPayloadMeta {
+    let started = Instant::now();
+    let file_bytes = config
+        .proxy_raw_max_bytes
+        .map_or(source_size, |limit| source_size.min(limit));
+    let mut meta = RawPayloadMeta {
+        path: None,
+        size_bytes: source_size as i64,
+        truncated: file_bytes < source_size,
+        truncated_reason: (file_bytes < source_size).then(|| "max_bytes_exceeded".to_string()),
+    };
+    let raw_dir = config.resolved_proxy_raw_dir();
+    let born_compressed = match config.proxy_raw_compression {
+        RawCompressionCodec::Zstd => true,
+        RawCompressionCodec::Gzip => config
+            .proxy_raw_immediate_compression_threshold()
+            .is_some_and(|threshold| file_bytes >= threshold),
+        RawCompressionCodec::None => false,
+    };
+    let codec = match (born_compressed, config.proxy_raw_compression) {
+        (true, RawCompressionCodec::Gzip) => RAW_CODEC_GZIP,
+        (true, RawCompressionCodec::Zstd) => RAW_CODEC_ZSTD,
+        _ => RAW_CODEC_IDENTITY,
+    };
+    let plain_path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, false);
+    let path = if codec == RAW_CODEC_ZSTD {
+        raw_payload_zstd_path(&plain_path)
+    } else if codec == RAW_CODEC_GZIP {
+        raw_payload_gzip_path(&plain_path)
+    } else {
+        plain_path
+    };
+    let write_path = path.clone();
+    let write_result = run_blocking_raw_writer_io(move || {
+        let mut source = std::io::BufReader::with_capacity(
+            REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES,
+            fs::File::open(source_path)?,
+        )
+        .take(file_bytes as u64);
+        if codec == RAW_CODEC_GZIP {
+            let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
+            std::io::copy(&mut source, &mut encoder)?;
+            encoder.finish()?.flush()
+        } else if codec == RAW_CODEC_ZSTD {
+            let mut encoder = create_zstd_streaming_raw_encoder(&write_path)?;
+            std::io::copy(&mut source, &mut encoder)?;
+            encoder.finish()?.flush()
+        } else {
+            prepare_streaming_raw_parent(&write_path)?;
+            let mut writer = fs::File::create(&write_path)?;
+            std::io::copy(&mut source, &mut writer)?;
+            writer.flush()
+        }
+    })
+    .await;
+    match write_result {
+        Ok(()) => meta.path = Some(path.to_string_lossy().to_string()),
+        Err(err) => {
+            let _ = fs::remove_file(&path);
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+        }
+    }
+    debug!(
+        invoke_id,
+        raw_kind = kind,
+        codec,
+        file_bytes,
+        observed_bytes = meta.size_bytes,
+        truncated = meta.truncated,
+        has_path = meta.path.is_some(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "proxy raw replay snapshot write completed"
+    );
+    meta
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProxyCaptureFollowUpBroadcastMode {
     ActiveSubscribers,

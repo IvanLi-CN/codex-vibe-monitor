@@ -34,6 +34,15 @@ pub(crate) struct ProcessMemorySnapshot {
     pub(crate) cgroup_limit_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeMemoryPressureSnapshot {
+    pub(crate) process: ProcessMemorySnapshot,
+    pub(crate) managed_bytes: u64,
+    pub(crate) unattributed_anon_bytes: u64,
+    pub(crate) pressure_level: String,
+    pub(crate) malloc_arena_max: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MemoryComponentEstimate {
     pub(crate) entries: usize,
@@ -111,6 +120,7 @@ pub(crate) struct MemoryOperationBaseline {
 pub(crate) struct MemoryDiagnosticsRuntime {
     mode: String,
     last_sample: Mutex<Option<ProcessMemorySnapshot>>,
+    sampled_managed_bytes: AtomicU64,
     peak_rss_bytes: AtomicU64,
     high_unattributed_samples: AtomicUsize,
     allocator_once_attempted: AtomicBool,
@@ -129,7 +139,8 @@ impl MemoryDiagnosticsRuntime {
                 .unwrap_or_else(|_| "summary".to_string())
                 .trim()
                 .to_ascii_lowercase(),
-            last_sample: Mutex::new(None),
+            last_sample: Mutex::new(Some(read_process_memory())),
+            sampled_managed_bytes: AtomicU64::new(0),
             peak_rss_bytes: AtomicU64::new(0),
             high_unattributed_samples: AtomicUsize::new(0),
             allocator_once_attempted: AtomicBool::new(false),
@@ -144,6 +155,26 @@ impl MemoryDiagnosticsRuntime {
         }
     }
 
+    pub(crate) fn runtime_pressure_snapshot(&self) -> RuntimeMemoryPressureSnapshot {
+        let process = self
+            .last_sample
+            .lock()
+            .ok()
+            .and_then(|sample| *sample)
+            .unwrap_or_default();
+        let managed_bytes = self.sampled_managed_bytes.load(Ordering::Relaxed);
+        RuntimeMemoryPressureSnapshot {
+            process,
+            managed_bytes,
+            unattributed_anon_bytes: process.rss_anon_bytes.saturating_sub(managed_bytes),
+            pressure_level: memory_pressure_level(process, managed_bytes as usize).to_string(),
+            malloc_arena_max: env::var("MALLOC_ARENA_MAX")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "unknown".to_string()),
+        }
+    }
+
     pub(crate) async fn observe_operation(
         &self,
         state: &AppState,
@@ -155,6 +186,8 @@ impl MemoryDiagnosticsRuntime {
         let process = read_process_memory();
         let components = collect_component_snapshot(state).await;
         let managed_bytes = components.managed_bytes();
+        self.sampled_managed_bytes
+            .store(managed_bytes as u64, Ordering::Relaxed);
         info!(
             operation,
             elapsed_ms = baseline.started_at.elapsed().as_millis() as u64,
@@ -179,6 +212,8 @@ impl MemoryDiagnosticsRuntime {
         let process = read_process_memory();
         let components = collect_component_snapshot(state).await;
         let managed_bytes = components.managed_bytes();
+        self.sampled_managed_bytes
+            .store(managed_bytes as u64, Ordering::Relaxed);
         let unattributed_bytes = process.rss_anon_bytes.saturating_sub(managed_bytes as u64);
         self.peak_rss_bytes
             .fetch_max(process.rss_bytes, Ordering::Relaxed);
