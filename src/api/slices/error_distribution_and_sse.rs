@@ -1970,7 +1970,7 @@ pub(crate) async fn broadcast_quota_if_changed(
 pub(crate) async fn sse_stream(
     state: State<Arc<AppState>>,
     query: Query<SubscriptionStreamQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<Response, ApiError> {
     topic_sse_stream(state, query).await
 }
 

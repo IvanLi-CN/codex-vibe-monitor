@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::header;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -163,19 +164,27 @@ pub(crate) struct SerializedTopicFrame {
     pub(crate) cursor: u64,
     descriptor: SubscriptionTopicDescriptor,
     fingerprint: u64,
-    payload_bytes: Arc<[u8]>,
-    snapshot_envelope_bytes: Arc<str>,
-    replay_envelope_bytes: Arc<str>,
-    live_envelope_bytes: Arc<str>,
+    payload_bytes: Bytes,
+    envelope_metadata_bytes: Bytes,
 }
 
 impl SerializedTopicFrame {
-    fn envelope_bytes(&self, kind: TopicFrameKind) -> &str {
-        match kind {
-            TopicFrameKind::Snapshot => &self.snapshot_envelope_bytes,
-            TopicFrameKind::Replay => &self.replay_envelope_bytes,
-            TopicFrameKind::Live => &self.live_envelope_bytes,
-        }
+    fn event_chunks(&self, kind: TopicFrameKind) -> [Bytes; 4] {
+        let prefix = match kind {
+            TopicFrameKind::Snapshot => Bytes::from_static(b"data: {\"type\":\"snapshot"),
+            TopicFrameKind::Replay => Bytes::from_static(b"data: {\"type\":\"replay"),
+            TopicFrameKind::Live => Bytes::from_static(b"data: {\"type\":\"live"),
+        };
+        [
+            prefix,
+            self.envelope_metadata_bytes.clone(),
+            self.payload_bytes.clone(),
+            Bytes::from_static(b"}\n\n"),
+        ]
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.envelope_metadata_bytes.len() + self.payload_bytes.len()
     }
 
     #[cfg(test)]
@@ -1052,11 +1061,10 @@ impl SubscriptionHub {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
             }
             let serialized_payload = serde_json::to_vec(&payload)?;
-            if let Some(existing) = guard.topics.get(&topic_key)
-                && !existing.dirty
-                && existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload
+            if let Some(existing) = guard.topics.get_mut(&topic_key)
+                && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
             {
-                return Ok(Some(existing.clone()));
+                return Ok(Some(existing));
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
@@ -1133,13 +1141,14 @@ impl SubscriptionHub {
                     .map_or(0, |entry| entry.replay_bytes),
             };
             if emit_live {
+                let retained_bytes = frame.retained_bytes();
                 let replay_event = ReplayableTopicEvent {
                     frame: frame.clone(),
-                    bytes: payload_bytes,
+                    bytes: retained_bytes,
                     emitted_at: Utc::now(),
                 };
                 next.replay_events.push_back(replay_event);
-                next.replay_bytes = next.replay_bytes.saturating_add(payload_bytes);
+                next.replay_bytes = next.replay_bytes.saturating_add(retained_bytes);
                 prune_replay_window(&mut next.replay_events, &mut next.replay_bytes);
             }
             guard.topics.insert(topic_key.clone(), next.clone());
@@ -1799,15 +1808,16 @@ impl SubscriptionHub {
                 serde_json::to_vec(&payload)?,
             )?);
             let payload_bytes = frame.payload_bytes.len();
+            let retained_bytes = frame.retained_bytes();
             cached.cursor = next_cursor;
             cached.snapshot_frame = frame.clone();
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
-                bytes: payload_bytes,
+                bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
             SubscriptionDispatchEvent { frame }
         };
@@ -1845,16 +1855,17 @@ impl SubscriptionHub {
                 serde_json::to_vec(&payload)?,
             )?);
             let payload_bytes = frame.payload_bytes.len();
+            let retained_bytes = frame.retained_bytes();
             cached.cursor = next_cursor;
             cached.snapshot_payload = payload.clone();
             cached.snapshot_frame = frame.clone();
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
-                bytes: payload_bytes,
+                bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
 
             SubscriptionDispatchEvent { frame }
@@ -2332,7 +2343,7 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
 pub(crate) async fn topic_sse_stream(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SubscriptionStreamQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<Response, ApiError> {
     let descriptors = decode_topics_query(query.topics.as_deref())?;
     let resume = decode_resume_query(query.resume.as_deref(), &descriptors)?;
     let resume_count = resume.len();
@@ -2383,39 +2394,51 @@ pub(crate) async fn topic_sse_stream(
         .register_server_push_topics(state.clone(), server_push_topics)
         .await?;
 
-    let initial_stream = stream::iter(
-        initial
-            .into_iter()
-            .map(|prepared| serialize_topic_frame_event(&prepared.frame, prepared.kind)),
-    );
+    let initial_stream = stream::iter(initial.into_iter().flat_map(|prepared| {
+        prepared
+            .frame
+            .event_chunks(prepared.kind)
+            .map(Ok::<_, Infallible>)
+    }));
 
     let live_stream = async_stream::stream! {
         let _topic_lease = topic_lease;
         let _server_push_lease = server_push_lease;
         let mut last_seen = last_seen_by_topic;
+        let mut keep_alive = tokio::time::interval(Duration::from_secs(15));
+        keep_alive.tick().await;
         loop {
-            match live_receiver.recv().await {
-                Ok(dispatch) => {
-                    if !selected_topic_keys.contains(&dispatch.frame.topic_key) {
-                        continue;
+            tokio::select! {
+                _ = keep_alive.tick() => yield Ok::<_, Infallible>(Bytes::from_static(b":\n\n")),
+                received = live_receiver.recv() => match received {
+                    Ok(dispatch) => {
+                        if !selected_topic_keys.contains(&dispatch.frame.topic_key) {
+                            continue;
+                        }
+                        let previous_cursor = last_seen.get(&dispatch.frame.topic_key).copied().unwrap_or(0);
+                        if dispatch.frame.cursor <= previous_cursor {
+                            continue;
+                        }
+                        last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        for chunk in dispatch.frame.event_chunks(TopicFrameKind::Live) {
+                            yield Ok::<_, Infallible>(chunk);
+                        }
                     }
-                    let previous_cursor = last_seen.get(&dispatch.frame.topic_key).copied().unwrap_or(0);
-                    if dispatch.frame.cursor <= previous_cursor {
-                        continue;
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "subscription live fanout lagged");
                     }
-                    last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
-                    yield serialize_topic_frame_event(&dispatch.frame, TopicFrameKind::Live);
-                }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "subscription live fanout lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
     };
 
     let merged = initial_stream.chain(live_stream);
-    Ok(Sse::new(merged).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(merged))
+        .map_err(|err| ApiError::from(anyhow!(err)))
 }
 
 impl SubscriptionTopic {
@@ -3278,35 +3301,30 @@ fn serialize_topic_frame(
     let descriptor_json = serde_json::to_string(&descriptor)?;
     let topic_key_json = serde_json::to_string(&topic_key)?;
     let schema_epoch_json = serde_json::to_string(&schema_epoch)?;
-    let payload_json =
-        std::str::from_utf8(&payload_bytes).map_err(|err| ApiError::from(anyhow!(err)))?;
-    let envelope = |kind| -> Result<Arc<str>, ApiError> {
-        Ok(format!(
-            r#"{{"type":"{kind}","topic":{descriptor_json},"topicKey":{topic_key_json},"schemaEpoch":{schema_epoch_json},"cursor":{cursor},"payload":{payload_json}}}"#
-        )
-        .into())
-    };
-    let snapshot_envelope_bytes = envelope("snapshot")?;
-    let replay_envelope_bytes = envelope("replay")?;
-    let live_envelope_bytes = envelope("live")?;
+    let envelope_metadata_bytes = Bytes::from(format!(
+        r#"","topic":{descriptor_json},"topicKey":{topic_key_json},"schemaEpoch":{schema_epoch_json},"cursor":{cursor},"payload":"#
+    ));
     Ok(SerializedTopicFrame {
         topic_key,
         schema_epoch,
         cursor,
         descriptor,
         fingerprint,
-        payload_bytes: payload_bytes.into(),
-        snapshot_envelope_bytes,
-        replay_envelope_bytes,
-        live_envelope_bytes,
+        payload_bytes: Bytes::from(payload_bytes),
+        envelope_metadata_bytes,
     })
 }
 
-fn serialize_topic_frame_event(
-    frame: &SerializedTopicFrame,
-    kind: TopicFrameKind,
-) -> Result<Event, Infallible> {
-    Ok(Event::default().data(frame.envelope_bytes(kind)))
+fn reuse_unchanged_cached_topic(
+    existing: &mut CachedSubscriptionTopic,
+    serialized_payload: &[u8],
+) -> Option<CachedSubscriptionTopic> {
+    if existing.dirty || existing.snapshot_frame.payload_bytes.as_ref() != serialized_payload {
+        return None;
+    }
+    existing.refresh_scheduled = false;
+    existing.snapshot_built_at = Instant::now();
+    Some(existing.clone())
 }
 
 fn prune_replay_window(events: &mut VecDeque<ReplayableTopicEvent>, total_bytes: &mut usize) {
@@ -4406,6 +4424,59 @@ mod tests {
     }
 
     #[test]
+    fn serialized_topic_frame_reuses_shared_chunks_for_each_delivery_kind() {
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let payload = serde_json::to_vec(&json!({ "value": 42 })).expect("payload");
+        let frame = serialize_topic_frame(
+            descriptor,
+            topic.cache_key().expect("topic key"),
+            topic.schema_epoch(),
+            7,
+            payload,
+        )
+        .expect("serialized frame");
+
+        for (kind, expected_kind) in [
+            (TopicFrameKind::Snapshot, "snapshot"),
+            (TopicFrameKind::Replay, "replay"),
+            (TopicFrameKind::Live, "live"),
+        ] {
+            let chunks = frame.event_chunks(kind);
+            assert_eq!(chunks[1].as_ptr(), frame.envelope_metadata_bytes.as_ptr());
+            assert_eq!(chunks[2].as_ptr(), frame.payload_bytes.as_ptr());
+            let wire = chunks.concat();
+            let envelope: Value = serde_json::from_slice(&wire[6..wire.len() - 2])
+                .expect("SSE data contains a JSON envelope");
+            assert_eq!(envelope["type"], expected_kind);
+            assert_eq!(envelope["cursor"], 7);
+            assert_eq!(envelope["payload"]["value"], 42);
+        }
+        assert_eq!(
+            frame.retained_bytes(),
+            frame.envelope_metadata_bytes.len() + frame.payload_bytes.len()
+        );
+    }
+
+    #[test]
+    fn unchanged_refresh_clears_scheduled_flag_for_the_next_terminal_event() {
+        let topic = summary_topic();
+        let mut cached = seeded_cached_topic(topic, &[], Utc::now());
+        cached.refresh_scheduled = true;
+        let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
+
+        let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
+
+        assert!(reused.is_some());
+        assert!(!cached.refresh_scheduled);
+        cached.refresh_scheduled = true;
+        assert!(
+            cached.refresh_scheduled,
+            "a later terminal event can schedule again"
+        );
+    }
+
+    #[test]
     fn prune_replay_window_drops_expired_entries() {
         let now = Utc::now();
         let topic = summary_topic();
@@ -4471,8 +4542,10 @@ mod tests {
             (TopicFrameKind::Replay, "replay"),
             (TopicFrameKind::Live, "live"),
         ] {
+            let chunks = frame.event_chunks(kind);
+            let wire = chunks.concat();
             let envelope: Value =
-                serde_json::from_str(frame.envelope_bytes(kind)).expect("wire envelope");
+                serde_json::from_slice(&wire[6..wire.len() - 2]).expect("wire envelope");
             assert_eq!(envelope["type"], expected);
             assert_eq!(envelope["cursor"], 7);
             assert_eq!(envelope["payload"], json!({ "total": 3 }));
