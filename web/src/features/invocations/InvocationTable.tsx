@@ -621,7 +621,7 @@ export function InvocationCardList({
       setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
     };
     const isInsideInvocationDetail = (target: EventTarget | null) =>
-      target instanceof HTMLElement && target.closest("[data-invocation-detail]") != null;
+      target instanceof Element && target.closest("[data-invocation-detail]") != null;
     const handleCardClick = (event: MouseEvent<HTMLElement>) => {
       if (isInsideInvocationDetail(event.target)) return;
       handleToggle();
@@ -680,6 +680,20 @@ export function InvocationCardList({
           isHighlighted && "border-primary/55 bg-primary/10",
         )}
       >
+        <button
+          type="button"
+          className="sr-only"
+          aria-expanded={isExpanded}
+          aria-controls={cardDetailId}
+          aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleToggle();
+          }}
+          data-testid="invocation-card-toggle"
+        >
+          {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
+        </button>
         <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -802,24 +816,30 @@ export function InvocationCardList({
             </div>
           </div>
           <div className="grid min-w-0 grid-cols-2 gap-x-3 gap-y-1 text-xs sm:grid-cols-3">
-            <span className="text-base-content/55">Hit {cacheHitRate}</span>
+            <span className="text-base-content/55">
+              {t("table.card.cacheHitRate")} {cacheHitRate}
+            </span>
             <span className="font-mono tabular-nums">
               {t("table.column.inputTokens")} {row.inputTokensValue}
             </span>
             <span className="font-mono tabular-nums">
               {t("table.column.cacheInputTokens")} {row.cacheInputTokensValue}
             </span>
-            <span className="font-mono tabular-nums">缓存写入 {row.cacheWriteTokensValue}</span>
+            <span className="font-mono tabular-nums">
+              {t("table.card.cacheWrite")} {row.cacheWriteTokensValue}
+            </span>
             <span className="font-mono tabular-nums">
               {t("table.column.outputTokens")} {row.outputTokensValue}
             </span>
             <span className="font-mono tabular-nums">
               {t("table.column.totalTokens")} {row.totalTokensValue}
             </span>
-            <span className="font-mono tabular-nums">成本 {row.costValue}</span>
+            <span className="font-mono tabular-nums">
+              {t("table.card.cost")} {row.costValue}
+            </span>
             <span className="font-mono tabular-nums">{row.outputReasoningBreakdownValue}</span>
             <span className="text-base-content/55">
-              压缩 {row.requestCompressionAlgorithmValue}
+              {t("table.card.requestCompression")} {row.requestCompressionAlgorithmValue}
             </span>
           </div>
         </div>
