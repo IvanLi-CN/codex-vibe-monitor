@@ -29,6 +29,8 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
 const CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -324,12 +326,21 @@ pub(crate) struct SubscriptionDispatchEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
 }
 
+#[cfg(test)]
+type DashboardTopologyFramesByTopic = BTreeMap<String, Vec<Arc<SerializedTopicFrame>>>;
+#[cfg(test)]
+type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFramesByTopic>;
+
 #[derive(Debug)]
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     serialization_count: AtomicU64,
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
+    #[cfg(test)]
+    dashboard_topology_sse_frame_observations: Mutex<DashboardTopologySseFrameObservations>,
+    #[cfg(test)]
+    server_push_test_suspensions: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -663,6 +674,10 @@ impl SubscriptionHub {
             broadcaster,
             serialization_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
+            #[cfg(test)]
+            dashboard_topology_sse_frame_observations: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            server_push_test_suspensions: Mutex::new(HashSet::new()),
         }
     }
 
@@ -699,6 +714,58 @@ impl SubscriptionHub {
     #[cfg(test)]
     pub(crate) fn reset_dashboard_topology_counters(&self) {
         self.dashboard_topology_counters.reset();
+    }
+
+    #[cfg(test)]
+    async fn record_dashboard_topology_sse_frame_delivery(
+        &self,
+        attempt: u64,
+        frame: &Arc<SerializedTopicFrame>,
+    ) {
+        let mut observations = self.dashboard_topology_sse_frame_observations.lock().await;
+        observations
+            .entry(attempt)
+            .or_default()
+            .entry(frame.descriptor.topic.clone())
+            .or_default()
+            .push(frame.clone());
+    }
+
+    #[cfg(test)]
+    async fn dashboard_topology_sse_frame_observations(
+        &self,
+        attempt: u64,
+    ) -> DashboardTopologyFramesByTopic {
+        self.dashboard_topology_sse_frame_observations
+            .lock()
+            .await
+            .get(&attempt)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    async fn reset_dashboard_topology_sse_frame_observations(&self) {
+        self.dashboard_topology_sse_frame_observations
+            .lock()
+            .await
+            .clear();
+    }
+
+    #[cfg(test)]
+    async fn suspend_server_push_for_test(&self, topic_key: &str) {
+        self.server_push_test_suspensions
+            .lock()
+            .await
+            .insert(topic_key.to_string());
+    }
+
+    #[cfg(test)]
+    async fn server_push_is_suspended_for_test(&self, topic_key: &str) -> bool {
+        self.server_push_test_suspensions
+            .lock()
+            .await
+            .contains(topic_key)
     }
 
     fn record_dashboard_topology_lag(&self, topic_names: &[String], skipped: u64) {
@@ -2464,6 +2531,10 @@ async fn run_server_push_topic_loop(
                 break;
             }
             _ = interval.tick() => {
+                #[cfg(test)]
+                if hub.server_push_is_suspended_for_test(&topic_key).await {
+                    continue;
+                }
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
@@ -2527,6 +2598,11 @@ pub(crate) async fn topic_sse_stream(
         })
         .map(str::to_string)
         .collect::<Vec<_>>();
+    #[cfg(test)]
+    let dashboard_topology_observer_attempt = (query.reason.as_deref()
+        == Some(DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON))
+    .then_some(query.attempt)
+    .flatten();
     let dashboard_topology_hub = state.subscription_hub.clone();
     let topic_lease = state
         .subscription_hub
@@ -2592,6 +2668,12 @@ pub(crate) async fn topic_sse_stream(
                             continue;
                         }
                         last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        #[cfg(test)]
+                        if let Some(attempt) = dashboard_topology_observer_attempt {
+                            dashboard_topology_hub
+                                .record_dashboard_topology_sse_frame_delivery(attempt, &dispatch.frame)
+                                .await;
+                        }
                         for chunk in dispatch.frame.event_chunks(TopicFrameKind::Live) {
                             yield Ok::<_, Infallible>(chunk);
                         }
@@ -3937,10 +4019,21 @@ mod tests {
         }
     }
 
-    async fn collect_dashboard_runtime_topology_frames(
-        receiver: &mut broadcast::Receiver<SubscriptionDispatchEvent>,
-        initial: Option<SubscriptionDispatchEvent>,
-    ) -> BTreeMap<String, Arc<SerializedTopicFrame>> {
+    fn dashboard_runtime_topology_stream_query(attempt: u64) -> SubscriptionStreamQuery {
+        SubscriptionStreamQuery {
+            topics: Some(
+                serde_json::to_string(&dashboard_runtime_topology_descriptors())
+                    .expect("serialize dashboard topology topics"),
+            ),
+            resume: None,
+            attempt: Some(attempt),
+            reason: Some(DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON.to_string()),
+        }
+    }
+
+    async fn collect_dashboard_runtime_topology_sse_events(
+        response: Response,
+    ) -> BTreeMap<String, Value> {
         let expected = [
             "dashboard.activity.current",
             "stats.summary.current",
@@ -3948,32 +4041,50 @@ mod tests {
             "dashboard.network-recent.current",
         ];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let mut frames = BTreeMap::new();
-        if let Some(dispatch) = initial
-            && expected.contains(&dispatch.frame.descriptor.topic.as_str())
-        {
-            frames.insert(dispatch.frame.descriptor.topic.clone(), dispatch.frame);
-        }
-        while frames.len() < expected.len() {
+        let mut stream = response.into_body().into_data_stream();
+        let mut buffered = Vec::new();
+        let mut events = BTreeMap::new();
+        while events.len() < expected.len() {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "dashboard topology live frame timeout"
+                "dashboard topology SSE live event timeout; received={:?}",
+                events.keys()
             );
-            let dispatch = tokio::time::timeout(remaining, receiver.recv())
+            let chunk = tokio::time::timeout(remaining, stream.next())
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
-                        "dashboard topology live frame timeout; received={:?}",
-                        frames.keys()
+                        "dashboard topology SSE live event timeout; received={:?}",
+                        events.keys()
                     )
                 })
-                .expect("dashboard topology live frame channel closed");
-            if expected.contains(&dispatch.frame.descriptor.topic.as_str()) {
-                frames.insert(dispatch.frame.descriptor.topic.clone(), dispatch.frame);
+                .expect("dashboard topology SSE stream closed")
+                .expect("dashboard topology SSE stream chunk");
+            buffered.extend_from_slice(&chunk);
+            while let Some(event_end) = buffered.windows(2).position(|window| window == b"\n\n") {
+                let event = buffered.drain(..event_end + 2).collect::<Vec<_>>();
+                let Some(payload) = event
+                    .strip_prefix(b"data: ")
+                    .and_then(|payload| payload.strip_suffix(b"\n\n"))
+                else {
+                    continue;
+                };
+                let envelope: Value =
+                    serde_json::from_slice(payload).expect("Dashboard SSE envelope");
+                let Some(topic) = envelope
+                    .pointer("/topic/topic")
+                    .and_then(Value::as_str)
+                    .filter(|topic| expected.contains(topic))
+                else {
+                    continue;
+                };
+                if envelope.get("type").and_then(Value::as_str) == Some("live") {
+                    events.insert(topic.to_string(), envelope);
+                }
             }
         }
-        frames
+        events
     }
 
     #[tokio::test]
@@ -4009,26 +4120,54 @@ mod tests {
             .map(SubscriptionTopic::from_descriptor)
             .collect::<Result<Vec<_>, _>>()
             .expect("dashboard topology topics");
-        let prepared = state
+        let network_recent_key = topics
+            .last()
+            .expect("network recent topic")
+            .cache_key()
+            .expect("network recent topic key");
+        state
             .subscription_hub
-            .prepare_connection(state.clone(), descriptors, Vec::new())
-            .await
-            .expect("prepare full dashboard topology");
-        assert_eq!(prepared.initial.len(), topics.len());
-
-        let first_owner = state
-            .subscription_hub
-            .register_topic_subscribers(&topics)
-            .await
-            .expect("register first dashboard topology owner");
-        let second_owner = state
-            .subscription_hub
-            .register_topic_subscribers(&topics)
-            .await
-            .expect("register second dashboard topology owner");
-        let mut first_receiver = state.subscription_hub.subscribe();
-        let mut second_receiver = state.subscription_hub.subscribe();
-        let mut producer_receiver = state.broadcaster.subscribe();
+            .suspend_server_push_for_test(&network_recent_key)
+            .await;
+        let first_response = topic_sse_stream(
+            State(state.clone()),
+            Query(dashboard_runtime_topology_stream_query(1)),
+        )
+        .await
+        .expect("open first full Dashboard SSE topology");
+        let second_response = topic_sse_stream(
+            State(state.clone()),
+            Query(dashboard_runtime_topology_stream_query(2)),
+        )
+        .await
+        .expect("open second full Dashboard SSE topology");
+        for topic in &topics {
+            assert_eq!(
+                state
+                    .subscription_hub
+                    .active_topic_subscriber_count(topic.name())
+                    .await,
+                2,
+                "SSE entrypoint should retain both Dashboard owners for {}",
+                topic.name(),
+            );
+        }
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            assert_eq!(
+                guard
+                    .server_push_subscribers
+                    .get(&network_recent_key)
+                    .copied(),
+                Some(2),
+                "SSE entrypoint should register both network recent cadence owners",
+            );
+            assert!(
+                guard.server_push_tasks.contains(&network_recent_key),
+                "SSE entrypoint should start the shared network recent cadence task",
+            );
+        }
+        spawn_subscription_broadcast_listener(state.clone());
 
         let process_started_epoch_second = state
             .dashboard_network_speed_cache
@@ -4041,6 +4180,10 @@ mod tests {
             .proxy_runtime_invocations
             .reset_dashboard_topology_counters();
         state.subscription_hub.reset_dashboard_topology_counters();
+        state
+            .subscription_hub
+            .reset_dashboard_topology_sse_frame_observations()
+            .await;
         let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
         state
             .proxy_runtime_invocations
@@ -4056,26 +4199,42 @@ mod tests {
         crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
             state.as_ref(),
         );
-        let payload = tokio::time::timeout(Duration::from_secs(2), producer_receiver.recv())
-            .await
-            .expect("dashboard topology producer timeout")
-            .expect("dashboard topology producer channel closed");
-        state.shutdown.cancel();
-        state
-            .subscription_hub
-            .handle_internal_broadcast(state.clone(), payload)
-            .await;
         let (first_frames, second_frames) = tokio::join!(
-            collect_dashboard_runtime_topology_frames(&mut first_receiver, None),
-            collect_dashboard_runtime_topology_frames(&mut second_receiver, None),
+            collect_dashboard_runtime_topology_sse_events(first_response),
+            collect_dashboard_runtime_topology_sse_events(second_response),
         );
-        for (topic, first_frame) in &first_frames {
-            let second_frame = second_frames
+        state.shutdown.cancel();
+        assert_eq!(
+            first_frames, second_frames,
+            "both SSE owners should receive the same serialized live frames",
+        );
+        let first_observations = state
+            .subscription_hub
+            .dashboard_topology_sse_frame_observations(1)
+            .await;
+        let second_observations = state
+            .subscription_hub
+            .dashboard_topology_sse_frame_observations(2)
+            .await;
+        for topic in [
+            "dashboard.activity.current",
+            "stats.summary.current",
+            "dashboard.network-timeseries.window",
+            "dashboard.network-recent.current",
+        ] {
+            let first_owner_frames = first_observations
                 .get(topic)
-                .expect("second owner receives every dashboard topic");
+                .expect("first owner should observe each Dashboard live frame");
+            let second_owner_frames = second_observations
+                .get(topic)
+                .expect("second owner should observe each Dashboard live frame");
             assert!(
-                Arc::ptr_eq(first_frame, second_frame),
-                "topic {topic} should reuse one serialized frame across owners",
+                first_owner_frames
+                    .iter()
+                    .any(|first_frame| second_owner_frames
+                        .iter()
+                        .any(|second_frame| Arc::ptr_eq(first_frame, second_frame))),
+                "topic {topic} should reuse one serialized frame across SSE owners",
             );
         }
 
@@ -4120,17 +4279,10 @@ mod tests {
         assert_eq!(delivery.network_timeseries.json_overlay_count, 0);
         assert_eq!(delivery.network_recent.materialization_count, 1);
         assert_eq!(delivery.network_recent.json_overlay_count, 0);
-        for topic in [
-            delivery.activity,
-            delivery.summary,
-            delivery.network_timeseries,
-            delivery.network_recent,
-        ] {
-            assert_eq!(topic.serialization_count, 1);
-        }
-
-        drop(second_owner);
-        drop(first_owner);
+        assert_eq!(delivery.activity.serialization_count, 1);
+        assert_eq!(delivery.summary.serialization_count, 1);
+        assert_eq!(delivery.network_timeseries.serialization_count, 1);
+        assert_eq!(delivery.network_recent.serialization_count, 1);
     }
 
     #[tokio::test]
