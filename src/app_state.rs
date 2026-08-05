@@ -332,6 +332,68 @@ pub(crate) struct DashboardProjectionCapture {
     pub(crate) snapshot_origin: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DashboardProjectionSliceCounterSnapshot {
+    pub(crate) build_count: u64,
+    pub(crate) revision_count: u64,
+    pub(crate) cadence_miss_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DashboardRuntimeTopologyCounterSnapshot {
+    pub(crate) current: DashboardProjectionSliceCounterSnapshot,
+    pub(crate) network: DashboardProjectionSliceCounterSnapshot,
+    pub(crate) terminal: DashboardProjectionSliceCounterSnapshot,
+}
+
+#[derive(Debug, Default)]
+struct DashboardProjectionSliceCounters {
+    build_count: AtomicU64,
+    revision_count: AtomicU64,
+    cadence_miss_count: AtomicU64,
+}
+
+impl DashboardProjectionSliceCounters {
+    fn snapshot(&self) -> DashboardProjectionSliceCounterSnapshot {
+        DashboardProjectionSliceCounterSnapshot {
+            build_count: self.build_count.load(Ordering::Relaxed),
+            revision_count: self.revision_count.load(Ordering::Relaxed),
+            cadence_miss_count: self.cadence_miss_count.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.build_count.store(0, Ordering::Relaxed);
+        self.revision_count.store(0, Ordering::Relaxed);
+        self.cadence_miss_count.store(0, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardRuntimeTopologyCounters {
+    current: DashboardProjectionSliceCounters,
+    network: DashboardProjectionSliceCounters,
+    terminal: DashboardProjectionSliceCounters,
+}
+
+impl DashboardRuntimeTopologyCounters {
+    fn snapshot(&self) -> DashboardRuntimeTopologyCounterSnapshot {
+        DashboardRuntimeTopologyCounterSnapshot {
+            current: self.current.snapshot(),
+            network: self.network.snapshot(),
+            terminal: self.terminal.snapshot(),
+        }
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.current.reset();
+        self.network.reset();
+        self.terminal.reset();
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeProjectionHealthSnapshot {
@@ -373,6 +435,7 @@ pub(crate) struct RuntimeProjectionHub {
     dashboard: std::sync::Mutex<DashboardRuntimeProjectionState>,
     live_path_db_read_count: AtomicU64,
     build_count: AtomicU64,
+    dashboard_topology_counters: DashboardRuntimeTopologyCounters,
     producer_running: AtomicBool,
     request_semantic_parse_count: AtomicU64,
     request_whole_body_materialization_count: AtomicU64,
@@ -397,6 +460,7 @@ impl RuntimeProjectionHub {
             dashboard: std::sync::Mutex::new(DashboardRuntimeProjectionState::default()),
             live_path_db_read_count: AtomicU64::new(0),
             build_count: AtomicU64::new(0),
+            dashboard_topology_counters: DashboardRuntimeTopologyCounters::default(),
             producer_running: AtomicBool::new(false),
             request_semantic_parse_count: AtomicU64::new(0),
             request_whole_body_materialization_count: AtomicU64::new(0),
@@ -607,6 +671,10 @@ impl RuntimeProjectionHub {
     pub(crate) fn capture_memory_snapshot(&self) -> Result<DashboardProjectionCapture> {
         let candidate = self.dashboard_live_projection().snapshot()?;
         self.build_count.fetch_add(1, Ordering::Relaxed);
+        self.dashboard_topology_counters
+            .current
+            .build_count
+            .fetch_add(1, Ordering::Relaxed);
         let mut dashboard = self
             .dashboard
             .lock()
@@ -632,6 +700,10 @@ impl RuntimeProjectionHub {
 
         let mut snapshot = candidate;
         snapshot.revision = reserve_dashboard_activity_live_revision();
+        self.dashboard_topology_counters
+            .current
+            .revision_count
+            .fetch_add(1, Ordering::Relaxed);
         dashboard.last_good = Some(snapshot.clone());
         dashboard.last_good_at = Some(Instant::now());
         dashboard.last_snapshot_origin = Some("memory");
@@ -714,6 +786,10 @@ impl RuntimeProjectionHub {
             .is_none_or(|current| !dashboard_live_snapshot_content_eq(current, &snapshot));
         let snapshot = if changed {
             snapshot.revision = reserve_dashboard_activity_live_revision();
+            self.dashboard_topology_counters
+                .current
+                .revision_count
+                .fetch_add(1, Ordering::Relaxed);
             dashboard.last_good = Some(snapshot.clone());
             dashboard.last_good_at = Some(Instant::now());
             snapshot
@@ -780,6 +856,27 @@ impl RuntimeProjectionHub {
 
     pub(crate) fn record_build(&self) {
         self.build_count.fetch_add(1, Ordering::Relaxed);
+        self.dashboard_topology_counters
+            .current
+            .build_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_current_slice_cadence_miss(&self) {
+        self.dashboard_topology_counters
+            .current
+            .cadence_miss_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dashboard_topology_counters(&self) -> DashboardRuntimeTopologyCounterSnapshot {
+        self.dashboard_topology_counters.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_dashboard_topology_counters(&self) {
+        self.dashboard_topology_counters.reset();
     }
 
     pub(crate) fn set_producer_running(&self, running: bool) {
