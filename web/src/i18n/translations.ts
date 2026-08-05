@@ -1621,7 +1621,7 @@ const baseTranslations = {
     "system.status.projection.deferReason": "Defer reason",
     "system.status.runtimePressure.title": "Runtime pressure health",
     "system.status.runtimePressure.description":
-      "In-memory diagnostics for process memory, writer accounting, and the Dashboard live projection. Refreshing this view does not query SQLite.",
+      "In-memory diagnostics for process memory, writer accounting, and the Dashboard live projection. These fields add no SQLite queries to the status refresh.",
     "system.status.runtimePressure.summary": "Runtime pressure: {{state}}",
     "system.status.runtimePressure.states.healthy": "Healthy",
     "system.status.runtimePressure.states.deferred": "Deferred",
@@ -4487,7 +4487,7 @@ const baseTranslations = {
     "system.status.projection.deferReason": "延后原因",
     "system.status.runtimePressure.title": "运行压力健康状态",
     "system.status.runtimePressure.description":
-      "只读取进程内存、写入队列核算与 Dashboard 实时投影诊断；刷新本区域不会查询 SQLite。",
+      "只读取进程内存、写入队列核算与 Dashboard 实时投影诊断；这些字段不会为状态刷新新增 SQLite 查询。",
     "system.status.runtimePressure.summary": "运行压力：{{state}}",
     "system.status.runtimePressure.states.healthy": "健康",
     "system.status.runtimePressure.states.deferred": "已延后",
