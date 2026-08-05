@@ -176,6 +176,17 @@ export const DetailDrawerOverview: Story = {
       }),
     ).toBeInTheDocument();
     await expect(within(dialog).getByText("/v1/alpha/search")).toBeInTheDocument();
+    const capabilityGrid = within(dialog).getByTestId("upstream-capability-grid");
+    await expect(
+      capabilityGrid.ownerDocument.defaultView
+        ?.getComputedStyle(capabilityGrid)
+        .gridTemplateColumns.split(" ").length,
+    ).toBe(3);
+    await expect(
+      Math.max(
+        ...Array.from(capabilityGrid.children, (card) => (card as HTMLElement).offsetHeight),
+      ),
+    ).toBeLessThan(440);
     await expect(
       within(dialog).getByText(/账号活动总览|account activity overview/i),
     ).toBeInTheDocument();

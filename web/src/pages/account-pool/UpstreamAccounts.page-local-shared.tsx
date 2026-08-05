@@ -638,28 +638,30 @@ function AccountCapabilityCard({
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
-      <CardHeader className="gap-4 pb-4">
+      <CardHeader className="gap-2 p-3 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <CardTitle className="text-base">{title}</CardTitle>
+            <CardTitle className="text-[0.9375rem] leading-5">{title}</CardTitle>
           </div>
           <Badge variant={capabilityBadgeVariant(state.effective)} className="shrink-0 self-start">
             {capabilityStatusLabel(state.effective, t)}
           </Badge>
         </div>
-        <div className="space-y-2">
-          <div className="flex min-h-[3.75rem] items-start">
-            <CardDescription className="text-sm leading-5">{description}</CardDescription>
+        <div className="space-y-1.5">
+          <div className="flex min-h-[2.25rem] items-start">
+            <CardDescription className="line-clamp-2 text-xs leading-4">
+              {description}
+            </CardDescription>
           </div>
-          <div className="space-y-1.5">
-            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
+          <div className="space-y-1">
+            <p className="text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
               {t("accountPool.upstreamAccounts.capability.endpointsLabel")}
             </p>
-            <div className="surface-subtle flex min-h-[5rem] flex-wrap content-start gap-2 rounded-xl px-3 py-2">
+            <div className="surface-subtle flex min-h-[2.75rem] flex-wrap content-start gap-1.5 rounded-lg px-2 py-1.5">
               {endpoints.map((endpoint) => (
                 <code
                   key={endpoint}
-                  className="rounded-md bg-base-200/80 px-2 py-1 font-mono text-[0.74rem] leading-5 text-base-content/82"
+                  className="rounded-md bg-base-200/80 px-1.5 py-0.5 font-mono text-[0.68rem] leading-4 text-base-content/82"
                 >
                   {endpoint}
                 </code>
@@ -668,34 +670,37 @@ function AccountCapabilityCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-4">
-        <div className="grid gap-2 text-sm text-base-content/75">
-          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
-            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+      <CardContent className="flex flex-1 flex-col gap-2.5 px-3 pb-3 pt-0">
+        <div className="grid grid-cols-3 gap-1.5 text-sm text-base-content/75">
+          <div className="surface-subtle flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-1.5">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.observed")}
             </span>
-            <Badge variant={capabilityBadgeVariant(state.observed)} className="max-w-full truncate">
+            <Badge
+              variant={capabilityBadgeVariant(state.observed)}
+              className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
+            >
               {capabilityStatusLabel(state.observed, t)}
             </Badge>
           </div>
-          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
-            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+          <div className="surface-subtle flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-1.5">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.override")}
             </span>
             <Badge
               variant={capabilityBadgeVariant(state.override ?? null)}
-              className="max-w-full truncate"
+              className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
             >
               {capabilityStatusLabel(state.override ?? null, t)}
             </Badge>
           </div>
-          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
-            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+          <div className="surface-subtle flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-1.5">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.effective")}
             </span>
             <Badge
               variant={capabilityBadgeVariant(state.effective)}
-              className="max-w-full truncate"
+              className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
             >
               {capabilityStatusLabel(state.effective, t)}
             </Badge>
@@ -729,7 +734,7 @@ function AccountCapabilityCard({
             )
           }
         />
-        <div className="mt-auto grid min-h-[3.25rem] gap-1 text-xs leading-5 text-base-content/60">
+        <div className="mt-auto grid min-h-[2.5rem] gap-0.5 text-xs leading-4 text-base-content/60">
           <div>
             <span className="font-semibold text-base-content/70">
               {t("accountPool.upstreamAccounts.capability.observedAt")}
@@ -2853,7 +2858,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                     </div>
                   </div>
-                  <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="grid gap-3 lg:grid-cols-3" data-testid="upstream-capability-grid">
                     <AccountCapabilityCard
                       title={t("accountPool.upstreamAccounts.capability.responseEndpoint.title")}
                       description={t(
