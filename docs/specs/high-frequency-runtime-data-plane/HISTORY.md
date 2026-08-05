@@ -14,3 +14,6 @@
 - 阶段目标为 RSS p95 `2 GiB`，`1 GiB` 保留为后续软目标；不得为了达标降低并发或丢数据。
 - Dashboard live projection 在 mutation 时维护紧凑账号聚合；发布阶段不得重新遍历 retained runtime records。性能测试必须覆盖不同 key 的真实保留集合，而不是反复覆盖同一个 key。
 - 请求语义管线的 parse、materialization、buffer peak 与 fallback 计数属于 `runtimePressureHealth` 合同，不能只存在于单请求日志。
+- 线上 Dashboard 开关 A/B 证明“零 live SQL”和“subscriber 共享 frame”不足以约束整页成本；一个页面激活多个 topic 时，完整 live snapshot 广播、cached payload 深拷贝和 topic 级 JSON materialization 仍会放大 CPU。
+- current/phase、network/rate、terminal totals 固定拆为 `250ms / 1s / 5s` 三个 revisioned slice；网络可见性不得继续每 `250ms` 唤醒完整 Dashboard projection。
+- Dashboard topic 按 activity、summary、network timeseries、network recent 分批迁移到 typed materializer。legacy delivery 只保留一个发布版本用于显式回滚，不作为长期并行架构。

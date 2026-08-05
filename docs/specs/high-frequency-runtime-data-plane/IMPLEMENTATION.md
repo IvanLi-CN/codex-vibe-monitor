@@ -2,7 +2,7 @@
 
 ## Delivery Topology
 
-- Integration branch: `prd/high-frequency-runtime-data-plane`
+- Integration branch: `prd/dashboard-runtime-delivery-plane`
 - Final base: `main`
 - Child merge policy: risk-gated
 - Final merge policy: owner-explicit
@@ -42,12 +42,14 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 - Runtime mutations update a compact account-level live aggregate in place. The 250-millisecond producer clones only the bounded account snapshot and overlays network counters; it does not clone or traverse retained `ApiInvocation` records.
 - `runtimePressureHealth.requestPipeline` exposes the active mode, latest snapshot kind, cumulative semantic parse and whole-body materialization counts, rewrite buffer peak and latest fallback reason from in-memory counters.
 
-Immutable SSE delivery frames are implemented through `SerializedTopicFrame` for issue #737:
+`SerializedTopicFrame` 已用于 cache、replay 与 subscriber 共享字节，但 producer 到 topic materialization 的边界尚未完成：
 
-- Each committed topic revision serializes its payload once and prebuilds compatible snapshot, replay and live envelope bytes.
-- Cache, replay retention, broadcaster and subscriber delivery share the same immutable `Arc<SerializedTopicFrame>`; subscriber count does not clone payload values or increase serialization count.
+- committed frame 之后的 cache、replay 与 subscriber 已共享不可变 `Arc`。
+- Dashboard live producer 仍广播完整业务 snapshot；多个受影响 topic 仍会克隆 cached payload、应用 JSON overlay 并分别序列化。这是当前需要迁移的生产热点，不能标记为已完成。
 - Byte-identical projections retain the current frame and cursor. Subscriber-free topics remain dirty and rebuild an authoritative snapshot when ownership returns.
-- Focused tests cover shared Arc identity, owner-count scaling, unchanged cursor suppression, replay compatibility and producer shutdown/reconnect behavior.
+- 现有 focused tests 只覆盖单 topic Arc identity、owner-count scaling、unchanged cursor suppression 和 replay compatibility；后续验证必须覆盖一个 Dashboard tab 同时激活全部相关 topic 的真实 producer 拓扑。
+
+目标实现将 projection 分成 current/phase、network/rate、terminal totals 三个 revisioned slice，并由 typed `TopicMaterializer` 直接生成 frame。旧 `DashboardActivityLive` 广播仅在 `DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 下保留一个发布版本。
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
 

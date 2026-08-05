@@ -115,4 +115,7 @@ related_specs:
 
 - Dashboard live, terminal totals, and runtime overlays are separate projections with explicit cadences: current-state updates may coalesce at 250ms, terminal totals at 5s, and SQLite baseline reconcile at 60s. A terminal burst must never turn the 5s publish deadline into a database rebuild loop.
 - SSE producers serialize one immutable frame per revision and fan it out by shared byte chunks. Subscriber count must not multiply builder or JSON serialization work; an unchanged revision must not advance the topic cursor.
+- “每个 revision 只序列化一次”必须从 producer 到 subscriber 全链成立。若 producer 仍广播完整业务 snapshot，再由多个 topic 克隆 cached payload、修改 `serde_json::Value` 并分别序列化，那么共享 frame 只消除了同 topic 的 subscriber 放大，没有消除单页面的多 topic 放大。
+- 高频 projection 应按数据变化性质拆分 revision 和 cadence：current/phase 可使用 `250ms`，network/rate 使用 `1s`，terminal totals 使用 `5s`。网络可见性不能为了保持活跃而重新标记完整 Dashboard projection。
+- 性能验收必须驱动真实 active-subscriber producer、全部页面 topic 与 mutation fan-out。单独证明零 SQL、单 topic Arc 复用或合成 snapshot p95，不能替代 Dashboard tab on/off CPU A/B。
 - `response_source=memory` is valid only when the request did not execute a database build. Reconcile attempts must additionally record build source, outcome, baseline age, active subscriber count, and pressure deferral so memory delivery cannot hide database cost.
