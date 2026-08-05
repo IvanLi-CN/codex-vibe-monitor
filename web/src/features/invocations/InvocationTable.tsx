@@ -68,6 +68,7 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
 };
 
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
+const INVOCATION_CARD_GAP_PX = 12;
 
 function FittedInvocationId({ invokeId, className }: { invokeId: string; className?: string }) {
   const containerRef = useRef<HTMLSpanElement>(null);
@@ -412,14 +413,24 @@ export function InvocationCardList({
   );
 
   const estimateRowSize = useCallback(
-    (index: number) =>
-      expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 154 : 250,
+    (index: number) => {
+      const baseSize =
+        expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 154 : 250;
+      return baseSize + (index < rows.length - 1 ? INVOCATION_CARD_GAP_PX : 0);
+    },
     [expandedId, isMdUp, rows],
   );
-  const measureVirtualItemElement = useCallback((element: HTMLElement) => {
-    const baseHeight = element.getBoundingClientRect().height;
-    return baseHeight;
-  }, []);
+  const measureVirtualItemElement = useCallback(
+    (element: HTMLElement) => {
+      const baseHeight = element.getBoundingClientRect().height;
+      const rowIndex = Number(element.dataset.index);
+      return (
+        baseHeight +
+        (Number.isFinite(rowIndex) && rowIndex < rows.length - 1 ? INVOCATION_CARD_GAP_PX : 0)
+      );
+    },
+    [rows],
+  );
   const elementVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollElement ?? null,
@@ -689,6 +700,7 @@ export function InvocationCardList({
         onKeyDown={handleKeyDown}
         className={cn(
           "surface-card min-w-0 overflow-hidden rounded-lg px-3 py-3.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-4",
+          virtualIndex < rows.length - 1 && "mb-3",
           isHighlighted && "border-primary/55 bg-primary/10",
         )}
       >
@@ -893,7 +905,7 @@ export function InvocationCardList({
       onPointerDownCapture={scheduleHighlightClear}
       onKeyDownCapture={scheduleHighlightClear}
     >
-      <div className="space-y-3" data-testid="invocation-card-list" data-invocation-card-list>
+      <div data-testid="invocation-card-list" data-invocation-card-list>
         {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
         {fallbackVirtualRows.map((virtualRow) => {
           const row = rows[virtualRow.index];
