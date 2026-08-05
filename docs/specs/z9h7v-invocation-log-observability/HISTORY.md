@@ -73,3 +73,4 @@
 - 2026-07-30: 同步 Prompt Cache 会话表的请求压缩列名回归测试，并记录 owner 对列表视觉证据的提交批准。
 - 2026-07-30: 修复泛化归档打开逻辑后长期统计误以调用表读取 pool attempt archive 的回归，恢复 attempt archive 的物化回放标记与过期清理资格。
 - 2026-07-30: 成功调用详情精简会继续保留 `requestCompressionAlgorithm`，避免 direct 调用在详情精简后、记录归档前丢失列表请求压缩值。
+- 2026-08-05: Replaced shared Live and conversation invocation table presentation with responsive three-segment cards while preserving Records table semantics and authoritative timing fields.

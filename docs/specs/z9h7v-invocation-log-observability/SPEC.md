@@ -1,5 +1,11 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles）（#z9h7v）
 
+## Shared invocation card presentation
+
+Live and conversation-detail invocation windows use a compact three-segment card projection. The card keeps the invocation ID, status/phase, transport, endpoint, account/plan, proxy, model routing, reasoning/FAST state, cache and token/cost diagnostics, compression, and conditional error summary. Conversation identity is supplied by the surrounding drawer and is not repeated in each card. The Records search result remains a table.
+
+For in-flight records, missing TTFT and response duration values display elapsed time from `occurredAt` on a one-second presentation clock. Authoritative `firstTokenMs` and `tUpstreamStreamMs` values immediately replace the elapsed values; terminal missing values display `—`, and `tTotalMs` is never used to infer either metric. Card activation, keyboard toggling, deep-link focus, stable-key replacement, virtual measurement, and account navigation retain the existing contracts.
+
 ## 背景 / 问题陈述
 
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
@@ -773,6 +779,22 @@
   submission_gate: approved
   image:
   ![Responses Lite image-tool rewrite audit](./assets/responses-lite-image-tool-rewrite-audit.png)
+
+- source_type: ui_demo
+  story_id_or_title: Shared Invocation Cards / Live and Conversation Calls
+  state: three-segment invocation cards with a live elapsed-timing row
+  requested_viewport: desktop and 393x852
+  viewport_strategy: browser viewport override for mobile
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only invocation and conversation data
+  submission_gate: pending-owner-approval-before-image-push
+  evidence_surface: page
+  evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, wrap at 393px, and keep the existing detail drawer interaction. Immutable Chat snapshots are recorded below and are not repository assets until owner approval.
+  chat_snapshot_desktop_live: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-desktop-e303be26.png
+  chat_snapshot_mobile_live: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-mobile393-c1832932.png
+  chat_snapshot_desktop_conversation: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-desktop-cf8029a6.png
+  chat_snapshot_mobile_conversation: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-mobile393-bc31c6ba.png
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

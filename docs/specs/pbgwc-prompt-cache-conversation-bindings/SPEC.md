@@ -86,6 +86,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - `invocation-history.overview` supplies the current summary and at most 1,000 chart samples; one topic build executes summary and every chart page through one SQLite read transaction plus one captured runtime overlay, and uses one fixed accepted page width so a non-divisor server limit cannot duplicate or skip samples. It may coalesce matching record changes for up to two seconds and retains last-good data on a refresh failure. When SSE is unavailable, an unpinned first HTTP page captures the snapshot and a pinned re-read of that first page supplies the summary, every bounded sample page, and the oldest boundary page used to retain the chart's full-history range.
 - `prompt-cache.conversation-binding.current` supplies the current binding/policy snapshot, while `prompt-cache.conversation-operations.window` supplies the newest 20 events for the selected filter. A local Settings draft is never overwritten by an external snapshot: the operator explicitly adopts it or saves the draft as last-write-wins. A cached binding payload captured when SSE fails is a fallback baseline only for that exact detail scope; changing scope resets the baseline.
 - When the Calls view is within 96px of its top edge, a newly keyed invocation is inserted immediately. Otherwise, the existing scroll anchor is preserved and a `Show N new` action reveals deferred rows; updates to an existing stable key never increase `N`.
+- Shared Calls consumers render the current invocation window as compact three-segment cards rather than a table. Cards keep the invocation ID and diagnostic fields but do not repeat the conversation ID, prompt-cache key, sticky key, or conversation short ID.
+- A card's first segment exposes status/phase, transport, endpoint, TTFT, and upstream response duration. While a record is `queued`, `requesting`, or `responding`, missing authoritative timing values are presentation-only elapsed values from `occurredAt` and advance once per second. `firstTokenMs` and `tUpstreamStreamMs` replace those values as soon as they arrive; terminal missing fields remain `—` and never fall back to `tTotalMs`.
+- The entire card, including `Enter` and `Space`, toggles the existing workflow detail panel. Account controls stop propagation and continue opening account detail. The card keeps the existing stable-key replacement, deep-link focus, new-data anchor, frozen history snapshot, and dynamic virtual measurement contracts. The standalone Records search table is unchanged.
 
 ## Interface Contract
 
@@ -615,6 +618,24 @@ PR: include
 - demo_route: `/#/live?demoEmbed=1`
 - state: `demo-conversation-a` drawer open on Calls in the compact single-column record layout
 - evidence_note: verifies that the responding row and terminal cards remain readable without clipping at the required mobile viewport.
+
+### Shared Invocation Cards (UI Demo)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- requested_viewport: desktop and 393x852
+- viewport_strategy: browser viewport override for mobile
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: pending-owner-approval-before-image-push
+- demo_routes: `/#/live?demoScene=operational&demoTheme=dark&demoEmbed=1`, `/#/dashboard?demoScene=attention&demoTheme=dark&demoEmbed=1`
+- state: Live and conversation Calls consumers render the same three-segment invocation cards; cards keep the invocation ID and diagnostics without repeating the conversation ID, and the first in-flight card shows elapsed TTFT/response values.
+- evidence_note: desktop and narrow captures verify responsive wrapping, stable card density, whole-card detail affordance, and the unchanged conversation detail drawer entry point. Chat snapshots are immutable and remain outside the repository until owner approval.
+- chat_snapshot_desktop_live: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-desktop-e303be26.png`
+- chat_snapshot_mobile_live: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-mobile393-c1832932.png`
+- chat_snapshot_desktop_conversation: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-desktop-cf8029a6.png`
+- chat_snapshot_mobile_conversation: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-mobile393-bc31c6ba.png`
 
 ## Image Tool Override Boundary
 
