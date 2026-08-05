@@ -1773,6 +1773,51 @@ async fn standalone_search_override_round_trips_through_account_detail() {
 }
 
 #[tokio::test]
+async fn standalone_search_override_is_rejected_for_oauth_accounts() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_oauth_account(&state.pool, "OAuth Search Override Rejected").await;
+
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Value(
+                    "supported".to_string(),
+                ),
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("only supported for API key accounts"));
+
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Null,
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject clearing standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load OAuth account after rejected override")
+        .expect("OAuth account exists after rejected override");
+    assert_eq!(row.policy_standalone_search_capability_override, None);
+}
+
+#[tokio::test]
 async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;

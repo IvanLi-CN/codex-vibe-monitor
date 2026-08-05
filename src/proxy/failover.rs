@@ -764,6 +764,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         capture_target_for_request(original_uri.path(), &method),
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits)
     );
+    let capability_endpoint = if method == Method::POST {
+        original_uri.path()
+    } else {
+        ""
+    };
     let uses_timeout_route_failover =
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
@@ -1019,7 +1024,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 wait_for_no_available,
                 &mut no_available_wait_deadline,
                 total_timeout_deadline,
-                original_uri.path(),
+                capability_endpoint,
                 image_intent,
                 codex_imagegen_request,
             )
@@ -3113,9 +3118,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         );
                     }
                     let capability_requirements =
-                        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+                        RequestCapabilityRequirements::from_endpoint_and_image_intent_for_method(
                             original_uri.path(),
                             attempted_requested_hosted_image_intent,
+                            method == Method::POST,
                         );
                     if capability_requirements.response_endpoint
                         && classify_response_endpoint_capability_observation(
@@ -3464,7 +3470,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         status,
                         &route_error_message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        original_uri.path(),
+                        capability_endpoint,
                         attempted_requested_hosted_image_intent,
                         pending_attempt_record
                             .as_ref()

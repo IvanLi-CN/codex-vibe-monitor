@@ -1329,6 +1329,18 @@ impl RequestCapabilityRequirements {
         }
     }
 
+    pub(crate) fn from_endpoint_and_image_intent_for_method(
+        endpoint: &str,
+        image_intent: ImageIntent,
+        is_post: bool,
+    ) -> Self {
+        let mut requirements = Self::from_endpoint_and_image_intent(endpoint, image_intent);
+        if !is_post {
+            requirements.standalone_search = false;
+        }
+        requirements
+    }
+
     pub(crate) fn direct_image_endpoint() -> Self {
         Self {
             response_endpoint: false,

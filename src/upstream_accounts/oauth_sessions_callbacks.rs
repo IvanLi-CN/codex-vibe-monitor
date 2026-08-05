@@ -1739,14 +1739,28 @@ pub(crate) async fn update_upstream_account_inner(
             value,
         )?),
     };
-    let standalone_search_capability_override = match &payload.standalone_search_capability_override
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        && !matches!(
+            &payload.standalone_search_capability_override,
+            OptionalField::Missing
+        )
     {
-        OptionalField::Missing => row.policy_standalone_search_capability_override.clone(),
-        OptionalField::Null => None,
-        OptionalField::Value(value) => Some(normalize_capability_override(
-            "standaloneSearchCapabilityOverride",
-            value,
-        )?),
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "standaloneSearchCapabilityOverride is only supported for API key accounts".to_string(),
+        ));
+    }
+    let standalone_search_capability_override = if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        None
+    } else {
+        match &payload.standalone_search_capability_override {
+            OptionalField::Missing => row.policy_standalone_search_capability_override.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(normalize_capability_override(
+                "standaloneSearchCapabilityOverride",
+                value,
+            )?),
+        }
     };
     let status_change_upstream_http_401 = match payload.routing_rule.as_ref() {
         Some(rule) => match rule
