@@ -167,6 +167,7 @@
 - 若号池达到不同账号尝试上限，前端应明确说明终态记录未发起新的上游请求，并可保留上一失败账号与上一错误状态作为诊断上下文。
 - 当 body logging 开关关闭导致新记录没有 raw 路径或 preview 时，详情页、回填与异常查看都要把它当作“未保留 body”，不是“raw 文件丢失”。
 - 上游返回 standalone search 的 HTTP 404/5xx 时，网关必须将其作为 upstream failure 记录并透传既有错误语义；不得把它误记为本地不支持路由。
+- API Key 号池的 standalone search attempt 可同时更新账号级 endpoint capability：成功记录支持，裸 404/405 记录不支持，明确 unsupported endpoint/path/route 的 400 记录不支持；该旁路不得改变父 invocation、attempt 或 rollup 计数语义。OAuth bridge 不参与此能力学习。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -186,6 +187,7 @@
 - 搜索响应不会因为包含 `output`、`results` 或 `encrypted_output` 而生成 token/cost/usage；没有明确 usage 证据时对应字段保持 unavailable。
 - request/response raw 文件与 inline preview 完全遵循 `requestBodyLoggingEnabled` / `responseBodyLoggingEnabled`。
 - 号池重试按一个父 invocation 和多个既有 upstream attempts 记录，source-level hourly rollup 只计一次父 invocation。
+- 账号能力学习以每次真实 API Key attempt 为单位；failover 可更新多个实际尝试账号，但不得增加父 invocation 或 rollup 请求量。
 
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 

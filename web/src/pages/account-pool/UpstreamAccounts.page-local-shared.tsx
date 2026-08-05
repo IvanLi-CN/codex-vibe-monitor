@@ -590,13 +590,15 @@ type CapabilityOverrideField =
   | "chatCompletionsCapabilityOverride"
   | "imageEndpointCapabilityOverride"
   | "responseImageToolCapabilityOverride"
-  | "codexImagegenCapabilityOverride";
+  | "codexImagegenCapabilityOverride"
+  | "standaloneSearchCapabilityOverride";
 
 const RESPONSES_CAPABILITY_ENDPOINTS = ["/v1/responses", "/v1/responses/compact"] as const;
 const CHAT_COMPLETIONS_CAPABILITY_ENDPOINTS = ["/v1/chat/completions"] as const;
 
 const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images/edits"] as const;
 const CODEX_IMAGEGEN_CAPABILITY_NAMESPACE = ["image_gen"] as const;
+const STANDALONE_SEARCH_CAPABILITY_ENDPOINTS = ["/v1/alpha/search"] as const;
 
 function capabilityBadgeVariant(
   value: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
@@ -2851,7 +2853,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                     </div>
                   </div>
-                  <div className="grid gap-4 lg:grid-cols-5">
+                  <div className="grid gap-4 lg:grid-cols-3">
                     <AccountCapabilityCard
                       title={t("accountPool.upstreamAccounts.capability.responseEndpoint.title")}
                       description={t(
@@ -2962,6 +2964,30 @@ function SharedUpstreamAccountDetailDrawerInner({
                         void handleSaveCapabilityOverride(selectedDetail, field, value)
                       }
                     />
+                    {selectedDetail.kind === "api_key_codex" ? (
+                      <AccountCapabilityCard
+                        title={t("accountPool.upstreamAccounts.capability.standaloneSearch.title")}
+                        description={t(
+                          "accountPool.upstreamAccounts.capability.standaloneSearch.description",
+                        )}
+                        endpoints={STANDALONE_SEARCH_CAPABILITY_ENDPOINTS}
+                        state={
+                          selectedDetail.standaloneSearchCapability ?? {
+                            observed: "unknown",
+                            override: null,
+                            effective: "unknown",
+                            observedAt: null,
+                            reason: null,
+                          }
+                        }
+                        overrideField="standaloneSearchCapabilityOverride"
+                        writesEnabled={writesEnabled}
+                        busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                        onOverrideChange={(field, value) =>
+                          void handleSaveCapabilityOverride(selectedDetail, field, value)
+                        }
+                      />
+                    ) : null}
                   </div>
                   {selectedDetail.kind === "oauth_codex" ? (
                     <div className="grid gap-4 lg:grid-cols-2">

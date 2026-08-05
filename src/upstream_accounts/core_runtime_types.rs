@@ -1312,6 +1312,7 @@ pub(crate) struct RequestCapabilityRequirements {
     pub(crate) image_endpoint: bool,
     pub(crate) response_image_tool: bool,
     pub(crate) codex_imagegen: bool,
+    pub(crate) standalone_search: bool,
 }
 
 impl RequestCapabilityRequirements {
@@ -1323,6 +1324,7 @@ impl RequestCapabilityRequirements {
             "/v1/responses" | "/v1/responses/compact" => Self::response_family(image_intent),
             "/v1/chat/completions" => Self::chat_completions(),
             "/v1/images/generations" | "/v1/images/edits" => Self::direct_image_endpoint(),
+            "/v1/alpha/search" => Self::standalone_search(),
             _ => Self::default(),
         }
     }
@@ -1334,6 +1336,7 @@ impl RequestCapabilityRequirements {
             image_endpoint: true,
             response_image_tool: false,
             codex_imagegen: false,
+            standalone_search: false,
         }
     }
 
@@ -1344,6 +1347,7 @@ impl RequestCapabilityRequirements {
             image_endpoint: false,
             response_image_tool: false,
             codex_imagegen: false,
+            standalone_search: false,
         }
     }
 
@@ -1354,6 +1358,14 @@ impl RequestCapabilityRequirements {
             image_endpoint: false,
             response_image_tool: matches!(image_intent, ImageIntent::Yes),
             codex_imagegen: false,
+            standalone_search: false,
+        }
+    }
+
+    pub(crate) fn standalone_search() -> Self {
+        Self {
+            standalone_search: true,
+            ..Self::default()
         }
     }
 }
@@ -1745,6 +1757,7 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) image_endpoint_capability: UpstreamCapabilityState,
     pub(crate) response_image_tool_capability: UpstreamCapabilityState,
     pub(crate) codex_imagegen_capability: UpstreamCapabilityState,
+    pub(crate) standalone_search_capability: UpstreamCapabilityState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2712,6 +2725,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     pub(crate) response_image_tool_capability_override: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) codex_imagegen_capability_override: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) standalone_search_capability_override: OptionalField<String>,
     pub(crate) routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 

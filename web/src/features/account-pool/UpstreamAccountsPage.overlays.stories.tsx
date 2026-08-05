@@ -69,6 +69,12 @@ async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
   });
 }
 
+async function findApiKeyDetailDialog(documentScope: ReturnType<typeof within>) {
+  return await documentScope.findByRole("dialog", {
+    name: /Team key - staging/i,
+  });
+}
+
 async function expectFixedDesktopDrawerWidth(dialog: HTMLElement) {
   await expect(dialog).toHaveClass("drawer-shell--detail-wide");
   const viewportWidth = dialog.ownerDocument.defaultView?.innerWidth ?? 0;
@@ -135,31 +141,66 @@ export const DetailDrawer: Story = {
 };
 
 export const DetailDrawerOverview: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(101)} />,
+  tags: ["test"],
+  render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(102)} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1920" },
+  },
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
-    const dialog = await findTokyoDetailDialog(documentScope);
+    const dialog = await findApiKeyDetailDialog(documentScope);
     await expect(within(dialog).getByRole("tab", { name: /概览|overview/i })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     await expect(
-      within(dialog).getByText(/Responses 端点|responses endpoint/i),
+      within(dialog).getByRole("heading", { name: /Responses 端点|responses endpoint/i }),
     ).toBeInTheDocument();
     await expect(
-      within(dialog).getByText(/Chat Completions 端点|chat completions endpoint/i),
+      within(dialog).getByRole("heading", {
+        name: /Chat Completions 端点|chat completions endpoint/i,
+      }),
     ).toBeInTheDocument();
-    await expect(within(dialog).getByText(/Image 端点|image endpoint/i)).toBeInTheDocument();
     await expect(
-      within(dialog).getByText(/Response 图片工具|response image-tool/i),
+      within(dialog).getByRole("heading", { name: /Image 端点|image endpoint/i }),
     ).toBeInTheDocument();
-    await expect(within(dialog).getByText(/Codex image_gen/i)).toBeInTheDocument();
+    await expect(
+      within(dialog).getByRole("heading", { name: /Response 图片工具|response image-tool/i }),
+    ).toBeInTheDocument();
+    await expect(
+      within(dialog).getByRole("heading", { name: /Codex image_gen/i }),
+    ).toBeInTheDocument();
+    await expect(
+      within(dialog).getByRole("heading", {
+        name: /Standalone Search 端点|standalone search endpoint/i,
+      }),
+    ).toBeInTheDocument();
+    await expect(within(dialog).getByText("/v1/alpha/search")).toBeInTheDocument();
     await expect(
       within(dialog).getByText(/账号活动总览|account activity overview/i),
     ).toBeInTheDocument();
     await expect(
       within(dialog).getByTestId("upstream-account-records-activity-overview"),
     ).toBeInTheDocument();
+  },
+};
+
+export const DetailDrawerOverviewMobile: Story = {
+  ...DetailDrawerOverview,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const dialog = await findApiKeyDetailDialog(documentScope);
+    await expect(
+      within(dialog).getByRole("heading", {
+        name: /Standalone Search 端点|standalone search endpoint/i,
+      }),
+    ).toBeInTheDocument();
+    await expect(within(dialog).getByText("/v1/alpha/search")).toBeInTheDocument();
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
   },
 };
 

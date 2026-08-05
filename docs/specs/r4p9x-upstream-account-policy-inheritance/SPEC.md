@@ -80,6 +80,7 @@ Accounts also track read-only system signals alongside editable policy:
 - observed direct image endpoint capability
 - observed Responses image-tool capability
 - observed Codex `image_gen` namespace capability
+- observed API-key standalone search endpoint capability
 - transport capability badges such as `unsupported_transport:websocket`
 
 ## Resolution
@@ -172,6 +173,8 @@ Capability learning and gating follow the real request endpoint:
 - successful or explicit unsupported `/v1/chat/completions` requests update only the Chat Completions axis
 - successful or explicit unsupported direct-image requests update only the direct image axis
 - Chat Completions does not have a separate image-tool axis
+- `standaloneSearchCapability` applies only to API-key accounts and exact `/v1/alpha/search` requests. Success learns `supported`; bare `404`/`405` learns `unsupported`; `400` learns `unsupported` only when the error explicitly identifies the search endpoint/path/route as unsupported. Authentication, rate-limit, other client, server, timeout, and transport failures preserve the prior observation.
+- standalone search uses the same persistent `supported | unsupported | null(auto)` operator override contract as ordinary endpoint capabilities. It does not use the one-shot Codex imagegen retest claim.
 
 Startup schema maintenance performs one capability-axis cutover:
 
@@ -373,6 +376,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 - upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
+- API-key upstream account detail Overview showing six capability cards in a three-column desktop grid, including standalone search observation, effective state, reason, and persistent override
 
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 

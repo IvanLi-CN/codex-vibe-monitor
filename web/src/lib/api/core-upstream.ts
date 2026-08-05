@@ -289,6 +289,7 @@ export interface UpstreamAccountSummary {
   imageEndpointCapability?: UpstreamCapabilityState | null;
   responseImageToolCapability?: UpstreamCapabilityState | null;
   codexImagegenCapability?: UpstreamCapabilityState | null;
+  standaloneSearchCapability?: UpstreamCapabilityState | null;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
 }
@@ -701,6 +702,7 @@ export interface UpdateUpstreamAccountPayload {
   imageEndpointCapabilityOverride?: CapabilityOverride | null;
   responseImageToolCapabilityOverride?: CapabilityOverride | null;
   codexImagegenCapabilityOverride?: CapabilityOverride | null;
+  standaloneSearchCapabilityOverride?: CapabilityOverride | null;
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
@@ -1319,6 +1321,9 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
       payload.responseImageToolCapability,
     ),
     codexImagegenCapability: normalizeUpstreamCapabilityState(payload.codexImagegenCapability),
+    standaloneSearchCapability: normalizeUpstreamCapabilityState(
+      payload.standaloneSearchCapability,
+    ),
     tags: Array.isArray(payload.tags)
       ? payload.tags
           .map(normalizeAccountTagSummary)

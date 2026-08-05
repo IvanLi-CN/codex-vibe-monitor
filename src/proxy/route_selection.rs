@@ -1595,6 +1595,7 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
         account.image_endpoint_capability,
         account.response_image_tool_capability,
         account.codex_imagegen_capability,
+        account.standalone_search_capability,
     );
     Ok(model_matches && model_route_allowed && image_matches)
 }

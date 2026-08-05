@@ -5,6 +5,7 @@
 - Canonical spec: `docs/specs/z9h7v-invocation-log-observability/SPEC.md`
 - Implementation summary: 已完成，且已扩展 request/response body logging 双开关
 - Codex standalone search (`POST /v1/alpha/search`) 复用普通非流式 capture、OAuth passthrough、父 invocation 与 source-level hourly rollup；不新增 endpoint rollup 或搜索专属 usage 解析。
+- API Key 号池的 standalone search attempt 额外驱动独立账号能力学习与 failover 筛选；OAuth passthrough、父 invocation 和 source-level rollup 合同保持不变。
 - 号池尝试详情会将真实上游请求尝试与 `budget_exhausted_final` / `sameAccountRetryIndex <= 0` 合成终态记录分开展示；终态记录只展示未发起新请求的终态说明与上一失败账号上下文。
 - proxy settings 现在持久化 `request_body_logging_enabled` / `response_body_logging_enabled`；关闭后只阻止新的 raw body / response preview 留存，不影响结构化 payload、usage、timing、routing/account、prompt cache key 等字段。
 - response body logging 关闭时，运行态记录与终态持久化都会将 `raw_response` preview 置空，并跳过 `response_raw_path` 元数据。

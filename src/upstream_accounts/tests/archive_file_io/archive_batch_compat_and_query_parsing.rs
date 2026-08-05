@@ -170,6 +170,13 @@ pub(crate) fn test_summary_with_statuses(
             observed_at: None,
             reason: None,
         },
+        standalone_search_capability: UpstreamCapabilityState {
+            observed: CapabilitySupport::Unknown,
+            override_value: None,
+            effective: CapabilitySupport::Unknown,
+            observed_at: None,
+            reason: None,
+        },
     }
 }
 
@@ -3260,6 +3267,10 @@ async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts(
             codex_imagegen_capability_observed_at: None,
             codex_imagegen_capability_reason: None,
             policy_codex_imagegen_capability_override: None,
+            standalone_search_capability: None,
+            standalone_search_capability_observed_at: None,
+            standalone_search_capability_reason: None,
+            policy_standalone_search_capability_override: None,
             local_primary_limit: None,
             local_secondary_limit: None,
             local_limit_unit: None,

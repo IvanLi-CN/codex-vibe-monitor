@@ -3197,6 +3197,26 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             "failed to record response image-tool capability observation"
                         );
                     }
+                    if capability_requirements.standalone_search
+                        && classify_standalone_search_capability_observation(
+                            status,
+                            Some(route_error_message.as_str()),
+                        ) == CapabilitySupport::Unsupported
+                        && let Err(observation_err) = record_capability_observation(
+                            &state.pool,
+                            account.account_id,
+                            UpstreamCapabilityAxis::StandaloneSearch,
+                            CapabilitySupport::Unsupported,
+                            Some(route_error_message.as_str()),
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record standalone search capability observation"
+                        );
+                    }
 
                     if let Some((forward_proxy_scope, selected_proxy)) =
                         forward_proxy_selection.as_ref()

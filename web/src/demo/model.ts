@@ -514,6 +514,13 @@ function createAccounts(scene: DemoScene = "operational") {
           observedAt: recentAt(24),
           reason: tagName === "image" ? "Codex imagegen namespace request succeeded" : null,
         },
+        standaloneSearchCapability: {
+          observed: kind === "api_key_codex" ? "supported" : "unknown",
+          override: null,
+          effective: kind === "api_key_codex" ? "supported" : "unknown",
+          observedAt: kind === "api_key_codex" ? recentAt(22) : null,
+          reason: kind === "api_key_codex" ? "standalone search endpoint request succeeded" : null,
+        },
         duplicateInfo:
           id === 103 ? { peerAccountIds: [101], reasons: ["sharedChatgptUserId"] } : null,
         effectiveRoutingRule: {
