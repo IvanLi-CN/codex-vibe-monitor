@@ -1540,6 +1540,9 @@ function accountList() {
 }
 
 function systemStatus() {
+  const pressureState = demoModel.snapshot.scene.replace("runtime-pressure-", "");
+  const runtimeState = pressureState === demoModel.snapshot.scene ? "healthy" : pressureState;
+  const accountingError = runtimeState === "accounting-error";
   return {
     liveInvocationsCount: 128_076,
     successCount: 124_882,
@@ -1566,6 +1569,42 @@ function systemStatus() {
         pendingEventCount: 0,
         lastFlushElapsedMs: 72,
         lastFlushAgeMs: 1_200,
+      },
+    },
+    runtimePressureHealth: {
+      state: accountingError ? "accounting_error" : runtimeState,
+      process: {
+        rssBytes: 1_073_741_824,
+        rssAnonBytes: 805_306_368,
+        swapBytes: runtimeState === "degraded" ? 268_435_456 : 0,
+        peakRssBytes: 1_342_177_280,
+        threads: 18,
+        managedBytes: 536_870_912,
+        unattributedAnonBytes: 268_435_456,
+        pressureLevel: runtimeState === "degraded" ? "elevated" : "normal",
+      },
+      allocator: { mallocArenaMax: "8" },
+      writerAccounting: {
+        state: accountingError ? "degraded" : "healthy",
+        pendingDepth: accountingError ? 24 : 3,
+        pendingBytes: accountingError ? 12_582_912 : 524_288,
+        transferBytes: 67_108_864,
+        retryCount: accountingError ? 4 : 0,
+        invariantViolationCount: accountingError ? 1 : 0,
+        degradedReason: accountingError ? "pending_bytes_underflow" : undefined,
+      },
+      dashboardProjection: {
+        mode: "auto",
+        state: runtimeState === "degraded" ? "degraded" : "healthy",
+        producerState: runtimeState === "deferred" ? "idle" : "running",
+        activeSubscriberCount: 2,
+        livePathDbReadCount: 0,
+        buildCount: 418,
+        revision: 771,
+        snapshotOrigin: "runtime_projection",
+        lastGoodAgeMs: 320,
+        degradedReason: runtimeState === "degraded" ? "projection_stale" : undefined,
+        lastDeferReason: runtimeState === "deferred" ? "writer_pressure" : undefined,
       },
     },
     refreshedAt: demoNow(),

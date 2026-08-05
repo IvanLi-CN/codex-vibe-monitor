@@ -41,3 +41,9 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 - Tests cover 10,000 healthy mutations with zero live-path database reads, a current-state update p95 at or below 400 milliseconds, cold fallback and degraded last-good behavior.
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
+
+Runtime pressure diagnostics are implemented for issue #738:
+
+- `GET /api/system/status` exposes additive `runtimePressureHealth` assembled from existing in-memory projection, request-pipeline, process-memory and writer-accounting counters without adding status-page SQL.
+- The System Status workspace treats a missing field as unknown and presents healthy, deferred, degraded and accounting-error summaries with expandable, non-sensitive details.
+- Storybook and the mock-only Web Demo provide deterministic states for contract, responsive and visual regression coverage.
