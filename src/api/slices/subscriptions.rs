@@ -3319,9 +3319,10 @@ fn reuse_unchanged_cached_topic(
     existing: &mut CachedSubscriptionTopic,
     serialized_payload: &[u8],
 ) -> Option<CachedSubscriptionTopic> {
-    if existing.dirty || existing.snapshot_frame.payload_bytes.as_ref() != serialized_payload {
+    if existing.snapshot_frame.payload_bytes.as_ref() != serialized_payload {
         return None;
     }
+    existing.dirty = false;
     existing.refresh_scheduled = false;
     existing.snapshot_built_at = Instant::now();
     Some(existing.clone())
@@ -3635,7 +3636,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inactive_topics_are_marked_dirty_and_rebuilt_on_reconnect() {
+    async fn inactive_topics_clear_dirty_when_rebuilt_payload_is_unchanged() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -3679,12 +3680,13 @@ mod tests {
             )
             .await
             .expect("reconnect should rebuild dirty topic");
-        assert_eq!(prepared.initial.len(), 1);
+        assert!(prepared.initial.is_empty());
         assert_eq!(
             prepared.outcomes[0].disposition,
-            TopicInitDisposition::SnapshotResumeMiss
+            TopicInitDisposition::ResumeCaughtUp
         );
-        assert_eq!(prepared.outcomes[0].miss_reason, Some("continuity_reset"));
+        assert_eq!(prepared.outcomes[0].cursor, initial_cursor);
+        assert_eq!(prepared.outcomes[0].miss_reason, None);
         let guard = hub.state.lock().await;
         assert!(!guard.topics.get(&topic_key).expect("cached topic").dirty);
         assert!(
@@ -4474,6 +4476,23 @@ mod tests {
             cached.refresh_scheduled,
             "a later terminal event can schedule again"
         );
+    }
+
+    #[test]
+    fn dirty_unchanged_refresh_clears_dirty_without_advancing_cursor() {
+        let topic = summary_topic();
+        let mut cached = seeded_cached_topic(topic, &[], Utc::now());
+        cached.dirty = true;
+        cached.refresh_scheduled = true;
+        let cursor = cached.cursor;
+        let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
+
+        let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
+
+        assert!(reused.is_some());
+        assert!(!cached.dirty);
+        assert!(!cached.refresh_scheduled);
+        assert_eq!(cached.cursor, cursor);
     }
 
     #[test]

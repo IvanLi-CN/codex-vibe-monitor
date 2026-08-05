@@ -3349,7 +3349,13 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         proxy_request_id,
                         request_body_bytes.clone(),
                     )
-                    .await;
+                    .await
+                    .map_err(|err| {
+                        plain_proxy_error(
+                            StatusCode::BAD_GATEWAY,
+                            format!("failed to persist pool replay request body: {err}"),
+                        )
+                    })?;
                     (
                         send_pool_request_with_failover_and_binding_constraint(
                             state.clone(),

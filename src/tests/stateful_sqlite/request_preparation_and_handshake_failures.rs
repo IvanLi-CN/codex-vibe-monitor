@@ -514,7 +514,9 @@ async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewr
         "padding": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
     });
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
-    let snapshot = pool_replay_snapshot_from_bytes(450451, body.clone()).await;
+    let snapshot = pool_replay_snapshot_from_bytes(450451, body.clone())
+        .await
+        .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
     let prepared = prepare_pool_request_body_for_account(
@@ -693,7 +695,9 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         "padding": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
     });
     let plain = Bytes::from(serde_json::to_vec(&expected).expect("serialize Lite request body"));
-    let snapshot = pool_replay_snapshot_from_bytes(488491, plain.clone()).await;
+    let snapshot = pool_replay_snapshot_from_bytes(488491, plain.clone())
+        .await
+        .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
     let file_prepared = prepare_pool_request_body_for_account(
