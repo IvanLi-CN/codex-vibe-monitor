@@ -626,3 +626,5 @@
 
 - Dashboard terminal 紧凑 delta 与长期统计共享 terminal admission/ACK 事件，但 Dashboard 的范围累计态不能等待长期统计 rollup。
 - Hub 或长期统计 consumer 进入 dirty-last-good 时，Dashboard 仍按既有 live overlay/last-good contract 服务；诊断通过 System Status 的 projection health 暴露。
+- Dashboard current-state 统一消费 [`RuntimeProjectionHub`](../high-frequency-runtime-data-plane/SPEC.md)；健康 `today / 1d / 7d` live render 不得持有 SQLite pool 或触发 SQL。
+- current-state 使用 `250ms` 固定合并，terminal totals 继续 `5s`；账号排序、recent 截断、runtime overlay 与 HTTP/SSE wire shape 不变。

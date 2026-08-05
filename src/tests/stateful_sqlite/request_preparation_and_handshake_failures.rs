@@ -490,6 +490,8 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         crate::ImageToolRewriteMode::KeepOriginal,
         crate::CodexImagegenRewriteMode::KeepOriginal,
         None,
+        None,
+        None,
     )
     .await
     .expect("prepare compact pool request body");
@@ -512,7 +514,9 @@ async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewr
         "padding": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
     });
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
-    let snapshot = pool_replay_snapshot_from_bytes(450451, body.clone()).await;
+    let snapshot = pool_replay_snapshot_from_bytes(450451, body.clone())
+        .await
+        .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
     let prepared = prepare_pool_request_body_for_account(
@@ -524,6 +528,8 @@ async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewr
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
         crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
+        None,
         None,
     )
     .await
@@ -567,6 +573,8 @@ async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_af
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
         crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
+        None,
         None,
     )
     .await
@@ -616,6 +624,8 @@ async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed()
         crate::ImageToolRewriteMode::ForceRemove,
         crate::CodexImagegenRewriteMode::KeepOriginal,
         None,
+        None,
+        None,
     )
     .await
     .expect("prepare responses pool request body");
@@ -662,6 +672,8 @@ async fn prepare_pool_request_body_for_account_keeps_responses_lite_body_when_co
         crate::ImageToolRewriteMode::KeepOriginal,
         crate::CodexImagegenRewriteMode::KeepOriginal,
         Some(CodexImagegenProtocol::Lite),
+        None,
+        None,
     )
     .await
     .expect("prepare Lite pool request body");
@@ -683,7 +695,9 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         "padding": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 64),
     });
     let plain = Bytes::from(serde_json::to_vec(&expected).expect("serialize Lite request body"));
-    let snapshot = pool_replay_snapshot_from_bytes(488491, plain.clone()).await;
+    let snapshot = pool_replay_snapshot_from_bytes(488491, plain.clone())
+        .await
+        .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
     let file_prepared = prepare_pool_request_body_for_account(
@@ -696,6 +710,8 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         crate::ImageToolRewriteMode::ForceRemove,
         crate::CodexImagegenRewriteMode::KeepOriginal,
         Some(CodexImagegenProtocol::Lite),
+        None,
+        None,
     )
     .await
     .expect("prepare file-backed Lite request body");
@@ -728,6 +744,8 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         crate::ImageToolRewriteMode::ForceAdd,
         crate::CodexImagegenRewriteMode::KeepOriginal,
         Some(CodexImagegenProtocol::Lite),
+        None,
+        None,
     )
     .await
     .expect("prepare compressed Lite request body");
@@ -766,6 +784,8 @@ async fn prepare_pool_request_body_for_account_decodes_gzip_before_rewrite() {
         TagFastModeRewriteMode::ForceAdd,
         crate::ImageToolRewriteMode::KeepOriginal,
         crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
+        None,
         None,
     )
     .await

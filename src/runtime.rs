@@ -123,9 +123,12 @@ pub(crate) async fn run() -> Result<()> {
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
-    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
+    let proxy_runtime_invocations =
+        Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::from_env()?));
     let dashboard_network_speed_cache =
         Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
+    proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(dashboard_network_speed_cache.clone())?;
     let dashboard_activity_snapshot_cache =
         Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
     let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
@@ -193,6 +196,8 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    warm_dashboard_runtime_projection(state.as_ref()).await;
+    spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());

@@ -21,6 +21,10 @@ const sceneOptions: Array<{ value: DemoScene; label: string }> = [
   { value: "empty", label: "空态" },
   { value: "progressive-loading", label: "渐进加载" },
   { value: "network-failure", label: "网络失败" },
+  { value: "runtime-pressure-healthy", label: "压力健康" },
+  { value: "runtime-pressure-deferred", label: "压力延后" },
+  { value: "runtime-pressure-degraded", label: "压力降级" },
+  { value: "runtime-pressure-accounting-error", label: "核算异常" },
 ];
 
 function useDemoSnapshot() {

@@ -1,6 +1,9 @@
 use super::*;
+use axum::http::header;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -147,19 +150,59 @@ pub(crate) struct SubscriptionStreamQuery {
     pub(crate) reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SubscriptionDispatchEvent {
+#[derive(Debug, Clone, Copy)]
+enum TopicFrameKind {
+    Snapshot,
+    Replay,
+    Live,
+}
+
+#[derive(Debug)]
+pub(crate) struct SerializedTopicFrame {
     pub(crate) topic_key: String,
     pub(crate) schema_epoch: String,
     pub(crate) cursor: u64,
-    pub(crate) payload: Value,
-    pub(crate) descriptor: SubscriptionTopicDescriptor,
+    descriptor: SubscriptionTopicDescriptor,
+    fingerprint: u64,
+    payload_bytes: Bytes,
+    envelope_metadata_bytes: Bytes,
+}
+
+impl SerializedTopicFrame {
+    fn event_chunks(&self, kind: TopicFrameKind) -> [Bytes; 4] {
+        let prefix = match kind {
+            TopicFrameKind::Snapshot => Bytes::from_static(b"data: {\"type\":\"snapshot"),
+            TopicFrameKind::Replay => Bytes::from_static(b"data: {\"type\":\"replay"),
+            TopicFrameKind::Live => Bytes::from_static(b"data: {\"type\":\"live"),
+        };
+        [
+            prefix,
+            self.envelope_metadata_bytes.clone(),
+            self.payload_bytes.clone(),
+            Bytes::from_static(b"}\n\n"),
+        ]
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.envelope_metadata_bytes.len() + self.payload_bytes.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_value(&self) -> Value {
+        serde_json::from_slice(&self.payload_bytes).expect("serialized topic payload")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SubscriptionDispatchEvent {
+    pub(crate) frame: Arc<SerializedTopicFrame>,
 }
 
 #[derive(Debug)]
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
+    serialization_count: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -167,6 +210,7 @@ struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
     active_subscribers: HashMap<String, usize>,
     active_topic_names: HashMap<String, usize>,
+    dashboard_live_subscriber_count: usize,
     server_push_subscribers: HashMap<String, usize>,
     server_push_tasks: HashSet<String>,
 }
@@ -191,6 +235,7 @@ struct CachedSubscriptionTopic {
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
     snapshot_payload: Value,
+    snapshot_frame: Arc<SerializedTopicFrame>,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
     replay_bytes: usize,
@@ -198,8 +243,7 @@ struct CachedSubscriptionTopic {
 
 #[derive(Debug, Clone)]
 struct ReplayableTopicEvent {
-    cursor: u64,
-    payload: Value,
+    frame: Arc<SerializedTopicFrame>,
     bytes: usize,
     emitted_at: DateTime<Utc>,
 }
@@ -213,6 +257,7 @@ pub(crate) struct TopicSubscriptionLease {
     hub: Arc<SubscriptionHub>,
     topic_keys: Vec<String>,
     topic_names: Vec<String>,
+    owns_dashboard_live: bool,
 }
 
 impl Drop for TopicSubscriptionLease {
@@ -223,8 +268,10 @@ impl Drop for TopicSubscriptionLease {
         let hub = self.hub.clone();
         let topic_keys = std::mem::take(&mut self.topic_keys);
         let topic_names = std::mem::take(&mut self.topic_names);
+        let owns_dashboard_live = self.owns_dashboard_live;
         tokio::spawn(async move {
-            hub.release_topic_subscribers(topic_keys, topic_names).await;
+            hub.release_topic_subscribers(topic_keys, topic_names, owns_dashboard_live)
+                .await;
         });
     }
 }
@@ -296,9 +343,15 @@ pub(crate) struct TopicInitOutcome {
 
 #[derive(Debug)]
 pub(crate) struct PreparedSubscriptionConnection {
-    pub(crate) initial: Vec<SubscriptionEventEnvelope>,
+    pub(crate) initial: Vec<PreparedTopicFrame>,
     pub(crate) last_sent_cursors: HashMap<String, u64>,
     pub(crate) outcomes: Vec<TopicInitOutcome>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedTopicFrame {
+    pub(crate) frame: Arc<SerializedTopicFrame>,
+    kind: TopicFrameKind,
 }
 
 #[derive(Debug, Clone)]
@@ -481,11 +534,31 @@ impl SubscriptionHub {
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
+            serialization_count: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
         self.broadcaster.subscribe()
+    }
+
+    fn serialize_frame(
+        &self,
+        descriptor: SubscriptionTopicDescriptor,
+        topic_key: String,
+        schema_epoch: String,
+        cursor: u64,
+        payload_bytes: Vec<u8>,
+    ) -> Result<SerializedTopicFrame, ApiError> {
+        let frame =
+            serialize_topic_frame(descriptor, topic_key, schema_epoch, cursor, payload_bytes)?;
+        self.serialization_count.fetch_add(1, Ordering::Relaxed);
+        Ok(frame)
+    }
+
+    #[cfg(test)]
+    fn serialization_count(&self) -> u64 {
+        self.serialization_count.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn has_active_topic_name(&self, topic_name: &str) -> bool {
@@ -537,70 +610,29 @@ impl SubscriptionHub {
 
     pub(crate) async fn has_active_dashboard_activity_live_topic(&self) -> bool {
         let guard = self.state.lock().await;
-        let has_cached_live_topic = guard.topics.iter().any(|(topic_key, cached)| {
-            (cached.topic.uses_dashboard_activity_live_overlay()
-                || cached.topic.uses_summary_live_overlay()
-                || cached.topic.uses_dashboard_network_live_snapshot())
-                && guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-        });
-        #[cfg(test)]
-        if has_cached_live_topic {
-            return true;
-        }
-        #[cfg(test)]
-        if guard
-            .active_topic_names
-            .get("dashboard.activity.current")
-            .copied()
-            .unwrap_or_default()
-            > 0
-        {
-            return true;
-        }
-        has_cached_live_topic
+        guard.dashboard_live_subscriber_count > 0
+    }
+
+    pub(crate) async fn dashboard_activity_live_subscriber_count(&self) -> usize {
+        self.state.lock().await.dashboard_live_subscriber_count
     }
 
     pub(crate) fn has_active_dashboard_activity_live_topic_sync(&self) -> bool {
         let Ok(guard) = self.state.try_lock() else {
             return true;
         };
-        let has_cached_live_topic = guard.topics.iter().any(|(topic_key, cached)| {
-            (cached.topic.uses_dashboard_activity_live_overlay()
-                || cached.topic.uses_summary_live_overlay()
-                || cached.topic.uses_dashboard_network_live_snapshot())
-                && guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-        });
-        #[cfg(test)]
-        if has_cached_live_topic {
-            return true;
-        }
-        #[cfg(test)]
-        if guard
-            .active_topic_names
-            .get("dashboard.activity.current")
-            .copied()
-            .unwrap_or_default()
-            > 0
-        {
-            return true;
-        }
-        has_cached_live_topic
+        guard.dashboard_live_subscriber_count > 0
     }
 
     async fn register_topic_subscribers(
         self: &Arc<Self>,
         topics: &[SubscriptionTopic],
     ) -> Result<TopicSubscriptionLease, ApiError> {
+        let owns_dashboard_live = topics.iter().any(|topic| {
+            topic.uses_dashboard_activity_live_overlay()
+                || topic.uses_summary_live_overlay()
+                || topic.uses_dashboard_network_live_snapshot()
+        });
         let topic_keys = topics
             .iter()
             .map(SubscriptionTopic::cache_key)
@@ -627,10 +659,14 @@ impl SubscriptionHub {
                 .entry(topic_name.clone())
                 .or_insert(0) += 1;
         }
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_add(usize::from(owns_dashboard_live));
         Ok(TopicSubscriptionLease {
             hub: self.clone(),
             topic_keys,
             topic_names,
+            owns_dashboard_live,
         })
     }
 
@@ -644,6 +680,16 @@ impl SubscriptionHub {
             .active_topic_names
             .entry(topic_name.to_string())
             .or_insert(0) += 1;
+        let owns_dashboard_live = topic_name == "dashboard.activity.current"
+            || guard.topics.values().any(|cached| {
+                cached.topic.name() == topic_name
+                    && (cached.topic.uses_dashboard_activity_live_overlay()
+                        || cached.topic.uses_summary_live_overlay()
+                        || cached.topic.uses_dashboard_network_live_snapshot())
+            });
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_add(usize::from(owns_dashboard_live));
         let topic_keys = guard
             .topics
             .iter()
@@ -660,10 +706,16 @@ impl SubscriptionHub {
             hub: self.clone(),
             topic_keys,
             topic_names: vec![topic_name.to_string()],
+            owns_dashboard_live,
         }
     }
 
-    async fn release_topic_subscribers(&self, topic_keys: Vec<String>, topic_names: Vec<String>) {
+    async fn release_topic_subscribers(
+        &self,
+        topic_keys: Vec<String>,
+        topic_names: Vec<String>,
+        owns_dashboard_live: bool,
+    ) {
         let mut guard = self.state.lock().await;
         for topic_key in topic_keys {
             match guard.active_subscribers.get_mut(&topic_key) {
@@ -683,6 +735,9 @@ impl SubscriptionHub {
                 None => {}
             }
         }
+        guard.dashboard_live_subscriber_count = guard
+            .dashboard_live_subscriber_count
+            .saturating_sub(usize::from(owns_dashboard_live));
     }
 
     async fn register_server_push_topics(
@@ -799,12 +854,9 @@ impl SubscriptionHub {
                         "subscription replay hit"
                     );
                     for event in events {
-                        initial.push(SubscriptionEventEnvelope::Replay {
-                            topic: cached.descriptor.clone(),
-                            topic_key: topic_key.clone(),
-                            schema_epoch: cached.schema_epoch.clone(),
-                            cursor: event.cursor,
-                            payload: event.payload,
+                        initial.push(PreparedTopicFrame {
+                            frame: event.frame,
+                            kind: TopicFrameKind::Replay,
                         });
                     }
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
@@ -829,12 +881,9 @@ impl SubscriptionHub {
                     });
                 }
                 Ok(None) => {
-                    initial.push(SubscriptionEventEnvelope::Snapshot {
-                        topic: cached.descriptor.clone(),
-                        topic_key: topic_key.clone(),
-                        schema_epoch: cached.schema_epoch.clone(),
-                        cursor: cached.cursor,
-                        payload: cached.snapshot_payload.clone(),
+                    initial.push(PreparedTopicFrame {
+                        frame: cached.snapshot_frame.clone(),
+                        kind: TopicFrameKind::Snapshot,
                     });
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
                     outcomes.push(TopicInitOutcome {
@@ -852,12 +901,9 @@ impl SubscriptionHub {
                         miss_reason = reason.as_str(),
                         "subscription replay miss, falling back to snapshot"
                     );
-                    initial.push(SubscriptionEventEnvelope::Snapshot {
-                        topic: cached.descriptor.clone(),
-                        topic_key: topic_key.clone(),
-                        schema_epoch: cached.schema_epoch.clone(),
-                        cursor: cached.cursor,
-                        payload: cached.snapshot_payload.clone(),
+                    initial.push(PreparedTopicFrame {
+                        frame: cached.snapshot_frame.clone(),
+                        kind: TopicFrameKind::Snapshot,
                     });
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
                     outcomes.push(TopicInitOutcome {
@@ -903,17 +949,17 @@ impl SubscriptionHub {
         let mut matched = false;
 
         for event in &cached.replay_events {
-            if event.cursor <= resume.cursor {
+            if event.frame.cursor <= resume.cursor {
                 matched = true;
                 continue;
             }
             if !matched
                 && resume.cursor > 0
-                && event.cursor > resume.cursor
+                && event.frame.cursor > resume.cursor
                 && cached
                     .replay_events
                     .front()
-                    .is_some_and(|front| front.cursor > resume.cursor)
+                    .is_some_and(|front| front.frame.cursor > resume.cursor)
             {
                 return Err(ReplayMissReason::GapWindowMiss);
             }
@@ -931,7 +977,7 @@ impl SubscriptionHub {
             && cached
                 .replay_events
                 .front()
-                .is_some_and(|front| front.cursor > resume.cursor)
+                .is_some_and(|front| front.frame.cursor > resume.cursor)
         {
             return Err(ReplayMissReason::GapWindowMiss);
         }
@@ -988,7 +1034,6 @@ impl SubscriptionHub {
         let descriptor = topic.descriptor();
         let started = Instant::now();
         let mut payload = topic.build_payload(state.clone()).await?;
-        let mut payload_bytes = serialized_len(&payload)?;
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1014,7 +1059,12 @@ impl SubscriptionHub {
                 .cloned()
             {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
-                payload_bytes = serialized_len(&payload)?;
+            }
+            let serialized_payload = serde_json::to_vec(&payload)?;
+            if let Some(existing) = guard.topics.get_mut(&topic_key)
+                && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
+            {
+                return Ok(Some(existing));
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
@@ -1025,6 +1075,14 @@ impl SubscriptionHub {
                     entry.continuity_reset_cursor
                 }
             });
+            let frame = Arc::new(self.serialize_frame(
+                descriptor.clone(),
+                topic_key.clone(),
+                schema_epoch.clone(),
+                next_cursor,
+                serialized_payload,
+            )?);
+            let payload_bytes = frame.payload_bytes.len();
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -1068,6 +1126,7 @@ impl SubscriptionHub {
                 calendar_anchor: subscription_calendar_anchor(&topic),
                 continuity_reset_cursor,
                 snapshot_payload: payload.clone(),
+                snapshot_frame: frame.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
                     .topics
@@ -1082,24 +1141,18 @@ impl SubscriptionHub {
                     .map_or(0, |entry| entry.replay_bytes),
             };
             if emit_live {
+                let retained_bytes = frame.retained_bytes();
                 let replay_event = ReplayableTopicEvent {
-                    cursor: next.cursor,
-                    payload: payload.clone(),
-                    bytes: payload_bytes,
+                    frame: frame.clone(),
+                    bytes: retained_bytes,
                     emitted_at: Utc::now(),
                 };
                 next.replay_events.push_back(replay_event);
-                next.replay_bytes = next.replay_bytes.saturating_add(payload_bytes);
+                next.replay_bytes = next.replay_bytes.saturating_add(retained_bytes);
                 prune_replay_window(&mut next.replay_events, &mut next.replay_bytes);
             }
             guard.topics.insert(topic_key.clone(), next.clone());
-            let dispatch = emit_live.then(|| SubscriptionDispatchEvent {
-                topic_key: topic_key.clone(),
-                schema_epoch: schema_epoch.clone(),
-                cursor: next.cursor,
-                payload: payload.clone(),
-                descriptor: descriptor.clone(),
-            });
+            let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame });
             (next, dispatch)
         };
 
@@ -1108,15 +1161,15 @@ impl SubscriptionHub {
             schema_epoch,
             emit_live,
             snapshot_build_ms = started.elapsed().as_millis() as u64,
-            payload_bytes,
+            payload_bytes = cached.snapshot_bytes,
             "subscription topic snapshot built"
         );
 
         if let Some(dispatch) = dispatch {
             let _ = self.broadcaster.send(dispatch.clone());
             tracing::debug!(
-                topic_key = dispatch.topic_key,
-                cursor = dispatch.cursor,
+                topic_key = dispatch.frame.topic_key,
+                cursor = dispatch.frame.cursor,
                 fanout_receivers = self.broadcaster.receiver_count(),
                 "subscription topic live event dispatched"
             );
@@ -1746,24 +1799,27 @@ impl SubscriptionHub {
                 set_json_field(object, key, value);
             }
             let payload = cached.snapshot_payload.clone();
-            let payload_bytes = serialized_len(&payload)?;
-            cached.cursor = cached.cursor.saturating_add(1);
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serde_json::to_vec(&payload)?,
+            )?);
+            let payload_bytes = frame.payload_bytes.len();
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
-                cursor: cached.cursor,
-                payload: payload.clone(),
-                bytes: payload_bytes,
+                frame: frame.clone(),
+                bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            SubscriptionDispatchEvent {
-                topic_key: topic_key.clone(),
-                schema_epoch: cached.schema_epoch.clone(),
-                cursor: cached.cursor,
-                payload,
-                descriptor: cached.descriptor.clone(),
-            }
+            SubscriptionDispatchEvent { frame }
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
@@ -1790,26 +1846,29 @@ impl SubscriptionHub {
                 return Ok(());
             }
 
-            let payload_bytes = serialized_len(&payload)?;
-            cached.cursor = cached.cursor.saturating_add(1);
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serde_json::to_vec(&payload)?,
+            )?);
+            let payload_bytes = frame.payload_bytes.len();
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
             cached.snapshot_payload = payload.clone();
+            cached.snapshot_frame = frame.clone();
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
-                cursor: cached.cursor,
-                payload: payload.clone(),
-                bytes: payload_bytes,
+                frame: frame.clone(),
+                bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
 
-            SubscriptionDispatchEvent {
-                topic_key: topic_key.clone(),
-                schema_epoch: cached.schema_epoch.clone(),
-                cursor: cached.cursor,
-                payload,
-                descriptor: cached.descriptor.clone(),
-            }
+            SubscriptionDispatchEvent { frame }
         };
 
         let _ = self.broadcaster.send(dispatch);
@@ -2284,7 +2343,7 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
 pub(crate) async fn topic_sse_stream(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SubscriptionStreamQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<Response, ApiError> {
     let descriptors = decode_topics_query(query.topics.as_deref())?;
     let resume = decode_resume_query(query.resume.as_deref(), &descriptors)?;
     let resume_count = resume.len();
@@ -2305,6 +2364,13 @@ pub(crate) async fn topic_sse_stream(
         .subscription_hub
         .prepare_connection(state.clone(), descriptors, resume)
         .await?;
+    if selected_topics.iter().any(|topic| {
+        topic.uses_dashboard_activity_live_overlay()
+            || topic.uses_summary_live_overlay()
+            || topic.uses_dashboard_network_live_snapshot()
+    }) {
+        ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
+    }
     tracing::info!(
         attempt = query.attempt,
         reason = query.reason.as_deref().unwrap_or("unknown"),
@@ -2328,48 +2394,51 @@ pub(crate) async fn topic_sse_stream(
         .register_server_push_topics(state.clone(), server_push_topics)
         .await?;
 
-    let initial_stream = stream::iter(
-        initial
-            .into_iter()
-            .filter_map(|payload| serialize_sse_event(&payload).ok()),
-    );
+    let initial_stream = stream::iter(initial.into_iter().flat_map(|prepared| {
+        prepared
+            .frame
+            .event_chunks(prepared.kind)
+            .map(Ok::<_, Infallible>)
+    }));
 
     let live_stream = async_stream::stream! {
         let _topic_lease = topic_lease;
         let _server_push_lease = server_push_lease;
         let mut last_seen = last_seen_by_topic;
+        let mut keep_alive = tokio::time::interval(Duration::from_secs(15));
+        keep_alive.tick().await;
         loop {
-            match live_receiver.recv().await {
-                Ok(dispatch) => {
-                    if !selected_topic_keys.contains(&dispatch.topic_key) {
-                        continue;
+            tokio::select! {
+                _ = keep_alive.tick() => yield Ok::<_, Infallible>(Bytes::from_static(b":\n\n")),
+                received = live_receiver.recv() => match received {
+                    Ok(dispatch) => {
+                        if !selected_topic_keys.contains(&dispatch.frame.topic_key) {
+                            continue;
+                        }
+                        let previous_cursor = last_seen.get(&dispatch.frame.topic_key).copied().unwrap_or(0);
+                        if dispatch.frame.cursor <= previous_cursor {
+                            continue;
+                        }
+                        last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        for chunk in dispatch.frame.event_chunks(TopicFrameKind::Live) {
+                            yield Ok::<_, Infallible>(chunk);
+                        }
                     }
-                    let previous_cursor = last_seen.get(&dispatch.topic_key).copied().unwrap_or(0);
-                    if dispatch.cursor <= previous_cursor {
-                        continue;
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "subscription live fanout lagged");
                     }
-                    last_seen.insert(dispatch.topic_key.clone(), dispatch.cursor);
-                    let payload = SubscriptionEventEnvelope::Live {
-                        topic: dispatch.descriptor.clone(),
-                        topic_key: dispatch.topic_key.clone(),
-                        schema_epoch: dispatch.schema_epoch.clone(),
-                        cursor: dispatch.cursor,
-                        payload: dispatch.payload.clone(),
-                    };
-                    if let Ok(event) = serialize_sse_event(&payload) {
-                        yield event;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "subscription live fanout lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
     };
 
     let merged = initial_stream.chain(live_stream);
-    Ok(Sse::new(merged).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(merged))
+        .map_err(|err| ApiError::from(anyhow!(err)))
 }
 
 impl SubscriptionTopic {
@@ -3219,17 +3288,44 @@ fn decode_query_json<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, A
     serde_json::from_slice(&bytes).map_err(ApiError::from)
 }
 
-fn serialize_sse_event(
-    payload: &SubscriptionEventEnvelope,
-) -> Result<Result<Event, Infallible>, ApiError> {
-    Event::default()
-        .json_data(payload)
-        .map(Ok)
-        .map_err(ApiError::from)
+fn serialize_topic_frame(
+    descriptor: SubscriptionTopicDescriptor,
+    topic_key: String,
+    schema_epoch: String,
+    cursor: u64,
+    payload_bytes: Vec<u8>,
+) -> Result<SerializedTopicFrame, ApiError> {
+    let mut hasher = DefaultHasher::new();
+    payload_bytes.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+    let descriptor_json = serde_json::to_string(&descriptor)?;
+    let topic_key_json = serde_json::to_string(&topic_key)?;
+    let schema_epoch_json = serde_json::to_string(&schema_epoch)?;
+    let envelope_metadata_bytes = Bytes::from(format!(
+        r#"","topic":{descriptor_json},"topicKey":{topic_key_json},"schemaEpoch":{schema_epoch_json},"cursor":{cursor},"payload":"#
+    ));
+    Ok(SerializedTopicFrame {
+        topic_key,
+        schema_epoch,
+        cursor,
+        descriptor,
+        fingerprint,
+        payload_bytes: Bytes::from(payload_bytes),
+        envelope_metadata_bytes,
+    })
 }
 
-fn serialized_len(payload: &Value) -> Result<usize, ApiError> {
-    Ok(serde_json::to_vec(payload)?.len())
+fn reuse_unchanged_cached_topic(
+    existing: &mut CachedSubscriptionTopic,
+    serialized_payload: &[u8],
+) -> Option<CachedSubscriptionTopic> {
+    if existing.snapshot_frame.payload_bytes.as_ref() != serialized_payload {
+        return None;
+    }
+    existing.dirty = false;
+    existing.refresh_scheduled = false;
+    existing.snapshot_built_at = Instant::now();
+    Some(existing.clone())
 }
 
 fn prune_replay_window(events: &mut VecDeque<ReplayableTopicEvent>, total_bytes: &mut usize) {
@@ -3477,7 +3573,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inactive_topics_are_marked_dirty_and_rebuilt_on_reconnect() {
+    async fn first_dashboard_owner_starts_pending_runtime_projection_producer() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let selected_topics = vec![topic.clone(), summary_topic()];
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "network-before-owner",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+        schedule_dashboard_activity_live_snapshot(state.as_ref());
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .pending_dashboard_deadline()
+                .is_some()
+        );
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(&selected_topics)
+            .await
+            .expect("register first dashboard owner");
+        assert!(
+            state
+                .subscription_hub
+                .has_active_dashboard_activity_live_topic()
+                .await
+        );
+        assert_eq!(
+            state
+                .subscription_hub
+                .dashboard_activity_live_subscriber_count()
+                .await,
+            1
+        );
+        let prepared = state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                selected_topics
+                    .iter()
+                    .map(SubscriptionTopic::descriptor)
+                    .collect(),
+                Vec::new(),
+            )
+            .await
+            .expect("prepare first dashboard owner connection");
+        assert!(!prepared.initial.is_empty());
+        ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
+    }
+
+    #[tokio::test]
+    async fn inactive_topics_clear_dirty_when_rebuilt_payload_is_unchanged() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -3521,12 +3680,13 @@ mod tests {
             )
             .await
             .expect("reconnect should rebuild dirty topic");
-        assert_eq!(prepared.initial.len(), 1);
+        assert!(prepared.initial.is_empty());
         assert_eq!(
             prepared.outcomes[0].disposition,
-            TopicInitDisposition::SnapshotResumeMiss
+            TopicInitDisposition::ResumeCaughtUp
         );
-        assert_eq!(prepared.outcomes[0].miss_reason, Some("continuity_reset"));
+        assert_eq!(prepared.outcomes[0].cursor, initial_cursor);
+        assert_eq!(prepared.outcomes[0].miss_reason, None);
         let guard = hub.state.lock().await;
         assert!(!guard.topics.get(&topic_key).expect("cached topic").dirty);
         assert!(
@@ -3572,7 +3732,11 @@ mod tests {
             "inProgressAvgWaitMs": null,
             "inProgressPhaseCounts": {"queued": 0, "requesting": 0, "responding": 0}
         });
-        hub.state.lock().await.topics.insert(topic_key, cached);
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key.clone(), cached);
         let mut receiver = hub.subscribe();
         let live = DashboardActivityLiveSnapshot {
             revision: 1,
@@ -3598,12 +3762,25 @@ mod tests {
             .recv()
             .await
             .expect("summary overlay should dispatch a changed payload");
-        assert_eq!(dispatch.payload["inProgressConversationCount"], json!(2));
+        assert_eq!(hub.serialization_count(), 1);
+        {
+            let guard = hub.state.lock().await;
+            let cached = guard.topics.get(&topic_key).expect("cached summary topic");
+            let replay = cached.replay_events.back().expect("summary replay frame");
+            assert!(Arc::ptr_eq(&cached.snapshot_frame, &replay.frame));
+            assert!(Arc::ptr_eq(&cached.snapshot_frame, &dispatch.frame));
+            assert_eq!(
+                cached.snapshot_frame.fingerprint,
+                dispatch.frame.fingerprint
+            );
+        }
+        let dispatch_payload = dispatch.frame.payload_value();
+        assert_eq!(dispatch_payload["inProgressConversationCount"], json!(2));
         assert_eq!(
-            dispatch.payload["inProgressRetryConversationCount"],
+            dispatch_payload["inProgressRetryConversationCount"],
             json!(1)
         );
-        assert_eq!(dispatch.payload["inProgressAvgWaitMs"], json!(40.0));
+        assert_eq!(dispatch_payload["inProgressAvgWaitMs"], json!(40.0));
 
         hub.apply_summary_live_overlay(&topic, live)
             .await
@@ -3613,6 +3790,39 @@ mod tests {
                 .await
                 .is_err()
         );
+        let guard = hub.state.lock().await;
+        assert_eq!(
+            guard.topics.get(&topic_key).expect("cached topic").cursor,
+            1
+        );
+        assert_eq!(hub.serialization_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn additional_topic_owners_reuse_the_committed_serialized_frame() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = summary_topic();
+        let topic_key = topic.cache_key().expect("topic key");
+        hub.state.lock().await.topics.insert(
+            topic_key.clone(),
+            seeded_cached_topic(topic.clone(), &[], Utc::now()),
+        );
+
+        let first = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("first owner");
+        let second = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("second owner");
+
+        let guard = hub.state.lock().await;
+        assert_eq!(guard.active_subscribers.get(&topic_key), Some(&2));
+        assert_eq!(hub.serialization_count(), 0);
+        drop(guard);
+        drop(first);
+        drop(second);
     }
 
     #[tokio::test]
@@ -3715,16 +3925,22 @@ mod tests {
         let schema_epoch = topic.schema_epoch();
         let replay_events = cursors
             .iter()
-            .map(|cursor| ReplayableTopicEvent {
-                cursor: *cursor,
-                payload: json!({ "cursor": cursor }),
-                bytes: 32,
-                emitted_at,
-            })
+            .map(|cursor| test_replay_event(&descriptor, &schema_epoch, *cursor, emitted_at, 32))
             .collect::<VecDeque<_>>();
         let replay_bytes = replay_events.iter().map(|event| event.bytes).sum::<usize>();
         let cursor = cursors.last().copied().unwrap_or(0);
 
+        let snapshot_payload = json!({ "cursor": cursor });
+        let snapshot_frame = Arc::new(
+            serialize_topic_frame(
+                descriptor.clone(),
+                topic.cache_key().expect("seeded topic key"),
+                schema_epoch.clone(),
+                cursor,
+                serde_json::to_vec(&snapshot_payload).expect("seeded payload"),
+            )
+            .expect("seeded frame"),
+        );
         CachedSubscriptionTopic {
             topic,
             descriptor,
@@ -3743,10 +3959,34 @@ mod tests {
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
-            snapshot_payload: json!({ "cursor": cursor }),
+            snapshot_payload,
+            snapshot_frame,
             snapshot_bytes: 32,
             replay_events,
             replay_bytes,
+        }
+    }
+
+    fn test_replay_event(
+        descriptor: &SubscriptionTopicDescriptor,
+        schema_epoch: &str,
+        cursor: u64,
+        emitted_at: DateTime<Utc>,
+        bytes: usize,
+    ) -> ReplayableTopicEvent {
+        let topic = SubscriptionTopic::from_descriptor(descriptor).expect("test topic");
+        let frame = serialize_topic_frame(
+            descriptor.clone(),
+            topic.cache_key().expect("test topic key"),
+            schema_epoch.to_string(),
+            cursor,
+            serde_json::to_vec(&json!({ "cursor": cursor })).expect("test payload"),
+        )
+        .expect("test frame");
+        ReplayableTopicEvent {
+            frame: Arc::new(frame),
+            bytes,
+            emitted_at,
         }
     }
 
@@ -4082,25 +4322,26 @@ mod tests {
             .expect("recent network push should be emitted")
             .expect("recent network dispatch");
 
-        assert_eq!(dispatch.descriptor, descriptor);
-        assert_eq!(dispatch.schema_epoch, "dashboard.network-recent.current/v1");
+        assert_eq!(dispatch.frame.descriptor, descriptor);
         assert_eq!(
-            dispatch
-                .payload
+            dispatch.frame.schema_epoch,
+            "dashboard.network-recent.current/v1"
+        );
+        let dispatch_payload = dispatch.frame.payload_value();
+        assert_eq!(
+            dispatch_payload
                 .get("windowSeconds")
                 .and_then(Value::as_i64),
             Some(300)
         );
         assert_eq!(
-            dispatch
-                .payload
+            dispatch_payload
                 .get("sampleSeconds")
                 .and_then(Value::as_i64),
             Some(1)
         );
         assert_eq!(
-            dispatch
-                .payload
+            dispatch_payload
                 .get("points")
                 .and_then(Value::as_array)
                 .map(Vec::len),
@@ -4165,13 +4406,17 @@ mod tests {
     fn prune_replay_window_enforces_event_cap() {
         let mut events = VecDeque::new();
         let mut total_bytes = 0usize;
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let schema_epoch = topic.schema_epoch();
         for index in 0..(SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC + 8) {
-            events.push_back(ReplayableTopicEvent {
-                cursor: index as u64 + 1,
-                payload: json!({ "cursor": index + 1 }),
-                bytes: 32,
-                emitted_at: Utc::now(),
-            });
+            events.push_back(test_replay_event(
+                &descriptor,
+                &schema_epoch,
+                index as u64 + 1,
+                Utc::now(),
+                32,
+            ));
             total_bytes += 32;
         }
 
@@ -4181,28 +4426,97 @@ mod tests {
     }
 
     #[test]
+    fn serialized_topic_frame_reuses_shared_chunks_for_each_delivery_kind() {
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let payload = serde_json::to_vec(&json!({ "value": 42 })).expect("payload");
+        let frame = serialize_topic_frame(
+            descriptor,
+            topic.cache_key().expect("topic key"),
+            topic.schema_epoch(),
+            7,
+            payload,
+        )
+        .expect("serialized frame");
+
+        for (kind, expected_kind) in [
+            (TopicFrameKind::Snapshot, "snapshot"),
+            (TopicFrameKind::Replay, "replay"),
+            (TopicFrameKind::Live, "live"),
+        ] {
+            let chunks = frame.event_chunks(kind);
+            assert_eq!(chunks[1].as_ptr(), frame.envelope_metadata_bytes.as_ptr());
+            assert_eq!(chunks[2].as_ptr(), frame.payload_bytes.as_ptr());
+            let wire = chunks.concat();
+            let envelope: Value = serde_json::from_slice(&wire[6..wire.len() - 2])
+                .expect("SSE data contains a JSON envelope");
+            assert_eq!(envelope["type"], expected_kind);
+            assert_eq!(envelope["cursor"], 7);
+            assert_eq!(envelope["payload"]["value"], 42);
+        }
+        assert_eq!(
+            frame.retained_bytes(),
+            frame.envelope_metadata_bytes.len() + frame.payload_bytes.len()
+        );
+    }
+
+    #[test]
+    fn unchanged_refresh_clears_scheduled_flag_for_the_next_terminal_event() {
+        let topic = summary_topic();
+        let mut cached = seeded_cached_topic(topic, &[], Utc::now());
+        cached.refresh_scheduled = true;
+        let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
+
+        let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
+
+        assert!(reused.is_some());
+        assert!(!cached.refresh_scheduled);
+        cached.refresh_scheduled = true;
+        assert!(
+            cached.refresh_scheduled,
+            "a later terminal event can schedule again"
+        );
+    }
+
+    #[test]
+    fn dirty_unchanged_refresh_clears_dirty_without_advancing_cursor() {
+        let topic = summary_topic();
+        let mut cached = seeded_cached_topic(topic, &[], Utc::now());
+        cached.dirty = true;
+        cached.refresh_scheduled = true;
+        let cursor = cached.cursor;
+        let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
+
+        let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
+
+        assert!(reused.is_some());
+        assert!(!cached.dirty);
+        assert!(!cached.refresh_scheduled);
+        assert_eq!(cached.cursor, cursor);
+    }
+
+    #[test]
     fn prune_replay_window_drops_expired_entries() {
         let now = Utc::now();
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let schema_epoch = topic.schema_epoch();
         let mut events = VecDeque::from([
-            ReplayableTopicEvent {
-                cursor: 1,
-                payload: json!({ "cursor": 1 }),
-                bytes: 32,
-                emitted_at: now - ChronoDuration::seconds(SUBSCRIPTION_REPLAY_WINDOW_SECS + 5),
-            },
-            ReplayableTopicEvent {
-                cursor: 2,
-                payload: json!({ "cursor": 2 }),
-                bytes: 32,
-                emitted_at: now,
-            },
+            test_replay_event(
+                &descriptor,
+                &schema_epoch,
+                1,
+                now - ChronoDuration::seconds(SUBSCRIPTION_REPLAY_WINDOW_SECS + 5),
+                32,
+            ),
+            test_replay_event(&descriptor, &schema_epoch, 2, now, 32),
         ]);
         let mut total_bytes = 64usize;
 
         prune_replay_window(&mut events, &mut total_bytes);
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events.front().map(|event| event.cursor), Some(2));
+        assert_eq!(events.front().map(|event| event.frame.cursor), Some(2));
         assert_eq!(total_bytes, 32);
     }
 
@@ -4228,6 +4542,33 @@ mod tests {
         assert_eq!(encoded.get("schemaEpoch"), Some(&json!("app.version/v1")));
         assert!(encoded.get("topic_key").is_none());
         assert!(encoded.get("schema_epoch").is_none());
+    }
+
+    #[test]
+    fn serialized_topic_frame_preserves_snapshot_replay_and_live_wire_kinds() {
+        let topic = summary_topic();
+        let frame = serialize_topic_frame(
+            topic.descriptor(),
+            topic.cache_key().expect("topic key"),
+            topic.schema_epoch(),
+            7,
+            serde_json::to_vec(&json!({ "total": 3 })).expect("payload"),
+        )
+        .expect("serialized frame");
+
+        for (kind, expected) in [
+            (TopicFrameKind::Snapshot, "snapshot"),
+            (TopicFrameKind::Replay, "replay"),
+            (TopicFrameKind::Live, "live"),
+        ] {
+            let chunks = frame.event_chunks(kind);
+            let wire = chunks.concat();
+            let envelope: Value =
+                serde_json::from_slice(&wire[6..wire.len() - 2]).expect("wire envelope");
+            assert_eq!(envelope["type"], expected);
+            assert_eq!(envelope["cursor"], 7);
+            assert_eq!(envelope["payload"], json!({ "total": 3 }));
+        }
     }
 
     #[test]
@@ -4325,7 +4666,10 @@ mod tests {
             .expect("replay gap should exist");
 
         assert_eq!(
-            replay.iter().map(|event| event.cursor).collect::<Vec<_>>(),
+            replay
+                .iter()
+                .map(|event| event.frame.cursor)
+                .collect::<Vec<_>>(),
             vec![3, 4]
         );
     }

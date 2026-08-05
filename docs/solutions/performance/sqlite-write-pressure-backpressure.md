@@ -120,3 +120,9 @@
 - 已知组件只做无克隆估算：runtime store、terminal/projection pending、Dashboard snapshot、long-term interval index、timeseries staging、raw writer occupancy、prompt/network/routing cache 与 SQLite writer queue。timeseries 若复用 terminal pending bytes，必须避免重复计入 `managed_bytes`。
 - 每个高风险后台操作应记录 `retained_bytes`、`retained_delta_bytes`、`peak_delta_bytes`、`load_row_count`、`clone_avoided` 和 elapsed。`peak_delta_bytes` 使用 `VmHWM` 增量，不能用结束时 RSS 增量冒充。
 - `unattributed_anon_bytes` 是正式分类，不是默认故障结论。只有匿名内存未归因比例连续达到阈值时，才允许显式启用一次受限 allocator 诊断；诊断默认关闭且不改变业务并发、数据保留或回收行为。
+
+## High-Frequency Runtime Data Plane
+
+- Dashboard live rendering and terminal-derived consumers must share a bounded in-memory projection, while SQLite remains the recovery, reconcile, and closed-range source. A memory-first label is not sufficient: the healthy live renderer must have no `Pool<Sqlite>` dependency.
+- Terminal admission, projection updates, and persistence acknowledgements are separate ownership boundaries. P1 raw durability must not wait for P2 rollups, account touches, or maintenance writes; each consumer needs its own cursor and dirty-last-good state.
+- A fixed publish deadline must not invalidate a database snapshot on every terminal event. Publish current-state changes from memory, reconcile baselines on a longer cadence, and defer reconciliation during writer pressure with explicit last-good age and defer telemetry.

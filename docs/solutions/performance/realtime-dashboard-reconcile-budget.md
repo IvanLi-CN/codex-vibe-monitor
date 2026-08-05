@@ -110,3 +110,9 @@ related_specs:
 - Dashboard、terminal projection 和长期统计的内存问题必须先分类再修复。5 秒/60 秒 cadence 不得被观测采样改变；采样应读取现有容器的容量、长度和 proc/cgroup 指标，不能克隆 snapshot 或为诊断发起 raw/SQLite 扫描。
 - `managed_bytes` 只能表示已知缓存的保守估算；匿名 RSS 中剩余部分记录为 `unattributed_anon_bytes`，用来区分 allocator、SQLite page cache 和尚未覆盖的组件。不得把数据库行数直接映射成 runtime memory。
 - 只有在连续生产采样证明某一组件达到 RSS 的主要占用阈值，或一次操作造成持久的 `VmHWM` 峰值，才单独设计分块、LRU 或临时对象生命周期修复；第一阶段不设置硬 RSS 上限、不丢事件、不降低并发。
+
+## Runtime Projection Boundary
+
+- Dashboard live, terminal totals, and runtime overlays are separate projections with explicit cadences: current-state updates may coalesce at 250ms, terminal totals at 5s, and SQLite baseline reconcile at 60s. A terminal burst must never turn the 5s publish deadline into a database rebuild loop.
+- SSE producers serialize one immutable frame per revision and fan it out by shared byte chunks. Subscriber count must not multiply builder or JSON serialization work; an unchanged revision must not advance the topic cursor.
+- `response_source=memory` is valid only when the request did not execute a database build. Reconcile attempts must additionally record build source, outcome, baseline age, active subscriber count, and pressure deferral so memory delivery cannot hide database cost.

@@ -1445,7 +1445,9 @@ async fn pool_replay_snapshot_from_bytes_uses_file_for_large_body() {
     let small = Bytes::from(vec![b'a'; POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES]);
     let large = Bytes::from(vec![b'b'; POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 1]);
 
-    let small_snapshot = pool_replay_snapshot_from_bytes(45, small.clone()).await;
+    let small_snapshot = pool_replay_snapshot_from_bytes(45, small.clone())
+        .await
+        .expect("build small replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&small_snapshot), "memory");
     assert_eq!(
         small_snapshot
@@ -1455,7 +1457,9 @@ async fn pool_replay_snapshot_from_bytes_uses_file_for_large_body() {
         small
     );
 
-    let large_snapshot = pool_replay_snapshot_from_bytes(46, large.clone()).await;
+    let large_snapshot = pool_replay_snapshot_from_bytes(46, large.clone())
+        .await
+        .expect("build large replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&large_snapshot), "file");
     assert_eq!(
         pool_request_snapshot_body_bytes(&large_snapshot),
@@ -1474,7 +1478,9 @@ async fn pool_replay_snapshot_from_bytes_uses_file_for_large_body() {
 async fn pool_replay_snapshot_from_vec_uses_file_for_large_body() {
     let large = vec![b'c'; POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 8];
 
-    let snapshot = pool_replay_snapshot_from_vec(47, large.clone()).await;
+    let snapshot = pool_replay_snapshot_from_vec(47, large.clone())
+        .await
+        .expect("build large replay snapshot");
 
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
     assert_eq!(pool_request_snapshot_body_bytes(&snapshot), large.len());

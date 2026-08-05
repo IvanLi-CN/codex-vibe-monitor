@@ -125,6 +125,11 @@ describe("SystemStatusPage", () => {
     expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-projection-health"]')).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="system-status-runtime-pressure-health"]'),
+    ).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("运行压力：未知");
+    expect(host?.textContent ?? "").toContain("这些字段不会为状态刷新新增 SQLite 查询");
     expect(host?.querySelector('[data-testid="system-status-raw-metrics-health"]')).not.toBeNull();
     expect(host?.textContent ?? "").toContain("Raw payload 指标已就绪，并由写侧持续维护。");
     expect(host?.textContent ?? "").toContain("修复中");

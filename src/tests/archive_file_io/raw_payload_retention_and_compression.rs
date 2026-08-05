@@ -5098,6 +5098,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
             is_stream: true,
             ..RequestCaptureInfo::default()
         },
+        hosted_image_intent: None,
         prompt_cache_key: Some("pck-guard-deferred".to_string()),
         owner_auto_guard_active: false,
         t_req_read_ms: 1.0,
@@ -5241,6 +5242,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
             is_stream: true,
             ..RequestCaptureInfo::default()
         },
+        hosted_image_intent: None,
         prompt_cache_key: Some("pck-guard-streaming-phase-persisted".to_string()),
         owner_auto_guard_active: false,
         t_req_read_ms: 1.0,
@@ -5369,6 +5371,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
             is_stream: true,
             ..RequestCaptureInfo::default()
         },
+        hosted_image_intent: None,
         prompt_cache_key: Some("pck-guard-streaming-phase".to_string()),
         owner_auto_guard_active: false,
         t_req_read_ms: 1.0,
@@ -7188,6 +7191,7 @@ async fn send_pool_request_with_failover_returns_owner_unavailable_for_encrypted
                 contains_encrypted_content: true,
                 ..RequestCaptureInfo::default()
             },
+            hosted_image_intent: None,
             prompt_cache_key: Some("encrypted-owner-unavailable-prompt-cache-key".to_string()),
             owner_auto_guard_active: true,
             t_req_read_ms: 1.0,

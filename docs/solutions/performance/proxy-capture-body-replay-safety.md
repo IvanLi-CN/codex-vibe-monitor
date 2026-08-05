@@ -67,6 +67,12 @@ For response capture, compression must be treated as a storage concern. Preserve
 - A normal response-body drop after the successful terminal chunk has actually been consumed is not a downstream failure. A drop before that point remains a client abort; an upstream completion that follows must still preserve the successful pool attempt.
 - The inline raw response preview is bounded and may stop before the terminal event. For end-to-end SSE diagnosis, read the complete file at `response_raw_path`; never infer terminal ordering from the 16 KiB preview alone.
 
+## Shared Runtime Pressure Controls
+
+- Runtime pressure diagnostics must read in-memory counters and process metrics only; status requests must not scan raw files or query SQLite. Legacy inventory belongs to a bounded, pressure-gated background cursor and exposes preparing/deferred/error state.
+- Paired pool response streams may share one capture worker and physical blob only when the wire bytes are identical. Invocation and attempt retention remain independent links, and the blob is removed only after the final owner link is released.
+- Request semantic extraction should produce one compact projection from one replay snapshot. Large file-backed bodies must not be materialized repeatedly for routing, capture, rewrite, and failover; compatibility fallbacks must be explicit in telemetry.
+
 ## References
 
 - `src/proxy/dispatch.rs`

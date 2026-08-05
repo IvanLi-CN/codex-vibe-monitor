@@ -2147,6 +2147,59 @@ export interface SystemRawMetricsHealth {
   updatedAgeMs?: number;
 }
 
+export interface RuntimePressureProcessHealth {
+  rssBytes: number;
+  rssAnonBytes: number;
+  swapBytes: number;
+  peakRssBytes: number;
+  threads: number;
+  managedBytes: number;
+  unattributedAnonBytes: number;
+  pressureLevel: string;
+}
+
+export interface RuntimePressureWriterAccountingHealth {
+  state: string;
+  pendingDepth: number;
+  pendingBytes: number;
+  transferBytes: number;
+  retryCount: number;
+  invariantViolationCount: number;
+  degradedReason?: string;
+}
+
+export interface RuntimePressureDashboardProjectionHealth {
+  mode: string;
+  state: string;
+  producerState: string;
+  activeSubscriberCount: number;
+  livePathDbReadCount: number;
+  buildCount: number;
+  revision: number;
+  snapshotOrigin: string;
+  lastGoodAgeMs?: number;
+  degradedReason?: string;
+  lastDeferReason?: string;
+}
+
+export interface RuntimePressureRequestPipelineHealth {
+  mode: string;
+  lastSnapshotKind: string;
+  semanticParseCount: number;
+  wholeBodyMaterializationCount: number;
+  rewriteBufferPeakBytes: number;
+  lastFallbackReason?: string;
+}
+
+export interface RuntimePressureHealth {
+  state: string;
+  process: RuntimePressureProcessHealth;
+  allocator: { mallocArenaMax: string };
+  writerAccounting: RuntimePressureWriterAccountingHealth;
+  dashboardProjection: RuntimePressureDashboardProjectionHealth;
+  requestPipeline?: RuntimePressureRequestPipelineHealth;
+}
+
 export interface SystemStatusResponse {
   liveInvocationsCount: number;
   successCount: number;
@@ -2160,6 +2213,7 @@ export interface SystemStatusResponse {
   otherFilesBytes: number;
   projectionHealth: SystemProjectionHealth;
   rawMetricsHealth: SystemRawMetricsHealth;
+  runtimePressureHealth?: RuntimePressureHealth;
   refreshedAt: string;
 }
 
@@ -4004,6 +4058,64 @@ function normalizeSystemRawMetricsHealth(raw: unknown): SystemRawMetricsHealth {
   };
 }
 
+function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const payload = raw as Record<string, unknown>;
+  const process = (payload.process ?? {}) as Record<string, unknown>;
+  const allocator = (payload.allocator ?? {}) as Record<string, unknown>;
+  const writer = (payload.writerAccounting ?? {}) as Record<string, unknown>;
+  const projection = (payload.dashboardProjection ?? {}) as Record<string, unknown>;
+  const requestPipeline = payload.requestPipeline as Record<string, unknown> | undefined;
+  const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
+  const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
+  return {
+    state: optionalString(payload.state) ?? "unknown",
+    process: {
+      rssBytes: number(process.rssBytes),
+      rssAnonBytes: number(process.rssAnonBytes),
+      swapBytes: number(process.swapBytes),
+      peakRssBytes: number(process.peakRssBytes),
+      threads: number(process.threads),
+      managedBytes: number(process.managedBytes),
+      unattributedAnonBytes: number(process.unattributedAnonBytes),
+      pressureLevel: optionalString(process.pressureLevel) ?? "unknown",
+    },
+    allocator: { mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown" },
+    writerAccounting: {
+      state: optionalString(writer.state) ?? "unknown",
+      pendingDepth: number(writer.pendingDepth),
+      pendingBytes: number(writer.pendingBytes),
+      transferBytes: number(writer.transferBytes),
+      retryCount: number(writer.retryCount),
+      invariantViolationCount: number(writer.invariantViolationCount),
+      degradedReason: optionalString(writer.degradedReason),
+    },
+    dashboardProjection: {
+      mode: optionalString(projection.mode) ?? "unknown",
+      state: optionalString(projection.state) ?? "unknown",
+      producerState: optionalString(projection.producerState) ?? "unknown",
+      activeSubscriberCount: number(projection.activeSubscriberCount),
+      livePathDbReadCount: number(projection.livePathDbReadCount),
+      buildCount: number(projection.buildCount),
+      revision: number(projection.revision),
+      snapshotOrigin: optionalString(projection.snapshotOrigin) ?? "unknown",
+      lastGoodAgeMs: normalizeFiniteNumber(projection.lastGoodAgeMs) ?? undefined,
+      degradedReason: optionalString(projection.degradedReason),
+      lastDeferReason: optionalString(projection.lastDeferReason),
+    },
+    requestPipeline: requestPipeline
+      ? {
+          mode: optionalString(requestPipeline.mode) ?? "unknown",
+          lastSnapshotKind: optionalString(requestPipeline.lastSnapshotKind) ?? "none",
+          semanticParseCount: number(requestPipeline.semanticParseCount),
+          wholeBodyMaterializationCount: number(requestPipeline.wholeBodyMaterializationCount),
+          rewriteBufferPeakBytes: number(requestPipeline.rewriteBufferPeakBytes),
+          lastFallbackReason: optionalString(requestPipeline.lastFallbackReason),
+        }
+      : undefined,
+  };
+}
+
 function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -4019,6 +4131,7 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
     projectionHealth: normalizeSystemProjectionHealth(payload.projectionHealth),
     rawMetricsHealth: normalizeSystemRawMetricsHealth(payload.rawMetricsHealth),
+    runtimePressureHealth: normalizeRuntimePressureHealth(payload.runtimePressureHealth),
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
 }

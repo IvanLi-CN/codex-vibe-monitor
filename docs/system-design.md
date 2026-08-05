@@ -1,78 +1,84 @@
 # 系统设计概览
 
-本项目当前定位为：通过 OpenAI 兼容 `/v1/*` HTTP 代理与可选 WebSocket 代理捕获调用记录，再通过 REST API 与 SSE 为前端仪表盘提供实时与历史视图。历史 `xy` 调用记录与历史 quota snapshot 继续只读可查，但服务不再从 XYAI 上游抓取新数据。
+本项目通过 OpenAI 兼容 `/v1/*` HTTP 代理与可选 WebSocket 代理采集运行事实，以 SQLite 保存 durable terminal/history，并通过 REST 与 SSE 向 Web App 提供历史和实时视图。高频运行数据面遵循 ingress、projection、delivery、persistence/reconcile 五层边界；SQLite 不是 Dashboard 当前态的请求内事实源。
 
-## 1. 数据来源
+## 1. 数据面总览
 
-### 1.1 OpenAI 兼容代理链路（主写入来源）
-
-- 服务暴露 `ANY /v1/*`，透明转发到上游 OpenAI 兼容接口；启用设置页中的下游 WebSocket 全局开关后，WebSocket upgrade 请求会按同一路由认证与账号池选择逻辑转成上游 `ws/wss` 隧道。
-- 在代理链路中解析请求、响应、usage 与耗时信息，并将调用明细写入本地 SQLite；WebSocket 初版记录连接级 attempt 结果，不做通用逐帧 usage 解析。
-- 新产生的在线记录以 `source='proxy'` 标记，作为当前系统的主要实时数据来源。
-
-### 1.2 历史 XY 数据（只读兼容）
-
-- 已存在的 `codex_invocations.source='xy'` 记录继续参与 `/api/invocations` 与 `/api/stats*` 查询。
-- 已存在的 `codex_quota_snapshots` 继续通过 `/api/quota/latest` 暴露最新快照。
-- 运行时不再依赖 XYAI cookie、base URL 或 quota endpoint，也不会新增新的 `xy` 调用记录或 quota snapshot。
-
-## 2. 配置与认证
-
-- 代理链路使用标准 OpenAI 兼容请求模型；上游地址通过 `OPENAI_UPSTREAM_BASE_URL` 控制，WebSocket 代理默认关闭，设置页启用后上游会把 `https/http` base URL 映射为 `wss/ws`。
-- 数据库、HTTP 监听、并发度、超时与 retention 均通过 `.env.local` 中的通用配置项管理。
-- 不再保留 XYAI 专属认证配置；部署时无需再提供历史的 XYAI cookie / quota 抓取参数。
-
-## 3. 调度与运行策略
-
-- 后台维护任务只负责账号池同步、retention 与历史 rollup；不轮询外部汇总统计源。
-- OpenAI `/v1/*` 代理路径按请求或 WebSocket 连接驱动写入，不依赖后台轮询。
-- 当前运行期不存在任何 XYAI legacy poll 分支、配额抓取或快照写入逻辑。
-
-## 4. 数据持久化设计
-
-- 使用 `sqlx + SQLite` 保存调用记录、统计快照、转发代理尝试记录与配额历史快照。
-- `codex_invocations` 保留统一明细表，通过 `source` 区分历史 `xy` 与当前 `proxy` 数据。
-- 旧数据库中可能仍有 `stats_source_snapshots` 与 `stats_source_deltas`；服务不会新建、读取、归档或删除这些遗留表。
-- `codex_quota_snapshots` 保留历史快照表，仅作为查询接口的数据来源，不再由运行时主动追加。
-- 长期统计使用隔离的 `long_term_usage_hourly`（受 `LONG_TERM_STATS_HOURLY_RETENTION_DAYS` 控制，默认 400 天且不低于 366 天）与永久 `long_term_usage_daily` 汇总表；首次升级由可恢复后台任务从 live invocation 与可用 archive 重建，并在 `long_term_stats_state` 中持久化进度和统计起始日。
-- API Key 上游账号通过 `pool_upstream_accounts.deleted_at` 软删除。凭据、会话和路由状态会清除，但稳定 ID、kind 与最后显示名保留给历史统计；非 API Key 账号仍沿用物理删除。
-
-示意结构：
-
-```sql
-CREATE TABLE IF NOT EXISTS codex_invocations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    invoke_id TEXT NOT NULL,
-    occurred_at TEXT NOT NULL,
-    source TEXT NOT NULL,
-    payload JSON,
-    raw_response JSON,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(invoke_id, occurred_at)
-);
-
-CREATE TABLE IF NOT EXISTS codex_quota_snapshots (...);
+```mermaid
+flowchart LR
+    Client["OpenAI-compatible client"] --> Ingress["Ingress: one replay snapshot"]
+    Ingress --> Semantics["RequestSemanticProjection"]
+    Semantics --> Upstream["Routing / rewrite / failover"]
+    Upstream --> Runtime["RuntimeProjectionHub"]
+    Upstream --> Journal["P1 terminal journal"]
+    Journal --> SQLite[(SQLite durable facts)]
+    Journal --> Terminal["TerminalProjectionHub"]
+    Runtime --> Dashboard["Dashboard live projection"]
+    Terminal --> Dashboard
+    Dashboard --> Frame["Arc<SerializedTopicFrame>"]
+    Frame --> SSE["SSE cache / replay / subscribers"]
+    SQLite -. "startup / 60s reconcile / cold fallback" .-> Dashboard
+    SQLite --> Historical["Closed-range and historical APIs"]
 ```
 
-## 5. HTTP API 与实时分发
+### 强制依赖方向
 
-- `GET /api/invocations`：返回历史与当前调用记录，支持分页、筛选与只读兼容历史 `xy` 数据。
-- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries`：聚合历史 `xy` 与当前 `proxy` 调用记录。
-- `GET /api/stats/long-term/overview?range=7d|30d|180d|365d`：读取上海自然日长期统计的全局、模型/思考强度和上游账号摘要及每日点；回填未完成时只返回准备状态和进度。
-- `GET /api/stats/long-term/series?range=...&dimension=model|upstream&key=...`：按 overview 签发的稳定 series key 返回每日完整指标，单次最多 8 项。
-- `GET /api/quota/latest`：读取数据库中最新的历史 quota snapshot；空库时返回 degraded default。
-- `GET /events`：以 SSE 推送代理写入与统计更新，供前端实时订阅。
+- ingress 只生成一份 replay snapshot 与一份不可变语义投影；路由、raw capture 和上游准备复用它们。
+- projection 接收事件并渲染当前态；健康 `DashboardLiveProjection::snapshot()` 不接受数据库连接。
+- delivery 只接收已序列化的不可变 frame；cache、replay、broadcast 与 subscriber 不构建业务 payload。
+- persistence/reconcile 负责 durable terminal、启动恢复、周期对账、closed-range exact 与明确冷回退。
+- System Status 的 runtime health 只读取内存计数器，不为诊断新增 SQL。
 
-## 6. Web SPA 界面
+## 2. 代理请求入口
 
-- 前端位于 `web/`，使用 `Vite + React + TypeScript` 构建单页应用。
-- Dashboard / Stats / Live / Settings 保持现有结构，展示调用记录、趋势图、配额卡片与代理设置。
-- 页面通过 HTTP API 获取历史数据，再使用 `EventSource` 订阅 `/events` 实时刷新。
-- Stats 页面末尾的长期统计区块使用独立 hooks、筛选和 60 秒轻量刷新，不改变现有 Stats 内容的范围、bucket 或 SSE 行为；桌面表格支持 sticky 身份列以及横纵双向虚拟化。
-- 配额卡片展示的是数据库中已有的历史快照，而不是实时抓取 XYAI 上游结果。
+- `/v1/*` 请求先建立 `PoolReplayBodySnapshot`。不超过 `1 MiB` 时可驻留内存，超过阈值必须 file-backed；请求总上限保持 `256 MiB`。
+- 单次 `RequestSemanticProjection` 提取 model、stream、sticky/prompt-cache key、reasoning、service tier、encrypted/image/compaction 与 rewrite 需求。
+- 需要 `include_usage` 等 rewrite 时，使用有界流式转换，业务缓冲不超过 `64 KiB`。失败沿用原始 body 的 fail-open 行为并记录原因。
+- response raw capture、terminal journal 与 runtime projection 均不得阻塞已经可转发的代理响应。
 
-## 7. 部署与扩展
+## 3. 运行态与 Terminal 投影
 
-- 后端与前端通过多阶段 `Dockerfile` 一体化构建，运行时静态托管 `web/dist`。
-- 生产部署重点关注 SQLite 挂载、代理上游可达性与 retention 策略。
-- 后续扩展应围绕 proxy 可观测性与历史查询体验展开，而不是恢复已退役的数据采集链路。
+- `RuntimeProjectionHub` 保存 current-state：在途调用、phase、network、账号 metadata，以及 Dashboard 所需 live overlay。
+- `TerminalProjectionHub` 保存 terminal admission/P1 ACK 与消费者 cursor，供 Dashboard totals、长期统计和 timeseries 增量物化。
+- P1 只保障 raw terminal 与 journal ACK；派生 rollup 和 repair 通过 P2 并受 SQLite pressure gate 控制。
+- writer queue 的 depth/bytes 由单一 accounting owner 管理。P1 生成 P2 工作时必须转移 ownership，不得跨阶段裸减计数。
+
+## 4. Dashboard 与 SSE
+
+- Dashboard current-state 以 `250ms` 固定 deadline 合并，terminal totals 以 `5s` 合并，SQLite baseline 每 `60s` 对账。
+- 健康 `today / 1d / 7d` live render 只读 Runtime/Terminal Projection；已有 last-good 时失败不会在订阅请求链同步查库。
+- `yesterday / previous7d / usage` 与其他 closed-range 查询继续使用 exact DB builder。
+- 每个 topic revision 生成一个 `Arc<SerializedTopicFrame>`。subscriber 数量只增加引用，不增加 builder 或 serialization 次数；fingerprint 未变化时不推进 cursor。
+- 第一位 owner subscriber 激活 producer；无 owner subscriber 时停止周期构建并标记 dirty，重新订阅时恢复 fresh snapshot/replay 语义。
+
+## 5. 持久化与历史数据
+
+- `codex_invocations` 保存 live/retained invocation durable facts，并通过 `source` 区分历史 `xy` 与当前 `proxy`。
+- SQLite rollup 保存长期统计、账号活动、usage breakdown、timeseries 与 parallel-work 的可恢复聚合；archive 承担超出 live retention 的历史详情。
+- 历史 HTTP API 从 rollup、archive 与 exact boundary 查询构建；不得把历史重建工作放回 Dashboard 当前态热路径。
+- 价格、归属、archive rewrite/restore 等修正通过目标桶 repair 收敛，而不是周期性重扫宽时间窗。
+
+## 6. 健康与回退
+
+- `DASHBOARD_RUNTIME_PROJECTION_MODE=auto|legacy` 控制 Dashboard 投影路径；默认 `auto`。
+- `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
+- `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。
+- accounting violation、live-path DB read、whole-body materialization、持续 stale 或重复 serialization 必须可被结构化 telemetry 判责。
+- 运行镜像默认 `MALLOC_ARENA_MAX=8`，部署可显式覆盖；该设置只限制 glibc arena 保留，不改变业务并发。
+
+## 7. 对外接口
+
+- `GET /api/invocations` 与 `/api/stats*` 提供历史、summary、timeseries、Dashboard/account activity 与长期统计。
+- `GET /events` 提供 topic-based `snapshot / replay / live` SSE。
+- `GET /api/system/status` 提供系统、projection、raw metrics 与 runtime pressure 的只读健康信息。
+- Dashboard、统计、raw detail 与 SSE 的既有字段、topic、排序、range 和 recent 语义保持兼容；仅 System Status health 允许 additive 扩展。
+
+## 8. 性能门槛
+
+- 10,000 次 runtime mutation 后健康 live render 的数据库查询数为零。
+- 同 topic 1 到 N 个 subscriber 不增加 builder 或 serialization 次数。
+- `16/64 MiB` file-backed 请求只有一次语义解析，业务峰值缓冲不超过 `64 KiB`。
+- Dashboard current-state 更新 p95 不超过 `400ms`；terminal totals 在 `5s` 内可见。
+- 生产 Dashboard tab A/B 的 CPU 增量不超过 10 个百分点；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。
+
+实现细节、迁移状态和测试证据见 [`docs/specs/high-frequency-runtime-data-plane`](./specs/high-frequency-runtime-data-plane/SPEC.md)。
