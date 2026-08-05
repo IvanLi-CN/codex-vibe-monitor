@@ -499,3 +499,105 @@ PR: include
   submission_gate: approved
   image:
   ![Codex imagegen rewrite policies](./assets/codex-imagegen-rewrite-policies.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview with the six capability cards visible
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the desktop capability area uses a three-column, two-row layout and includes Standalone Search as the sixth independent capability.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability desktop grid](./assets/standalone-search-capability-desktop-grid.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview scrolled to the Standalone Search capability card
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the card exposes the exact endpoint, observed value, persistent override, effective value, observation time, and reason.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability desktop details](./assets/standalone-search-capability-desktop-1920.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview Mobile`
+  state: narrow API-key account overview scrolled to the Standalone Search capability card
+  requested_viewport: 390x844
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the capability cards collapse to one column without horizontal overflow while preserving all Standalone Search controls and state.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability mobile](./assets/standalone-search-capability-mobile-390.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview with compact six-card capability layout
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact desktop layout keeps six capability cards in three columns and two rows while retaining the status summary, override control, timestamp, and reason fields.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability desktop](./assets/standalone-search-capability-compact-desktop-viewport.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview focused on the compact Standalone Search card
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact card preserves the exact endpoint, three-value status summary, persistent override selector, observation time, and reason without excessive vertical padding.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability details](./assets/standalone-search-capability-compact-desktop-search.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview Mobile`
+  state: narrow API-key account overview focused on the compact Standalone Search card
+  requested_viewport: 390x844
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact single-column card remains readable on narrow screens, keeps the override control usable, and produces no horizontal overflow.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability mobile](./assets/standalone-search-capability-compact-mobile-390.png)
