@@ -3923,6 +3923,12 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(window.deadline)) => {}
             }
 
+            if Instant::now().saturating_duration_since(window.deadline)
+                > DASHBOARD_RUNTIME_PROJECTION_COALESCE
+            {
+                proxy_runtime_invocations.record_current_slice_cadence_miss();
+            }
+
             let Some(window) = proxy_runtime_invocations.begin_dashboard_publish_window(window)
             else {
                 continue;

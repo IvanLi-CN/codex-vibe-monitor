@@ -49,6 +49,8 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 - Byte-identical projections retain the current frame and cursor. Subscriber-free topics remain dirty and rebuild an authoritative snapshot when ownership returns.
 - 现有 focused tests 只覆盖单 topic Arc identity、owner-count scaling、unchanged cursor suppression 和 replay compatibility；后续验证必须覆盖一个 Dashboard tab 同时激活全部相关 topic 的真实 producer 拓扑。
 
+Dashboard full-topology contract now uses the real active-subscriber producer with `dashboard.activity.current`, `stats.summary.current`, `dashboard.network-timeseries.window`, and `dashboard.network-recent.current` together. The deterministic baseline records one current-slice build and revision with zero cadence misses, no independent network or terminal slice work, one business-payload handoff per affected topic, JSON overlays for activity and summary, and separate network-topic materialization and serialization. It also verifies zero live-path database reads and that increasing owners from one to two reuses the same serialized frame for every topic.
+
 目标实现将 projection 分成 current/phase、network/rate、terminal totals 三个 revisioned slice，并由 typed `TopicMaterializer` 直接生成 frame。旧 `DashboardActivityLive` 广播仅在 `DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 下保留一个发布版本。
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.

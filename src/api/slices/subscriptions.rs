@@ -193,6 +193,132 @@ impl SerializedTopicFrame {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DashboardTopicTopologyCounterSnapshot {
+    pub(crate) materialization_count: u64,
+    pub(crate) serialization_count: u64,
+    pub(crate) frame_bytes_count: u64,
+    pub(crate) lagged_count: u64,
+    pub(crate) skipped_count: u64,
+    pub(crate) business_payload_count: u64,
+    pub(crate) json_overlay_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
+    pub(crate) activity: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) summary: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) network_timeseries: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) network_recent: DashboardTopicTopologyCounterSnapshot,
+}
+
+#[derive(Debug, Default)]
+struct DashboardTopicTopologyCounters {
+    materialization_count: AtomicU64,
+    serialization_count: AtomicU64,
+    frame_bytes_count: AtomicU64,
+    lagged_count: AtomicU64,
+    skipped_count: AtomicU64,
+    business_payload_count: AtomicU64,
+    json_overlay_count: AtomicU64,
+}
+
+impl DashboardTopicTopologyCounters {
+    fn snapshot(&self) -> DashboardTopicTopologyCounterSnapshot {
+        DashboardTopicTopologyCounterSnapshot {
+            materialization_count: self.materialization_count.load(Ordering::Relaxed),
+            serialization_count: self.serialization_count.load(Ordering::Relaxed),
+            frame_bytes_count: self.frame_bytes_count.load(Ordering::Relaxed),
+            lagged_count: self.lagged_count.load(Ordering::Relaxed),
+            skipped_count: self.skipped_count.load(Ordering::Relaxed),
+            business_payload_count: self.business_payload_count.load(Ordering::Relaxed),
+            json_overlay_count: self.json_overlay_count.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.materialization_count.store(0, Ordering::Relaxed);
+        self.serialization_count.store(0, Ordering::Relaxed);
+        self.frame_bytes_count.store(0, Ordering::Relaxed);
+        self.lagged_count.store(0, Ordering::Relaxed);
+        self.skipped_count.store(0, Ordering::Relaxed);
+        self.business_payload_count.store(0, Ordering::Relaxed);
+        self.json_overlay_count.store(0, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardDeliveryTopologyCounters {
+    activity: DashboardTopicTopologyCounters,
+    summary: DashboardTopicTopologyCounters,
+    network_timeseries: DashboardTopicTopologyCounters,
+    network_recent: DashboardTopicTopologyCounters,
+}
+
+impl DashboardDeliveryTopologyCounters {
+    fn for_topic(&self, topic_name: &str) -> Option<&DashboardTopicTopologyCounters> {
+        match topic_name {
+            "dashboard.activity.current" => Some(&self.activity),
+            "stats.summary.current" => Some(&self.summary),
+            "dashboard.network-timeseries.window" => Some(&self.network_timeseries),
+            "dashboard.network-recent.current" => Some(&self.network_recent),
+            _ => None,
+        }
+    }
+
+    fn record_materialization(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.materialization_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_serialization(&self, topic_name: &str, frame_bytes: usize) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.serialization_count.fetch_add(1, Ordering::Relaxed);
+            topic
+                .frame_bytes_count
+                .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_lag(&self, topic_name: &str, skipped: u64) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.lagged_count.fetch_add(1, Ordering::Relaxed);
+            topic.skipped_count.fetch_add(skipped, Ordering::Relaxed);
+        }
+    }
+
+    fn record_business_payload(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.business_payload_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_json_overlay(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.json_overlay_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> DashboardDeliveryTopologyCounterSnapshot {
+        DashboardDeliveryTopologyCounterSnapshot {
+            activity: self.activity.snapshot(),
+            summary: self.summary.snapshot(),
+            network_timeseries: self.network_timeseries.snapshot(),
+            network_recent: self.network_recent.snapshot(),
+        }
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.activity.reset();
+        self.summary.reset();
+        self.network_timeseries.reset();
+        self.network_recent.reset();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionDispatchEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
@@ -203,6 +329,7 @@ pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     serialization_count: AtomicU64,
+    dashboard_topology_counters: DashboardDeliveryTopologyCounters,
 }
 
 #[derive(Debug, Default)]
@@ -535,6 +662,7 @@ impl SubscriptionHub {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
             serialization_count: AtomicU64::new(0),
+            dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
         }
     }
 
@@ -553,12 +681,31 @@ impl SubscriptionHub {
         let frame =
             serialize_topic_frame(descriptor, topic_key, schema_epoch, cursor, payload_bytes)?;
         self.serialization_count.fetch_add(1, Ordering::Relaxed);
+        self.dashboard_topology_counters
+            .record_serialization(&frame.descriptor.topic, frame.retained_bytes());
         Ok(frame)
     }
 
     #[cfg(test)]
     fn serialization_count(&self) -> u64 {
         self.serialization_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
+        self.dashboard_topology_counters.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_dashboard_topology_counters(&self) {
+        self.dashboard_topology_counters.reset();
+    }
+
+    fn record_dashboard_topology_lag(&self, topic_names: &[String], skipped: u64) {
+        for topic_name in topic_names {
+            self.dashboard_topology_counters
+                .record_lag(topic_name, skipped);
+        }
     }
 
     pub(crate) async fn has_active_topic_name(&self, topic_name: &str) -> bool {
@@ -1033,6 +1180,8 @@ impl SubscriptionHub {
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
         let started = Instant::now();
+        self.dashboard_topology_counters
+            .record_materialization(topic.name());
         let mut payload = topic.build_payload(state.clone()).await?;
 
         let (cached, dispatch) = {
@@ -1208,6 +1357,10 @@ impl SubscriptionHub {
                         && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
                     {
                         cached.latest_live_snapshot = Some(snapshot.as_ref().clone());
+                    }
+                    if matches!(payload, BroadcastPayload::DashboardActivityLive { .. }) {
+                        self.dashboard_topology_counters
+                            .record_business_payload(cached.topic.name());
                     }
                     Some(cached.clone())
                 })
@@ -1743,6 +1896,8 @@ impl SubscriptionHub {
         else {
             return Ok(());
         };
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let account = upstream_account_id.and_then(|account_id| {
             live.accounts
                 .iter()
@@ -1832,6 +1987,8 @@ impl SubscriptionHub {
         live: DashboardActivityLiveSnapshot,
     ) -> Result<(), ApiError> {
         let topic_key = topic.cache_key()?;
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let dispatch = {
             let mut guard = self.state.lock().await;
             let Some(cached) = guard.topics.get_mut(&topic_key) else {
@@ -2356,6 +2513,21 @@ pub(crate) async fn topic_sse_stream(
         .iter()
         .map(SubscriptionTopic::cache_key)
         .collect::<Result<HashSet<_>, _>>()?;
+    let selected_dashboard_topology_topic_names = selected_topics
+        .iter()
+        .map(SubscriptionTopic::name)
+        .filter(|topic_name| {
+            matches!(
+                *topic_name,
+                "dashboard.activity.current"
+                    | "stats.summary.current"
+                    | "dashboard.network-timeseries.window"
+                    | "dashboard.network-recent.current"
+            )
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let dashboard_topology_hub = state.subscription_hub.clone();
     let topic_lease = state
         .subscription_hub
         .register_topic_subscribers(&selected_topics)
@@ -2425,6 +2597,10 @@ pub(crate) async fn topic_sse_stream(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        dashboard_topology_hub.record_dashboard_topology_lag(
+                            &selected_dashboard_topology_topic_names,
+                            skipped,
+                        );
                         warn!(skipped, "subscription live fanout lagged");
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -3633,6 +3809,328 @@ mod tests {
             .expect("prepare first dashboard owner connection");
         assert!(!prepared.initial.is_empty());
         ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
+    }
+
+    fn dashboard_runtime_topology_descriptors() -> Vec<SubscriptionTopicDescriptor> {
+        vec![
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.activity.current".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "today".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                    ("recentLimit".to_string(), "16".to_string()),
+                    ("includeAccounts".to_string(), "true".to_string()),
+                    ("includeRecent".to_string(), "true".to_string()),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.summary.current".to_string(),
+                params: BTreeMap::from([
+                    ("window".to_string(), "current".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.network-timeseries.window".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "today".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.network-recent.current".to_string(),
+                params: BTreeMap::new(),
+            },
+        ]
+    }
+
+    fn dashboard_runtime_topology_live_record(occurred_at: &str) -> ApiInvocation {
+        ApiInvocation {
+            id: 748_001,
+            invoke_id: "dashboard-runtime-topology-live".to_string(),
+            occurred_at: occurred_at.to_string(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: Some("gpt-5".to_string()),
+            request_model: None,
+            response_model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            reasoning_effort: None,
+            total_tokens: None,
+            cost: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: None,
+            status: Some("running".to_string()),
+            live_phase: Some("requesting".to_string()),
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            blocked_binding: None,
+            blocked_binding_json: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: None,
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: Some(42),
+            upstream_account_name: Some("Topology Account".to_string()),
+            response_content_encoding: None,
+            request_compression_algorithm: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            cost_audit: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: occurred_at.to_string(),
+        }
+    }
+
+    async fn collect_dashboard_runtime_topology_frames(
+        receiver: &mut broadcast::Receiver<SubscriptionDispatchEvent>,
+        initial: Option<SubscriptionDispatchEvent>,
+    ) -> BTreeMap<String, Arc<SerializedTopicFrame>> {
+        let expected = [
+            "dashboard.activity.current",
+            "stats.summary.current",
+            "dashboard.network-timeseries.window",
+            "dashboard.network-recent.current",
+        ];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut frames = BTreeMap::new();
+        if let Some(dispatch) = initial
+            && expected.contains(&dispatch.frame.descriptor.topic.as_str())
+        {
+            frames.insert(dispatch.frame.descriptor.topic.clone(), dispatch.frame);
+        }
+        while frames.len() < expected.len() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "dashboard topology live frame timeout"
+            );
+            let dispatch = tokio::time::timeout(remaining, receiver.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "dashboard topology live frame timeout; received={:?}",
+                        frames.keys()
+                    )
+                })
+                .expect("dashboard topology live frame channel closed");
+            if expected.contains(&dispatch.frame.descriptor.topic.as_str()) {
+                frames.insert(dispatch.frame.descriptor.topic.clone(), dispatch.frame);
+            }
+        }
+        frames
+    }
+
+    #[tokio::test]
+    async fn dashboard_runtime_topology_contract_characterizes_legacy_amplification() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind dashboard network cache");
+        state
+            .proxy_runtime_invocations
+            .capture_memory_snapshot()
+            .expect("establish in-memory dashboard projection");
+        if let Some(window) = state
+            .proxy_runtime_invocations
+            .pending_dashboard_publish_window()
+        {
+            let consumed = state
+                .proxy_runtime_invocations
+                .begin_dashboard_publish_window(window)
+                .expect("consume initial dashboard projection window");
+            state
+                .proxy_runtime_invocations
+                .complete_dashboard_publish_window(consumed);
+        }
+
+        let descriptors = dashboard_runtime_topology_descriptors();
+        let topics = descriptors
+            .iter()
+            .map(SubscriptionTopic::from_descriptor)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("dashboard topology topics");
+        let prepared = state
+            .subscription_hub
+            .prepare_connection(state.clone(), descriptors, Vec::new())
+            .await
+            .expect("prepare full dashboard topology");
+        assert_eq!(prepared.initial.len(), topics.len());
+
+        let first_owner = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register first dashboard topology owner");
+        let second_owner = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register second dashboard topology owner");
+        let mut first_receiver = state.subscription_hub.subscribe();
+        let mut second_receiver = state.subscription_hub.subscribe();
+        let mut producer_receiver = state.broadcaster.subscribe();
+
+        let process_started_epoch_second = state
+            .dashboard_network_speed_cache
+            .process_started_at_utc()
+            .timestamp();
+        while Utc::now().timestamp() <= process_started_epoch_second.saturating_add(1) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        state
+            .proxy_runtime_invocations
+            .reset_dashboard_topology_counters();
+        state.subscription_hub.reset_dashboard_topology_counters();
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        state
+            .proxy_runtime_invocations
+            .upsert(dashboard_runtime_topology_live_record(&occurred_at));
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "dashboard-runtime-topology-network",
+            &occurred_at,
+            Some(42),
+            Some("api.openai.com"),
+            4096,
+            Utc::now() - ChronoDuration::seconds(1),
+        );
+        crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
+            state.as_ref(),
+        );
+        let payload = tokio::time::timeout(Duration::from_secs(2), producer_receiver.recv())
+            .await
+            .expect("dashboard topology producer timeout")
+            .expect("dashboard topology producer channel closed");
+        state.shutdown.cancel();
+        state
+            .subscription_hub
+            .handle_internal_broadcast(state.clone(), payload)
+            .await;
+        let (first_frames, second_frames) = tokio::join!(
+            collect_dashboard_runtime_topology_frames(&mut first_receiver, None),
+            collect_dashboard_runtime_topology_frames(&mut second_receiver, None),
+        );
+        for (topic, first_frame) in &first_frames {
+            let second_frame = second_frames
+                .get(topic)
+                .expect("second owner receives every dashboard topic");
+            assert!(
+                Arc::ptr_eq(first_frame, second_frame),
+                "topic {topic} should reuse one serialized frame across owners",
+            );
+        }
+
+        let projection = state
+            .proxy_runtime_invocations
+            .dashboard_topology_counters();
+        assert_eq!(projection.current.build_count, 1);
+        assert_eq!(projection.current.revision_count, 1);
+        assert_eq!(projection.current.cadence_miss_count, 0);
+        assert_eq!(projection.network.build_count, 0);
+        assert_eq!(projection.network.revision_count, 0);
+        assert_eq!(projection.network.cadence_miss_count, 0);
+        assert_eq!(projection.terminal.build_count, 0);
+        assert_eq!(projection.terminal.revision_count, 0);
+        assert_eq!(projection.terminal.cadence_miss_count, 0);
+        assert_eq!(
+            state
+                .proxy_runtime_invocations
+                .health_snapshot(2)
+                .live_path_db_read_count,
+            0,
+            "active Dashboard producer must remain on the in-memory live path",
+        );
+
+        let delivery = state.subscription_hub.dashboard_topology_counters();
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(topic.business_payload_count, 1);
+            assert!(topic.frame_bytes_count > 0);
+            assert_eq!(topic.lagged_count, 0);
+            assert_eq!(topic.skipped_count, 0);
+        }
+        assert_eq!(delivery.activity.materialization_count, 0);
+        assert_eq!(delivery.activity.json_overlay_count, 1);
+        assert_eq!(delivery.summary.materialization_count, 0);
+        assert_eq!(delivery.summary.json_overlay_count, 1);
+        assert_eq!(delivery.network_timeseries.materialization_count, 1);
+        assert_eq!(delivery.network_timeseries.json_overlay_count, 0);
+        assert_eq!(delivery.network_recent.materialization_count, 1);
+        assert_eq!(delivery.network_recent.json_overlay_count, 0);
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(topic.serialization_count, 1);
+        }
+
+        drop(second_owner);
+        drop(first_owner);
     }
 
     #[tokio::test]
