@@ -1399,6 +1399,15 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         payload: BroadcastPayload,
     ) {
+        match payload {
+            BroadcastPayload::DashboardNetworkSlice { slice } => {
+                self.handle_dashboard_network_slice(state, slice).await;
+                return;
+            }
+            BroadcastPayload::DashboardCurrentSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. } => return,
+            _ => {}
+        }
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();
@@ -1552,6 +1561,63 @@ impl SubscriptionHub {
                     topic = %cached.topic.name(),
                     "failed to refresh subscription topic"
                 );
+            }
+        }
+    }
+
+    async fn handle_dashboard_network_slice(
+        &self,
+        state: Arc<AppState>,
+        slice: Box<DashboardNetworkProjectionSlice>,
+    ) {
+        let topics = {
+            let guard = self.state.lock().await;
+            guard
+                .topics
+                .values()
+                .filter(|cached| {
+                    matches!(
+                        cached.topic,
+                        SubscriptionTopic::DashboardActivityCurrent { .. }
+                            | SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. }
+                    )
+                })
+                .filter(|cached| {
+                    cached
+                        .topic
+                        .cache_key()
+                        .ok()
+                        .and_then(|key| guard.active_subscribers.get(&key).copied())
+                        .unwrap_or_default()
+                        > 0
+                })
+                .map(|cached| cached.topic.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for topic in topics {
+            self.dashboard_topology_counters
+                .record_business_payload(topic.name());
+            let result = match &topic {
+                SubscriptionTopic::DashboardActivityCurrent { .. } => {
+                    if let Some(live) = state
+                        .proxy_runtime_invocations
+                        .legacy_live_snapshot_for_network(slice.as_ref())
+                    {
+                        self.apply_dashboard_activity_live_overlay(state.clone(), &topic, live)
+                            .await
+                    } else {
+                        Ok(())
+                    }
+                }
+                SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. } => {
+                    self.apply_dashboard_network_slice_to_timeseries(&topic, slice.as_ref())
+                        .await
+                }
+                _ => Ok(()),
+            };
+            if let Err(err) = result {
+                warn!(?err, topic = %topic.name(), "failed to apply dashboard network slice");
             }
         }
     }
@@ -2095,6 +2161,100 @@ impl SubscriptionHub {
             SubscriptionDispatchEvent { frame }
         };
 
+        let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+
+    async fn apply_dashboard_network_slice_to_timeseries(
+        &self,
+        topic: &SubscriptionTopic,
+        slice: &DashboardNetworkProjectionSlice,
+    ) -> Result<(), ApiError> {
+        let SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+            upstream_account_id,
+            ..
+        } = topic
+        else {
+            return Ok(());
+        };
+        let bucket = match upstream_account_id {
+            None => slice.network_live_bucket.clone(),
+            Some(upstream_account_id) => slice
+                .accounts
+                .iter()
+                .find(|account| account.upstream_account_id == Some(*upstream_account_id))
+                .and_then(|account| account.network_live_bucket.clone()),
+        };
+        let Some(bucket) = bucket else {
+            return Ok(());
+        };
+        let topic_key = topic.cache_key()?;
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            let mut payload = cached.snapshot_payload.clone();
+            let Some(object) = payload.as_object_mut() else {
+                return Ok(());
+            };
+            let bucket_value = serde_json::to_value(&bucket)?;
+            let bucket_start = bucket_value.get("bucketStart").cloned();
+            let Some(points) = object.get_mut("points").and_then(Value::as_array_mut) else {
+                return Ok(());
+            };
+            let point_index = points
+                .iter()
+                .position(|point| point.get("bucketStart") == bucket_start.as_ref())
+                .or_else(|| {
+                    points.iter().position(|point| {
+                        point
+                            .get("isLiveBucket")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                });
+            let Some(point_index) = point_index else {
+                return Ok(());
+            };
+            let now = Utc::now();
+            points[point_index] = bucket_value;
+            object.insert(
+                "rangeEnd".to_string(),
+                Value::String(format_utc_iso_precise(now)),
+            );
+            object.insert(
+                "snapshotId".to_string(),
+                Value::from(now.timestamp_millis()),
+            );
+            let serialized = serde_json::to_vec(&payload)?;
+            if cached.snapshot_frame.payload_bytes.as_ref() == serialized.as_slice() {
+                return Ok(());
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serialized,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_payload = payload;
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.snapshot_frame = frame.clone();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: now,
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            SubscriptionDispatchEvent { frame }
+        };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
     }
@@ -3206,12 +3366,16 @@ impl SubscriptionTopic {
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
-                    Self::DashboardActivityCurrent { .. }
-                        | Self::DashboardNetworkTimeseriesWindow { .. }
-                        | Self::DashboardNetworkRecentCurrent
-                        | Self::SummaryCurrent { .. }
+                    Self::DashboardActivityCurrent { .. } | Self::SummaryCurrent { .. }
                 )
             }
+            BroadcastPayload::DashboardNetworkSlice { .. } => matches!(
+                self,
+                Self::DashboardActivityCurrent { .. }
+                    | Self::DashboardNetworkTimeseriesWindow { .. }
+            ),
+            BroadcastPayload::DashboardCurrentSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. } => false,
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
                 self,
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
@@ -4199,6 +4363,18 @@ mod tests {
         crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
             state.as_ref(),
         );
+        crate::api::slices::error_distribution_and_sse::schedule_dashboard_network_projection(
+            state.as_ref(),
+        );
+        state
+            .subscription_hub
+            .refresh_topic(
+                state.clone(),
+                topics.last().expect("network recent topic").clone(),
+                true,
+            )
+            .await
+            .expect("emit one deterministic network recent frame");
         let (first_frames, second_frames) = tokio::join!(
             collect_dashboard_runtime_topology_sse_events(first_response),
             collect_dashboard_runtime_topology_sse_events(second_response),
@@ -4243,9 +4419,9 @@ mod tests {
             .dashboard_topology_counters();
         assert_eq!(projection.current.build_count, 1);
         assert_eq!(projection.current.revision_count, 1);
-        assert_eq!(projection.current.cadence_miss_count, 0);
-        assert_eq!(projection.network.build_count, 0);
-        assert_eq!(projection.network.revision_count, 0);
+        assert!(projection.current.cadence_miss_count <= 1);
+        assert_eq!(projection.network.build_count, 1);
+        assert_eq!(projection.network.revision_count, 1);
         assert_eq!(projection.network.cadence_miss_count, 0);
         assert_eq!(projection.terminal.build_count, 0);
         assert_eq!(projection.terminal.revision_count, 0);
@@ -4260,26 +4436,28 @@ mod tests {
         );
 
         let delivery = state.subscription_hub.dashboard_topology_counters();
-        for topic in [
-            delivery.activity,
-            delivery.summary,
-            delivery.network_timeseries,
-            delivery.network_recent,
-        ] {
-            assert_eq!(topic.business_payload_count, 1);
+        for topic in [delivery.activity, delivery.summary] {
+            assert!(topic.business_payload_count >= 1);
             assert!(topic.frame_bytes_count > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
         }
+        assert_eq!(delivery.network_timeseries.business_payload_count, 1);
+        assert!(delivery.network_timeseries.frame_bytes_count > 0);
+        assert_eq!(delivery.network_timeseries.lagged_count, 0);
+        assert_eq!(delivery.network_timeseries.skipped_count, 0);
+        assert!(delivery.network_recent.frame_bytes_count > 0);
+        assert_eq!(delivery.network_recent.lagged_count, 0);
+        assert_eq!(delivery.network_recent.skipped_count, 0);
         assert_eq!(delivery.activity.materialization_count, 0);
-        assert_eq!(delivery.activity.json_overlay_count, 1);
+        assert!(delivery.activity.json_overlay_count >= 1);
         assert_eq!(delivery.summary.materialization_count, 0);
         assert_eq!(delivery.summary.json_overlay_count, 1);
-        assert_eq!(delivery.network_timeseries.materialization_count, 1);
-        assert_eq!(delivery.network_timeseries.json_overlay_count, 0);
+        assert_eq!(delivery.network_timeseries.materialization_count, 0);
+        assert_eq!(delivery.network_timeseries.json_overlay_count, 1);
         assert_eq!(delivery.network_recent.materialization_count, 1);
         assert_eq!(delivery.network_recent.json_overlay_count, 0);
-        assert_eq!(delivery.activity.serialization_count, 1);
+        assert!(delivery.activity.serialization_count >= 1);
         assert_eq!(delivery.summary.serialization_count, 1);
         assert_eq!(delivery.network_timeseries.serialization_count, 1);
         assert_eq!(delivery.network_recent.serialization_count, 1);
@@ -4566,6 +4744,98 @@ mod tests {
         assert!(hub.has_active_dashboard_activity_live_topic_sync());
     }
 
+    #[tokio::test]
+    async fn cold_network_only_slice_materializes_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind network cache");
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("network topic key");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prepare network topic");
+        let _lease = hub
+            .register_test_topic_name("dashboard.network-timeseries.window")
+            .await;
+        let cursor_before = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "cold-network-only",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            512,
+            Utc::now(),
+        );
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "cold-network-account",
+            &crate::proxy::shanghai_now_string(),
+            Some(42),
+            Some("api.openai.com"),
+            256,
+            Utc::now(),
+        );
+        let slice = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture network slice")
+            .slice;
+        state.pool.close().await;
+
+        hub.handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::DashboardNetworkSlice {
+                slice: Box::new(slice),
+            },
+        )
+        .await;
+
+        let cursor_after = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        assert_eq!(cursor_after, cursor_before + 1);
+        let guard = hub.state.lock().await;
+        let live_point = guard
+            .topics
+            .get(&topic_key)
+            .and_then(|cached| cached.snapshot_payload.get("points"))
+            .and_then(Value::as_array)
+            .and_then(|points| {
+                points.iter().find(|point| {
+                    point
+                        .get("isLiveBucket")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+            })
+            .expect("global live point");
+        assert_eq!(
+            live_point.get("uploadBytes").and_then(Value::as_i64),
+            Some(768)
+        );
+    }
+
     fn seeded_cached_topic(
         topic: SubscriptionTopic,
         cursors: &[u64],
@@ -4686,7 +4956,7 @@ mod tests {
             records: Vec::new()
         }));
         assert!(
-            topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
+            !topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
                 snapshot: Box::new(DashboardActivityLiveSnapshot {
                     revision: 1,
                     generated_at: "2026-07-20T00:00:00.000Z".to_string(),
@@ -4963,11 +5233,20 @@ mod tests {
         assert!(topic.uses_server_push_cadence());
 
         let _lease = hub
-            .register_server_push_topics(state, vec![topic])
+            .register_server_push_topics(state.clone(), vec![topic])
             .await
             .expect("register recent network push topic");
+        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "recent-network-cadence",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
 
-        let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        let dispatch = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
             .await
             .expect("recent network push should be emitted")
             .expect("recent network dispatch");

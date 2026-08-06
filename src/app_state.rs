@@ -87,6 +87,10 @@ pub(crate) struct RuntimeInvocationStoreRemoveOutcome {
 
 pub(crate) const DASHBOARD_RUNTIME_PROJECTION_MODE_ENV: &str = "DASHBOARD_RUNTIME_PROJECTION_MODE";
 pub(crate) const DASHBOARD_RUNTIME_PROJECTION_COALESCE: Duration = Duration::from_millis(250);
+pub(crate) const DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE: Duration = Duration::from_secs(1);
+pub(crate) const DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE: Duration = Duration::from_secs(5);
+const DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING: usize = 10_000;
+const DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeProjectionMode {
@@ -122,7 +126,19 @@ impl RuntimeProjectionMode {
 struct DashboardRuntimeProjectionState {
     dirty_generation: u64,
     pending_deadline: Option<Instant>,
+    network_dirty_generation: u64,
+    pending_network_deadline: Option<Instant>,
+    terminal_dirty_generation: u64,
+    pending_terminal_deadline: Option<Instant>,
+    terminal_published_generation: u64,
+    current_revision: u64,
+    network_revision: u64,
+    terminal_revision: u64,
+    terminal_pending_delta_bytes: usize,
+    terminal_pending_deltas: VecDeque<DashboardActivityTerminalDelta>,
     last_good: Option<DashboardActivityLiveSnapshot>,
+    network_last_good: Option<DashboardNetworkProjectionSlice>,
+    legacy_last_good: Option<DashboardActivityLiveSnapshot>,
     last_good_at: Option<Instant>,
     last_snapshot_origin: Option<&'static str>,
     degraded_reason: Option<&'static str>,
@@ -141,7 +157,19 @@ impl Default for DashboardRuntimeProjectionState {
         Self {
             dirty_generation: 0,
             pending_deadline: None,
+            network_dirty_generation: 0,
+            pending_network_deadline: None,
+            terminal_dirty_generation: 0,
+            pending_terminal_deadline: None,
+            terminal_published_generation: 0,
+            current_revision: 0,
+            network_revision: 0,
+            terminal_revision: 0,
+            terminal_pending_delta_bytes: 0,
+            terminal_pending_deltas: VecDeque::new(),
             last_good: None,
+            network_last_good: None,
+            legacy_last_good: None,
             last_good_at: None,
             last_snapshot_origin: None,
             degraded_reason: None,
@@ -293,6 +321,18 @@ fn mark_dashboard_state_dirty(
     }
 }
 
+fn mark_dashboard_projection_slice_dirty(
+    generation: &mut u64,
+    deadline: &mut Option<Instant>,
+    now: Instant,
+    cadence: Duration,
+) {
+    *generation = generation.saturating_add(1);
+    if deadline.is_none() {
+        *deadline = Some(now + cadence);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardRuntimeBaselineRecord {
     pub(crate) key: RuntimeInvocationKey,
@@ -321,8 +361,16 @@ pub(crate) struct DashboardRuntimeNetworkOpenBucketBaseline {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DashboardProjectionPublishWindow {
+    pub(crate) slice: DashboardProjectionSlice,
     pub(crate) deadline: Instant,
     pub(crate) generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardProjectionSlice {
+    Current,
+    Network,
+    Terminal,
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +378,18 @@ pub(crate) struct DashboardProjectionCapture {
     pub(crate) snapshot: DashboardActivityLiveSnapshot,
     pub(crate) changed: bool,
     pub(crate) snapshot_origin: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardNetworkProjectionCapture {
+    pub(crate) slice: DashboardNetworkProjectionSlice,
+    pub(crate) changed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardTerminalProjectionCapture {
+    pub(crate) revision: u64,
+    pub(crate) deltas: Vec<DashboardActivityTerminalDelta>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -433,6 +493,7 @@ pub(crate) struct RuntimeProjectionHub {
     mode: RuntimeProjectionMode,
     dashboard_network_speed_cache: std::sync::OnceLock<Arc<DashboardNetworkSpeedCache>>,
     dashboard: std::sync::Mutex<DashboardRuntimeProjectionState>,
+    dashboard_publish_notify: tokio::sync::Notify,
     live_path_db_read_count: AtomicU64,
     build_count: AtomicU64,
     dashboard_topology_counters: DashboardRuntimeTopologyCounters,
@@ -458,6 +519,7 @@ impl RuntimeProjectionHub {
             mode,
             dashboard_network_speed_cache: std::sync::OnceLock::new(),
             dashboard: std::sync::Mutex::new(DashboardRuntimeProjectionState::default()),
+            dashboard_publish_notify: tokio::sync::Notify::new(),
             live_path_db_read_count: AtomicU64::new(0),
             build_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardRuntimeTopologyCounters::default(),
@@ -542,6 +604,7 @@ impl RuntimeProjectionHub {
             .accounts
             .sort_by(|left, right| left.account_key.cmp(&right.account_key));
         mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
+        self.dashboard_publish_notify.notify_one();
     }
 
     fn sync_dashboard_runtime_key(&self, key: &RuntimeInvocationKey, trigger: &'static str) {
@@ -597,6 +660,7 @@ impl RuntimeProjectionHub {
         dashboard.projection_records = records;
         dashboard.live_core = Some(core);
         mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
+        self.dashboard_publish_notify.notify_one();
     }
 
     pub(crate) fn mark_dashboard_dirty(&self, trigger: &'static str) {
@@ -608,6 +672,55 @@ impl RuntimeProjectionHub {
             return;
         };
         mark_dashboard_state_dirty(&mut dashboard, _trigger, now);
+        self.dashboard_publish_notify.notify_one();
+    }
+
+    pub(crate) fn mark_dashboard_network_dirty(&self) {
+        self.mark_dashboard_network_dirty_at(Instant::now());
+    }
+
+    fn mark_dashboard_network_dirty_at(&self, now: Instant) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        let DashboardRuntimeProjectionState {
+            network_dirty_generation,
+            pending_network_deadline,
+            ..
+        } = &mut *dashboard;
+        mark_dashboard_projection_slice_dirty(
+            network_dirty_generation,
+            pending_network_deadline,
+            now,
+            DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE,
+        );
+        self.dashboard_publish_notify.notify_one();
+    }
+
+    fn mark_dashboard_terminal_dirty(&self) {
+        self.mark_dashboard_terminal_dirty_at(Instant::now());
+    }
+
+    fn mark_dashboard_terminal_dirty_at(&self, now: Instant) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        let DashboardRuntimeProjectionState {
+            terminal_dirty_generation,
+            pending_terminal_deadline,
+            ..
+        } = &mut *dashboard;
+        mark_dashboard_projection_slice_dirty(
+            terminal_dirty_generation,
+            pending_terminal_deadline,
+            now,
+            DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE,
+        );
+        self.dashboard_publish_notify.notify_one();
+    }
+
+    pub(crate) async fn wait_for_dashboard_publish_signal(&self) {
+        self.dashboard_publish_notify.notified().await;
     }
 
     pub(crate) fn pending_dashboard_deadline(&self) -> Option<Instant> {
@@ -620,14 +733,40 @@ impl RuntimeProjectionHub {
     pub(crate) fn pending_dashboard_publish_window(
         &self,
     ) -> Option<DashboardProjectionPublishWindow> {
-        self.dashboard.lock().ok().and_then(|dashboard| {
-            dashboard
-                .pending_deadline
-                .map(|deadline| DashboardProjectionPublishWindow {
-                    deadline,
-                    generation: dashboard.dirty_generation,
-                })
+        let dashboard = self.dashboard.lock().ok()?;
+        [
+            (
+                DashboardProjectionSlice::Current,
+                dashboard.pending_deadline,
+                dashboard.dirty_generation,
+            ),
+            (
+                DashboardProjectionSlice::Network,
+                dashboard.pending_network_deadline,
+                dashboard.network_dirty_generation,
+            ),
+            (
+                DashboardProjectionSlice::Terminal,
+                dashboard.pending_terminal_deadline,
+                dashboard.terminal_dirty_generation,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(slice, deadline, generation)| {
+            deadline.map(|deadline| DashboardProjectionPublishWindow {
+                slice,
+                deadline,
+                generation,
+            })
         })
+        .min_by_key(|window| window.deadline)
+    }
+
+    pub(crate) fn has_pending_dashboard_terminal_publish(&self) -> bool {
+        self.dashboard
+            .lock()
+            .map(|dashboard| dashboard.pending_terminal_deadline.is_some())
+            .unwrap_or(false)
     }
 
     pub(crate) fn begin_dashboard_publish_window(
@@ -635,13 +774,33 @@ impl RuntimeProjectionHub {
         window: DashboardProjectionPublishWindow,
     ) -> Option<DashboardProjectionPublishWindow> {
         let mut dashboard = self.dashboard.lock().ok()?;
-        if dashboard.pending_deadline != Some(window.deadline) {
-            return None;
-        }
-        dashboard.pending_deadline = None;
+        let generation = match window.slice {
+            DashboardProjectionSlice::Current => {
+                if dashboard.pending_deadline != Some(window.deadline) {
+                    return None;
+                }
+                dashboard.pending_deadline = None;
+                dashboard.dirty_generation
+            }
+            DashboardProjectionSlice::Network => {
+                if dashboard.pending_network_deadline != Some(window.deadline) {
+                    return None;
+                }
+                dashboard.pending_network_deadline = None;
+                dashboard.network_dirty_generation
+            }
+            DashboardProjectionSlice::Terminal => {
+                if dashboard.pending_terminal_deadline != Some(window.deadline) {
+                    return None;
+                }
+                dashboard.pending_terminal_deadline = None;
+                dashboard.terminal_dirty_generation
+            }
+        };
         Some(DashboardProjectionPublishWindow {
+            slice: window.slice,
             deadline: window.deadline,
-            generation: dashboard.dirty_generation,
+            generation,
         })
     }
 
@@ -650,7 +809,12 @@ impl RuntimeProjectionHub {
         window: DashboardProjectionPublishWindow,
     ) {
         if let Ok(dashboard) = self.dashboard.lock() {
-            debug_assert!(dashboard.dirty_generation >= window.generation);
+            let generation = match window.slice {
+                DashboardProjectionSlice::Current => dashboard.dirty_generation,
+                DashboardProjectionSlice::Network => dashboard.network_dirty_generation,
+                DashboardProjectionSlice::Terminal => dashboard.terminal_dirty_generation,
+            };
+            debug_assert!(generation >= window.generation);
         }
     }
 
@@ -682,12 +846,16 @@ impl RuntimeProjectionHub {
         let changed = dashboard
             .last_good
             .as_ref()
-            .is_none_or(|current| !dashboard_live_snapshot_content_eq(current, &candidate));
+            .is_none_or(|current| !dashboard_current_snapshot_content_eq(current, &candidate));
         if !changed {
-            let snapshot = dashboard
+            let revision = dashboard
                 .last_good
-                .clone()
-                .expect("unchanged projection has a last-good snapshot");
+                .as_ref()
+                .expect("unchanged projection has a last-good snapshot")
+                .revision;
+            let mut snapshot = candidate;
+            snapshot.revision = revision;
+            dashboard.last_good = Some(snapshot.clone());
             dashboard.memory_ready = true;
             dashboard.degraded_reason = None;
             dashboard.last_snapshot_origin = Some("memory");
@@ -698,8 +866,9 @@ impl RuntimeProjectionHub {
             });
         }
 
+        dashboard.current_revision = dashboard.current_revision.saturating_add(1);
         let mut snapshot = candidate;
-        snapshot.revision = reserve_dashboard_activity_live_revision();
+        snapshot.revision = dashboard.current_revision;
         self.dashboard_topology_counters
             .current
             .revision_count
@@ -714,6 +883,206 @@ impl RuntimeProjectionHub {
             changed: true,
             snapshot_origin: "memory",
         })
+    }
+
+    pub(crate) fn capture_network_slice(&self) -> Result<DashboardNetworkProjectionCapture> {
+        let dashboard_network_speed_cache = self
+            .dashboard_network_speed_cache
+            .get()
+            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
+        let (network_open_buckets, known_account_ids) = {
+            let dashboard = self
+                .dashboard
+                .lock()
+                .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+            let network_open_buckets = dashboard
+                .persistence_baseline
+                .as_ref()
+                .map(|baseline| baseline.network_open_buckets.clone())
+                .unwrap_or_default();
+            let known_account_ids = dashboard
+                .network_last_good
+                .as_ref()
+                .map(|slice| {
+                    slice
+                        .accounts
+                        .iter()
+                        .map(|account| account.upstream_account_id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (network_open_buckets, known_account_ids)
+        };
+        let candidate = DashboardNetworkProjectionSlice::from_memory(
+            dashboard_network_speed_cache.as_ref(),
+            &network_open_buckets,
+            &known_account_ids,
+        );
+        self.dashboard_topology_counters
+            .network
+            .build_count
+            .fetch_add(1, Ordering::Relaxed);
+        let mut dashboard = self
+            .dashboard
+            .lock()
+            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+        let changed = dashboard
+            .network_last_good
+            .as_ref()
+            .is_none_or(|current| !dashboard_network_slice_content_eq(current, &candidate));
+        if !changed {
+            return Ok(DashboardNetworkProjectionCapture {
+                slice: dashboard
+                    .network_last_good
+                    .clone()
+                    .expect("unchanged network projection has a last-good snapshot"),
+                changed: false,
+            });
+        }
+
+        dashboard.network_revision = dashboard.network_revision.saturating_add(1);
+        let mut snapshot = candidate;
+        snapshot.revision = dashboard.network_revision;
+        self.dashboard_topology_counters
+            .network
+            .revision_count
+            .fetch_add(1, Ordering::Relaxed);
+        dashboard.network_last_good = Some(snapshot.clone());
+        Ok(DashboardNetworkProjectionCapture {
+            slice: snapshot,
+            changed: true,
+        })
+    }
+
+    pub(crate) fn record_dashboard_terminal_delta(&self, delta: DashboardActivityTerminalDelta) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        if dashboard.terminal_pending_deltas.len() >= DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING
+            || dashboard
+                .terminal_pending_delta_bytes
+                .saturating_add(delta.estimated_bytes)
+                > DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING_BYTES
+        {
+            dashboard.degraded_reason = Some("terminal_slice_hard_limit");
+            tracing::warn!(
+                pending_delta_count = dashboard.terminal_pending_deltas.len(),
+                pending_delta_estimated_bytes = dashboard.terminal_pending_delta_bytes,
+                "dashboard terminal projection slice reached its hard limit"
+            );
+            return;
+        }
+        dashboard.terminal_pending_delta_bytes = dashboard
+            .terminal_pending_delta_bytes
+            .saturating_add(delta.estimated_bytes);
+        dashboard.terminal_pending_deltas.push_back(delta);
+        let now = Instant::now();
+        let DashboardRuntimeProjectionState {
+            terminal_dirty_generation,
+            pending_terminal_deadline,
+            ..
+        } = &mut *dashboard;
+        mark_dashboard_projection_slice_dirty(
+            terminal_dirty_generation,
+            pending_terminal_deadline,
+            now,
+            DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE,
+        );
+        self.dashboard_publish_notify.notify_one();
+    }
+
+    pub(crate) fn discard_dashboard_terminal_delta(&self, invoke_id: &str, occurred_at: &str) {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return;
+        };
+        let mut removed_bytes = 0usize;
+        dashboard.terminal_pending_deltas.retain(|delta| {
+            let retain = delta.invoke_id != invoke_id || delta.occurred_at != occurred_at;
+            if !retain {
+                removed_bytes = removed_bytes.saturating_add(delta.estimated_bytes);
+            }
+            retain
+        });
+        dashboard.terminal_pending_delta_bytes = dashboard
+            .terminal_pending_delta_bytes
+            .saturating_sub(removed_bytes);
+    }
+
+    pub(crate) fn capture_terminal_slice(&self) -> Option<DashboardTerminalProjectionCapture> {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            return None;
+        };
+        self.dashboard_topology_counters
+            .terminal
+            .build_count
+            .fetch_add(1, Ordering::Relaxed);
+        if dashboard.terminal_published_generation == dashboard.terminal_dirty_generation {
+            return None;
+        }
+        dashboard.terminal_published_generation = dashboard.terminal_dirty_generation;
+        let deltas = std::mem::take(&mut dashboard.terminal_pending_deltas)
+            .into_iter()
+            .collect::<Vec<_>>();
+        dashboard.terminal_pending_delta_bytes = 0;
+        if deltas.is_empty() {
+            return None;
+        }
+        dashboard.terminal_revision = dashboard.terminal_revision.saturating_add(1);
+        self.dashboard_topology_counters
+            .terminal
+            .revision_count
+            .fetch_add(1, Ordering::Relaxed);
+        Some(DashboardTerminalProjectionCapture {
+            revision: dashboard.terminal_revision,
+            deltas,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_terminal_slice_count(&self) -> usize {
+        self.dashboard
+            .lock()
+            .map(|dashboard| dashboard.terminal_pending_deltas.len())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn legacy_live_snapshot(
+        &self,
+        mut current: DashboardActivityLiveSnapshot,
+    ) -> DashboardActivityLiveSnapshot {
+        if let Ok(dashboard) = self.dashboard.lock()
+            && let Some(network) = dashboard.network_last_good.as_ref()
+        {
+            apply_dashboard_network_slice_to_live_snapshot(&mut current, network);
+        }
+        self.commit_legacy_live_snapshot(current)
+    }
+
+    pub(crate) fn legacy_live_snapshot_for_network(
+        &self,
+        network: &DashboardNetworkProjectionSlice,
+    ) -> Option<DashboardActivityLiveSnapshot> {
+        let mut current = self.dashboard.lock().ok()?.last_good.clone()?;
+        apply_dashboard_network_slice_to_live_snapshot(&mut current, network);
+        Some(self.commit_legacy_live_snapshot(current))
+    }
+
+    fn commit_legacy_live_snapshot(
+        &self,
+        mut candidate: DashboardActivityLiveSnapshot,
+    ) -> DashboardActivityLiveSnapshot {
+        let Ok(mut dashboard) = self.dashboard.lock() else {
+            candidate.revision = reserve_dashboard_activity_live_revision();
+            return candidate;
+        };
+        if let Some(previous) = dashboard.legacy_last_good.as_ref()
+            && dashboard_legacy_snapshot_content_eq(previous, &candidate)
+        {
+            return previous.clone();
+        }
+        candidate.revision = reserve_dashboard_activity_live_revision();
+        dashboard.legacy_last_good = Some(candidate.clone());
+        candidate
     }
 
     pub(crate) fn install_persistence_baseline_if_generation(
@@ -771,21 +1140,14 @@ impl RuntimeProjectionHub {
         }
         core.accounts
             .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        let dashboard_network_speed_cache = self
-            .dashboard_network_speed_cache
-            .get()
-            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
-        let mut snapshot = overlay_dashboard_network_live_snapshot(
-            core.clone(),
-            &baseline.network_open_buckets,
-            dashboard_network_speed_cache.as_ref(),
-        );
+        let mut snapshot = core.clone();
         let changed = dashboard
             .last_good
             .as_ref()
-            .is_none_or(|current| !dashboard_live_snapshot_content_eq(current, &snapshot));
+            .is_none_or(|current| !dashboard_current_snapshot_content_eq(current, &snapshot));
         let snapshot = if changed {
-            snapshot.revision = reserve_dashboard_activity_live_revision();
+            dashboard.current_revision = dashboard.current_revision.saturating_add(1);
+            snapshot.revision = dashboard.current_revision;
             self.dashboard_topology_counters
                 .current
                 .revision_count
@@ -794,10 +1156,13 @@ impl RuntimeProjectionHub {
             dashboard.last_good_at = Some(Instant::now());
             snapshot
         } else {
-            dashboard
+            snapshot.revision = dashboard
                 .last_good
-                .clone()
+                .as_ref()
                 .expect("unchanged baseline has a last-good snapshot")
+                .revision;
+            dashboard.last_good = Some(snapshot.clone());
+            snapshot
         };
         dashboard.last_snapshot_origin = Some(snapshot_origin);
         dashboard.degraded_reason = None;
@@ -865,6 +1230,20 @@ impl RuntimeProjectionHub {
     pub(crate) fn record_current_slice_cadence_miss(&self) {
         self.dashboard_topology_counters
             .current
+            .cadence_miss_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_network_slice_cadence_miss(&self) {
+        self.dashboard_topology_counters
+            .network
+            .cadence_miss_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_terminal_slice_cadence_miss(&self) {
+        self.dashboard_topology_counters
+            .terminal
             .cadence_miss_count
             .fetch_add(1, Ordering::Relaxed);
     }
@@ -982,37 +1361,20 @@ pub(crate) struct DashboardLiveProjection<'a> {
 
 impl DashboardLiveProjection<'_> {
     pub(crate) fn snapshot(&self) -> Result<DashboardActivityLiveSnapshot> {
-        let dashboard_network_speed_cache = self
-            .hub
-            .dashboard_network_speed_cache
-            .get()
-            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
-        let (core, network_open_buckets) = {
-            let dashboard = self
-                .hub
-                .dashboard
-                .lock()
-                .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
-            let core = dashboard
-                .live_core
-                .clone()
-                .unwrap_or_else(empty_dashboard_live_core);
-            let network_open_buckets = dashboard
-                .persistence_baseline
-                .as_ref()
-                .map(|baseline| baseline.network_open_buckets.clone())
-                .unwrap_or_default();
-            (core, network_open_buckets)
-        };
-        Ok(overlay_dashboard_network_live_snapshot(
-            core,
-            &network_open_buckets,
-            dashboard_network_speed_cache.as_ref(),
-        ))
+        self.hub
+            .dashboard
+            .lock()
+            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))
+            .map(|dashboard| {
+                dashboard
+                    .live_core
+                    .clone()
+                    .unwrap_or_else(empty_dashboard_live_core)
+            })
     }
 }
 
-fn dashboard_live_snapshot_content_eq(
+fn dashboard_current_snapshot_content_eq(
     left: &DashboardActivityLiveSnapshot,
     right: &DashboardActivityLiveSnapshot,
 ) -> bool {
@@ -1021,9 +1383,78 @@ fn dashboard_live_snapshot_content_eq(
         && left.retry_invocation_count == right.retry_invocation_count
         && left.in_progress_wait_sum_ms == right.in_progress_wait_sum_ms
         && left.in_progress_wait_sample_count == right.in_progress_wait_sample_count
-        && left.network_live_bucket == right.network_live_bucket
+        && left.accounts.len() == right.accounts.len()
+        && left.accounts.iter().all(|left| {
+            right
+                .accounts
+                .iter()
+                .find(|right| right.account_key == left.account_key)
+                .is_some_and(|right| {
+                    left.upstream_account_id == right.upstream_account_id
+                        && left.upstream_account_name == right.upstream_account_name
+                        && left.in_progress_invocation_count == right.in_progress_invocation_count
+                        && left.in_progress_phase_counts == right.in_progress_phase_counts
+                        && left.retry_invocation_count == right.retry_invocation_count
+                        && left.in_progress_wait_sum_ms == right.in_progress_wait_sum_ms
+                        && left.in_progress_wait_sample_count == right.in_progress_wait_sample_count
+                })
+        })
+}
+
+fn dashboard_legacy_snapshot_content_eq(
+    left: &DashboardActivityLiveSnapshot,
+    right: &DashboardActivityLiveSnapshot,
+) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.revision = 0;
+    right.revision = 0;
+    left.generated_at.clear();
+    right.generated_at.clear();
+    left == right
+}
+
+fn dashboard_network_slice_content_eq(
+    left: &DashboardNetworkProjectionSlice,
+    right: &DashboardNetworkProjectionSlice,
+) -> bool {
+    left.network_live_bucket == right.network_live_bucket
         && left.network_realtime_rate == right.network_realtime_rate
-        && left.accounts == right.accounts
+        && left.accounts.len() == right.accounts.len()
+        && left.accounts.iter().all(|left| {
+            right
+                .accounts
+                .iter()
+                .find(|right| right.account_key == left.account_key)
+                .is_some_and(|right| {
+                    left.upload_bytes_per_second == right.upload_bytes_per_second
+                        && left.download_bytes_per_second == right.download_bytes_per_second
+                        && left.network_live_bucket == right.network_live_bucket
+                })
+        })
+}
+
+fn apply_dashboard_network_slice_to_live_snapshot(
+    current: &mut DashboardActivityLiveSnapshot,
+    network: &DashboardNetworkProjectionSlice,
+) {
+    current.network_live_bucket = network.network_live_bucket.clone();
+    current.network_realtime_rate = network.network_realtime_rate.clone();
+    for account in &mut current.accounts {
+        let Some(network_account) = network
+            .accounts
+            .iter()
+            .find(|candidate| candidate.account_key == account.account_key)
+        else {
+            account.upload_bytes_per_second = 0.0;
+            account.download_bytes_per_second = 0.0;
+            account.network_live_bucket = None;
+            continue;
+        };
+        account.upload_bytes_per_second = network_account.upload_bytes_per_second;
+        account.download_bytes_per_second = network_account.download_bytes_per_second;
+        account.network_live_bucket = network_account.network_live_bucket.clone();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1175,6 +1606,7 @@ impl RuntimeProjectionHub {
         } else {
             self.update_dashboard_runtime_record(key, None, "terminal_delta");
         }
+        self.mark_dashboard_terminal_dirty();
         outcome
     }
 
@@ -1192,6 +1624,7 @@ impl RuntimeProjectionHub {
                 &RuntimeInvocationKey::new(invoke_id, occurred_at),
                 "terminal_rollback",
             );
+            self.mark_dashboard_terminal_dirty();
         }
         removed
     }
@@ -1311,6 +1744,7 @@ impl RuntimeProjectionHub {
         } else {
             self.update_dashboard_runtime_record(key, None, "terminal_persisted");
         }
+        self.mark_dashboard_terminal_dirty();
         removed
     }
 
@@ -2109,5 +2543,129 @@ impl HttpClients {
         } else {
             builder
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_projection_slices_keep_independent_non_extending_deadlines() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let started = Instant::now();
+
+        hub.mark_dashboard_dirty_at("test", started);
+        hub.mark_dashboard_network_dirty_at(started);
+        hub.mark_dashboard_terminal_dirty_at(started);
+        hub.mark_dashboard_dirty_at("test", started + Duration::from_millis(100));
+        hub.mark_dashboard_network_dirty_at(started + Duration::from_millis(500));
+        hub.mark_dashboard_terminal_dirty_at(started + Duration::from_secs(2));
+
+        let current = hub
+            .pending_dashboard_publish_window()
+            .expect("current slice deadline");
+        assert_eq!(current.slice, DashboardProjectionSlice::Current);
+        assert_eq!(
+            current.deadline,
+            started + DASHBOARD_RUNTIME_PROJECTION_COALESCE
+        );
+        hub.complete_dashboard_publish_window(
+            hub.begin_dashboard_publish_window(current)
+                .expect("consume current window"),
+        );
+
+        let network = hub
+            .pending_dashboard_publish_window()
+            .expect("network slice deadline");
+        assert_eq!(network.slice, DashboardProjectionSlice::Network);
+        assert_eq!(
+            network.deadline,
+            started + DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE
+        );
+        hub.complete_dashboard_publish_window(
+            hub.begin_dashboard_publish_window(network)
+                .expect("consume network window"),
+        );
+
+        let terminal = hub
+            .pending_dashboard_publish_window()
+            .expect("terminal slice deadline");
+        assert_eq!(terminal.slice, DashboardProjectionSlice::Terminal);
+        assert_eq!(
+            terminal.deadline,
+            started + DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE
+        );
+        hub.complete_dashboard_publish_window(
+            hub.begin_dashboard_publish_window(terminal)
+                .expect("consume terminal window"),
+        );
+
+        assert!(hub.capture_terminal_slice().is_none());
+        assert!(hub.capture_terminal_slice().is_none());
+        let counters = hub.dashboard_topology_counters();
+        assert_eq!(counters.terminal.build_count, 2);
+        assert_eq!(counters.terminal.revision_count, 0);
+    }
+
+    #[test]
+    fn current_slice_comparison_ignores_network_only_changes() {
+        let account = DashboardActivityLiveAccount {
+            account_key: "upstream:7".to_string(),
+            upstream_account_id: Some(7),
+            upstream_account_name: Some("account-7".to_string()),
+            in_progress_invocation_count: 1,
+            in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+            retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
+            upload_bytes_per_second: 1.0,
+            download_bytes_per_second: 2.0,
+            network_live_bucket: None,
+        };
+        let mut current = empty_dashboard_live_core();
+        current.accounts.push(account.clone());
+        let mut network_only = current.clone();
+        network_only.accounts[0].upload_bytes_per_second = 99.0;
+        network_only.accounts[0].download_bytes_per_second = 101.0;
+
+        assert!(dashboard_current_snapshot_content_eq(
+            &current,
+            &network_only
+        ));
+
+        network_only.accounts[0].in_progress_invocation_count = 2;
+        assert!(!dashboard_current_snapshot_content_eq(
+            &current,
+            &network_only
+        ));
+    }
+
+    #[test]
+    fn current_and_network_slices_use_independent_revisions() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        let network_cache = Arc::new(DashboardNetworkSpeedCache::new(Utc::now()));
+        hub.bind_dashboard_network_speed_cache(network_cache.clone())
+            .expect("bind network cache");
+        {
+            let mut dashboard = hub.dashboard.lock().expect("dashboard state");
+            let mut core = empty_dashboard_live_core();
+            core.in_progress_invocation_count = 1;
+            dashboard.live_core = Some(core);
+        }
+
+        let current = hub.capture_memory_snapshot().expect("current slice");
+        network_cache.record_request_bytes(
+            "independent-revision",
+            "2026-08-06 10:00:00",
+            None,
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+        let network = hub.capture_network_slice().expect("network slice");
+
+        assert_eq!(current.snapshot.revision, 1);
+        assert_eq!(network.slice.revision, 1);
     }
 }
