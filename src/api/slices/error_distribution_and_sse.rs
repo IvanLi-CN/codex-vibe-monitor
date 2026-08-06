@@ -2692,21 +2692,21 @@ mod tests {
         hub.mark_dashboard_dirty_at("network_delta", Instant::now());
 
         let first = hub
-            .capture_memory_snapshot()
-            .expect("merged network projection snapshot");
+            .capture_network_slice()
+            .expect("merged network projection slice");
         let second = hub
-            .capture_memory_snapshot()
-            .expect("unchanged merged network projection snapshot");
+            .capture_network_slice()
+            .expect("unchanged merged network projection slice");
 
         let global = first
-            .snapshot
+            .slice
             .network_live_bucket
             .as_ref()
             .expect("global live bucket");
         assert_eq!(global.upload_bytes, 150);
         assert_eq!(global.download_bytes, 300);
         let account = first
-            .snapshot
+            .slice
             .accounts
             .iter()
             .find(|account| account.upstream_account_id == Some(42))
@@ -2715,14 +2715,14 @@ mod tests {
         assert_eq!(account.upload_bytes, 110);
         assert_eq!(account.download_bytes, 220);
         let second_global = second
-            .snapshot
+            .slice
             .network_live_bucket
             .as_ref()
             .expect("second global live bucket");
         assert_eq!(second_global.upload_bytes, 150);
         assert_eq!(second_global.download_bytes, 300);
         let second_account = second
-            .snapshot
+            .slice
             .accounts
             .iter()
             .find(|account| account.upstream_account_id == Some(42))
@@ -2730,6 +2730,27 @@ mod tests {
             .expect("second account live bucket");
         assert_eq!(second_account.upload_bytes, 110);
         assert_eq!(second_account.download_bytes, 220);
+    }
+
+    #[test]
+    fn network_projection_keeps_known_account_after_rate_bucket_expires() {
+        let cache = DashboardNetworkSpeedCache::new(Utc::now());
+        let known_account_ids = std::collections::BTreeSet::from([Some(42)]);
+
+        let slice = DashboardNetworkProjectionSlice::from_memory(
+            &cache,
+            &HashMap::new(),
+            &known_account_ids,
+        );
+
+        let account = slice
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(42))
+            .expect("known account remains in the network projection");
+        assert_eq!(account.upload_bytes_per_second, 0.0);
+        assert_eq!(account.download_bytes_per_second, 0.0);
+        assert!(account.network_live_bucket.is_some());
     }
 
     #[tokio::test]
@@ -3425,6 +3446,7 @@ impl DashboardNetworkProjectionSlice {
             DashboardNetworkScopeKey,
             DashboardRuntimeNetworkOpenBucketBaseline,
         >,
+        known_account_ids: &std::collections::BTreeSet<Option<i64>>,
     ) -> Self {
         let now = Utc::now();
         let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
@@ -3437,6 +3459,7 @@ impl DashboardNetworkProjectionSlice {
                 .keys()
                 .filter_map(|scope| scope.upstream_account_id()),
         );
+        account_ids.extend(known_account_ids.iter().copied());
         let mut accounts = account_ids
             .into_iter()
             .map(|upstream_account_id| {

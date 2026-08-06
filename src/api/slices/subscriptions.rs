@@ -2177,17 +2177,14 @@ impl SubscriptionHub {
         else {
             return Ok(());
         };
-        let bucket = slice
-            .accounts
-            .iter()
-            .find(|account| account.upstream_account_id == *upstream_account_id)
-            .and_then(|account| account.network_live_bucket.clone())
-            .or_else(|| {
-                upstream_account_id
-                    .is_none()
-                    .then(|| slice.network_live_bucket.clone())
-                    .flatten()
-            });
+        let bucket = match upstream_account_id {
+            None => slice.network_live_bucket.clone(),
+            Some(upstream_account_id) => slice
+                .accounts
+                .iter()
+                .find(|account| account.upstream_account_id == Some(*upstream_account_id))
+                .and_then(|account| account.network_live_bucket.clone()),
+        };
         let Some(bucket) = bucket else {
             return Ok(());
         };
@@ -4786,6 +4783,14 @@ mod tests {
             512,
             Utc::now(),
         );
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "cold-network-account",
+            &crate::proxy::shanghai_now_string(),
+            Some(42),
+            Some("api.openai.com"),
+            256,
+            Utc::now(),
+        );
         let slice = state
             .proxy_runtime_invocations
             .capture_network_slice()
@@ -4810,6 +4815,25 @@ mod tests {
             .expect("cached network topic")
             .cursor;
         assert_eq!(cursor_after, cursor_before + 1);
+        let guard = hub.state.lock().await;
+        let live_point = guard
+            .topics
+            .get(&topic_key)
+            .and_then(|cached| cached.snapshot_payload.get("points"))
+            .and_then(Value::as_array)
+            .and_then(|points| {
+                points.iter().find(|point| {
+                    point
+                        .get("isLiveBucket")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+            })
+            .expect("global live point");
+        assert_eq!(
+            live_point.get("uploadBytes").and_then(Value::as_i64),
+            Some(768)
+        );
     }
 
     fn seeded_cached_topic(
@@ -4932,7 +4956,7 @@ mod tests {
             records: Vec::new()
         }));
         assert!(
-            topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
+            !topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
                 snapshot: Box::new(DashboardActivityLiveSnapshot {
                     revision: 1,
                     generated_at: "2026-07-20T00:00:00.000Z".to_string(),
@@ -5209,11 +5233,20 @@ mod tests {
         assert!(topic.uses_server_push_cadence());
 
         let _lease = hub
-            .register_server_push_topics(state, vec![topic])
+            .register_server_push_topics(state.clone(), vec![topic])
             .await
             .expect("register recent network push topic");
+        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "recent-network-cadence",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
 
-        let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        let dispatch = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
             .await
             .expect("recent network push should be emitted")
             .expect("recent network dispatch");

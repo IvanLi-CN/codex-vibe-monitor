@@ -890,17 +890,33 @@ impl RuntimeProjectionHub {
             .dashboard_network_speed_cache
             .get()
             .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
-        let network_open_buckets = self
-            .dashboard
-            .lock()
-            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?
-            .persistence_baseline
-            .as_ref()
-            .map(|baseline| baseline.network_open_buckets.clone())
-            .unwrap_or_default();
+        let (network_open_buckets, known_account_ids) = {
+            let dashboard = self
+                .dashboard
+                .lock()
+                .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+            let network_open_buckets = dashboard
+                .persistence_baseline
+                .as_ref()
+                .map(|baseline| baseline.network_open_buckets.clone())
+                .unwrap_or_default();
+            let known_account_ids = dashboard
+                .network_last_good
+                .as_ref()
+                .map(|slice| {
+                    slice
+                        .accounts
+                        .iter()
+                        .map(|account| account.upstream_account_id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (network_open_buckets, known_account_ids)
+        };
         let candidate = DashboardNetworkProjectionSlice::from_memory(
             dashboard_network_speed_cache.as_ref(),
             &network_open_buckets,
+            &known_account_ids,
         );
         self.dashboard_topology_counters
             .network
