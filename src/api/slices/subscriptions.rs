@@ -370,7 +370,6 @@ struct CachedSubscriptionTopic {
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
-    typed_dashboard_payload: Option<TypedDashboardTopicPayload>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
     snapshot_payload: Value,
@@ -378,19 +377,6 @@ struct CachedSubscriptionTopic {
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
     replay_bytes: usize,
-}
-
-#[derive(Debug, Clone)]
-enum TypedDashboardTopicPayload {
-    Activity(Box<DashboardActivityResponse>),
-    Summary(Box<StatsResponse>),
-    NetworkTimeseries(DashboardNetworkTimeseriesResponse),
-    NetworkRecent(DashboardRecentNetworkWindowResponse),
-}
-
-struct BuiltCachedTopicPayload {
-    json: Value,
-    typed_dashboard_payload: Option<TypedDashboardTopicPayload>,
 }
 
 #[derive(Debug, Clone)]
@@ -1235,19 +1221,9 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
-        self.refresh_topic_inner(state, topic, emit_live, false, false)
+        self.refresh_topic_inner(state, topic, emit_live, false)
             .await
             .map(|cached| cached.expect("unguarded topic refresh should always commit"))
-    }
-
-    async fn refresh_server_push_topic(
-        &self,
-        state: Arc<AppState>,
-        topic: SubscriptionTopic,
-    ) -> Result<CachedSubscriptionTopic, ApiError> {
-        self.refresh_topic_inner(state, topic, true, false, false)
-            .await
-            .map(|cached| cached.expect("unguarded server-push refresh should always commit"))
     }
 
     async fn refresh_topic_if_active(
@@ -1256,7 +1232,7 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
-        self.refresh_topic_inner(state, topic, emit_live, true, false)
+        self.refresh_topic_inner(state, topic, emit_live, true)
             .await
     }
 
@@ -1266,7 +1242,6 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
         require_active_owner: bool,
-        force_live_emit: bool,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
@@ -1274,10 +1249,7 @@ impl SubscriptionHub {
         let started = Instant::now();
         self.dashboard_topology_counters
             .record_materialization(topic.name());
-        let BuiltCachedTopicPayload {
-            json: mut payload,
-            mut typed_dashboard_payload,
-        } = topic.build_cached_payload(state.clone()).await?;
+        let mut payload = topic.build_payload(state.clone()).await?;
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1305,8 +1277,7 @@ impl SubscriptionHub {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
             }
             let serialized_payload = serde_json::to_vec(&payload)?;
-            if !force_live_emit
-                && let Some(existing) = guard.topics.get_mut(&topic_key)
+            if let Some(existing) = guard.topics.get_mut(&topic_key)
                 && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
             {
                 return Ok(Some(existing));
@@ -1368,7 +1339,6 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .and_then(|entry| entry.latest_live_snapshot.clone()),
-                typed_dashboard_payload: typed_dashboard_payload.take(),
                 calendar_anchor: subscription_calendar_anchor(&topic),
                 continuity_reset_cursor,
                 snapshot_payload: payload.clone(),
@@ -1429,25 +1399,6 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         payload: BroadcastPayload,
     ) {
-        let payload = match payload {
-            BroadcastPayload::DashboardCurrentSlice { slice } => {
-                self.handle_dashboard_current_slice(slice).await;
-                return;
-            }
-            BroadcastPayload::DashboardNetworkSlice { slice } => {
-                self.handle_dashboard_network_slice(state, slice).await;
-                return;
-            }
-            BroadcastPayload::DashboardTerminalSlice { slice } => {
-                tracing::debug!(
-                    revision = slice.revision,
-                    delta_count = slice.deltas.len(),
-                    "deferred dashboard terminal slice materialization to topic migration"
-                );
-                return;
-            }
-            payload => payload,
-        };
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();
@@ -1488,7 +1439,7 @@ impl SubscriptionHub {
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
                 if let Err(err) = self
-                    .apply_summary_live_overlay(&cached.topic, snapshot.as_ref().clone(), false)
+                    .apply_summary_live_overlay(&cached.topic, snapshot.as_ref().clone())
                     .await
                 {
                     warn!(
@@ -1554,7 +1505,6 @@ impl SubscriptionHub {
                         state.clone(),
                         &cached.topic,
                         snapshot.as_ref().clone(),
-                        false,
                     )
                     .await
                 {
@@ -1604,452 +1554,6 @@ impl SubscriptionHub {
                 );
             }
         }
-    }
-
-    async fn handle_dashboard_current_slice(&self, slice: Box<DashboardCurrentProjectionSlice>) {
-        let affected = {
-            let mut guard = self.state.lock().await;
-            let active_subscribers = guard.active_subscribers.clone();
-            guard
-                .topics
-                .values_mut()
-                .filter(|cached| {
-                    cached.topic.uses_summary_live_overlay()
-                        || cached.topic.uses_dashboard_activity_live_overlay()
-                })
-                .filter_map(|cached| {
-                    let topic_key = cached.topic.cache_key().ok()?;
-                    let active = active_subscribers
-                        .get(&topic_key)
-                        .copied()
-                        .unwrap_or_default()
-                        > 0;
-                    if !active {
-                        cached.dirty = true;
-                        cached.latest_live_snapshot = None;
-                        return None;
-                    }
-                    Some((cached.topic.clone(), topic_key))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        for (topic, topic_key) in affected {
-            let result = self
-                .materialize_dashboard_current_slice(&topic, &topic_key, slice.as_ref())
-                .await;
-            if let Err(err) = result {
-                warn!(?err, topic = %topic.name(), "failed to materialize dashboard current slice");
-            }
-        }
-    }
-
-    async fn handle_dashboard_network_slice(
-        &self,
-        state: Arc<AppState>,
-        slice: Box<DashboardNetworkProjectionSlice>,
-    ) {
-        let affected = {
-            let mut guard = self.state.lock().await;
-            let active_subscribers = guard.active_subscribers.clone();
-            guard
-                .topics
-                .values_mut()
-                .filter(|cached| {
-                    cached.topic.uses_dashboard_network_live_snapshot()
-                        || matches!(
-                            cached.topic,
-                            SubscriptionTopic::DashboardNetworkRecentCurrent
-                        )
-                })
-                .filter_map(|cached| {
-                    let topic_key = cached.topic.cache_key().ok()?;
-                    if active_subscribers
-                        .get(&topic_key)
-                        .copied()
-                        .unwrap_or_default()
-                        == 0
-                    {
-                        cached.dirty = true;
-                        return None;
-                    }
-                    Some((cached.topic.clone(), topic_key))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        for (topic, topic_key) in affected {
-            if let Err(err) = self
-                .materialize_dashboard_network_slice(
-                    state.as_ref(),
-                    &topic,
-                    &topic_key,
-                    slice.as_ref(),
-                )
-                .await
-            {
-                warn!(?err, topic = %topic.name(), "failed to materialize dashboard network slice");
-            }
-        }
-    }
-
-    async fn materialize_dashboard_current_slice(
-        &self,
-        topic: &SubscriptionTopic,
-        topic_key: &str,
-        slice: &DashboardCurrentProjectionSlice,
-    ) -> Result<(), ApiError> {
-        self.dashboard_topology_counters
-            .record_materialization(topic.name());
-        self.commit_typed_dashboard_materialization(topic_key, |payload| match payload {
-            TypedDashboardTopicPayload::Summary(response) => {
-                apply_dashboard_current_slice_to_summary(response, topic, slice);
-                Ok(())
-            }
-            TypedDashboardTopicPayload::Activity(response) => {
-                apply_dashboard_current_slice_to_activity(response, slice);
-                Ok(())
-            }
-            _ => Ok(()),
-        })
-        .await
-    }
-
-    async fn materialize_dashboard_network_slice(
-        &self,
-        state: &AppState,
-        topic: &SubscriptionTopic,
-        topic_key: &str,
-        slice: &DashboardNetworkProjectionSlice,
-    ) -> Result<(), ApiError> {
-        self.dashboard_topology_counters
-            .record_materialization(topic.name());
-        let current_snapshot_by_account = state
-            .dashboard_network_speed_cache
-            .snapshot_dashboard_activity_accounts(Utc::now());
-        self.commit_typed_dashboard_materialization(topic_key, |payload| match payload {
-            TypedDashboardTopicPayload::Activity(response) => {
-                apply_dashboard_network_slice_to_activity(
-                    response,
-                    slice,
-                    &current_snapshot_by_account,
-                );
-                Ok(())
-            }
-            TypedDashboardTopicPayload::NetworkTimeseries(response) => {
-                let bucket = match topic {
-                    SubscriptionTopic::DashboardNetworkTimeseriesWindow {
-                        upstream_account_id,
-                        ..
-                    } => slice
-                        .accounts
-                        .iter()
-                        .find(|account| account.upstream_account_id == *upstream_account_id)
-                        .and_then(|account| account.network_live_bucket.clone())
-                        .or_else(|| {
-                            upstream_account_id
-                                .is_none()
-                                .then(|| slice.network_live_bucket.clone())
-                                .flatten()
-                        }),
-                    _ => None,
-                };
-                if let Some(bucket) = bucket {
-                    let now = Utc::now();
-                    let point_index = response
-                        .points
-                        .iter()
-                        .position(|point| point.bucket_start == bucket.bucket_start)
-                        .or_else(|| {
-                            response
-                                .points
-                                .iter()
-                                .position(|point| point.is_live_bucket)
-                        });
-                    if let Some(point_index) = point_index {
-                        response.points[point_index] = bucket;
-                    }
-                    response.range_end = format_utc_iso_precise(now);
-                    response.snapshot_id = now.timestamp_millis();
-                }
-                Ok(())
-            }
-            TypedDashboardTopicPayload::NetworkRecent(response) => {
-                *response = slice.recent.clone();
-                Ok(())
-            }
-            TypedDashboardTopicPayload::Summary(_) => Ok(()),
-        })
-        .await
-    }
-
-    async fn commit_typed_dashboard_materialization(
-        &self,
-        topic_key: &str,
-        mutate: impl FnOnce(&mut TypedDashboardTopicPayload) -> Result<(), ApiError>,
-    ) -> Result<(), ApiError> {
-        let dispatch = {
-            let mut guard = self.state.lock().await;
-            let Some(cached) = guard.topics.get_mut(topic_key) else {
-                return Ok(());
-            };
-            let Some(payload) = cached.typed_dashboard_payload.as_mut() else {
-                cached.dirty = true;
-                return Ok(());
-            };
-            mutate(payload)?;
-            let serialized_payload = serialize_typed_dashboard_payload(payload)?;
-            if cached.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice() {
-                return Ok(());
-            }
-            let next_cursor = cached.cursor.saturating_add(1);
-            let frame = Arc::new(self.serialize_frame(
-                cached.descriptor.clone(),
-                topic_key.to_string(),
-                cached.schema_epoch.clone(),
-                next_cursor,
-                serialized_payload,
-            )?);
-            let retained_bytes = frame.retained_bytes();
-            cached.cursor = next_cursor;
-            cached.snapshot_frame = frame.clone();
-            cached.snapshot_bytes = frame.payload_bytes.len();
-            cached.replay_events.push_back(ReplayableTopicEvent {
-                frame: frame.clone(),
-                bytes: retained_bytes,
-                emitted_at: Utc::now(),
-            });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
-            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            Some(SubscriptionDispatchEvent { frame })
-        };
-        if let Some(dispatch) = dispatch {
-            let _ = self.broadcaster.send(dispatch);
-        }
-        Ok(())
-    }
-}
-
-fn apply_dashboard_terminal_payload_to_activity(
-    response: &mut DashboardActivityResponse,
-    terminal: &DashboardActivityTerminalPayload,
-) {
-    response.summary.stats = terminal.summary.stats.clone();
-    response.summary.model_performance = terminal.summary.model_performance.clone();
-    let Some(existing_accounts) = response.accounts.as_ref() else {
-        return;
-    };
-    let existing_by_key = existing_accounts
-        .iter()
-        .map(|account| (account.account_key.as_str(), account))
-        .collect::<HashMap<_, _>>();
-    let mut accounts = terminal.accounts.clone();
-    for account in &mut accounts {
-        let Some(existing) = existing_by_key.get(account.account_key.as_str()) else {
-            continue;
-        };
-        account.tokens_per_minute = existing.tokens_per_minute;
-        account.spend_rate = existing.spend_rate;
-        account.current_first_response_byte_total_avg_ms =
-            existing.current_first_response_byte_total_avg_ms;
-        account.current_first_token_avg_ms = existing.current_first_token_avg_ms;
-        account.current_avg_total_ms = existing.current_avg_total_ms;
-        account.current_avg_response_ms = existing.current_avg_response_ms;
-        account.in_progress_invocation_count = existing.in_progress_invocation_count;
-        account.in_progress_phase_counts = existing.in_progress_phase_counts;
-        account.retry_invocation_count = existing.retry_invocation_count;
-        account.upload_bytes_per_second = existing.upload_bytes_per_second;
-        account.download_bytes_per_second = existing.download_bytes_per_second;
-        account.in_progress_wait_sum_ms = existing.in_progress_wait_sum_ms;
-        account.in_progress_wait_sample_count = existing.in_progress_wait_sample_count;
-    }
-    response.accounts = Some(accounts);
-}
-
-fn dashboard_current_slice_values(
-    topic: &SubscriptionTopic,
-    slice: &DashboardCurrentProjectionSlice,
-) -> (i64, i64, InvocationPhaseCountsResponse, Option<f64>) {
-    let account = match topic {
-        SubscriptionTopic::SummaryCurrent {
-            upstream_account_id: Some(account_id),
-            ..
-        } => slice
-            .accounts
-            .iter()
-            .find(|account| account.upstream_account_id == Some(*account_id)),
-        _ => None,
-    };
-    match account {
-        Some(account) => (
-            account.in_progress_invocation_count,
-            account.retry_invocation_count,
-            account.in_progress_phase_counts,
-            (account.in_progress_wait_sample_count > 0).then_some(
-                account.in_progress_wait_sum_ms / account.in_progress_wait_sample_count as f64,
-            ),
-        ),
-        None if matches!(
-            topic,
-            SubscriptionTopic::SummaryCurrent {
-                upstream_account_id: Some(_),
-                ..
-            }
-        ) =>
-        {
-            (0, 0, InvocationPhaseCountsResponse::default(), None)
-        }
-        None => (
-            slice.in_progress_invocation_count,
-            slice.retry_invocation_count,
-            slice.in_progress_phase_counts,
-            (slice.in_progress_wait_sample_count > 0).then_some(
-                slice.in_progress_wait_sum_ms / slice.in_progress_wait_sample_count as f64,
-            ),
-        ),
-    }
-}
-
-fn apply_dashboard_current_slice_to_summary(
-    response: &mut StatsResponse,
-    topic: &SubscriptionTopic,
-    slice: &DashboardCurrentProjectionSlice,
-) {
-    let (count, retry_count, phase_counts, wait_ms) = dashboard_current_slice_values(topic, slice);
-    response.in_progress_conversation_count = Some(count);
-    response.in_progress_retry_conversation_count = Some(retry_count);
-    response.in_progress_avg_wait_ms = wait_ms;
-    response.in_progress_phase_counts = Some(phase_counts);
-}
-
-fn apply_dashboard_current_slice_to_activity(
-    response: &mut DashboardActivityResponse,
-    slice: &DashboardCurrentProjectionSlice,
-) {
-    response.live_revision = slice.revision;
-    response.summary.stats.in_progress_conversation_count =
-        Some(slice.in_progress_invocation_count);
-    response.summary.stats.in_progress_retry_conversation_count =
-        Some(slice.retry_invocation_count);
-    response.summary.stats.in_progress_phase_counts = Some(slice.in_progress_phase_counts);
-
-    let Some(accounts) = response.accounts.as_mut() else {
-        return;
-    };
-    for account in accounts.iter_mut() {
-        let live = slice
-            .accounts
-            .iter()
-            .find(|live| live.account_key == account.account_key);
-        account.in_progress_invocation_count =
-            Some(live.map_or(0, |live| live.in_progress_invocation_count));
-        account.in_progress_phase_counts = Some(
-            live.map(|live| live.in_progress_phase_counts)
-                .unwrap_or_default(),
-        );
-        account.retry_invocation_count = Some(live.map_or(0, |live| live.retry_invocation_count));
-        if let Some(live) = live {
-            account.request_count = account
-                .request_count
-                .max(live.in_progress_invocation_count.max(0));
-        }
-    }
-
-    let known_accounts = accounts
-        .iter()
-        .map(|account| account.account_key.clone())
-        .collect::<HashSet<_>>();
-    let exact_range = parse_to_utc_datetime(&response.range_start)
-        .zip(parse_to_utc_datetime(&response.range_end))
-        .map(|(start, end)| ExactUtcRange { start, end });
-    if let Some(exact_range) = exact_range {
-        let model_performance_available = response.summary.model_performance.available;
-        for live in slice
-            .accounts
-            .iter()
-            .filter(|live| !known_accounts.contains(&live.account_key))
-        {
-            let live = DashboardActivityLiveAccount {
-                account_key: live.account_key.clone(),
-                upstream_account_id: live.upstream_account_id,
-                upstream_account_name: live.upstream_account_name.clone(),
-                in_progress_invocation_count: live.in_progress_invocation_count,
-                in_progress_phase_counts: live.in_progress_phase_counts,
-                retry_invocation_count: live.retry_invocation_count,
-                in_progress_wait_sum_ms: live.in_progress_wait_sum_ms,
-                in_progress_wait_sample_count: live.in_progress_wait_sample_count,
-                upload_bytes_per_second: 0.0,
-                download_bytes_per_second: 0.0,
-                network_live_bucket: None,
-            };
-            accounts.push(dashboard_activity_account_from_live(
-                &live,
-                None,
-                exact_range,
-                DashboardActivityCurrentSnapshot::default(),
-                model_performance_available,
-                None,
-                Vec::new(),
-            ));
-        }
-        sort_dashboard_activity_accounts(accounts);
-    }
-}
-
-fn apply_dashboard_network_slice_to_activity(
-    response: &mut DashboardActivityResponse,
-    slice: &DashboardNetworkProjectionSlice,
-    current_snapshot_by_account: &HashMap<Option<i64>, DashboardActivityCurrentSnapshot>,
-) {
-    response.network_live_bucket = slice.network_live_bucket.clone();
-    response.network_realtime_rate = slice.network_realtime_rate.clone();
-    let current_snapshot_summary =
-        sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
-    response.summary.tokens_per_minute =
-        Some(current_snapshot_summary.qualified_tokens.max(0) as f64);
-    response.summary.spend_rate = Some(current_snapshot_summary.total_cost.max(0.0));
-    response.summary.current_first_response_byte_total_avg_ms =
-        current_snapshot_summary.first_response_byte_total_avg_ms();
-    response.summary.current_first_token_avg_ms = current_snapshot_summary.first_token_avg_ms();
-    response.summary.current_avg_total_ms = current_snapshot_summary.avg_total_ms();
-    response.summary.current_avg_response_ms = current_snapshot_summary.avg_response_duration_ms();
-
-    let Some(accounts) = response.accounts.as_mut() else {
-        return;
-    };
-    for account in accounts {
-        let network = slice
-            .accounts
-            .iter()
-            .find(|network| network.account_key == account.account_key);
-        account.upload_bytes_per_second =
-            network.map_or(0.0, |network| network.upload_bytes_per_second);
-        account.download_bytes_per_second =
-            network.map_or(0.0, |network| network.download_bytes_per_second);
-        let current = current_snapshot_by_account
-            .get(&account.upstream_account_id)
-            .copied()
-            .unwrap_or_default();
-        account.tokens_per_minute = Some(current.qualified_tokens.max(0) as f64);
-        account.spend_rate = Some(current.total_cost.max(0.0));
-        account.current_first_response_byte_total_avg_ms =
-            current.first_response_byte_total_avg_ms();
-        account.current_first_token_avg_ms = current.first_token_avg_ms();
-        account.current_avg_total_ms = current.avg_total_ms();
-        account.current_avg_response_ms = current.avg_response_duration_ms();
-    }
-}
-
-fn serialize_typed_dashboard_payload(
-    payload: &TypedDashboardTopicPayload,
-) -> Result<Vec<u8>, ApiError> {
-    match payload {
-        TypedDashboardTopicPayload::Activity(response) => Ok(serde_json::to_vec(response)?),
-        TypedDashboardTopicPayload::Summary(response) => Ok(serde_json::to_vec(response)?),
-        TypedDashboardTopicPayload::NetworkTimeseries(response) => {
-            Ok(serde_json::to_vec(response)?)
-        }
-        TypedDashboardTopicPayload::NetworkRecent(response) => Ok(serde_json::to_vec(response)?),
     }
 }
 
@@ -2451,7 +1955,6 @@ impl SubscriptionHub {
         &self,
         topic: &SubscriptionTopic,
         live: DashboardActivityLiveSnapshot,
-        materialized_from_slice: bool,
     ) -> Result<(), ApiError> {
         let SubscriptionTopic::SummaryCurrent {
             upstream_account_id,
@@ -2460,13 +1963,8 @@ impl SubscriptionHub {
         else {
             return Ok(());
         };
-        if materialized_from_slice {
-            self.dashboard_topology_counters
-                .record_materialization(topic.name());
-        } else {
-            self.dashboard_topology_counters
-                .record_json_overlay(topic.name());
-        }
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let account = upstream_account_id.and_then(|account_id| {
             live.accounts
                 .iter()
@@ -2554,16 +2052,10 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: &SubscriptionTopic,
         live: DashboardActivityLiveSnapshot,
-        materialized_from_slice: bool,
     ) -> Result<(), ApiError> {
         let topic_key = topic.cache_key()?;
-        if materialized_from_slice {
-            self.dashboard_topology_counters
-                .record_materialization(topic.name());
-        } else {
-            self.dashboard_topology_counters
-                .record_json_overlay(topic.name());
-        }
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let dispatch = {
             let mut guard = self.state.lock().await;
             let Some(cached) = guard.topics.get_mut(&topic_key) else {
@@ -3046,10 +2538,7 @@ async fn run_server_push_topic_loop(
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
-                if let Err(err) = hub
-                    .refresh_server_push_topic(state.clone(), topic.clone())
-                    .await
-                {
+                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
                     warn!(?err, topic = %topic.name(), "failed to push subscription topic cadence");
                 }
             }
@@ -3723,14 +3212,9 @@ impl SubscriptionTopic {
                         | Self::SummaryCurrent { .. }
                 )
             }
-            BroadcastPayload::DashboardCurrentSlice { .. } => {
-                self.uses_dashboard_activity_live_overlay() || self.uses_summary_live_overlay()
-            }
-            BroadcastPayload::DashboardNetworkSlice { .. } => {
-                self.uses_dashboard_network_live_snapshot()
-                    || matches!(self, Self::DashboardNetworkRecentCurrent)
-            }
-            BroadcastPayload::DashboardTerminalSlice { .. } => self.uses_summary_topic_refresh(),
+            BroadcastPayload::DashboardCurrentSlice { .. }
+            | BroadcastPayload::DashboardNetworkSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. } => false,
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
                 self,
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
@@ -3738,92 +3222,6 @@ impl SubscriptionTopic {
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
         }
-    }
-
-    async fn build_cached_payload(
-        &self,
-        state: Arc<AppState>,
-    ) -> Result<BuiltCachedTopicPayload, ApiError> {
-        let typed_dashboard_payload = match self {
-            Self::DashboardActivityCurrent {
-                range,
-                time_zone,
-                recent_limit,
-                include_accounts,
-                include_recent,
-            } => {
-                let Json(response) = fetch_dashboard_activity(
-                    State(state.clone()),
-                    Query(DashboardActivityQuery {
-                        range: range.clone(),
-                        recent_limit: Some(*recent_limit),
-                        time_zone: Some(time_zone.clone()),
-                        include_accounts: *include_accounts,
-                        include_recent: Some(*include_recent),
-                    }),
-                )
-                .await?;
-                Some(TypedDashboardTopicPayload::Activity(Box::new(response)))
-            }
-            Self::DashboardNetworkTimeseriesWindow {
-                range,
-                time_zone,
-                upstream_account_id,
-            } => {
-                let Json(response) = fetch_dashboard_network_timeseries(
-                    State(state.clone()),
-                    Query(DashboardNetworkTimeseriesQuery {
-                        range: range.clone(),
-                        time_zone: Some(time_zone.clone()),
-                        upstream_account_id: *upstream_account_id,
-                    }),
-                )
-                .await?;
-                Some(TypedDashboardTopicPayload::NetworkTimeseries(response))
-            }
-            Self::DashboardNetworkRecentCurrent => {
-                let Json(response) = fetch_dashboard_network_recent(
-                    State(state.clone()),
-                    Query(DashboardRecentNetworkWindowQuery::default()),
-                )
-                .await?;
-                Some(TypedDashboardTopicPayload::NetworkRecent(response))
-            }
-            Self::SummaryCurrent {
-                window,
-                time_zone,
-                limit,
-                upstream_account_id,
-            } => Some(TypedDashboardTopicPayload::Summary(Box::new(
-                load_summary_response_from_query(
-                    state.as_ref(),
-                    &SummaryQuery {
-                        window: Some(window.clone()),
-                        limit: *limit,
-                        time_zone: Some(time_zone.clone()),
-                        upstream_account_id: *upstream_account_id,
-                    },
-                    SummaryBuildRoute::Topic,
-                )
-                .await?,
-            ))),
-            _ => None,
-        };
-        let json = match typed_dashboard_payload.as_ref() {
-            Some(TypedDashboardTopicPayload::Activity(response)) => serde_json::to_value(response)?,
-            Some(TypedDashboardTopicPayload::Summary(response)) => serde_json::to_value(response)?,
-            Some(TypedDashboardTopicPayload::NetworkTimeseries(response)) => {
-                serde_json::to_value(response)?
-            }
-            Some(TypedDashboardTopicPayload::NetworkRecent(response)) => {
-                serde_json::to_value(response)?
-            }
-            None => self.build_payload(state).await?,
-        };
-        Ok(BuiltCachedTopicPayload {
-            json,
-            typed_dashboard_payload,
-        })
     }
 
     async fn build_payload(&self, state: Arc<AppState>) -> Result<Value, ApiError> {
@@ -4693,7 +4091,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_runtime_topology_contract_uses_independent_projection_slices() {
+    async fn dashboard_runtime_topology_contract_characterizes_legacy_amplification() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -4801,9 +4199,6 @@ mod tests {
             4096,
             Utc::now() - ChronoDuration::seconds(1),
         );
-        crate::api::slices::error_distribution_and_sse::schedule_dashboard_network_projection(
-            state.as_ref(),
-        );
         crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
             state.as_ref(),
         );
@@ -4852,8 +4247,8 @@ mod tests {
         assert_eq!(projection.current.build_count, 1);
         assert_eq!(projection.current.revision_count, 1);
         assert_eq!(projection.current.cadence_miss_count, 0);
-        assert_eq!(projection.network.build_count, 1);
-        assert_eq!(projection.network.revision_count, 1);
+        assert_eq!(projection.network.build_count, 0);
+        assert_eq!(projection.network.revision_count, 0);
         assert_eq!(projection.network.cadence_miss_count, 0);
         assert_eq!(projection.terminal.build_count, 0);
         assert_eq!(projection.terminal.revision_count, 0);
@@ -4874,15 +4269,15 @@ mod tests {
             delivery.network_timeseries,
             delivery.network_recent,
         ] {
-            assert_eq!(topic.business_payload_count, 0);
+            assert_eq!(topic.business_payload_count, 1);
             assert!(topic.frame_bytes_count > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
         }
-        assert_eq!(delivery.activity.materialization_count, 1);
-        assert_eq!(delivery.activity.json_overlay_count, 0);
-        assert_eq!(delivery.summary.materialization_count, 1);
-        assert_eq!(delivery.summary.json_overlay_count, 0);
+        assert_eq!(delivery.activity.materialization_count, 0);
+        assert_eq!(delivery.activity.json_overlay_count, 1);
+        assert_eq!(delivery.summary.materialization_count, 0);
+        assert_eq!(delivery.summary.json_overlay_count, 1);
         assert_eq!(delivery.network_timeseries.materialization_count, 1);
         assert_eq!(delivery.network_timeseries.json_overlay_count, 0);
         assert_eq!(delivery.network_recent.materialization_count, 1);
@@ -5013,7 +4408,7 @@ mod tests {
             accounts: Vec::new(),
         };
 
-        hub.apply_summary_live_overlay(&topic, live.clone(), false)
+        hub.apply_summary_live_overlay(&topic, live.clone())
             .await
             .expect("apply summary live overlay");
         let dispatch = receiver
@@ -5040,7 +4435,7 @@ mod tests {
         );
         assert_eq!(dispatch_payload["inProgressAvgWaitMs"], json!(40.0));
 
-        hub.apply_summary_live_overlay(&topic, live, false)
+        hub.apply_summary_live_overlay(&topic, live)
             .await
             .expect("reapply summary live overlay");
         assert!(
@@ -5215,7 +4610,6 @@ mod tests {
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
             latest_live_snapshot: None,
-            typed_dashboard_payload: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
             snapshot_payload,
@@ -5554,7 +4948,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_network_recent_topic_push_cadence_suppresses_unchanged_payload() {
+    async fn dashboard_network_recent_topic_push_cadence_emits_live_payload() {
         let state =
             crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
                 .await;
@@ -5576,108 +4970,35 @@ mod tests {
             .await
             .expect("register recent network push topic");
 
-        assert!(
-            tokio::time::timeout(
-                DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 3,
-                receiver.recv()
-            )
+        let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await
-            .is_err(),
-            "unchanged network cadence must not advance the topic cursor"
-        );
-    }
+            .expect("recent network push should be emitted")
+            .expect("recent network dispatch");
 
-    #[tokio::test]
-    async fn dashboard_terminal_slice_defers_topic_materialization_to_topic_migration() {
-        let state = crate::tests::test_state_with_openai_base(
-            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        let hub = Arc::new(SubscriptionHub::new());
-        let activity_topic = SubscriptionTopic::DashboardActivityCurrent {
-            range: "today".to_string(),
-            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
-            recent_limit: SUBSCRIPTION_DEFAULT_DASHBOARD_RECENT_LIMIT,
-            include_accounts: true,
-            include_recent: true,
-        };
-        let summary_topic = SubscriptionTopic::SummaryCurrent {
-            window: "all".to_string(),
-            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
-            limit: None,
-            upstream_account_id: None,
-        };
-        let activity_key = activity_topic.cache_key().expect("activity topic key");
-        let summary_key = summary_topic.cache_key().expect("summary topic key");
-        hub.prepare_connection(
-            state.clone(),
-            vec![activity_topic.descriptor(), summary_topic.descriptor()],
-            Vec::new(),
-        )
-        .await
-        .expect("prepare typed Dashboard topics");
-        let _activity_lease = hub.register_test_topic_name(activity_topic.name()).await;
-        let _summary_lease = hub.register_test_topic_name(summary_topic.name()).await;
-        let live_path_db_reads_before_terminal = state
-            .proxy_runtime_invocations
-            .health_snapshot(2)
-            .live_path_db_read_count;
-
-        let mut record =
-            dashboard_runtime_topology_live_record(&crate::proxy::shanghai_now_string());
-        record.status = Some("success".to_string());
-        record.total_tokens = Some(13);
-        record.input_tokens = Some(8);
-        record.output_tokens = Some(5);
-        record.cost = Some(0.25);
-        record.cost_input = Some(0.15);
-        record.cost_cache_write = Some(0.0);
-        record.cost_cache_read = Some(0.0);
-        record.cost_output = Some(0.10);
-        record.cost_reasoning = Some(0.0);
-        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &record).await;
-        let delta = outcome
-            .terminal_delta
-            .expect("accepted terminal record must yield a typed delta");
-
-        hub.handle_internal_broadcast(
-            state.clone(),
-            BroadcastPayload::DashboardTerminalSlice {
-                slice: Box::new(DashboardTerminalProjectionSlice {
-                    revision: 1,
-                    deltas: vec![delta],
-                }),
-            },
-        )
-        .await;
-
-        let guard = hub.state.lock().await;
-        let activity = guard
-            .topics
-            .get(&activity_key)
-            .and_then(|cached| cached.typed_dashboard_payload.as_ref())
-            .expect("activity typed payload");
-        let summary = guard
-            .topics
-            .get(&summary_key)
-            .and_then(|cached| cached.typed_dashboard_payload.as_ref())
-            .expect("summary typed payload");
-        let TypedDashboardTopicPayload::Activity(activity) = activity else {
-            panic!("expected activity typed payload");
-        };
-        let TypedDashboardTopicPayload::Summary(summary) = summary else {
-            panic!("expected summary typed payload");
-        };
-        assert_eq!(activity.summary.stats.total_count, 0);
-        assert_eq!(activity.summary.stats.total_tokens, 0);
-        assert_eq!(summary.total_count, 0);
-        assert_eq!(summary.total_tokens, 0);
+        assert_eq!(dispatch.frame.descriptor, descriptor);
         assert_eq!(
-            state
-                .proxy_runtime_invocations
-                .health_snapshot(2)
-                .live_path_db_read_count,
-            live_path_db_reads_before_terminal
+            dispatch.frame.schema_epoch,
+            "dashboard.network-recent.current/v1"
+        );
+        let dispatch_payload = dispatch.frame.payload_value();
+        assert_eq!(
+            dispatch_payload
+                .get("windowSeconds")
+                .and_then(Value::as_i64),
+            Some(300)
+        );
+        assert_eq!(
+            dispatch_payload
+                .get("sampleSeconds")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            dispatch_payload
+                .get("points")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(300)
         );
     }
 

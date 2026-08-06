@@ -19469,6 +19469,34 @@ mod dashboard_activity_read_model_tests {
         assert!(outcome.terminal_delta.is_none());
     }
 
+    #[tokio::test]
+    async fn terminal_slice_does_not_queue_without_an_owner_subscription() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
+        record.invoke_id = "subscriber-free-terminal-slice".to_string();
+        record.occurred_at = (Utc::now() - ChronoDuration::minutes(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let _registration =
+            crate::terminal_projection::register_terminal_projection_before_enqueue(
+                state.as_ref(),
+                &record,
+            )
+            .await;
+
+        assert_eq!(
+            state
+                .proxy_runtime_invocations
+                .pending_terminal_slice_count(),
+            0
+        );
+    }
+
     #[test]
     fn persisted_recovery_delta_does_not_wait_for_a_writer_ack() {
         let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
