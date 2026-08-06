@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.58.1",
+  "base_stable_version": "2.58.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-06T08:44:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.58.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "df40251a4242ae991c348ff3c43d4eb10248f876",
+  "pr_number": 755,
+  "pr_title": "fix(routing): proactively hand off fallback sticky accounts",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.58.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.58.1",
+  "target_sha": "b9d52412c8cba2bb09b052f41935b87bf82bdc42",
+  "type_label": "type:patch"
+}
