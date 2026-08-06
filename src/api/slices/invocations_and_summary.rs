@@ -13118,7 +13118,6 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         );
         return outcome;
     }
-    outcome.terminal_delta = Some(delta.clone());
     let mut expiry_hard_limit = None;
     for (selection, entry) in &mut cache.entries {
         if !dashboard_activity_selection_includes_compact_terminal(selection, &delta, occurred_at) {
@@ -13155,7 +13154,9 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         cache.read_model.hard_limit_reason = Some(reason);
         cache.read_model.pending_terminal_overflow_count += 1;
         outcome.hard_limit_reason = Some(reason);
+        return outcome;
     }
+    outcome.terminal_delta = Some(delta.clone());
     if !dashboard_activity_terminal_delta_needs_persistence_ack(&delta) {
         return outcome;
     }
@@ -19412,6 +19413,59 @@ mod dashboard_activity_read_model_tests {
         let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &record).await;
 
         assert_eq!(outcome.hard_limit_reason, Some("count_limit"));
+        assert!(outcome.terminal_delta.is_none());
+    }
+
+    #[tokio::test]
+    async fn expiry_hard_limit_does_not_publish_a_terminal_delta() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
+        record.invoke_id = "rejected-expiry-terminal-delta".to_string();
+        record.occurred_at = (Utc::now() - ChronoDuration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let occurred_at = parse_to_utc_datetime(&record.occurred_at).expect("record timestamp");
+        let selection = build_dashboard_activity_snapshot_selection(
+            "7d",
+            ExactUtcRange {
+                start: occurred_at - ChronoDuration::days(1),
+                end: occurred_at + ChronoDuration::days(6),
+            },
+            chrono_tz::UTC,
+            InvocationSourceScope::All,
+            4,
+            true,
+            true,
+        );
+        let pending = dashboard_activity_terminal_delta(&record);
+        {
+            let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            cache.entries.insert(
+                selection,
+                DashboardActivitySnapshotCacheEntry {
+                    cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    last_reconcile_failed: false,
+                    baseline_snapshot_cursor: 0,
+                    expiry_covered_until: Some(occurred_at + ChronoDuration::hours(1)),
+                    expiry_terminal_deltas: std::iter::repeat_n(
+                        pending,
+                        DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS,
+                    )
+                    .collect(),
+                    expiry_delta_estimated_bytes: 0,
+                    response: DashboardActivitySnapshot::test_stub("7d"),
+                },
+            );
+        }
+
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &record).await;
+
+        assert_eq!(outcome.hard_limit_reason, Some("expiry_count_limit"));
         assert!(outcome.terminal_delta.is_none());
     }
 

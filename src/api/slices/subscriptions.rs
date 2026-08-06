@@ -1439,7 +1439,11 @@ impl SubscriptionHub {
                 return;
             }
             BroadcastPayload::DashboardTerminalSlice { slice } => {
-                self.handle_dashboard_terminal_slice(state, slice).await;
+                tracing::debug!(
+                    revision = slice.revision,
+                    delta_count = slice.deltas.len(),
+                    "deferred dashboard terminal slice materialization to topic migration"
+                );
                 return;
             }
             payload => payload,
@@ -1498,7 +1502,6 @@ impl SubscriptionHub {
 
             if cached.topic.uses_summary_topic_refresh()
                 && let BroadcastPayload::Records { records } = &payload
-                && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy
             {
                 if records
                     .iter()
@@ -1574,7 +1577,6 @@ impl SubscriptionHub {
                     _ => false,
                 };
                 if needs_refresh
-                    && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy
                     && let Err(err) = self
                         .schedule_dashboard_activity_topic_refresh(
                             state.clone(),
@@ -1826,137 +1828,6 @@ impl SubscriptionHub {
         }
         Ok(())
     }
-
-    async fn handle_dashboard_terminal_slice(
-        &self,
-        state: Arc<AppState>,
-        slice: Box<DashboardTerminalProjectionSlice>,
-    ) {
-        let affected = {
-            let mut guard = self.state.lock().await;
-            let active_subscribers = guard.active_subscribers.clone();
-            guard
-                .topics
-                .values_mut()
-                .filter(|cached| {
-                    cached.topic.uses_summary_topic_refresh()
-                        || cached.topic.uses_dashboard_activity_live_overlay()
-                })
-                .filter_map(|cached| {
-                    let topic_key = cached.topic.cache_key().ok()?;
-                    if active_subscribers
-                        .get(&topic_key)
-                        .copied()
-                        .unwrap_or_default()
-                        == 0
-                    {
-                        cached.dirty = true;
-                        return None;
-                    }
-                    Some((cached.topic.clone(), topic_key))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        for (topic, topic_key) in affected {
-            let result = match &topic {
-                SubscriptionTopic::DashboardActivityCurrent { .. } => {
-                    let selection = match dashboard_activity_snapshot_selection_for_topic(
-                        state.as_ref(),
-                        &topic,
-                    )
-                    .await
-                    {
-                        Ok(Some(selection)) => selection,
-                        Ok(None) => continue,
-                        Err(err) => {
-                            warn!(?err, topic = %topic.name(), "failed to resolve dashboard terminal selection");
-                            continue;
-                        }
-                    };
-                    let Some(terminal) =
-                        dashboard_activity_terminal_payload_from_memory(state.as_ref(), &selection)
-                            .await
-                    else {
-                        self.mark_dashboard_activity_topic_dirty(&topic).await;
-                        continue;
-                    };
-                    self.dashboard_topology_counters
-                        .record_materialization(topic.name());
-                    self.commit_typed_dashboard_materialization(&topic_key, |payload| {
-                        if let TypedDashboardTopicPayload::Activity(response) = payload {
-                            apply_dashboard_terminal_payload_to_activity(response, &terminal);
-                        }
-                        Ok(())
-                    })
-                    .await
-                }
-                SubscriptionTopic::SummaryCurrent { .. } => {
-                    self.dashboard_topology_counters
-                        .record_materialization(topic.name());
-                    self.commit_typed_dashboard_materialization(&topic_key, |payload| {
-                        if let TypedDashboardTopicPayload::Summary(response) = payload {
-                            for delta in &slice.deltas {
-                                if dashboard_terminal_delta_matches_summary_topic(&topic, delta) {
-                                    apply_dashboard_activity_terminal_delta_to_stats(
-                                        response, delta,
-                                    );
-                                }
-                            }
-                        }
-                        Ok(())
-                    })
-                    .await
-                }
-                _ => Ok(()),
-            };
-            if let Err(err) = result {
-                warn!(?err, topic = %topic.name(), revision = slice.revision, "failed to materialize dashboard terminal slice");
-            }
-        }
-    }
-}
-
-fn dashboard_terminal_delta_matches_summary_topic(
-    topic: &SubscriptionTopic,
-    delta: &DashboardActivityTerminalDelta,
-) -> bool {
-    let SubscriptionTopic::SummaryCurrent {
-        window,
-        time_zone,
-        upstream_account_id,
-        ..
-    } = topic
-    else {
-        return false;
-    };
-    if upstream_account_id.is_some_and(|account_id| Some(account_id) != delta.upstream_account_id) {
-        return false;
-    }
-    let Ok(window) = parse_summary_window(
-        &SummaryQuery {
-            window: Some(window.clone()),
-            limit: None,
-            time_zone: Some(time_zone.clone()),
-            upstream_account_id: *upstream_account_id,
-        },
-        i64::MAX,
-    ) else {
-        return false;
-    };
-    if matches!(window, SummaryWindow::All | SummaryWindow::Current(_)) {
-        return true;
-    }
-    let Ok(reporting_tz) = parse_reporting_tz(Some(time_zone.as_str())) else {
-        return false;
-    };
-    let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
-        return false;
-    };
-    summary_window_range(&window, reporting_tz, Utc::now())
-        .ok()
-        .flatten()
-        .is_some_and(|(start, end)| occurred_at >= start && occurred_at < end)
 }
 
 fn apply_dashboard_terminal_payload_to_activity(
@@ -5717,7 +5588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_terminal_slice_materializes_cached_topics_without_refresh() {
+    async fn dashboard_terminal_slice_defers_topic_materialization_to_topic_migration() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -5769,12 +5640,14 @@ mod tests {
             .terminal_delta
             .expect("accepted terminal record must yield a typed delta");
 
-        hub.handle_dashboard_terminal_slice(
+        hub.handle_internal_broadcast(
             state.clone(),
-            Box::new(DashboardTerminalProjectionSlice {
-                revision: 1,
-                deltas: vec![delta],
-            }),
+            BroadcastPayload::DashboardTerminalSlice {
+                slice: Box::new(DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            },
         )
         .await;
 
@@ -5795,10 +5668,10 @@ mod tests {
         let TypedDashboardTopicPayload::Summary(summary) = summary else {
             panic!("expected summary typed payload");
         };
-        assert_eq!(activity.summary.stats.total_count, 1);
-        assert_eq!(activity.summary.stats.total_tokens, 13);
-        assert_eq!(summary.total_count, 1);
-        assert_eq!(summary.total_tokens, 13);
+        assert_eq!(activity.summary.stats.total_count, 0);
+        assert_eq!(activity.summary.stats.total_tokens, 0);
+        assert_eq!(summary.total_count, 0);
+        assert_eq!(summary.total_tokens, 0);
         assert_eq!(
             state
                 .proxy_runtime_invocations
