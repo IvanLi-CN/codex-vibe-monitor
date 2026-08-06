@@ -2757,18 +2757,28 @@ mod tests {
             ));
             let started_at = Instant::now();
             schedule_dashboard_activity_live_snapshot(state.as_ref());
-            let snapshot = tokio::time::timeout(Duration::from_millis(400), async {
-                loop {
-                    if let Ok(BroadcastPayload::DashboardActivityLive { snapshot }) =
-                        receiver.recv().await
-                    {
-                        return snapshot;
+            let in_progress_invocation_count =
+                tokio::time::timeout(Duration::from_millis(400), async {
+                    loop {
+                        match receiver.recv().await {
+                            Ok(BroadcastPayload::DashboardActivityLive { snapshot }) => {
+                                return snapshot.in_progress_invocation_count;
+                            }
+                            Ok(BroadcastPayload::DashboardCurrentSlice { slice }) => {
+                                return slice.in_progress_invocation_count;
+                            }
+                            _ => continue,
+                        }
                     }
-                }
-            })
-            .await
-            .expect("dashboard current update exceeded 400ms");
-            assert_eq!(snapshot.in_progress_invocation_count, 1);
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "dashboard current update exceeded 400ms at mutation {mutation}: {:?}",
+                        state.proxy_runtime_invocations.health_snapshot(1)
+                    )
+                });
+            assert_eq!(in_progress_invocation_count, 1);
             samples_ms.push(started_at.elapsed().as_secs_f64() * 1_000.0);
         }
 
@@ -2798,31 +2808,87 @@ mod tests {
             Utc::now(),
         );
 
-        schedule_dashboard_activity_live_snapshot(state.as_ref());
+        schedule_dashboard_network_projection(state.as_ref());
         assert!(
             state
                 .proxy_runtime_invocations
-                .pending_dashboard_deadline()
-                .is_some()
+                .pending_dashboard_publish_window()
+                .is_some_and(|window| window.slice == DashboardProjectionSlice::Network)
         );
-        let snapshot = capture_dashboard_activity_live_snapshot(state.as_ref())
-            .await
-            .expect("first memory snapshot after subscriber-free network mutation");
-        let health = state.proxy_runtime_invocations.health_snapshot(0);
-
-        assert_eq!(
-            snapshot
-                .network_live_bucket
-                .expect("global live bucket")
-                .upload_bytes,
-            128
-        );
-        assert_eq!(health.live_path_db_read_count, 0);
         assert!(
             state
                 .proxy_runtime_invocations
                 .pending_dashboard_deadline()
                 .is_none()
+        );
+        let snapshot = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("first memory network slice after subscriber-free mutation");
+        let health = state.proxy_runtime_invocations.health_snapshot(0);
+
+        assert_eq!(
+            snapshot
+                .slice
+                .network_live_bucket
+                .expect("global live bucket")
+                .upload_bytes,
+            128
+        );
+        assert!(snapshot.changed);
+        assert_eq!(health.live_path_db_read_count, 0);
+    }
+
+    #[tokio::test]
+    async fn network_only_schedule_does_not_construct_current_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind dashboard network cache");
+        state
+            .proxy_runtime_invocations
+            .capture_memory_snapshot()
+            .expect("establish current projection");
+        state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("establish network projection");
+        state
+            .proxy_runtime_invocations
+            .reset_dashboard_topology_counters();
+
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "network-only-slice",
+            "2026-08-04 12:00:00",
+            Some(42),
+            Some("api.openai.com"),
+            256,
+            Utc::now(),
+        );
+        schedule_dashboard_network_projection(state.as_ref());
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture network-only slice");
+        let counters = state
+            .proxy_runtime_invocations
+            .dashboard_topology_counters();
+
+        assert!(capture.changed);
+        assert_eq!(counters.current.build_count, 0);
+        assert_eq!(counters.current.revision_count, 0);
+        assert_eq!(counters.network.build_count, 1);
+        assert_eq!(counters.network.revision_count, 1);
+        assert_eq!(
+            state
+                .proxy_runtime_invocations
+                .health_snapshot(0)
+                .live_path_db_read_count,
+            0
         );
     }
 
@@ -3261,6 +3327,143 @@ pub(crate) struct DashboardActivityLiveSnapshot {
     pub(crate) accounts: Vec<DashboardActivityLiveAccount>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DashboardCurrentProjectionAccountSlice {
+    pub(crate) account_key: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) in_progress_invocation_count: i64,
+    pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
+    pub(crate) retry_invocation_count: i64,
+    pub(crate) in_progress_wait_sum_ms: f64,
+    pub(crate) in_progress_wait_sample_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DashboardCurrentProjectionSlice {
+    pub(crate) revision: u64,
+    pub(crate) in_progress_invocation_count: i64,
+    pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
+    pub(crate) retry_invocation_count: i64,
+    pub(crate) in_progress_wait_sum_ms: f64,
+    pub(crate) in_progress_wait_sample_count: i64,
+    pub(crate) accounts: Vec<DashboardCurrentProjectionAccountSlice>,
+}
+
+impl From<&DashboardActivityLiveSnapshot> for DashboardCurrentProjectionSlice {
+    fn from(snapshot: &DashboardActivityLiveSnapshot) -> Self {
+        Self {
+            revision: snapshot.revision,
+            in_progress_invocation_count: snapshot.in_progress_invocation_count,
+            in_progress_phase_counts: snapshot.in_progress_phase_counts,
+            retry_invocation_count: snapshot.retry_invocation_count,
+            in_progress_wait_sum_ms: snapshot.in_progress_wait_sum_ms,
+            in_progress_wait_sample_count: snapshot.in_progress_wait_sample_count,
+            accounts: snapshot
+                .accounts
+                .iter()
+                .map(|account| DashboardCurrentProjectionAccountSlice {
+                    account_key: account.account_key.clone(),
+                    upstream_account_id: account.upstream_account_id,
+                    upstream_account_name: account.upstream_account_name.clone(),
+                    in_progress_invocation_count: account.in_progress_invocation_count,
+                    in_progress_phase_counts: account.in_progress_phase_counts,
+                    retry_invocation_count: account.retry_invocation_count,
+                    in_progress_wait_sum_ms: account.in_progress_wait_sum_ms,
+                    in_progress_wait_sample_count: account.in_progress_wait_sample_count,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DashboardNetworkProjectionAccountSlice {
+    pub(crate) account_key: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
+    pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DashboardNetworkProjectionSlice {
+    pub(crate) revision: u64,
+    pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
+    pub(crate) network_realtime_rate: Option<DashboardNetworkRealtimeRateResponse>,
+    pub(crate) accounts: Vec<DashboardNetworkProjectionAccountSlice>,
+    pub(crate) recent: DashboardRecentNetworkWindowResponse,
+}
+
+impl DashboardNetworkProjectionSlice {
+    pub(crate) fn from_memory(
+        dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+        network_open_buckets: &HashMap<
+            DashboardNetworkScopeKey,
+            DashboardRuntimeNetworkOpenBucketBaseline,
+        >,
+    ) -> Self {
+        let now = Utc::now();
+        let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
+        let mut account_ids = account_rates
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        account_ids.extend(
+            network_open_buckets
+                .keys()
+                .filter_map(|scope| scope.upstream_account_id()),
+        );
+        let mut accounts = account_ids
+            .into_iter()
+            .map(|upstream_account_id| {
+                let rate = account_rates
+                    .get(&upstream_account_id)
+                    .copied()
+                    .unwrap_or_default();
+                DashboardNetworkProjectionAccountSlice {
+                    account_key: upstream_account_id
+                        .map(|id| format!("upstream:{id}"))
+                        .unwrap_or_else(|| "unassigned".to_string()),
+                    upstream_account_id,
+                    upload_bytes_per_second: rate.upload_bytes_per_second,
+                    download_bytes_per_second: rate.download_bytes_per_second,
+                    network_live_bucket: Some(dashboard_network_live_bucket_from_memory(
+                        dashboard_network_speed_cache,
+                        network_open_buckets,
+                        DashboardNetworkScopeKey::account_scope(upstream_account_id),
+                        now,
+                    )),
+                }
+            })
+            .collect::<Vec<_>>();
+        accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+        Self {
+            revision: 0,
+            network_live_bucket: Some(dashboard_network_live_bucket_from_memory(
+                dashboard_network_speed_cache,
+                network_open_buckets,
+                DashboardNetworkScopeKey::Global,
+                now,
+            )),
+            network_realtime_rate: Some(build_dashboard_network_realtime_rate_response(
+                dashboard_network_speed_cache
+                    .snapshot_scope_realtime_bytes(DashboardNetworkScopeKey::Global, now),
+            )),
+            accounts,
+            recent: build_dashboard_recent_network_window_response(
+                dashboard_network_speed_cache.snapshot_recent_global_window(now),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardTerminalProjectionSlice {
+    pub(crate) revision: u64,
+    pub(crate) deltas: Vec<DashboardActivityTerminalDelta>,
+}
+
 pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
 }
@@ -3275,6 +3478,7 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
     let pending_window = state
         .proxy_runtime_invocations
         .pending_dashboard_publish_window()
+        .filter(|window| window.slice == DashboardProjectionSlice::Current)
         .and_then(|window| {
             state
                 .proxy_runtime_invocations
@@ -3498,11 +3702,21 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                             .has_active_dashboard_activity_live_topic()
                             .await
                     {
-                        let _ = state
-                            .broadcaster
-                            .send(BroadcastPayload::DashboardActivityLive {
-                                snapshot: Box::new(capture.snapshot),
-                            });
+                        let payload = match state.proxy_runtime_invocations.mode() {
+                            RuntimeProjectionMode::Legacy => {
+                                BroadcastPayload::DashboardActivityLive {
+                                    snapshot: Box::new(capture.snapshot),
+                                }
+                            }
+                            RuntimeProjectionMode::Auto => {
+                                BroadcastPayload::DashboardCurrentSlice {
+                                    slice: Box::new(DashboardCurrentProjectionSlice::from(
+                                        &capture.snapshot,
+                                    )),
+                                }
+                            }
+                        };
+                        let _ = state.broadcaster.send(payload);
                     }
                 }
                 Err(err) => {
@@ -3860,6 +4074,35 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     ensure_dashboard_activity_live_snapshot_producer(state);
 }
 
+pub(crate) fn schedule_dashboard_network_projection(state: &AppState) {
+    if state.shutdown.is_cancelled() {
+        return;
+    }
+    if let Err(err) = state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+    {
+        state
+            .proxy_runtime_invocations
+            .mark_degraded("network_cache_bind_failed");
+        warn!(
+            ?err,
+            "failed to bind dashboard network cache to runtime projection"
+        );
+        return;
+    }
+    if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+        state
+            .proxy_runtime_invocations
+            .mark_dashboard_network_dirty();
+    } else {
+        state
+            .proxy_runtime_invocations
+            .mark_dashboard_dirty("dashboard_network_legacy_schedule");
+    }
+    ensure_dashboard_activity_live_snapshot_producer(state);
+}
+
 pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState) {
     if state.shutdown.is_cancelled()
         || state
@@ -3921,12 +4164,28 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                     return;
                 }
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(window.deadline)) => {}
+                _ = proxy_runtime_invocations.wait_for_dashboard_publish_signal() => continue,
             }
 
-            if Instant::now().saturating_duration_since(window.deadline)
-                > DASHBOARD_RUNTIME_PROJECTION_COALESCE
-            {
-                proxy_runtime_invocations.record_current_slice_cadence_miss();
+            let cadence = match window.slice {
+                DashboardProjectionSlice::Current => DASHBOARD_RUNTIME_PROJECTION_COALESCE,
+                DashboardProjectionSlice::Network => DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE,
+                DashboardProjectionSlice::Terminal => {
+                    DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE
+                }
+            };
+            if Instant::now().saturating_duration_since(window.deadline) > cadence {
+                match window.slice {
+                    DashboardProjectionSlice::Current => {
+                        proxy_runtime_invocations.record_current_slice_cadence_miss()
+                    }
+                    DashboardProjectionSlice::Network => {
+                        proxy_runtime_invocations.record_network_slice_cadence_miss()
+                    }
+                    DashboardProjectionSlice::Terminal => {
+                        proxy_runtime_invocations.record_terminal_slice_cadence_miss()
+                    }
+                }
             }
 
             let Some(window) = proxy_runtime_invocations.begin_dashboard_publish_window(window)
@@ -3940,51 +4199,97 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                 .await;
             if has_active_subscribers {
                 let started = Instant::now();
-                match capture_dashboard_activity_live_snapshot_from_runtime(
-                    &pool,
-                    proxy_runtime_invocations.as_ref(),
-                    dashboard_network_speed_cache.as_ref(),
-                )
-                .await
-                {
-                    Ok(capture) if capture.changed => {
-                        let revision = capture.snapshot.revision;
-                        if let Err(err) =
-                            broadcaster.send(BroadcastPayload::DashboardActivityLive {
-                                snapshot: Box::new(capture.snapshot),
-                            })
+                match window.slice {
+                    DashboardProjectionSlice::Current => {
+                        match capture_dashboard_activity_live_snapshot_from_runtime(
+                            &pool,
+                            proxy_runtime_invocations.as_ref(),
+                            dashboard_network_speed_cache.as_ref(),
+                        )
+                        .await
                         {
-                            warn!(
-                                ?err,
-                                revision, "failed to broadcast dashboard activity live snapshot"
-                            );
-                        } else {
-                            tracing::debug!(
-                                revision,
-                                coalesced_mutation_count = sent_seq.saturating_sub(delivered_seq),
-                                generated_to_sent_ms = started.elapsed().as_millis() as u64,
+                            Ok(capture) if capture.changed => {
+                                let revision = capture.snapshot.revision;
+                                let payload = match proxy_runtime_invocations.mode() {
+                                    RuntimeProjectionMode::Legacy => {
+                                        BroadcastPayload::DashboardActivityLive {
+                                            snapshot: Box::new(capture.snapshot),
+                                        }
+                                    }
+                                    RuntimeProjectionMode::Auto => {
+                                        BroadcastPayload::DashboardCurrentSlice {
+                                            slice: Box::new(DashboardCurrentProjectionSlice::from(
+                                                &capture.snapshot,
+                                            )),
+                                        }
+                                    }
+                                };
+                                if let Err(err) = broadcaster.send(payload) {
+                                    warn!(
+                                        ?err,
+                                        revision, "failed to broadcast dashboard current slice"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        revision,
+                                        coalesced_mutation_count =
+                                            sent_seq.saturating_sub(delivered_seq),
+                                        generated_to_sent_ms = started.elapsed().as_millis() as u64,
+                                        snapshot_origin = capture.snapshot_origin,
+                                        "broadcast dashboard current slice"
+                                    );
+                                }
+                            }
+                            Ok(capture) => tracing::debug!(
+                                revision = capture.snapshot.revision,
                                 snapshot_origin = capture.snapshot_origin,
-                                "broadcast dashboard activity live snapshot"
-                            );
+                                "suppressed unchanged dashboard current slice"
+                            ),
+                            Err(err) => warn!(?err, "failed to capture dashboard current slice"),
                         }
                     }
-                    Ok(capture) => tracing::debug!(
-                        revision = capture.snapshot.revision,
-                        snapshot_origin = capture.snapshot_origin,
-                        "suppressed unchanged dashboard activity live snapshot"
-                    ),
-                    Err(err) => warn!(?err, "failed to capture dashboard activity live snapshot"),
+                    DashboardProjectionSlice::Network => {
+                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                            match proxy_runtime_invocations.capture_network_slice() {
+                                Ok(capture) if capture.changed => {
+                                    let revision = capture.slice.revision;
+                                    if let Err(err) =
+                                        broadcaster.send(BroadcastPayload::DashboardNetworkSlice {
+                                            slice: Box::new(capture.slice),
+                                        })
+                                    {
+                                        warn!(
+                                            ?err,
+                                            revision, "failed to broadcast dashboard network slice"
+                                        );
+                                    }
+                                }
+                                Ok(_) => {
+                                    tracing::debug!("suppressed unchanged dashboard network slice")
+                                }
+                                Err(err) => {
+                                    warn!(?err, "failed to capture dashboard network slice")
+                                }
+                            }
+                        }
+                    }
+                    DashboardProjectionSlice::Terminal => {
+                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+                            && let Some(capture) =
+                                proxy_runtime_invocations.capture_terminal_slice()
+                        {
+                            let _ = broadcaster.send(BroadcastPayload::DashboardTerminalSlice {
+                                slice: Box::new(DashboardTerminalProjectionSlice {
+                                    revision: capture.revision,
+                                    deltas: capture.deltas,
+                                }),
+                            });
+                        }
+                    }
                 }
             }
             proxy_runtime_invocations.complete_dashboard_publish_window(window);
             delivered_seq = sent_seq;
-
-            if has_active_subscribers
-                && dashboard_network_speed_cache
-                    .should_keep_dashboard_activity_live_stream(Utc::now())
-            {
-                proxy_runtime_invocations.mark_dashboard_dirty("network_visibility");
-            }
         }
     });
 }
@@ -4008,6 +4313,16 @@ pub(crate) enum BroadcastPayload {
     },
     DashboardActivityLive {
         snapshot: Box<DashboardActivityLiveSnapshot>,
+    },
+    DashboardCurrentSlice {
+        slice: Box<DashboardCurrentProjectionSlice>,
+    },
+    DashboardNetworkSlice {
+        slice: Box<DashboardNetworkProjectionSlice>,
+    },
+    DashboardTerminalSlice {
+        #[serde(skip)]
+        slice: Box<DashboardTerminalProjectionSlice>,
     },
     #[serde(rename = "pool_attempts")]
     PoolAttempts {

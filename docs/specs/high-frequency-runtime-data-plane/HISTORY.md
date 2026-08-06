@@ -17,3 +17,4 @@
 - 线上 Dashboard 开关 A/B 证明“零 live SQL”和“subscriber 共享 frame”不足以约束整页成本；一个页面激活多个 topic 时，完整 live snapshot 广播、cached payload 深拷贝和 topic 级 JSON materialization 仍会放大 CPU。
 - current/phase、network/rate、terminal totals 固定拆为 `250ms / 1s / 5s` 三个 revisioned slice；网络可见性不得继续每 `250ms` 唤醒完整 Dashboard projection。
 - Dashboard topic 按 activity、summary、network timeseries、network recent 分批迁移到 typed materializer。legacy delivery 只保留一个发布版本用于显式回滚，不作为长期并行架构。
+- current/phase、network/rate 与 terminal totals 的触发窗口分别拥有独立 generation 和固定 deadline；network-only 变化不得推进 current revision，terminal durable totals 只在 terminal window 结束后刷新。

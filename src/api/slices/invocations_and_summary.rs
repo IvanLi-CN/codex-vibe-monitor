@@ -12414,13 +12414,14 @@ struct DashboardActivityBuildTelemetry {
     account_aggregation: AccountActivityRangeBuildTelemetry,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct DashboardActivityTerminalDeltaOutcome {
     pub(crate) applied_selection_count: usize,
     pub(crate) duplicate: bool,
     pub(crate) skipped_out_of_range_count: usize,
     pub(crate) hard_limit_reason: Option<&'static str>,
     pub(crate) terminal_sequence: Option<u64>,
+    pub(crate) terminal_delta: Option<DashboardActivityTerminalDelta>,
 }
 
 fn dashboard_activity_selection_includes_compact_terminal(
@@ -12820,25 +12821,7 @@ fn apply_dashboard_activity_compact_terminal_delta(
     snapshot: &mut DashboardActivitySnapshot,
     delta: &DashboardActivityTerminalDelta,
 ) {
-    let non_success = !delta.success;
-
-    let stats = &mut snapshot.summary.stats;
-    stats.total_count += 1;
-    stats.success_count += i64::from(delta.success);
-    stats.failure_count += i64::from(delta.failure);
-    stats.total_tokens += delta.total_tokens;
-    stats.total_cost += delta.total_cost;
-    if non_success {
-        if let Some(non_success_cost) = stats.non_success_cost.as_mut() {
-            *non_success_cost += delta.total_cost;
-        }
-        if let Some(non_success_tokens) = stats.non_success_tokens.as_mut() {
-            *non_success_tokens += delta.total_tokens;
-        }
-    }
-    if let Some(usage) = stats.usage_breakdown.as_mut() {
-        add_dashboard_activity_terminal_usage(usage, delta);
-    }
+    apply_dashboard_activity_terminal_delta_to_stats(&mut snapshot.summary.stats, delta);
 
     let model_performance_available = snapshot.summary.model_performance.available;
     let snapshot_range = ExactUtcRange {
@@ -12886,6 +12869,40 @@ fn apply_dashboard_activity_compact_terminal_delta(
         .iter_mut()
         .find(|account| account.upstream_account_id == delta.upstream_account_id)
         .expect("terminal account inserted when absent");
+    apply_dashboard_activity_terminal_delta_to_account(account, delta);
+    account_latency.apply_to_account(account);
+    account.model_performance = account_model_performance;
+    sort_dashboard_activity_accounts(&mut snapshot.accounts);
+}
+
+pub(crate) fn apply_dashboard_activity_terminal_delta_to_stats(
+    stats: &mut StatsResponse,
+    delta: &DashboardActivityTerminalDelta,
+) {
+    let non_success = !delta.success;
+    stats.total_count += 1;
+    stats.success_count += i64::from(delta.success);
+    stats.failure_count += i64::from(delta.failure);
+    stats.total_tokens += delta.total_tokens;
+    stats.total_cost += delta.total_cost;
+    if non_success {
+        if let Some(non_success_cost) = stats.non_success_cost.as_mut() {
+            *non_success_cost += delta.total_cost;
+        }
+        if let Some(non_success_tokens) = stats.non_success_tokens.as_mut() {
+            *non_success_tokens += delta.total_tokens;
+        }
+    }
+    if let Some(usage) = stats.usage_breakdown.as_mut() {
+        add_dashboard_activity_terminal_usage(usage, delta);
+    }
+}
+
+fn apply_dashboard_activity_terminal_delta_to_account(
+    account: &mut DashboardActivityAccountResponse,
+    delta: &DashboardActivityTerminalDelta,
+) {
+    let non_success = !delta.success;
     account.request_count += 1;
     account.success_count += i64::from(delta.success);
     account.failure_count += i64::from(delta.failure);
@@ -12912,11 +12929,8 @@ fn apply_dashboard_activity_compact_terminal_delta(
         account.last_invocation_at = Some(delta.occurred_at.clone());
     }
     add_dashboard_activity_terminal_usage(&mut account.usage_breakdown, delta);
-    account_latency.apply_to_account(account);
     account.cache_hit_rate = (account.total_tokens > 0)
         .then_some(account.usage_breakdown.cache_read_tokens as f64 / account.total_tokens as f64);
-    account.model_performance = account_model_performance;
-    sort_dashboard_activity_accounts(&mut snapshot.accounts);
 }
 
 fn apply_dashboard_activity_terminal_delta(
@@ -13104,6 +13118,7 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         );
         return outcome;
     }
+    outcome.terminal_delta = Some(delta.clone());
     let mut expiry_hard_limit = None;
     for (selection, entry) in &mut cache.entries {
         if !dashboard_activity_selection_includes_compact_terminal(selection, &delta, occurred_at) {
@@ -14082,6 +14097,24 @@ pub(crate) fn build_dashboard_activity_snapshot_selection(
         include_accounts,
         include_recent,
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardActivityTerminalPayload {
+    pub(crate) summary: DashboardActivitySummaryResponse,
+    pub(crate) accounts: Vec<DashboardActivityAccountResponse>,
+}
+
+pub(crate) async fn dashboard_activity_terminal_payload_from_memory(
+    state: &AppState,
+    selection: &DashboardActivitySnapshotSelection,
+) -> Option<DashboardActivityTerminalPayload> {
+    let cache = state.dashboard_activity_snapshot_cache.lock().await;
+    let entry = cache.entries.get(selection)?;
+    Some(DashboardActivityTerminalPayload {
+        summary: entry.response.summary.clone(),
+        accounts: entry.response.accounts.clone(),
+    })
 }
 
 fn dashboard_activity_snapshot_selection_anchor(
@@ -17464,7 +17497,7 @@ pub(crate) fn build_dashboard_network_realtime_rate_response(
     }
 }
 
-fn build_dashboard_recent_network_window_response(
+pub(crate) fn build_dashboard_recent_network_window_response(
     snapshot: crate::dashboard_network_speed::DashboardRecentNetworkWindowSnapshot,
 ) -> DashboardRecentNetworkWindowResponse {
     DashboardRecentNetworkWindowResponse {
@@ -19357,6 +19390,29 @@ mod dashboard_activity_read_model_tests {
             dashboard_activity_terminal_delta_hard_limit_reason(&read_model, &delta),
             Some("byte_limit")
         );
+    }
+
+    #[tokio::test]
+    async fn hard_limit_rejection_does_not_publish_a_terminal_delta() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
+        record.invoke_id = "rejected-terminal-delta".to_string();
+        let pending = dashboard_activity_terminal_delta(&record);
+        {
+            let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            cache.read_model.pending_terminal_deltas =
+                std::iter::repeat_n(pending, DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS)
+                    .collect();
+        }
+
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &record).await;
+
+        assert_eq!(outcome.hard_limit_reason, Some("count_limit"));
+        assert!(outcome.terminal_delta.is_none());
     }
 
     #[test]
