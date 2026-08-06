@@ -621,7 +621,6 @@ PR: include
 
 ### Shared Invocation Cards (UI Demo)
 
-PR: none
 ![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
 
 - source_type: ui_demo
