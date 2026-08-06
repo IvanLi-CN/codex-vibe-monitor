@@ -79,6 +79,7 @@ vi.mock("../features/invocations/InvocationChart", () => ({
 
 vi.mock("../features/invocations/InvocationTable", () => ({
   InvocationTable: () => <div data-testid="invocation-table" />,
+  InvocationCardList: () => <div data-testid="invocation-table" />,
 }));
 
 vi.mock("../i18n", () => ({

@@ -5,6 +5,10 @@
 - Status: implemented
 - Canonical spec: `docs/specs/pbgwc-prompt-cache-conversation-bindings/SPEC.md`
 
+## Calls card projection
+
+The shared conversation Calls view uses `InvocationCardList` (the compatibility export remains `InvocationTable`) so Live and conversation drawers consume the same card projection. The projection is presentation-only: terminal timing still comes from the persisted invocation fields, while one shared one-second clock supplies elapsed values only for in-flight rows. Virtual rows retain stable invocation keys and mount the existing `InvocationWorkflowDetailPanel` in the expanded card region.
+
 ## Delivery Checklist
 
 - [x] Storage schema for `prompt_cache_conversation_bindings`.

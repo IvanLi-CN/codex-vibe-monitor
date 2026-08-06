@@ -1,5 +1,11 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles）（#z9h7v）
 
+## Shared invocation card presentation
+
+Live and conversation-detail invocation windows use a compact three-segment card projection. The card keeps the invocation ID, status/phase, transport, endpoint, account/plan, proxy, model routing, reasoning/FAST state, cache and token/cost diagnostics, compression, and conditional error summary. Conversation identity is supplied by the surrounding drawer and is not repeated in each card. The Records search result remains a table.
+
+For in-flight records, missing TTFT and response duration values display elapsed time from `occurredAt` on a one-second presentation clock. Authoritative `firstTokenMs` and `tUpstreamStreamMs` values immediately replace the elapsed values; terminal missing values display `—`, and `tTotalMs` is never used to infer either metric. Card activation, keyboard toggling, deep-link focus, stable-key replacement, virtual measurement, and account navigation retain the existing contracts.
+
 ## 背景 / 问题陈述
 
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
@@ -775,6 +781,39 @@
   submission_gate: approved
   image:
   ![Responses Lite image-tool rewrite audit](./assets/responses-lite-image-tool-rewrite-audit.png)
+
+- source_type: ui_demo
+  story_id_or_title: Shared Invocation Cards / Live and Conversation Calls
+  state: three-segment invocation cards with a live elapsed-timing row
+  requested_viewport: desktop and 393x852
+  viewport_strategy: browser viewport override for mobile
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only invocation and conversation data
+  submission_gate: approved
+  demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+  evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, and keep the existing detail drawer interaction.
+  PR: include
+  ![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
+
+- state: compact desktop summary strip plus three-line cards with invocation ID, status, timing, routing metadata, token/cost diagnostics, and the in-flight elapsed timer.
+
+PR: include
+![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: semantic wrapping keeps the card readable without horizontal overflow or a repeated conversation ID.
+
+PR: include
+![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: the existing InvocationWorkflowDetailPanel expands inside the same card boundary and remains available from the card body/chevron.
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

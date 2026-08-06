@@ -3,6 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/z9h7v-invocation-log-observability/SPEC.md`
+- `web/src/features/invocations/InvocationTable.tsx` exposes the compatibility `InvocationTable` name while rendering the shared `InvocationCardList`. It keeps the existing virtualizer and detail-panel ownership, with a single responsive card markup and a one-second timer gated by in-flight rows.
 - Implementation summary: 已完成，且已扩展 request/response body logging 双开关
 - Codex standalone search (`POST /v1/alpha/search`) 复用普通非流式 capture、OAuth passthrough、父 invocation 与 source-level hourly rollup；不新增 endpoint rollup 或搜索专属 usage 解析。
 - API Key 号池的 standalone search attempt 额外驱动独立账号能力学习与 failover 筛选；OAuth passthrough、父 invocation 和 source-level rollup 合同保持不变。
