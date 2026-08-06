@@ -952,12 +952,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     } else {
         false
     };
-    let sticky_fallback_handoff_enabled = sticky_source_rule
+    let sticky_fallback_handoff_policy_enabled = sticky_source_rule
         .as_ref()
         .is_some_and(|rule| rule.priority_tier == TagPriorityTier::Fallback)
         && binding_constraint.is_none()
         && !sticky_source_transport_decode_escape
         && !sticky_cut_out_blocked_by_policy;
+    let mut sticky_fallback_handoff_enabled = false;
     let bypass_requested_model_filter = binding_constraint.is_some();
     let conversation_available_models_override =
         conversation_override.is_some_and(|policy| policy.available_models.is_some());
@@ -1155,6 +1156,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 if !excluded_upstream_route_keys
                                     .contains(&account.upstream_route_key())
                                 {
+                                    sticky_fallback_handoff_enabled =
+                                        sticky_fallback_handoff_policy_enabled;
                                     let route_binding_failure_penalty =
                                         route_binding_failure_penalty_for_account(
                                             state,

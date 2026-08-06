@@ -1655,7 +1655,7 @@ async fn resolver_allows_sticky_reuse_even_when_concurrency_limit_is_reached() {
 }
 
 #[tokio::test]
-async fn resolver_keeps_sticky_reuse_even_when_higher_priority_accounts_exist() {
+async fn resolver_hands_off_fallback_sticky_to_higher_priority_account() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -1727,13 +1727,12 @@ async fn resolver_keeps_sticky_reuse_even_when_higher_priority_accounts_exist() 
     .expect("resolve sticky reuse with higher priority candidate");
 
     let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected sticky reuse to keep the current account");
+        panic!("expected fallback sticky handoff to resolve the higher priority account");
     };
-    assert_eq!(account.account_id, sticky_account_id);
-    assert_ne!(account.account_id, primary_account_id);
+    assert_eq!(account.account_id, primary_account_id);
     assert_eq!(
         account.routing_source,
-        PoolRoutingSelectionSource::StickyReuse
+        PoolRoutingSelectionSource::FreshAssignment
     );
 }
 

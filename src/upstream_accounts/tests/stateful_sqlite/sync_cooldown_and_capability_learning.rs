@@ -4866,6 +4866,64 @@ async fn resolver_keeps_fallback_sticky_when_no_higher_priority_candidate_exists
 }
 
 #[tokio::test]
+async fn resolver_allows_fallback_failover_when_sticky_source_is_unusable() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Unusable Fallback Sticky Source",
+        "sk-unusable-fallback-sticky-source",
+        Some("fallback-sticky-unusable"),
+        Some("https://unusable-fallback-sticky-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let fallback_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Failover Candidate",
+        "sk-fallback-failover-candidate",
+        Some("fallback-sticky-unusable"),
+        Some("https://fallback-failover-candidate.example.com/backend-api/codex"),
+    )
+    .await;
+    for account_id in [sticky_account_id, fallback_account_id] {
+        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind(TagPriorityTier::Fallback.as_str())
+            .execute(&state.pool)
+            .await
+            .expect("set fallback failover priority");
+    }
+    sqlx::query("UPDATE pool_upstream_accounts SET status = ?2 WHERE id = ?1")
+        .bind(sticky_account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
+        .execute(&state.pool)
+        .await
+        .expect("make sticky fallback unusable");
+
+    let sticky_key = "fallback-sticky-unusable";
+    upsert_sticky_route(
+        &state.pool,
+        sticky_key,
+        sticky_account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed unusable fallback sticky route");
+
+    let resolution =
+        resolve_pool_account_for_request(&state, Some(sticky_key), &[], &HashSet::new())
+            .await
+            .expect("resolve fallback failover");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected usable fallback candidate after sticky source became unusable");
+    };
+    assert_eq!(account.account_id, fallback_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
 async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_priority_ready_account()
  {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
