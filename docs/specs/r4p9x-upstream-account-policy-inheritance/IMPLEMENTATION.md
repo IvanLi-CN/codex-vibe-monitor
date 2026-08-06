@@ -96,6 +96,8 @@ Effective routing resolution applies group policy, read-only system signals, the
 
 Sticky routing now treats a reusable `fallback` source as a comparison candidate on every subsequent request when automatic cut-out is allowed. The resolver enables the priority filter only after the sticky source resolves as a sendable account, so hard failures, capability rejection, and other non-reusable sources retain the existing fresh failover behavior. It admits only strictly higher `normal` / `primary` candidates into the proactive comparison, keeps the existing composite score ordering, and leaves the fallback source selected when no higher candidate wins. A fresh handoff carries the captured sticky generation and is rebound only by the existing successful-route CAS path.
 
+Penalty-bearing sticky sources keep the existing comparison path: recent route-binding failures and model-route demotions still allow healthy same-tier fallback peers to win on the composite score. The higher-priority-only filter is limited to reusable, unpenalized fallback sticky sources.
+
 Request compression extends the same inheritance contract with one root-only field.
 
 - `pool_routing_settings` stores the global `request_compression_algorithm` and `request_compression_level_preset`
