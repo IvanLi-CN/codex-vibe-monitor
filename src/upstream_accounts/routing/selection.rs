@@ -1083,6 +1083,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             row.policy_codex_imagegen_capability_override.as_deref(),
                         ),
                     ),
+                    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+                        effective_capability_support(
+                            decode_capability_support(row.standalone_search_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_standalone_search_capability_override.as_deref(),
+                            ),
+                        )
+                    } else {
+                        CapabilitySupport::Supported
+                    },
                 ) {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
@@ -1482,6 +1492,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     row.policy_codex_imagegen_capability_override.as_deref(),
                 ),
             ),
+            if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+                effective_capability_support(
+                    decode_capability_support(row.standalone_search_capability.as_deref()),
+                    decode_capability_override(
+                        row.policy_standalone_search_capability_override.as_deref(),
+                    ),
+                )
+            } else {
+                CapabilitySupport::Supported
+            },
         ) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
@@ -1877,6 +1897,7 @@ mod tests {
             CapabilitySupport::Supported,
             CapabilitySupport::Supported,
             CapabilitySupport::Unsupported,
+            CapabilitySupport::Unknown,
         ));
         assert!(account_accepts_request_capabilities(
             force_add,
@@ -1888,6 +1909,7 @@ mod tests {
                 CapabilitySupport::Unsupported,
                 Some(CapabilitySupport::Supported),
             ),
+            CapabilitySupport::Unknown,
         ));
 
         let image_model = request_capability_requirements_after_codex_imagegen_rewrite(

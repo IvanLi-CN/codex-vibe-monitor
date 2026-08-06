@@ -161,6 +161,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
 
     reserve_pool_routing_account(state.as_ref(), "sticky-reservation", &account);

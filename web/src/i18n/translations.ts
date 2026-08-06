@@ -1277,6 +1277,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
     "accountPool.upstreamAccounts.capability.codexImagegen.description":
       "Controls whether this account can receive Codex requests after image_gen namespace injection.",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.title": "Standalone Search endpoint",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.description":
+      "Controls routing eligibility for the Codex standalone search endpoint only.",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "Rewrite policy is not capability routing",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
@@ -4185,6 +4188,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
     "accountPool.upstreamAccounts.capability.codexImagegen.description":
       "控制该账号能否接收已注入 image_gen 命名空间的 Codex 请求。",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.title": "Standalone Search 端点",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.description":
+      "仅控制 Codex standalone search 端点的路由可选性。",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "rewrite 策略不等于 capability 路由",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":

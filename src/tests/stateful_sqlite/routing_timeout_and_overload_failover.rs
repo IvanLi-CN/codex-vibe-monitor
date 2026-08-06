@@ -2728,6 +2728,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(

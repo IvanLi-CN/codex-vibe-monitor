@@ -1,6 +1,7 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
 - 2026-08-04: Implemented Codex standalone search recording as an exact `POST /v1/alpha/search` non-streaming capture target. It reuses pool and OAuth passthrough accounting, records one parent invocation per downstream request, and enters the existing source-level hourly rollup without inventing search usage or adding an endpoint rollup dimension.
+- 2026-08-05: Connected API-key standalone search attempts to an independent account capability axis without changing invocation, attempt, OAuth passthrough, or source-level rollup accounting.
 
 ## Account upstream attempt observability
 

@@ -12,6 +12,7 @@ pub(crate) enum UpstreamCapabilityAxis {
     ImageEndpoint,
     ResponseImageTool,
     CodexImagegen,
+    StandaloneSearch,
 }
 
 impl UpstreamCapabilityAxis {
@@ -22,6 +23,7 @@ impl UpstreamCapabilityAxis {
             Self::ImageEndpoint => "image_endpoint_capability",
             Self::ResponseImageTool => "response_image_tool_capability",
             Self::CodexImagegen => "codex_imagegen_capability",
+            Self::StandaloneSearch => "standalone_search_capability",
         }
     }
 
@@ -32,6 +34,7 @@ impl UpstreamCapabilityAxis {
             Self::ImageEndpoint => "image_endpoint_capability_observed_at",
             Self::ResponseImageTool => "response_image_tool_capability_observed_at",
             Self::CodexImagegen => "codex_imagegen_capability_observed_at",
+            Self::StandaloneSearch => "standalone_search_capability_observed_at",
         }
     }
 
@@ -42,6 +45,7 @@ impl UpstreamCapabilityAxis {
             Self::ImageEndpoint => "image_endpoint_capability_reason",
             Self::ResponseImageTool => "response_image_tool_capability_reason",
             Self::CodexImagegen => "codex_imagegen_capability_reason",
+            Self::StandaloneSearch => "standalone_search_capability_reason",
         }
     }
 
@@ -52,6 +56,7 @@ impl UpstreamCapabilityAxis {
             Self::ImageEndpoint => "image endpoint request succeeded",
             Self::ResponseImageTool => "response image tool request succeeded",
             Self::CodexImagegen => "Codex imagegen namespace request succeeded",
+            Self::StandaloneSearch => "standalone search endpoint request succeeded",
         }
     }
 }
@@ -494,6 +499,16 @@ async fn record_pool_route_success_capability_observations(
         )
         .await?;
     }
+    if requirements.standalone_search {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::StandaloneSearch,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::StandaloneSearch.success_reason()),
+        )
+        .await?;
+    }
     if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
         record_capability_observation(
             pool,
@@ -559,6 +574,11 @@ pub(crate) async fn record_capability_observation(
         return Ok(());
     }
     let now_iso = format_utc_iso(Utc::now());
+    let api_key_only_filter = if matches!(axis, UpstreamCapabilityAxis::StandaloneSearch) {
+        " AND kind = 'api_key_codex'"
+    } else {
+        ""
+    };
     let statement = format!(
         r#"
         UPDATE pool_upstream_accounts
@@ -566,11 +586,12 @@ pub(crate) async fn record_capability_observation(
             {observed_at_column} = ?3,
             {reason_column} = ?4,
             updated_at = ?3
-        WHERE id = ?1
+        WHERE id = ?1{api_key_only_filter}
         "#,
         observed_column = axis.observed_column(),
         observed_at_column = axis.observed_at_column(),
         reason_column = axis.reason_column(),
+        api_key_only_filter = api_key_only_filter,
     );
     sqlx::query(&statement)
         .bind(account_id)
@@ -731,6 +752,19 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
+            CapabilitySupport::Unsupported,
+            Some(error_message),
+        )
+        .await?;
+    }
+    if requirements.standalone_search
+        && classify_standalone_search_capability_observation(status, Some(error_message))
+            == CapabilitySupport::Unsupported
+    {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::StandaloneSearch,
             CapabilitySupport::Unsupported,
             Some(error_message),
         )

@@ -67,20 +67,22 @@ Status-change side effects are now gated by the resolved per-reason policy.
 - for account-scoped failure families, disabling a reason preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
 - suppressed sync failures still advance the non-health sync timestamp so maintenance cadence does not collapse into immediate retries
 
-Endpoint capability routing is now endpoint-aware instead of response-family wide.
+Endpoint capability routing is endpoint-aware instead of response-family wide.
 
 - `pool_upstream_accounts` persists `chat_completions_capability`, its observed timestamp/reason, and `policy_chat_completions_capability_override`
 - runtime requirement inference now keys off `endpoint + image_intent`, so Responses, Chat Completions, direct image, and Responses image-tool learning are independent
 - `/v1/chat/completions` no longer participates in `response_endpoint_capability` or `response_image_tool_capability`
 - startup schema maintenance performs a one-time cutover that clears legacy mixed Responses observed state and overrides, seeds the new Chat axis as `unknown`, and records completion in `pool_routing_settings.capability_axis_split_migrated`
+- API-key accounts persist an independent `standalone_search_capability`, observed timestamp/reason, and nullable policy override. Exact `/v1/alpha/search` routing filters on its effective value; successful attempts learn support, bare `404`/`405` learn non-support, and ambiguous failures preserve the current observation.
 
-The account detail Overview now renders five independent capability cards.
+The API-key account detail Overview renders six independent capability cards in a three-column desktop grid.
 
 - Responses card: `/v1/responses`, `/v1/responses/compact`
 - Chat Completions card: `/v1/chat/completions`
 - Image card: `/v1/images/generations`, `/v1/images/edits`
 - Codex imagegen card: `image_gen` namespace compatibility, including observed reason and an explicit supported/unsupported override for a deliberate post-repair retest
 - Response image-tool card: Responses-family image-tool eligibility only
+- Standalone Search card: exact `/v1/alpha/search` eligibility with automatic learning and persistent supported/unsupported override
 
 ## API and Resolution
 

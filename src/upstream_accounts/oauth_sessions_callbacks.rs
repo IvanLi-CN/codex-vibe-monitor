@@ -1739,6 +1739,29 @@ pub(crate) async fn update_upstream_account_inner(
             value,
         )?),
     };
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        && !matches!(
+            &payload.standalone_search_capability_override,
+            OptionalField::Missing
+        )
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "standaloneSearchCapabilityOverride is only supported for API key accounts".to_string(),
+        ));
+    }
+    let standalone_search_capability_override = if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        None
+    } else {
+        match &payload.standalone_search_capability_override {
+            OptionalField::Missing => row.policy_standalone_search_capability_override.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(normalize_capability_override(
+                "standaloneSearchCapabilityOverride",
+                value,
+            )?),
+        }
+    };
     let status_change_upstream_http_401 = match payload.routing_rule.as_ref() {
         Some(rule) => match rule
             .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
@@ -1948,8 +1971,9 @@ pub(crate) async fn update_upstream_account_inner(
             policy_image_endpoint_capability_override = ?43,
             policy_response_image_tool_capability_override = ?44,
             policy_codex_imagegen_capability_override = ?45,
-            updated_at = ?46,
-            policy_codex_imagegen_rewrite_mode = ?47
+            policy_standalone_search_capability_override = ?46,
+            updated_at = ?47,
+            policy_codex_imagegen_rewrite_mode = ?48
         WHERE id = ?1
         "#,
     )
@@ -2139,6 +2163,7 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(image_endpoint_capability_override)
     .bind(response_image_tool_capability_override)
     .bind(codex_imagegen_capability_override)
+    .bind(standalone_search_capability_override)
     .bind(&now_iso)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.codex_imagegen_rewrite_mode {

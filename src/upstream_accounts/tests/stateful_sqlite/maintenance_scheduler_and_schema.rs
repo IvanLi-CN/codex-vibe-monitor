@@ -354,6 +354,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unknown,
+        CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -365,6 +366,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unknown,
+        CapabilitySupport::Unknown,
     ));
     assert!(account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -375,6 +377,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
         CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
@@ -387,6 +390,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unknown,
+        CapabilitySupport::Unknown,
     ));
     assert!(account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -397,6 +401,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
         CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
@@ -409,6 +414,32 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unknown,
+        CapabilitySupport::Unknown,
+    ));
+
+    assert!(!account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/alpha/search",
+            ImageIntent::Unknown,
+        ),
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
+        CapabilitySupport::Unsupported,
+    ));
+    assert!(account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/alpha/search/",
+            ImageIntent::Unknown,
+        ),
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
+        CapabilitySupport::Unsupported,
     ));
 }
 
