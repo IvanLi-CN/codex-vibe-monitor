@@ -15782,11 +15782,16 @@ fn extract_subscription_snapshot_payload(prepared: PreparedSubscriptionConnectio
 }
 
 #[tokio::test]
-async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_without_db_rebuild() {
+async fn dashboard_activity_subscription_projection_slices_update_cached_frame_without_db_rebuild()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    state
+        .proxy_runtime_invocations
+        .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+        .expect("bind dashboard network cache");
 
     let initial_prepared = state
         .subscription_hub
@@ -15982,15 +15987,31 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
             Utc::now(),
         );
 
-    let live_snapshot = capture_dashboard_activity_live_snapshot(state.as_ref())
-        .await
-        .expect("capture dashboard activity live snapshot");
+    let current_capture = state
+        .proxy_runtime_invocations
+        .capture_memory_snapshot()
+        .expect("capture dashboard current projection slice");
+    let network_capture = state
+        .proxy_runtime_invocations
+        .capture_network_slice()
+        .expect("capture dashboard network projection slice");
     state
         .subscription_hub
         .handle_internal_broadcast(
             state.clone(),
-            BroadcastPayload::DashboardActivityLive {
-                snapshot: Box::new(live_snapshot),
+            BroadcastPayload::DashboardCurrentSlice {
+                slice: Box::new(crate::DashboardCurrentProjectionSlice::from(
+                    &current_capture.snapshot,
+                )),
+            },
+        )
+        .await;
+    state
+        .subscription_hub
+        .handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::DashboardNetworkSlice {
+                slice: Box::new(network_capture.slice),
             },
         )
         .await;

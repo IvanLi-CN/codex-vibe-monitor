@@ -18,3 +18,4 @@
 - current/phase、network/rate、terminal totals 固定拆为 `250ms / 1s / 5s` 三个 revisioned slice；网络可见性不得继续每 `250ms` 唤醒完整 Dashboard projection。
 - Dashboard topic 按 activity、summary、network timeseries、network recent 分批迁移到 typed materializer。legacy delivery 只保留一个发布版本用于显式回滚，不作为长期并行架构。
 - current/phase、network/rate 与 terminal totals 的触发窗口分别拥有独立 generation 和固定 deadline；network-only 变化不得推进 current revision，terminal durable totals 只在 terminal window 结束后刷新。
+- Issue #756 将四类 Dashboard live topic 落为 typed base 和 revision dependency graph：activity 依赖 current/network，summary 依赖 current，network timeseries/recent 依赖 network。Auto delivery 只接收 projection slice 并为每个 topic revision 生成一个共享 `Arc<SerializedTopicFrame>`；业务 snapshot 广播和通用 JSON mutation 留在 explicit legacy rollback path。网络切片相等判定包含 recent 与 current-rate 依赖，确保内存数据变化推进正确 revision 而不触发 SQLite 或 reconcile。

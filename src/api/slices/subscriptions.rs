@@ -199,6 +199,7 @@ impl SerializedTopicFrame {
 pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) materialization_count: u64,
     pub(crate) serialization_count: u64,
+    pub(crate) payload_clone_count: u64,
     pub(crate) frame_bytes_count: u64,
     pub(crate) lagged_count: u64,
     pub(crate) skipped_count: u64,
@@ -218,6 +219,7 @@ pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
 struct DashboardTopicTopologyCounters {
     materialization_count: AtomicU64,
     serialization_count: AtomicU64,
+    payload_clone_count: AtomicU64,
     frame_bytes_count: AtomicU64,
     lagged_count: AtomicU64,
     skipped_count: AtomicU64,
@@ -230,6 +232,7 @@ impl DashboardTopicTopologyCounters {
         DashboardTopicTopologyCounterSnapshot {
             materialization_count: self.materialization_count.load(Ordering::Relaxed),
             serialization_count: self.serialization_count.load(Ordering::Relaxed),
+            payload_clone_count: self.payload_clone_count.load(Ordering::Relaxed),
             frame_bytes_count: self.frame_bytes_count.load(Ordering::Relaxed),
             lagged_count: self.lagged_count.load(Ordering::Relaxed),
             skipped_count: self.skipped_count.load(Ordering::Relaxed),
@@ -242,6 +245,7 @@ impl DashboardTopicTopologyCounters {
     fn reset(&self) {
         self.materialization_count.store(0, Ordering::Relaxed);
         self.serialization_count.store(0, Ordering::Relaxed);
+        self.payload_clone_count.store(0, Ordering::Relaxed);
         self.frame_bytes_count.store(0, Ordering::Relaxed);
         self.lagged_count.store(0, Ordering::Relaxed);
         self.skipped_count.store(0, Ordering::Relaxed);
@@ -281,6 +285,12 @@ impl DashboardDeliveryTopologyCounters {
             topic
                 .frame_bytes_count
                 .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_payload_clone(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.payload_clone_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -351,6 +361,8 @@ struct SubscriptionHubState {
     dashboard_live_subscriber_count: usize,
     server_push_subscribers: HashMap<String, usize>,
     server_push_tasks: HashSet<String>,
+    dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
+    dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +384,9 @@ struct CachedSubscriptionTopic {
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
+    dashboard_materializer: Option<DashboardTopicMaterializer>,
+    dashboard_base_revision: u64,
+    dashboard_materialized_revision: Option<DashboardTopicRevision>,
     snapshot_payload: Value,
     snapshot_frame: Arc<SerializedTopicFrame>,
     snapshot_bytes: usize,
@@ -384,6 +399,139 @@ struct ReplayableTopicEvent {
     frame: Arc<SerializedTopicFrame>,
     bytes: usize,
     emitted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DashboardTopicRevision {
+    base_revision: u64,
+    current_revision: Option<u64>,
+    network_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+enum DashboardTopicMaterializer {
+    Activity {
+        base: Arc<DashboardActivityResponse>,
+    },
+    Summary {
+        base: Arc<StatsResponse>,
+        upstream_account_id: Option<i64>,
+    },
+    NetworkTimeseries {
+        base: Arc<DashboardNetworkTimeseriesResponse>,
+        upstream_account_id: Option<i64>,
+    },
+    NetworkRecent {
+        base: Arc<DashboardRecentNetworkWindowResponse>,
+    },
+}
+
+impl DashboardTopicMaterializer {
+    fn revision(
+        &self,
+        base_revision: u64,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+    ) -> Option<DashboardTopicRevision> {
+        match self {
+            Self::Activity { .. } if current.is_some() || network.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: network.map(|slice| slice.revision),
+                })
+            }
+            Self::Summary { .. } => current.map(|slice| DashboardTopicRevision {
+                base_revision,
+                current_revision: Some(slice.revision),
+                network_revision: None,
+            }),
+            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => {
+                network.map(|slice| DashboardTopicRevision {
+                    base_revision,
+                    current_revision: None,
+                    network_revision: Some(slice.revision),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn serialize(
+        &self,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+    ) -> Result<Vec<u8>, ApiError> {
+        match self {
+            Self::Activity { base } => serde_json::to_vec(
+                &materialize_dashboard_activity_response(base.as_ref(), current, network),
+            )
+            .map_err(ApiError::from),
+            Self::Summary {
+                base,
+                upstream_account_id,
+            } => serde_json::to_vec(&materialize_dashboard_summary_response(
+                base.as_ref(),
+                *upstream_account_id,
+                current,
+            ))
+            .map_err(ApiError::from),
+            Self::NetworkTimeseries {
+                base,
+                upstream_account_id,
+            } => serde_json::to_vec(&materialize_dashboard_network_timeseries_response(
+                base.as_ref(),
+                *upstream_account_id,
+                network,
+            ))
+            .map_err(ApiError::from),
+            Self::NetworkRecent { base } => serde_json::to_vec(
+                &network.map_or_else(|| base.as_ref().clone(), |slice| slice.recent.clone()),
+            )
+            .map_err(ApiError::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum BuiltSubscriptionTopicPayload {
+    Json(Value),
+    Dashboard(DashboardTopicMaterializer),
+}
+
+impl BuiltSubscriptionTopicPayload {
+    fn dashboard_materializer(&self) -> Option<DashboardTopicMaterializer> {
+        match self {
+            Self::Json(_) => None,
+            Self::Dashboard(materializer) => Some(materializer.clone()),
+        }
+    }
+
+    fn serialize(
+        &self,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+    ) -> Result<Vec<u8>, ApiError> {
+        match self {
+            Self::Json(payload) => serde_json::to_vec(payload).map_err(ApiError::from),
+            Self::Dashboard(materializer) => materializer.serialize(current, network),
+        }
+    }
+
+    fn snapshot_payload(&self) -> Value {
+        match self {
+            Self::Json(payload) => payload.clone(),
+            Self::Dashboard(_) => Value::Null,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingDashboardTopicMaterialization {
+    topic_key: String,
+    topic_name: &'static str,
+    revision: DashboardTopicRevision,
+    materializer: DashboardTopicMaterializer,
 }
 
 struct ServerPushTopicLease {
@@ -1249,7 +1397,11 @@ impl SubscriptionHub {
         let started = Instant::now();
         self.dashboard_topology_counters
             .record_materialization(topic.name());
-        let mut payload = topic.build_payload(state.clone()).await?;
+        let mut built_payload = topic.build_cached_payload(state.clone()).await?;
+        if matches!(&built_payload, BuiltSubscriptionTopicPayload::Dashboard(_)) {
+            self.dashboard_topology_counters
+                .record_payload_clone(topic.name());
+        }
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1268,15 +1420,19 @@ impl SubscriptionHub {
                 }
                 return Ok(None);
             }
-            if let Some(live) = guard
-                .topics
-                .get(&topic_key)
-                .and_then(|cached| cached.latest_live_snapshot.as_ref())
-                .cloned()
+            if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
+                && let Some(live) = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| cached.latest_live_snapshot.as_ref())
+                    .cloned()
             {
-                apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
+                apply_topic_live_overlay_to_payload(state.as_ref(), &topic, payload, &live)?;
             }
-            let serialized_payload = serde_json::to_vec(&payload)?;
+            let serialized_payload = built_payload.serialize(
+                guard.dashboard_current_slice.as_deref(),
+                guard.dashboard_network_slice.as_deref(),
+            )?;
             if let Some(existing) = guard.topics.get_mut(&topic_key)
                 && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
             {
@@ -1299,6 +1455,15 @@ impl SubscriptionHub {
                 serialized_payload,
             )?);
             let payload_bytes = frame.payload_bytes.len();
+            let dashboard_materializer = built_payload.dashboard_materializer();
+            let dashboard_materialized_revision =
+                dashboard_materializer.as_ref().and_then(|materializer| {
+                    materializer.revision(
+                        next_cursor,
+                        guard.dashboard_current_slice.as_deref(),
+                        guard.dashboard_network_slice.as_deref(),
+                    )
+                });
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -1341,7 +1506,10 @@ impl SubscriptionHub {
                     .and_then(|entry| entry.latest_live_snapshot.clone()),
                 calendar_anchor: subscription_calendar_anchor(&topic),
                 continuity_reset_cursor,
-                snapshot_payload: payload.clone(),
+                dashboard_materializer,
+                dashboard_base_revision: next_cursor,
+                dashboard_materialized_revision,
+                snapshot_payload: built_payload.snapshot_payload(),
                 snapshot_frame: frame.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -1394,6 +1562,119 @@ impl SubscriptionHub {
         Ok(Some(cached))
     }
 
+    pub(crate) async fn materialize_dashboard_current_slice(
+        &self,
+        slice: DashboardCurrentProjectionSlice,
+    ) {
+        let (pending, current, network) = {
+            let mut guard = self.state.lock().await;
+            guard.dashboard_current_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network)
+            .await;
+    }
+
+    pub(crate) async fn materialize_dashboard_network_slice(
+        &self,
+        slice: DashboardNetworkProjectionSlice,
+    ) {
+        let (pending, current, network) = {
+            let mut guard = self.state.lock().await;
+            guard.dashboard_network_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network)
+            .await;
+    }
+
+    async fn materialize_pending_dashboard_topics(
+        &self,
+        pending: Vec<PendingDashboardTopicMaterialization>,
+        current: Option<Arc<DashboardCurrentProjectionSlice>>,
+        network: Option<Arc<DashboardNetworkProjectionSlice>>,
+    ) {
+        for pending in pending {
+            let serialized_payload = match pending
+                .materializer
+                .serialize(current.as_deref(), network.as_deref())
+            {
+                Ok(payload) => payload,
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        topic = pending.topic_name,
+                        "failed to materialize dashboard topic frame"
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = self
+                .commit_dashboard_materialized_frame(pending, serialized_payload)
+                .await
+            {
+                warn!(?err, "failed to commit dashboard topic frame");
+            }
+        }
+    }
+
+    async fn commit_dashboard_materialized_frame(
+        &self,
+        pending: PendingDashboardTopicMaterialization,
+        serialized_payload: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&pending.topic_key) else {
+                return Ok(());
+            };
+            if cached.dashboard_materializer.is_none()
+                || cached.dashboard_base_revision != pending.revision.base_revision
+                || cached.dashboard_materialized_revision == Some(pending.revision)
+            {
+                return Ok(());
+            }
+            if cached.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice() {
+                cached.dashboard_materialized_revision = Some(pending.revision);
+                return Ok(());
+            }
+
+            let next_cursor = cached.cursor.saturating_add(1);
+            self.dashboard_topology_counters
+                .record_materialization(pending.topic_name);
+            self.dashboard_topology_counters
+                .record_payload_clone(pending.topic_name);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                pending.topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serialized_payload,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.snapshot_frame = frame.clone();
+            cached.dashboard_materialized_revision = Some(pending.revision);
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            SubscriptionDispatchEvent { frame }
+        };
+        let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+
     pub(crate) async fn handle_internal_broadcast(
         &self,
         state: Arc<AppState>,
@@ -1401,11 +1682,25 @@ impl SubscriptionHub {
     ) {
         match payload {
             BroadcastPayload::DashboardNetworkSlice { slice } => {
-                self.handle_dashboard_network_slice(state, slice).await;
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_network_slice(*slice).await;
+                } else {
+                    self.handle_dashboard_network_slice(state, slice).await;
+                }
                 return;
             }
-            BroadcastPayload::DashboardCurrentSlice { .. }
-            | BroadcastPayload::DashboardTerminalSlice { .. } => return,
+            BroadcastPayload::DashboardCurrentSlice { slice } => {
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_current_slice(*slice).await;
+                }
+                return;
+            }
+            BroadcastPayload::DashboardActivityLive { .. }
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto =>
+            {
+                return;
+            }
+            BroadcastPayload::DashboardTerminalSlice { .. } => return,
             _ => {}
         }
         let affected = {
@@ -1621,6 +1916,52 @@ impl SubscriptionHub {
             }
         }
     }
+}
+
+fn collect_pending_dashboard_topic_materializations(
+    guard: &mut SubscriptionHubState,
+) -> Vec<PendingDashboardTopicMaterialization> {
+    let active_subscribers = guard.active_subscribers.clone();
+    let server_push_subscribers = guard.server_push_subscribers.clone();
+    let current = guard.dashboard_current_slice.clone();
+    let network = guard.dashboard_network_slice.clone();
+    guard
+        .topics
+        .iter_mut()
+        .filter_map(|(topic_key, cached)| {
+            let active = active_subscribers
+                .get(topic_key)
+                .copied()
+                .unwrap_or_default()
+                > 0
+                || server_push_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0;
+            if !active {
+                cached.dirty = true;
+                return None;
+            }
+            if cached.dirty {
+                return None;
+            }
+            let materializer = cached.dashboard_materializer.as_ref()?;
+            let revision = materializer.revision(
+                cached.dashboard_base_revision,
+                current.as_deref(),
+                network.as_deref(),
+            )?;
+            (cached.dashboard_materialized_revision != Some(revision)).then(|| {
+                PendingDashboardTopicMaterialization {
+                    topic_key: topic_key.clone(),
+                    topic_name: cached.topic.name(),
+                    revision,
+                    materializer: materializer.clone(),
+                }
+            })
+        })
+        .collect()
 }
 
 impl Default for SubscriptionHub {
@@ -2654,12 +2995,269 @@ fn apply_dashboard_activity_live_overlay_to_payload(
     Ok(true)
 }
 
+fn dashboard_activity_response_exact_range(
+    response: &DashboardActivityResponse,
+) -> Option<ExactUtcRange> {
+    Some(ExactUtcRange {
+        start: parse_to_utc_datetime(&response.range_start)?,
+        end: parse_to_utc_datetime(&response.range_end)?,
+    })
+}
+
+fn materialize_dashboard_activity_response(
+    base: &DashboardActivityResponse,
+    current: Option<&DashboardCurrentProjectionSlice>,
+    network: Option<&DashboardNetworkProjectionSlice>,
+) -> DashboardActivityResponse {
+    let mut response = base.clone();
+
+    if let Some(current) = current {
+        response.live_revision = current.revision;
+        response.summary.stats.in_progress_conversation_count =
+            Some(current.in_progress_invocation_count);
+        response.summary.stats.in_progress_retry_conversation_count =
+            Some(current.retry_invocation_count);
+        response.summary.stats.in_progress_avg_wait_ms = (current.in_progress_wait_sample_count
+            > 0)
+        .then_some(current.in_progress_wait_sum_ms / current.in_progress_wait_sample_count as f64);
+        response.summary.stats.in_progress_phase_counts = Some(current.in_progress_phase_counts);
+
+        let exact_range = dashboard_activity_response_exact_range(&response);
+        let model_performance_available = response.summary.model_performance.available;
+        if let Some(accounts) = response.accounts.as_mut() {
+            let current_by_key = current
+                .accounts
+                .iter()
+                .map(|account| (account.account_key.as_str(), account))
+                .collect::<HashMap<_, _>>();
+            let existing_account_keys = accounts
+                .iter()
+                .map(|account| account.account_key.clone())
+                .collect::<HashSet<_>>();
+
+            for account in accounts.iter_mut() {
+                apply_dashboard_current_slice_to_activity_account(
+                    account,
+                    current_by_key.get(account.account_key.as_str()).copied(),
+                );
+            }
+
+            if let Some(exact_range) = exact_range {
+                for account in &current.accounts {
+                    if existing_account_keys.contains(&account.account_key) {
+                        continue;
+                    }
+                    let live_account = DashboardActivityLiveAccount {
+                        account_key: account.account_key.clone(),
+                        upstream_account_id: account.upstream_account_id,
+                        upstream_account_name: account.upstream_account_name.clone(),
+                        in_progress_invocation_count: account.in_progress_invocation_count,
+                        in_progress_phase_counts: account.in_progress_phase_counts,
+                        retry_invocation_count: account.retry_invocation_count,
+                        in_progress_wait_sum_ms: account.in_progress_wait_sum_ms,
+                        in_progress_wait_sample_count: account.in_progress_wait_sample_count,
+                        upload_bytes_per_second: 0.0,
+                        download_bytes_per_second: 0.0,
+                        network_live_bucket: None,
+                    };
+                    accounts.push(dashboard_activity_account_from_live(
+                        &live_account,
+                        None,
+                        exact_range,
+                        network
+                            .and_then(|slice| {
+                                slice
+                                    .current_snapshot_by_account
+                                    .get(&account.upstream_account_id)
+                                    .copied()
+                            })
+                            .unwrap_or_default(),
+                        model_performance_available,
+                        None,
+                        Vec::new(),
+                    ));
+                }
+                sort_dashboard_activity_accounts(accounts);
+            }
+        }
+    }
+
+    if let Some(network) = network {
+        response.network_live_bucket = network.network_live_bucket.clone();
+        response.network_realtime_rate = network.network_realtime_rate.clone();
+        response.summary.tokens_per_minute =
+            Some(network.current_snapshot.qualified_tokens.max(0) as f64);
+        response.summary.spend_rate = Some(network.current_snapshot.total_cost.max(0.0));
+        response.summary.current_first_response_byte_total_avg_ms =
+            network.current_snapshot.first_response_byte_total_avg_ms();
+        response.summary.current_first_token_avg_ms = network.current_snapshot.first_token_avg_ms();
+        response.summary.current_avg_total_ms = network.current_snapshot.avg_total_ms();
+        response.summary.current_avg_response_ms =
+            network.current_snapshot.avg_response_duration_ms();
+        if let Some(accounts) = response.accounts.as_mut() {
+            let network_by_account = network
+                .accounts
+                .iter()
+                .map(|account| (account.upstream_account_id, account))
+                .collect::<HashMap<_, _>>();
+            for account in accounts {
+                let network_account = network_by_account
+                    .get(&account.upstream_account_id)
+                    .copied();
+                account.upload_bytes_per_second =
+                    network_account.map_or(0.0, |value| value.upload_bytes_per_second);
+                account.download_bytes_per_second =
+                    network_account.map_or(0.0, |value| value.download_bytes_per_second);
+                apply_dashboard_current_rate_to_activity_account(
+                    account,
+                    network
+                        .current_snapshot_by_account
+                        .get(&account.upstream_account_id)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    response
+}
+
+fn apply_dashboard_current_slice_to_activity_account(
+    account: &mut DashboardActivityAccountResponse,
+    current: Option<&DashboardCurrentProjectionAccountSlice>,
+) {
+    account.in_progress_invocation_count =
+        Some(current.map_or(0, |value| value.in_progress_invocation_count));
+    account.in_progress_phase_counts = Some(
+        current
+            .map(|value| value.in_progress_phase_counts)
+            .unwrap_or_default(),
+    );
+    account.retry_invocation_count = Some(current.map_or(0, |value| value.retry_invocation_count));
+    if let Some(current) = current {
+        account.request_count = account
+            .request_count
+            .max(current.in_progress_invocation_count.max(0));
+    }
+}
+
+fn apply_dashboard_current_rate_to_activity_account(
+    account: &mut DashboardActivityAccountResponse,
+    current: DashboardActivityCurrentSnapshot,
+) {
+    account.tokens_per_minute = Some(current.qualified_tokens.max(0) as f64);
+    account.spend_rate = Some(current.total_cost.max(0.0));
+    account.current_first_response_byte_total_avg_ms = current.first_response_byte_total_avg_ms();
+    account.current_first_token_avg_ms = current.first_token_avg_ms();
+    account.current_avg_total_ms = current.avg_total_ms();
+    account.current_avg_response_ms = current.avg_response_duration_ms();
+}
+
+fn materialize_dashboard_summary_response(
+    base: &StatsResponse,
+    upstream_account_id: Option<i64>,
+    current: Option<&DashboardCurrentProjectionSlice>,
+) -> StatsResponse {
+    let mut response = base.clone();
+    let Some(current) = current else {
+        return response;
+    };
+    let account = upstream_account_id.and_then(|account_id| {
+        current
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(account_id))
+    });
+    let (count, retry_count, phase_counts, wait_ms) = match account {
+        Some(account) => (
+            account.in_progress_invocation_count,
+            account.retry_invocation_count,
+            account.in_progress_phase_counts,
+            (account.in_progress_wait_sample_count > 0).then_some(
+                account.in_progress_wait_sum_ms / account.in_progress_wait_sample_count as f64,
+            ),
+        ),
+        None if upstream_account_id.is_some() => {
+            (0, 0, InvocationPhaseCountsResponse::default(), None)
+        }
+        None => (
+            current.in_progress_invocation_count,
+            current.retry_invocation_count,
+            current.in_progress_phase_counts,
+            (current.in_progress_wait_sample_count > 0).then_some(
+                current.in_progress_wait_sum_ms / current.in_progress_wait_sample_count as f64,
+            ),
+        ),
+    };
+    response.in_progress_conversation_count = Some(count);
+    response.in_progress_retry_conversation_count = Some(retry_count);
+    response.in_progress_avg_wait_ms = wait_ms;
+    response.in_progress_phase_counts = Some(phase_counts);
+    response
+}
+
+fn materialize_dashboard_network_timeseries_response(
+    base: &DashboardNetworkTimeseriesResponse,
+    upstream_account_id: Option<i64>,
+    network: Option<&DashboardNetworkProjectionSlice>,
+) -> DashboardNetworkTimeseriesResponse {
+    let mut response = base.clone();
+    let Some(network) = network else {
+        return response;
+    };
+    let bucket = match upstream_account_id {
+        None => network.network_live_bucket.clone(),
+        Some(upstream_account_id) => network
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(upstream_account_id))
+            .and_then(|account| account.network_live_bucket.clone()),
+    };
+    let Some(bucket) = bucket else {
+        return response;
+    };
+    let bucket_start = &bucket.bucket_start;
+    let point_index = response
+        .points
+        .iter()
+        .position(|point| point.bucket_start == *bucket_start)
+        .or_else(|| {
+            response
+                .points
+                .iter()
+                .position(|point| point.is_live_bucket)
+        });
+    let Some(point_index) = point_index else {
+        return response;
+    };
+    let now = Utc::now();
+    response.points[point_index] = bucket;
+    response.range_end = format_utc_iso_precise(now);
+    response.snapshot_id = now.timestamp_millis();
+    response
+}
+
 async fn run_server_push_topic_loop(
     hub: Arc<SubscriptionHub>,
     state: Arc<AppState>,
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
+    if matches!(&topic, SubscriptionTopic::DashboardNetworkRecentCurrent)
+        && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+        && let Err(err) = state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+    {
+        warn!(
+            ?err,
+            "failed to bind dashboard network cache for recent topic push"
+        );
+        hub.clear_server_push_task(&topic_key).await;
+        return;
+    }
+
     if topic.is_closed_summary_topic() {
         loop {
             tokio::select! {
@@ -2697,6 +3295,19 @@ async fn run_server_push_topic_loop(
                 }
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
+                }
+                if matches!(&topic, SubscriptionTopic::DashboardNetworkRecentCurrent)
+                    && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+                {
+                    match state.proxy_runtime_invocations.capture_network_slice() {
+                        Ok(capture) => {
+                            hub.materialize_dashboard_network_slice(capture.slice).await;
+                        }
+                        Err(err) => {
+                            warn!(?err, "failed to capture dashboard network recent slice");
+                        }
+                    }
+                    continue;
                 }
                 if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
                     warn!(?err, topic = %topic.name(), "failed to push subscription topic cadence");
@@ -2888,7 +3499,10 @@ impl SubscriptionTopic {
     }
 
     fn uses_dashboard_network_live_snapshot(&self) -> bool {
-        matches!(self, Self::DashboardNetworkTimeseriesWindow { .. })
+        matches!(
+            self,
+            Self::DashboardNetworkTimeseriesWindow { .. } | Self::DashboardNetworkRecentCurrent
+        )
     }
 
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
@@ -3383,6 +3997,102 @@ impl SubscriptionTopic {
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
         }
+    }
+
+    async fn build_cached_payload(
+        &self,
+        state: Arc<AppState>,
+    ) -> Result<BuiltSubscriptionTopicPayload, ApiError> {
+        if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+            match self {
+                Self::DashboardActivityCurrent {
+                    range,
+                    time_zone,
+                    recent_limit,
+                    include_accounts,
+                    include_recent,
+                } if range != "yesterday" => {
+                    let Json(response) = fetch_dashboard_activity(
+                        State(state),
+                        Query(DashboardActivityQuery {
+                            range: range.clone(),
+                            recent_limit: Some(*recent_limit),
+                            time_zone: Some(time_zone.clone()),
+                            include_accounts: *include_accounts,
+                            include_recent: Some(*include_recent),
+                        }),
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Activity {
+                            base: Arc::new(response),
+                        },
+                    ));
+                }
+                Self::SummaryCurrent {
+                    window,
+                    time_zone,
+                    limit,
+                    upstream_account_id,
+                } if !matches!(window.as_str(), "yesterday" | "previous7d") => {
+                    let response = load_summary_response_from_query(
+                        state.as_ref(),
+                        &SummaryQuery {
+                            window: Some(window.clone()),
+                            limit: *limit,
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                        SummaryBuildRoute::Topic,
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Summary {
+                            base: Arc::new(response),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::DashboardNetworkTimeseriesWindow {
+                    range,
+                    time_zone,
+                    upstream_account_id,
+                } => {
+                    let Json(response) = fetch_dashboard_network_timeseries(
+                        State(state),
+                        Query(DashboardNetworkTimeseriesQuery {
+                            range: range.clone(),
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        }),
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::NetworkTimeseries {
+                            base: Arc::new(response),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::DashboardNetworkRecentCurrent => {
+                    let Json(response) = fetch_dashboard_network_recent(
+                        State(state),
+                        Query(DashboardRecentNetworkWindowQuery::default()),
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::NetworkRecent {
+                            base: Arc::new(response),
+                        },
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(BuiltSubscriptionTopicPayload::Json(
+            self.build_payload(state).await?,
+        ))
     }
 
     async fn build_payload(&self, state: Arc<AppState>) -> Result<Value, ApiError> {
@@ -4252,7 +4962,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_runtime_topology_contract_characterizes_legacy_amplification() {
+    async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -4436,31 +5146,43 @@ mod tests {
         );
 
         let delivery = state.subscription_hub.dashboard_topology_counters();
-        for topic in [delivery.activity, delivery.summary] {
-            assert!(topic.business_payload_count >= 1);
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(
+                topic.business_payload_count, 0,
+                "new Dashboard delivery must not fan out business payloads"
+            );
+            assert_eq!(
+                topic.json_overlay_count, 0,
+                "new Dashboard delivery must not mutate generic JSON payloads"
+            );
+            assert!(
+                topic.materialization_count >= 1,
+                "each active Dashboard topic should materialize an immutable frame"
+            );
             assert!(topic.frame_bytes_count > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
         }
-        assert_eq!(delivery.network_timeseries.business_payload_count, 1);
-        assert!(delivery.network_timeseries.frame_bytes_count > 0);
-        assert_eq!(delivery.network_timeseries.lagged_count, 0);
-        assert_eq!(delivery.network_timeseries.skipped_count, 0);
-        assert!(delivery.network_recent.frame_bytes_count > 0);
-        assert_eq!(delivery.network_recent.lagged_count, 0);
-        assert_eq!(delivery.network_recent.skipped_count, 0);
-        assert_eq!(delivery.activity.materialization_count, 0);
-        assert!(delivery.activity.json_overlay_count >= 1);
-        assert_eq!(delivery.summary.materialization_count, 0);
-        assert_eq!(delivery.summary.json_overlay_count, 1);
-        assert_eq!(delivery.network_timeseries.materialization_count, 0);
-        assert_eq!(delivery.network_timeseries.json_overlay_count, 1);
-        assert_eq!(delivery.network_recent.materialization_count, 1);
-        assert_eq!(delivery.network_recent.json_overlay_count, 0);
-        assert!(delivery.activity.serialization_count >= 1);
-        assert_eq!(delivery.summary.serialization_count, 1);
-        assert_eq!(delivery.network_timeseries.serialization_count, 1);
-        assert_eq!(delivery.network_recent.serialization_count, 1);
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(
+                topic.serialization_count, topic.materialization_count,
+                "each materialized topic revision should serialize exactly once"
+            );
+            assert_eq!(
+                topic.payload_clone_count, topic.materialization_count,
+                "each materialized topic revision should clone its typed base once"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4816,10 +5538,13 @@ mod tests {
             .cursor;
         assert_eq!(cursor_after, cursor_before + 1);
         let guard = hub.state.lock().await;
-        let live_point = guard
+        let payload = guard
             .topics
             .get(&topic_key)
-            .and_then(|cached| cached.snapshot_payload.get("points"))
+            .map(|cached| cached.snapshot_frame.payload_value())
+            .expect("cached network frame");
+        let live_point = payload
+            .get("points")
             .and_then(Value::as_array)
             .and_then(|points| {
                 points.iter().find(|point| {
@@ -4879,6 +5604,9 @@ mod tests {
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
+            dashboard_materializer: None,
+            dashboard_base_revision: cursor,
+            dashboard_materialized_revision: None,
             snapshot_payload,
             snapshot_frame,
             snapshot_bytes: 32,

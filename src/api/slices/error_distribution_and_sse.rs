@@ -3437,6 +3437,10 @@ pub(crate) struct DashboardNetworkProjectionSlice {
     pub(crate) network_realtime_rate: Option<DashboardNetworkRealtimeRateResponse>,
     pub(crate) accounts: Vec<DashboardNetworkProjectionAccountSlice>,
     pub(crate) recent: DashboardRecentNetworkWindowResponse,
+    #[serde(skip)]
+    pub(crate) current_snapshot: DashboardActivityCurrentSnapshot,
+    #[serde(skip)]
+    pub(crate) current_snapshot_by_account: HashMap<Option<i64>, DashboardActivityCurrentSnapshot>,
 }
 
 impl DashboardNetworkProjectionSlice {
@@ -3450,6 +3454,10 @@ impl DashboardNetworkProjectionSlice {
     ) -> Self {
         let now = Utc::now();
         let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
+        let current_snapshot_by_account =
+            dashboard_network_speed_cache.snapshot_dashboard_activity_accounts(now);
+        let current_snapshot =
+            sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
         let mut account_ids = account_rates
             .keys()
             .copied()
@@ -3459,6 +3467,7 @@ impl DashboardNetworkProjectionSlice {
                 .keys()
                 .filter_map(|scope| scope.upstream_account_id()),
         );
+        account_ids.extend(current_snapshot_by_account.keys().copied());
         account_ids.extend(known_account_ids.iter().copied());
         let mut accounts = account_ids
             .into_iter()
@@ -3500,6 +3509,8 @@ impl DashboardNetworkProjectionSlice {
             recent: build_dashboard_recent_network_window_response(
                 dashboard_network_speed_cache.snapshot_recent_global_window(now),
             ),
+            current_snapshot,
+            current_snapshot_by_account,
         }
     }
 }
@@ -3750,13 +3761,12 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                             .has_active_dashboard_activity_live_topic()
                             .await
                     {
-                        let snapshot = state
-                            .proxy_runtime_invocations
-                            .legacy_live_snapshot(capture.snapshot);
                         let _ = state
                             .broadcaster
-                            .send(BroadcastPayload::DashboardActivityLive {
-                                snapshot: Box::new(snapshot),
+                            .send(BroadcastPayload::DashboardCurrentSlice {
+                                slice: Box::new(DashboardCurrentProjectionSlice::from(
+                                    &capture.snapshot,
+                                )),
                             });
                     }
                 }
@@ -4255,14 +4265,25 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                         .await
                         {
                             Ok(capture) if capture.changed => {
-                                let snapshot = proxy_runtime_invocations
-                                    .legacy_live_snapshot(capture.snapshot);
-                                let revision = snapshot.revision;
-                                if let Err(err) =
-                                    broadcaster.send(BroadcastPayload::DashboardActivityLive {
-                                        snapshot: Box::new(snapshot),
-                                    })
-                                {
+                                let revision = capture.snapshot.revision;
+                                let payload = match proxy_runtime_invocations.mode() {
+                                    RuntimeProjectionMode::Auto => {
+                                        BroadcastPayload::DashboardCurrentSlice {
+                                            slice: Box::new(DashboardCurrentProjectionSlice::from(
+                                                &capture.snapshot,
+                                            )),
+                                        }
+                                    }
+                                    RuntimeProjectionMode::Legacy => {
+                                        BroadcastPayload::DashboardActivityLive {
+                                            snapshot: Box::new(
+                                                proxy_runtime_invocations
+                                                    .legacy_live_snapshot(capture.snapshot),
+                                            ),
+                                        }
+                                    }
+                                };
+                                if let Err(err) = broadcaster.send(payload) {
                                     warn!(
                                         ?err,
                                         revision, "failed to broadcast dashboard current slice"
