@@ -4,7 +4,7 @@ import { SegmentedControl, SegmentedControlItem } from "../components/ui/segment
 import { SelectField } from "../components/ui/select-field";
 import { ForwardProxyLiveTable } from "../features/forward-proxy/ForwardProxyLiveTable";
 import { InvocationChart } from "../features/invocations/InvocationChart";
-import { InvocationTable } from "../features/invocations/InvocationTable";
+import { InvocationCardList } from "../features/invocations/InvocationTable";
 import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
 import { AppIcon } from "../features/shared/AppIcon";
 import { StatsCards } from "../features/stats/StatsCards";
@@ -371,7 +371,7 @@ export default function LivePage() {
           <div className="section-heading">
             <h2 className="section-title">{t("live.latest.title")}</h2>
           </div>
-          <InvocationTable
+          <InvocationCardList
             records={records}
             isLoading={isLoading}
             error={error}

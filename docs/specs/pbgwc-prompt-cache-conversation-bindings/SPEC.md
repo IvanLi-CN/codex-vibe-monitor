@@ -86,6 +86,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - `invocation-history.overview` supplies the current summary and at most 1,000 chart samples; one topic build executes summary and every chart page through one SQLite read transaction plus one captured runtime overlay, and uses one fixed accepted page width so a non-divisor server limit cannot duplicate or skip samples. It may coalesce matching record changes for up to two seconds and retains last-good data on a refresh failure. When SSE is unavailable, an unpinned first HTTP page captures the snapshot and a pinned re-read of that first page supplies the summary, every bounded sample page, and the oldest boundary page used to retain the chart's full-history range.
 - `prompt-cache.conversation-binding.current` supplies the current binding/policy snapshot, while `prompt-cache.conversation-operations.window` supplies the newest 20 events for the selected filter. A local Settings draft is never overwritten by an external snapshot: the operator explicitly adopts it or saves the draft as last-write-wins. A cached binding payload captured when SSE fails is a fallback baseline only for that exact detail scope; changing scope resets the baseline.
 - When the Calls view is within 96px of its top edge, a newly keyed invocation is inserted immediately. Otherwise, the existing scroll anchor is preserved and a `Show N new` action reveals deferred rows; updates to an existing stable key never increase `N`.
+- Shared Calls consumers render the current invocation window as compact three-segment cards rather than a table. Cards keep the invocation ID and diagnostic fields but do not repeat the conversation ID, prompt-cache key, sticky key, or conversation short ID.
+- A card's first segment exposes status/phase, transport, endpoint, TTFT, and upstream response duration. While a record is `queued`, `requesting`, or `responding`, missing authoritative timing values are presentation-only elapsed values from `occurredAt` and advance once per second. `firstTokenMs` and `tUpstreamStreamMs` replace those values as soon as they arrive; terminal missing fields remain `—` and never fall back to `tTotalMs`.
+- The entire card, including `Enter` and `Space`, toggles the existing workflow detail panel. Account controls stop propagation and continue opening account detail. The card keeps the existing stable-key replacement, deep-link focus, new-data anchor, frozen history snapshot, and dynamic virtual measurement contracts. The standalone Records search table is unchanged.
 
 ## Interface Contract
 
@@ -615,6 +618,56 @@ PR: include
 - demo_route: `/#/live?demoEmbed=1`
 - state: `demo-conversation-a` drawer open on Calls in the compact single-column record layout
 - evidence_note: verifies that the responding row and terminal cards remain readable without clipping at the required mobile viewport.
+
+### Shared Invocation Cards (UI Demo)
+
+![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
+- requested_viewport: desktop
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: approved
+- demo_routes: `/#/live?demoScene=attention&demoTheme=dark`, shared conversation Calls drawer
+- state: Live and conversation Calls consumers render the same three-segment invocation cards, retain the invocation ID and diagnostics without repeating the conversation ID, and show elapsed TTFT/response values on the in-flight row.
+- evidence_note: desktop evidence verifies the compact summary strip, dense three-line card projection, full diagnostic fields, and the existing whole-card detail affordance.
+
+![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: approved
+- demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+- state: the same card list wraps by semantic groups at 393px without clipping or repeating the surrounding conversation ID.
+- evidence_note: mobile evidence verifies stable touch targets, readable metadata, and no horizontal overflow.
+
+![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: approved
+- demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+- state: the first invocation card is expanded and keeps the existing InvocationWorkflowDetailPanel inside the same card boundary.
+- evidence_note: expanded evidence verifies the unchanged detail content and card-level expansion entry point on the narrow layout.
 
 ## Image Tool Override Boundary
 

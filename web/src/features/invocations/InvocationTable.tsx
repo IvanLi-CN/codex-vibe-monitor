@@ -1,6 +1,7 @@
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
-  Fragment,
+  type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -34,8 +35,6 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
-  renderInvocationModelBadge,
-  renderInvocationModelRoutingSummary,
   renderReasoningEffortBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
@@ -47,7 +46,6 @@ interface InvocationTableProps {
   emptyLabel?: string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
-  showInvokeId?: boolean;
   scrollTarget?: { invokeId: string; attemptId?: string | null; version: number } | null;
 }
 
@@ -68,6 +66,7 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
 };
 
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
+const INVOCATION_CARD_GAP_PX = 12;
 
 function FittedInvocationId({ invokeId, className }: { invokeId: string; className?: string }) {
   const containerRef = useRef<HTMLSpanElement>(null);
@@ -138,21 +137,6 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   return { variant: "secondary", label: raw };
 }
 
-function statusTextClassName(variant: StatusMeta["variant"]) {
-  switch (variant) {
-    case "success":
-      return "text-success";
-    case "warning":
-      return "text-warning";
-    case "error":
-      return "text-error";
-    case "default":
-      return "text-info";
-    default:
-      return "text-base-content/70";
-  }
-}
-
 interface InvocationRowViewModel {
   record: ApiInvocation;
   rowKey: string;
@@ -166,6 +150,7 @@ interface InvocationRowViewModel {
   accountId: number | null;
   accountClickable: boolean;
   accountRoutingInProgress: boolean;
+  accountPlanType: string | null;
   proxyDisplayName: string;
   modelValue: string;
   modelHasMismatch: boolean;
@@ -177,6 +162,7 @@ interface InvocationRowViewModel {
   fastIndicatorState: FastIndicatorState;
   costValue: string;
   inputTokensValue: string;
+  cacheWriteTokensValue: string;
   cacheInputTokensValue: string;
   outputTokensValue: string;
   outputReasoningBreakdownValue: string;
@@ -197,23 +183,18 @@ interface InvocationRowViewModel {
   timingPairs: Array<{ label: string; value: string }>;
 }
 
-export function InvocationTable({
+export function InvocationCardList({
   records,
   isLoading,
   error,
   emptyLabel,
   onOpenUpstreamAccount,
   scrollElement,
-  showInvokeId = false,
   scrollTarget,
 }: InvocationTableProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [isXlUp, setIsXlUp] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-    return window.matchMedia("(min-width: 1280px)").matches;
-  });
   const [isMdUp, setIsMdUp] = useState(() => {
     if (typeof window === "undefined") return false;
     if (typeof window.matchMedia === "function") {
@@ -224,10 +205,23 @@ export function InvocationTable({
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const [highlightedInvokeId, setHighlightedInvokeId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const measureRefs = useRef(new Map<number, HTMLElement>());
   const handledScrollTargetVersionRef = useRef<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const focusFrameRefs = useRef<number[]>([]);
+
+  const scheduleHighlightClear = useCallback(() => {
+    if (!highlightedInvokeId || typeof window === "undefined") return;
+    if (highlightTimeoutRef.current != null) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    const invokeId = highlightedInvokeId;
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedInvokeId((current) => (current === invokeId ? null : current));
+      highlightTimeoutRef.current = null;
+    }, 1_500);
+  }, [highlightedInvokeId]);
 
   const toggleLabels = useMemo(() => {
     if (locale === "zh") {
@@ -284,7 +278,10 @@ export function InvocationTable({
             "inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
             className,
           )}
-          onClick={() => openAccountDrawer(accountId, accountLabel)}
+          onClick={(event) => {
+            event.stopPropagation();
+            openAccountDrawer(accountId, accountLabel);
+          }}
           title={accountLabel}
         >
           {accountLabel}
@@ -300,27 +297,6 @@ export function InvocationTable({
       return records.some((record) => invocationStableKey(record) === current) ? current : null;
     });
   }, [records]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mediaQuery = window.matchMedia("(min-width: 1280px)");
-    const sync = () => {
-      setIsXlUp(mediaQuery.matches);
-    };
-
-    sync();
-    if (typeof mediaQuery.addEventListener === "function") {
-      mediaQuery.addEventListener("change", sync);
-      return () => {
-        mediaQuery.removeEventListener("change", sync);
-      };
-    }
-
-    mediaQuery.addListener(sync);
-    return () => {
-      mediaQuery.removeListener(sync);
-    };
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -434,36 +410,71 @@ export function InvocationTable({
     ],
   );
 
+  const listSummary = useMemo(() => {
+    const successful = rows.filter((row) => row.meta.variant === "success").length;
+    const failed = rows.filter((row) => row.meta.variant === "error").length;
+    const running = rows.filter((row) => row.livePhase != null).length;
+    const firstTokenSamples = rows
+      .map((row) => row.record.firstTokenMs)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const responseSamples = rows
+      .map((row) => row.record.tUpstreamStreamMs)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const totalCost = rows.reduce(
+      (sum, row) => sum + (typeof row.record.cost === "number" ? row.record.cost : 0),
+      0,
+    );
+    const totalTokens = rows.reduce(
+      (sum, row) => sum + (typeof row.record.totalTokens === "number" ? row.record.totalTokens : 0),
+      0,
+    );
+    const cacheRead = rows.reduce(
+      (sum, row) => sum + Math.max(0, row.record.cacheInputTokens ?? 0),
+      0,
+    );
+    const cacheWrite = rows.reduce(
+      (sum, row) => sum + Math.max(0, row.record.cacheWriteTokens ?? 0),
+      0,
+    );
+    const cacheHitRate =
+      cacheRead + cacheWrite > 0 ? Math.round((cacheRead / (cacheRead + cacheWrite)) * 100) : null;
+
+    return {
+      successful,
+      failed,
+      running,
+      totalCost,
+      totalTokens,
+      cacheHitRate,
+      averageFirstToken:
+        firstTokenSamples.length > 0
+          ? firstTokenSamples.reduce((sum, value) => sum + value, 0) / firstTokenSamples.length
+          : null,
+      averageResponse:
+        responseSamples.length > 0
+          ? responseSamples.reduce((sum, value) => sum + value, 0) / responseSamples.length
+          : null,
+    };
+  }, [rows]);
+
   const estimateRowSize = useCallback(
-    (index: number) =>
-      expandedId === rows[index]?.rowKey ? (isMdUp ? 320 : 430) : isMdUp ? 74 : 285,
+    (index: number) => {
+      const baseSize =
+        expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 106 : 132;
+      return baseSize + (index < rows.length - 1 ? INVOCATION_CARD_GAP_PX : 0);
+    },
     [expandedId, isMdUp, rows],
   );
   const measureVirtualItemElement = useCallback(
     (element: HTMLElement) => {
       const baseHeight = element.getBoundingClientRect().height;
-      if (!isMdUp || element.tagName !== "TR") {
-        return baseHeight;
-      }
-
       const rowIndex = Number(element.dataset.index);
-      if (!Number.isFinite(rowIndex)) {
-        return baseHeight;
-      }
-
-      const row = rows[rowIndex];
-      if (!row || expandedId !== row.rowKey) {
-        return baseHeight;
-      }
-
-      const detailRow = element.nextElementSibling;
-      if (detailRow?.tagName !== "TR") {
-        return baseHeight;
-      }
-
-      return baseHeight + detailRow.getBoundingClientRect().height;
+      return (
+        baseHeight +
+        (Number.isFinite(rowIndex) && rowIndex < rows.length - 1 ? INVOCATION_CARD_GAP_PX : 0)
+      );
     },
-    [expandedId, isMdUp, rows],
+    [rows],
   );
   const elementVirtualizer = useVirtualizer({
     count: rows.length,
@@ -505,6 +516,18 @@ export function InvocationTable({
           end: (index + 1) * estimateRowSize(index),
           lane: 0,
         }));
+  const hasVisibleInFlightRows = useMemo(
+    () => fallbackVirtualRows.some((virtualRow) => rows[virtualRow.index]?.livePhase != null),
+    [fallbackVirtualRows, rows],
+  );
+
+  useEffect(() => {
+    if (!hasVisibleInFlightRows) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [hasVisibleInFlightRows]);
+
   const totalVirtualSize =
     virtualRows.length > 0
       ? rowVirtualizer.getTotalSize()
@@ -566,6 +589,7 @@ export function InvocationTable({
 
     handledScrollTargetVersionRef.current = scrollTarget.version;
     rowVirtualizer.scrollToIndex(targetIndex, { align: "center" });
+    setExpandedId(rows[targetIndex]?.rowKey ?? null);
     setHighlightedInvokeId(scrollTarget.invokeId);
 
     focusFrameRefs.current.forEach((frame) => {
@@ -579,13 +603,6 @@ export function InvocationTable({
       focusFrameRefs.current.push(secondFrame);
     });
     focusFrameRefs.current.push(firstFrame);
-    if (highlightTimeoutRef.current != null) {
-      window.clearTimeout(highlightTimeoutRef.current);
-    }
-    highlightTimeoutRef.current = window.setTimeout(() => {
-      setHighlightedInvokeId((current) => (current === scrollTarget.invokeId ? null : current));
-      highlightTimeoutRef.current = null;
-    }, 2_000);
   }, [rowVirtualizer, rows, scrollTarget]);
 
   useEffect(
@@ -647,561 +664,399 @@ export function InvocationTable({
     ? Math.max(0, totalVirtualSize - (lastVirtualRow.end - scrollMargin))
     : 0;
 
-  if (!isMdUp) {
-    return (
-      <div className="space-y-3" ref={setContainerElement}>
-        <div className="space-y-3" data-testid="invocation-list">
-          {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
-          {fallbackVirtualRows.map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            if (!row) return null;
-            const listDetailId = `invocation-list-details-${invocationStableDomKey(row.rowKey)}`;
-            const isExpanded = expandedId === row.rowKey;
-            const isHighlighted = highlightedInvokeId === row.record.invokeId;
-            const handleToggle = () => {
-              setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
-            };
+  const formatElapsed = (occurredAt: string, fallback: string) => {
+    const occurredMs = Date.parse(occurredAt);
+    if (!Number.isFinite(occurredMs)) return fallback;
+    const seconds = Math.max(0, nowMs - occurredMs) / 1000;
+    const fractionDigits = seconds >= 10 ? 1 : 2;
+    return `${seconds.toLocaleString(localeTag, {
+      useGrouping: false,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: fractionDigits,
+    })} s`;
+  };
 
-            return (
-              <article
-                key={`mobile-${row.rowKey}`}
-                ref={(node) => {
-                  if (node) {
-                    if (measureRefs.current.get(virtualRow.index) !== node) {
-                      measureRefs.current.set(virtualRow.index, node);
-                      scheduleMeasureElement(node);
-                    }
-                  } else {
-                    measureRefs.current.delete(virtualRow.index);
-                  }
-                }}
-                data-index={virtualRow.index}
-                data-invoke-id={row.record.invokeId ?? undefined}
-                data-testid="invocation-list-item"
-                tabIndex={isHighlighted ? -1 : undefined}
-                aria-current={isHighlighted ? "true" : undefined}
-                className={cn(
-                  "rounded-lg border border-base-300/70 px-3 py-3 outline-none transition-colors motion-reduce:transition-none",
-                  virtualRow.index % 2 === 0 ? "bg-base-100/40" : "bg-base-200/24",
-                  isHighlighted && "border-primary/55 bg-primary/10",
-                )}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{row.occurredTime}</div>
-                    <div className="truncate text-xs text-base-content/65">{row.occurredDate}</div>
-                    {showInvokeId && row.record.invokeId ? (
-                      <FittedInvocationId
-                        invokeId={row.record.invokeId}
-                        className="mt-1 font-mono text-info select-text"
-                      />
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                    onClick={handleToggle}
-                    aria-expanded={isExpanded}
-                    aria-controls={listDetailId}
-                    aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
-                  >
-                    <AppIcon
-                      name={isExpanded ? "chevron-down" : "chevron-right"}
-                      className="h-5 w-5"
-                      aria-hidden
-                    />
-                    <span className="sr-only">
-                      {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
-                    </span>
-                  </button>
-                </div>
+  const formatSummaryDuration = (value: number | null) => {
+    if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+    const seconds = value / 1000;
+    return `${seconds.toLocaleString(localeTag, {
+      useGrouping: false,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: seconds >= 10 ? 1 : 2,
+    })} s`;
+  };
 
-                <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                  {row.livePhase ? (
-                    <InvocationPhaseBadge
-                      phase={row.livePhase}
-                      appearance="inline"
-                      motion="dynamic"
-                    />
-                  ) : (
-                    <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div data-testid="invocation-account-name">
-                      {renderAccountValue(
-                        row.accountLabel,
-                        row.accountId,
-                        row.accountClickable,
-                        cn(
-                          "text-xs font-medium text-base-content",
-                          row.accountRoutingInProgress &&
-                            INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                        ),
-                      )}
-                    </div>
-                    <div
-                      className="min-w-0 truncate text-[11px] text-base-content/70"
-                      title={row.proxyDisplayName}
-                      data-testid="invocation-proxy-name"
-                    >
-                      {row.proxyDisplayName}
-                    </div>
-                  </div>
-                </div>
+  const formatSummaryNumber = (value: number) => numberFormatter.format(value);
 
-                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
-                  <span
-                    title={row.firstTokenValue}
-                  >{`${t("table.column.firstTokenShort")} ${row.firstTokenValue}`}</span>
-                  <span
-                    title={row.responseDurationValue}
-                  >{`${t("table.column.responseDurationShort")} ${row.responseDurationValue}`}</span>
-                  <span
-                    title={row.requestCompressionAlgorithmValue}
-                  >{`${t("table.column.requestCompressionShort")} ${row.requestCompressionAlgorithmValue}`}</span>
-                </div>
+  const summaryTitle =
+    locale === "zh" ? `最近 ${rows.length} 条调用` : `${rows.length} most recent calls`;
+  const summaryMetrics = [
+    {
+      key: "ttft",
+      label: locale === "zh" ? "TTFT" : "TTFT",
+      value: formatSummaryDuration(listSummary.averageFirstToken),
+      detail: formatSummaryDuration(listSummary.averageResponse),
+      icon: "timer-outline" as const,
+      tone: "text-info",
+    },
+    {
+      key: "requests",
+      label: locale === "zh" ? "请求数" : "Requests",
+      value: formatSummaryNumber(rows.length),
+      detail: `${listSummary.successful} ${locale === "zh" ? "成功" : "ok"} · ${listSummary.failed} ${locale === "zh" ? "失败" : "failed"}`,
+      icon: "counter" as const,
+      tone: "text-success",
+    },
+    {
+      key: "cost",
+      label: locale === "zh" ? "成本" : "Cost",
+      value: listSummary.totalCost > 0 ? `$${listSummary.totalCost.toFixed(4)}` : FALLBACK_CELL,
+      detail: `${listSummary.running} ${locale === "zh" ? "进行中" : "in flight"}`,
+      icon: "currency-usd" as const,
+      tone: "text-warning",
+    },
+    {
+      key: "tokens",
+      label: locale === "zh" ? "TOKEN" : "Tokens",
+      value: formatSummaryNumber(listSummary.totalTokens),
+      detail:
+        listSummary.cacheHitRate == null
+          ? FALLBACK_CELL
+          : `${listSummary.cacheHitRate}% ${locale === "zh" ? "命中" : "cache hit"}`,
+      icon: "database-outline" as const,
+      tone: "text-success",
+    },
+  ];
 
-                <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-base-content/65">{t("table.column.model")}</dt>
-                  <dd className="min-w-0">
-                    {row.modelHasMismatch ? (
-                      renderInvocationModelRoutingSummary({
-                        requestModelValue: row.requestModelValue,
-                        responseModelValue: row.responseModelValue,
-                        hasMismatch: true,
-                        t,
-                        adornments: (
-                          <>
-                            {renderInvocationTransportBadge(row.record)}
-                            {renderFastIndicator(row.fastIndicatorState, t)}
-                          </>
-                        ),
-                      })
-                    ) : (
-                      <div
-                        className="flex items-center justify-end gap-1 text-right"
-                        title={row.modelValue}
-                      >
-                        {renderInvocationModelBadge(row.modelValue, {
-                          t,
-                          hasMismatch: false,
-                          textClassName: "text-right",
-                          testId: "invocation-table-model",
-                        })}
-                        {renderInvocationTransportBadge(row.record)}
-                        {renderFastIndicator(row.fastIndicatorState, t)}
-                      </div>
-                    )}
-                  </dd>
-                  <dt className="text-base-content/65">{t("table.column.costUsd")}</dt>
-                  <dd className="truncate text-right font-mono">{row.costValue}</dd>
-                  <dt className="text-base-content/65">{t("table.column.inputTokens")}</dt>
-                  <dd className="truncate text-right font-mono">{row.inputTokensValue}</dd>
-                  <dt className="text-base-content/65">{t("table.column.cacheInputTokens")}</dt>
-                  <dd className="truncate text-right font-mono">{row.cacheInputTokensValue}</dd>
-                  <dt className="text-base-content/65">{t("table.column.outputTokens")}</dt>
-                  <dd className="text-right">
-                    <div className="flex flex-col items-end gap-0.5 leading-tight">
-                      <span className="truncate font-mono">{row.outputTokensValue}</span>
-                      <span
-                        className="truncate text-[11px] text-base-content/70"
-                        title={`${t("table.details.reasoningTokens")}: ${row.reasoningTokensValue}`}
-                      >
-                        {row.outputReasoningBreakdownValue}
-                      </span>
-                    </div>
-                  </dd>
-                  <dt className="text-base-content/65">{t("table.column.totalTokens")}</dt>
-                  <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
-                  <dt className="text-base-content/65">{t("table.column.reasoningEffort")}</dt>
-                  <dd className="flex justify-end">
-                    {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                  </dd>
-                </dl>
-
-                <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
-                  <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                    {t("table.details.endpoint")}
-                  </div>
-                  <div className="flex min-w-0 flex-wrap items-center gap-1">
-                    {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
-                    {renderImageIntentBadge(
-                      row.imageIntentDisplay,
-                      t,
-                      "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
-                    )}
-                  </div>
-                  <div className="truncate text-xs" title={row.collapsedErrorSummary || undefined}>
-                    {row.collapsedErrorSummary || FALLBACK_CELL}
-                  </div>
-                </div>
-
-                {isExpanded && (
-                  <div
-                    id={listDetailId}
-                    className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58"
-                  >
-                    <InvocationWorkflowDetailPanel
-                      record={row.record}
-                      focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
-                      size="compact"
-                      onOpenUpstreamAccount={onOpenUpstreamAccount}
-                    />
-                  </div>
-                )}
-              </article>
-            );
-          })}
-          {paddingBottom > 0 ? <div aria-hidden="true" style={{ height: paddingBottom }} /> : null}
-        </div>
-      </div>
+  const renderCard = (row: InvocationRowViewModel, virtualIndex: number) => {
+    const cardDetailId = `invocation-card-details-${invocationStableDomKey(row.rowKey)}`;
+    const isExpanded = expandedId === row.rowKey;
+    const isHighlighted = highlightedInvokeId === row.record.invokeId;
+    const handleToggle = () => {
+      setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
+    };
+    const isInsideInvocationDetail = (target: EventTarget | null) =>
+      target instanceof Element && target.closest("[data-invocation-detail]") != null;
+    const handleCardClick = (event: MouseEvent<HTMLElement>) => {
+      if (event.target instanceof Node && !event.currentTarget.contains(event.target)) return;
+      if (isInsideInvocationDetail(event.target)) return;
+      handleToggle();
+    };
+    const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (event.target !== event.currentTarget) return;
+      if (isInsideInvocationDetail(event.target)) return;
+      event.preventDefault();
+      handleToggle();
+    };
+    const firstTokenValue =
+      row.record.firstTokenMs != null && Number.isFinite(row.record.firstTokenMs)
+        ? row.firstTokenValue
+        : row.livePhase
+          ? formatElapsed(row.record.occurredAt, FALLBACK_CELL)
+          : FALLBACK_CELL;
+    const responseDurationValue =
+      row.record.tUpstreamStreamMs != null && Number.isFinite(row.record.tUpstreamStreamMs)
+        ? row.responseDurationValue
+        : row.livePhase
+          ? formatElapsed(row.record.occurredAt, FALLBACK_CELL)
+          : FALLBACK_CELL;
+    const cacheReadTokens = Math.max(0, row.record.cacheInputTokens ?? 0);
+    const cacheWriteTokens = Math.max(
+      0,
+      row.record.cacheWriteTokens ?? Math.max(0, (row.record.inputTokens ?? 0) - cacheReadTokens),
     );
-  }
+    const outputTokens = Math.max(0, row.record.outputTokens ?? 0);
+    const cacheHitDenominator = cacheWriteTokens + cacheReadTokens + outputTokens;
+    const cacheHitRate =
+      cacheHitDenominator > 0
+        ? `${Math.round((cacheReadTokens / cacheHitDenominator) * 100)}%`
+        : FALLBACK_CELL;
+    const shortInvocationId = row.record.invokeId.slice(-6).toUpperCase();
+    const modelLabel = row.modelHasMismatch
+      ? `${row.requestModelValue} → ${row.responseModelValue}`
+      : row.modelValue;
+    const secondaryBadges = [
+      row.reasoningEffortValue !== FALLBACK_CELL ? (
+        <span key="reasoning" className="inline-flex items-center">
+          {renderReasoningEffortBadge(row.reasoningEffortValue)}
+        </span>
+      ) : null,
+      row.fastIndicatorState !== "none" ? (
+        <span key="fast" className="inline-flex items-center">
+          {renderFastIndicator(row.fastIndicatorState, t)}
+        </span>
+      ) : null,
+    ].filter(Boolean);
+
+    return (
+      <article
+        key={row.rowKey}
+        ref={(node) => {
+          if (node) {
+            if (measureRefs.current.get(virtualIndex) !== node) {
+              measureRefs.current.set(virtualIndex, node);
+              scheduleMeasureElement(node);
+            }
+          } else {
+            measureRefs.current.delete(virtualIndex);
+          }
+        }}
+        data-index={virtualIndex}
+        data-invoke-id={row.record.invokeId ?? undefined}
+        data-testid="invocation-card"
+        tabIndex={isHighlighted ? -1 : 0}
+        aria-current={isHighlighted ? "true" : undefined}
+        aria-label={`${row.statusLabel} ${row.record.invokeId}`}
+        data-expanded={isExpanded}
+        onClick={handleCardClick}
+        onKeyDown={handleKeyDown}
+        className={cn(
+          "surface-card min-w-0 overflow-hidden rounded-lg px-3 py-2.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-3.5 md:py-2.5",
+          virtualIndex < rows.length - 1 && "mb-3",
+          isHighlighted && "border-primary/55 bg-primary/10",
+        )}
+      >
+        <button
+          type="button"
+          tabIndex={-1}
+          className="sr-only"
+          aria-expanded={isExpanded}
+          aria-controls={cardDetailId}
+          aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleToggle();
+          }}
+          data-testid="invocation-card-toggle"
+        >
+          {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
+        </button>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Badge
+            variant="secondary"
+            className="border-primary/45 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.04em] tone-ink-primary"
+            title={row.record.invokeId}
+          >
+            {shortInvocationId}
+          </Badge>
+          <FittedInvocationId
+            invokeId={row.record.invokeId}
+            className="max-w-[9rem] flex-none font-mono text-[11px] font-semibold text-base-content/88 select-text sm:max-w-[13rem]"
+          />
+          {row.livePhase ? (
+            <InvocationPhaseBadge phase={row.livePhase} appearance="inline" motion="dynamic" />
+          ) : (
+            <Badge
+              variant={row.meta.variant}
+              className="px-1.5 py-0 text-[10px]"
+              data-testid="invocation-proxy-badge"
+            >
+              {row.statusLabel}
+            </Badge>
+          )}
+          {renderInvocationTransportBadge(row.record)}
+          <span
+            className="min-w-0 max-w-[10rem] truncate text-[11px] text-base-content/68"
+            title={row.endpointValue}
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              {renderEndpointSummary(row.endpointDisplay, t, "text-[11px]")}
+              {renderImageIntentBadge(row.imageIntentDisplay, t, "h-5 px-1.5 text-[10px]")}
+            </span>
+          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums text-info">
+            <span
+              className="inline-flex items-center gap-1"
+              data-testid="invocation-card-ttft"
+              title={`${t("table.column.firstTokenShort")}: ${firstTokenValue}`}
+            >
+              <AppIcon name="timer-outline" className="h-3.5 w-3.5" aria-hidden />
+              {t("table.column.firstTokenShort")} {firstTokenValue}
+            </span>
+            <span
+              className="inline-flex items-center gap-1"
+              data-testid="invocation-card-response"
+              title={`${t("table.column.responseDurationShort")}: ${responseDurationValue}`}
+            >
+              <AppIcon name="timer-refresh-outline" className="h-3.5 w-3.5" aria-hidden />
+              {t("table.column.responseDurationShort")} {responseDurationValue}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleToggle();
+            }}
+            aria-expanded={isExpanded}
+            aria-controls={cardDetailId}
+            aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
+          >
+            <AppIcon
+              name={isExpanded ? "chevron-down" : "chevron-right"}
+              className="h-5 w-5"
+              aria-hidden
+            />
+            <span className="sr-only">
+              {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
+            </span>
+          </button>
+        </div>
+
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-base-content/68">
+          <span className="font-mono tabular-nums text-base-content/82">
+            {row.occurredDate} {row.occurredTime}
+          </span>
+          <span className="text-base-content/35">·</span>
+          <span data-testid="invocation-account-name" className="min-w-0 max-w-[9rem] truncate">
+            {renderAccountValue(
+              row.accountLabel,
+              row.accountId,
+              row.accountClickable,
+              cn(
+                "max-w-full truncate font-medium text-base-content/82",
+                row.accountRoutingInProgress && INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+              ),
+            )}
+          </span>
+          {row.accountPlanType ? (
+            <span className="text-base-content/55">{row.accountPlanType}</span>
+          ) : null}
+          <span className="text-base-content/35">·</span>
+          <span
+            className="min-w-0 max-w-[10rem] truncate"
+            title={row.proxyDisplayName}
+            data-testid="invocation-proxy-name"
+          >
+            {row.proxyDisplayName}
+          </span>
+          <span className="text-base-content/35">·</span>
+          <span
+            className="min-w-0 max-w-[13rem] truncate"
+            title={modelLabel}
+            data-testid="invocation-table-model"
+          >
+            {modelLabel}
+          </span>
+          {secondaryBadges.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap items-center gap-1">{secondaryBadges}</span>
+          ) : null}
+        </div>
+
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-base-300/55 pt-1.5 text-[10px] text-base-content/65">
+          <span className="min-w-0 font-mono tabular-nums">
+            Hit {cacheHitRate} · {t("table.column.inputTokens")} {row.inputTokensValue} ·{" "}
+            {t("table.column.cacheInputTokens")} {row.cacheInputTokensValue} ·{" "}
+            {t("table.column.outputTokens")} {row.outputTokensValue}
+          </span>
+          <span className="min-w-0 font-mono tabular-nums text-base-content/82">
+            {row.outputReasoningBreakdownValue} · {t("table.card.cacheWrite")}{" "}
+            {row.cacheWriteTokensValue} · {t("table.card.requestCompression")}{" "}
+            <span>{row.requestCompressionAlgorithmValue}</span> · {t("table.column.totalTokens")}{" "}
+            {row.totalTokensValue} · {row.costValue}
+          </span>
+        </div>
+
+        {row.collapsedErrorSummary ? (
+          <div
+            className="mt-3 min-w-0 border-t border-error/20 pt-2 text-xs text-error/90"
+            title={row.errorMessage || row.collapsedErrorSummary}
+          >
+            <span className="font-semibold">{t("table.column.error")}:</span>{" "}
+            {row.collapsedErrorSummary}
+          </div>
+        ) : null}
+
+        {isExpanded ? (
+          <div
+            id={cardDetailId}
+            className="mt-3 min-w-0 border-t border-base-300/70 pt-3"
+            data-invocation-detail
+          >
+            <InvocationWorkflowDetailPanel
+              record={row.record}
+              focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
+              size={isMdUp ? "default" : "compact"}
+              onOpenUpstreamAccount={onOpenUpstreamAccount}
+            />
+          </div>
+        ) : null}
+      </article>
+    );
+  };
 
   return (
-    <div className="space-y-3" ref={setContainerElement}>
-      <div>
-        <div
-          className="overflow-x-hidden rounded-xl border border-base-300/70 bg-base-100/52 backdrop-blur"
-          data-testid="invocation-table-scroll"
-        >
-          <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
-            <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
-              <tr>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[20%] xl:w-[16%]" : "w-[11%] xl:w-[10%]",
-                  )}
-                >
-                  {t("table.column.time")}
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[16%] xl:w-[15%]" : "w-[18%] xl:w-[15%]",
-                  )}
-                >
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.account")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.proxy")}
-                    </span>
-                  </div>
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[10%] xl:w-[9%]" : "w-[13%] xl:w-[12%]",
-                  )}
-                >
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.firstToken")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.responseDurationCompression")}
-                    </span>
-                  </div>
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[15%] xl:w-[15%]" : "w-[17%] xl:w-[14%]",
-                  )}
-                >
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.model")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.costUsd")}
-                    </span>
-                  </div>
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[11%] xl:w-[11%]" : "w-[16%] xl:w-[14%]",
-                  )}
-                >
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.inputTokens")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.cacheInputTokens")}
-                    </span>
-                  </div>
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3",
-                    showInvokeId ? "w-[8%] xl:w-[8%]" : "w-[10%] xl:w-[10%]",
-                  )}
-                >
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.outputTokens")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.details.reasoningTokens")}
-                    </span>
-                  </div>
-                </th>
-                <th className="w-[12%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[11%] xl:px-3">
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.totalTokens")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.reasoningEffort")}
-                    </span>
-                  </div>
-                </th>
-                <th className="hidden w-[10%] px-2 py-2.5 text-left font-semibold xl:table-cell xl:px-3">
-                  <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.error")}</span>
-                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.details.endpoint")}
-                    </span>
-                  </div>
-                </th>
-                <th
-                  className={cn(
-                    "px-2 py-2.5 text-right xl:px-3",
-                    showInvokeId ? "w-[8%] xl:w-[5%]" : "w-[9%] xl:w-[4%]",
-                  )}
-                >
-                  <span className="sr-only">{toggleLabels.header}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-base-300/65">
-              {paddingTop > 0 ? (
-                <tr>
-                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingTop, padding: 0 }} />
-                </tr>
-              ) : null}
-              {fallbackVirtualRows.map((virtualRow) => {
-                const row = rows[virtualRow.index];
-                if (!row) return null;
-                const tableDetailId = `invocation-table-details-${invocationStableDomKey(row.rowKey)}`;
-                const isExpanded = expandedId === row.rowKey;
-                const isHighlighted = highlightedInvokeId === row.record.invokeId;
-                const handleToggle = () => {
-                  setExpandedId((current) => (current === row.rowKey ? null : row.rowKey));
-                };
-
-                return (
-                  <Fragment key={row.rowKey}>
-                    <tr
-                      ref={(node) => {
-                        if (node) {
-                          if (measureRefs.current.get(virtualRow.index) !== node) {
-                            measureRefs.current.set(virtualRow.index, node);
-                            scheduleMeasureElement(node);
-                          }
-                        } else {
-                          measureRefs.current.delete(virtualRow.index);
-                        }
-                      }}
-                      data-index={virtualRow.index}
-                      data-invoke-id={row.record.invokeId ?? undefined}
-                      tabIndex={isHighlighted ? -1 : undefined}
-                      aria-current={isHighlighted ? "true" : undefined}
-                      className={cn(
-                        "outline-none transition-colors hover:bg-primary/6 motion-reduce:transition-none",
-                        virtualRow.index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22",
-                        isHighlighted && "bg-primary/10 ring-1 ring-inset ring-primary/45",
-                      )}
-                    >
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
-                        <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <span className="truncate whitespace-nowrap font-medium">
-                            {row.occurredTime}
-                          </span>
-                          <span className="truncate whitespace-nowrap text-base-content/70">
-                            {row.occurredDate}
-                          </span>
-                          {showInvokeId && row.record.invokeId ? (
-                            <FittedInvocationId
-                              invokeId={row.record.invokeId}
-                              className="font-mono text-info select-text"
-                            />
-                          ) : null}
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
-                        <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
-                          {row.livePhase ? (
-                            <InvocationPhaseBadge
-                              phase={row.livePhase}
-                              appearance="inline"
-                              motion="dynamic"
-                              className="justify-center text-[11px] font-semibold"
-                            />
-                          ) : (
-                            <span
-                              className={cn(
-                                "block max-w-full truncate whitespace-nowrap text-center text-[11px] font-semibold leading-none",
-                                statusTextClassName(row.meta.variant),
-                              )}
-                              data-testid="invocation-proxy-badge"
-                              title={row.statusLabel}
-                            >
-                              {row.statusLabel}
-                            </span>
-                          )}
-                          <div className="mx-auto flex w-fit max-w-full items-center justify-center overflow-hidden text-center text-[11px] font-semibold leading-none text-base-content">
-                            <span
-                              className="inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none"
-                              data-testid="invocation-account-name"
-                            >
-                              {renderAccountValue(
-                                row.accountLabel,
-                                row.accountId,
-                                row.accountClickable,
-                                row.accountRoutingInProgress
-                                  ? INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME
-                                  : undefined,
-                              )}
-                            </span>
-                          </div>
-                          <span
-                            className="block w-full truncate whitespace-nowrap text-center text-[11px] text-base-content/70"
-                            title={row.proxyDisplayName}
-                            data-testid="invocation-proxy-name"
-                          >
-                            {row.proxyDisplayName}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
-                        <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <span
-                            className="truncate whitespace-nowrap font-mono tabular-nums"
-                            title={row.firstTokenValue}
-                          >
-                            {row.firstTokenValue}
-                          </span>
-                          <span
-                            className="truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${row.responseDurationValue} · ${row.requestCompressionAlgorithmValue}`}
-                          >
-                            {`${row.responseDurationValue} · ${row.requestCompressionAlgorithmValue}`}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
-                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <div className="flex w-full items-center justify-end gap-1">
-                            {renderInvocationModelBadge(row.modelValue, {
-                              t,
-                              hasMismatch: row.modelHasMismatch,
-                              textClassName: "whitespace-nowrap text-base-content/85",
-                              testId: "invocation-table-model",
-                            })}
-                            {renderInvocationTransportBadge(row.record)}
-                            {renderFastIndicator(row.fastIndicatorState, t)}
-                          </div>
-                          <span className="w-full truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
-                            {row.costValue}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
-                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <span className="w-full truncate whitespace-nowrap font-mono tabular-nums">
-                            {row.inputTokensValue}
-                          </span>
-                          <span className="w-full truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
-                            {row.cacheInputTokensValue}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
-                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <span className="block w-full truncate whitespace-nowrap font-mono tabular-nums">
-                            {row.outputTokensValue}
-                          </span>
-                          <span
-                            className="block w-full truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${t("table.details.reasoningTokens")}: ${row.reasoningTokensValue}`}
-                          >
-                            {row.outputReasoningBreakdownValue}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
-                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <span className="block w-full truncate whitespace-nowrap font-mono tabular-nums">
-                            {row.totalTokensValue}
-                          </span>
-                          <div className="flex w-full justify-end">
-                            {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
-                        <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <div className="flex min-w-0 flex-wrap items-center gap-1">
-                            {renderEndpointSummary(row.endpointDisplay, t)}
-                            {renderImageIntentBadge(
-                              row.imageIntentDisplay,
-                              t,
-                              "h-5 border-transparent bg-base-100/70 px-2 text-[10px] shadow-none",
-                            )}
-                          </div>
-                          <span
-                            className="block truncate whitespace-nowrap"
-                            title={row.collapsedErrorSummary || undefined}
-                          >
-                            {row.collapsedErrorSummary || FALLBACK_CELL}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
-                        <button
-                          type="button"
-                          className="inline-flex items-center justify-end gap-1 text-lg leading-none text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                          onClick={handleToggle}
-                          aria-expanded={isExpanded}
-                          aria-controls={tableDetailId}
-                          aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
-                        >
-                          <AppIcon
-                            name={isExpanded ? "chevron-down" : "chevron-right"}
-                            className="h-4 w-4"
-                            aria-hidden
-                          />
-                          <span className="sr-only">
-                            {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
-                          </span>
-                        </button>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-base-200/68">
-                        <td
-                          colSpan={isXlUp ? 9 : 8}
-                          className="border-t border-base-300/65 px-2 py-2.5 xl:px-3"
-                        >
-                          <div id={tableDetailId}>
-                            <InvocationWorkflowDetailPanel
-                              record={row.record}
-                              focusedAttemptId={
-                                isHighlighted ? (scrollTarget?.attemptId ?? null) : null
-                              }
-                              size="default"
-                              onOpenUpstreamAccount={onOpenUpstreamAccount}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-              {paddingBottom > 0 ? (
-                <tr>
-                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingBottom, padding: 0 }} />
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+    <div
+      className="space-y-3"
+      ref={setContainerElement}
+      data-testid="invocation-table-scroll"
+      onPointerDownCapture={scheduleHighlightClear}
+      onKeyDownCapture={scheduleHighlightClear}
+    >
+      <section
+        className="border-b border-base-300/65 pb-3"
+        aria-label={summaryTitle}
+        data-testid="invocation-card-summary"
+      >
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <h3 className="text-sm font-semibold text-base-content">{summaryTitle}</h3>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-base-content/62">
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+              {locale === "zh" ? "成功" : "Success"} {listSummary.successful}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-error" aria-hidden />
+              {locale === "zh" ? "失败" : "Failed"} {listSummary.failed}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-info" aria-hidden />
+              {locale === "zh" ? "进行中" : "In flight"} {listSummary.running}
+            </span>
+          </div>
         </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+          {summaryMetrics.map((metric) => (
+            <div
+              key={metric.key}
+              className="min-w-0 rounded-md border border-base-300/75 bg-base-200/35 px-2.5 py-2"
+              data-testid={`invocation-card-summary-${metric.key}`}
+            >
+              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.06em] text-base-content/58">
+                <AppIcon
+                  name={metric.icon}
+                  className={cn("h-3.5 w-3.5", metric.tone)}
+                  aria-hidden
+                />
+                <span>{metric.label}</span>
+              </div>
+              <div
+                className={cn(
+                  "mt-1 truncate font-mono text-base font-semibold tabular-nums",
+                  metric.tone,
+                )}
+              >
+                {metric.value}
+              </div>
+              <div className="mt-0.5 truncate text-[10px] text-base-content/58">
+                {metric.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <div data-testid="invocation-card-list" data-invocation-card-list>
+        {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
+        {fallbackVirtualRows.map((virtualRow) => {
+          const row = rows[virtualRow.index];
+          return row ? renderCard(row, virtualRow.index) : null;
+        })}
+        {paddingBottom > 0 ? <div aria-hidden="true" style={{ height: paddingBottom }} /> : null}
       </div>
     </div>
   );
 }
+
+export const InvocationTable = InvocationCardList;

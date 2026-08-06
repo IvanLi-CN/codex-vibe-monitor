@@ -60,6 +60,8 @@ related_specs:
 
 ## Guardrails / Reuse Notes
 
+- Shared invocation cards may use a presentation-only elapsed clock for `queued/requesting/responding` rows. Start one one-second clock only while a visible row is in flight; never use the clock to fetch or reconcile data. As authoritative `firstTokenMs` / `tUpstreamStreamMs` values arrive, replace the elapsed display immediately; terminal missing values stay missing rather than being inferred from `tTotalMs`.
+
 - 不要把 `records` 事件继续暴露成“页面自己决定要不要重拉”的契约；主应用订阅面应该直接消费 topic payload。
 - 不要为覆盖范围内页面保留健康态 timer reconcile、open-resync 或页面私有 fallback；那会重新引入第二真相源。
 - 不要把 closed-range / history-only 页面硬塞进持续推送；纯 SSE 的边界是“常驻当前态订阅”，不是“所有页面都实时化”。
