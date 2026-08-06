@@ -19,6 +19,8 @@
 
 ## Key Decisions
 
+- 2026-08-06: Owner approved and persisted the compact shared invocation card evidence for desktop, 393x852 mobile, and expanded mobile states. The selected images are now PR-publishable and bound to the accepted card implementation.
+
 - No separate historical decision record was present before this migration.
 
 ## Migrated Change History

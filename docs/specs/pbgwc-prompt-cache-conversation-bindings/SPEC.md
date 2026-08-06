@@ -621,21 +621,54 @@ PR: include
 
 ### Shared Invocation Cards (UI Demo)
 
+PR: none
+![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
+
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: page
-- requested_viewport: desktop and 393x852
-- viewport_strategy: browser viewport override for mobile
+- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- requested_viewport: desktop
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
 - evidence_surface: page
 - sensitive_exclusion: fixture-only invocation and conversation data
-- submission_gate: pending-owner-approval-before-image-push
-- demo_routes: `/#/live?demoScene=operational&demoTheme=dark&demoEmbed=1`, `/#/dashboard?demoScene=attention&demoTheme=dark&demoEmbed=1`
-- state: Live and conversation Calls consumers render the same three-segment invocation cards; cards keep the invocation ID and diagnostics without repeating the conversation ID, and the first in-flight card shows elapsed TTFT/response values.
-- evidence_note: desktop and narrow captures verify responsive wrapping, stable card density, whole-card detail affordance, and the unchanged conversation detail drawer entry point. Chat snapshots are immutable and remain outside the repository until owner approval.
-- chat_snapshot_desktop_live: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-desktop-e303be26.png`
-- chat_snapshot_mobile_live: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-mobile393-c1832932.png`
-- chat_snapshot_desktop_conversation: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-desktop-cf8029a6.png`
-- chat_snapshot_mobile_conversation: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-mobile393-bc31c6ba.png`
+- submission_gate: approved
+- demo_routes: `/#/live?demoScene=attention&demoTheme=dark`, shared conversation Calls drawer
+- state: Live and conversation Calls consumers render the same three-segment invocation cards, retain the invocation ID and diagnostics without repeating the conversation ID, and show elapsed TTFT/response values on the in-flight row.
+- evidence_note: desktop evidence verifies the compact summary strip, dense three-line card projection, full diagnostic fields, and the existing whole-card detail affordance.
+
+![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: approved
+- demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+- state: the same card list wraps by semantic groups at 393px without clipping or repeating the surrounding conversation ID.
+- evidence_note: mobile evidence verifies stable touch targets, readable metadata, and no horizontal overflow.
+
+![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
+
+- source_type: ui_demo
+- target_program: mock-only
+- capture_scope: page
+- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only invocation and conversation data
+- submission_gate: approved
+- demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+- state: the first invocation card is expanded and keeps the existing InvocationWorkflowDetailPanel inside the same card boundary.
+- evidence_note: expanded evidence verifies the unchanged detail content and card-level expansion entry point on the narrow layout.
 
 ## Image Tool Override Boundary
 

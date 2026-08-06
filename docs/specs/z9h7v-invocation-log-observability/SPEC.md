@@ -785,16 +785,33 @@ For in-flight records, missing TTFT and response duration values display elapsed
   state: three-segment invocation cards with a live elapsed-timing row
   requested_viewport: desktop and 393x852
   viewport_strategy: browser viewport override for mobile
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
   target_program: mock-only
   capture_scope: page
   sensitive_exclusion: fixture-only invocation and conversation data
-  submission_gate: pending-owner-approval-before-image-push
-  evidence_surface: page
-  evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, wrap at 393px, and keep the existing detail drawer interaction. Immutable Chat snapshots are recorded below and are not repository assets until owner approval.
-  chat_snapshot_desktop_live: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-desktop-e303be26.png
-  chat_snapshot_mobile_live: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-live-cards-mobile393-c1832932.png
-  chat_snapshot_desktop_conversation: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-desktop-cf8029a6.png
-  chat_snapshot_mobile_conversation: /Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__741ca115/2026/08/05/20260805T160156Z-invocation-conversation-cards-mobile393-bc31c6ba.png
+  submission_gate: approved
+  demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+  evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, and keep the existing detail drawer interaction.
+  PR: include
+  ![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
+
+- state: compact desktop summary strip plus three-line cards with invocation ID, status, timing, routing metadata, token/cost diagnostics, and the in-flight elapsed timer.
+
+PR: include
+![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: semantic wrapping keeps the card readable without horizontal overflow or a repeated conversation ID.
+
+PR: include
+![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: the existing InvocationWorkflowDetailPanel expands inside the same card boundary and remains available from the card body/chevron.
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

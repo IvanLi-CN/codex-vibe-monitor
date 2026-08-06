@@ -2,6 +2,8 @@
 
 ## Key Decisions
 
+- 2026-08-06: Owner approved the shared invocation card evidence. The desktop, narrow, and expanded narrow `ui_demo` snapshots are now persisted as stable Spec assets; this Spec remains owner-facing only while the invocation observability Spec publishes the selected images in the PR body.
+
 - 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while the entire captured HTTP snapshot, including page 1, remains frozen; cached Calls hydration survives direct opens, and away-from-top head refreshes retain existing visible rows while only new stable keys enter the reveal count. Overview builds its summary and samples through one SQLite read transaction plus captured runtime overlay with a fixed accepted page width. Its SSE-disabled HTTP fallback captures an unpinned head and re-reads it with the returned snapshot for summary, samples, and full-range bounds, while a cached binding fallback baseline remains scope-local. Records changes coalesce, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.
 - 2026-05-25: Created a dedicated topic spec because per-conversation routing bindings introduce a new stable runtime contract distinct from invocation observability.
 - 2026-05-25: Chose hard-constraint routing semantics so bound conversations never silently fall back to unrelated accounts or groups.
