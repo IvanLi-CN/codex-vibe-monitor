@@ -1568,6 +1568,13 @@ impl SubscriptionHub {
     ) {
         let (pending, current, network) = {
             let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_current_slice
+                .as_ref()
+                .is_some_and(|current| current.revision >= slice.revision)
+            {
+                return;
+            }
             guard.dashboard_current_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
@@ -1584,6 +1591,13 @@ impl SubscriptionHub {
     ) {
         let (pending, current, network) = {
             let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_network_slice
+                .as_ref()
+                .is_some_and(|network| network.revision >= slice.revision)
+            {
+                return;
+            }
             guard.dashboard_network_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
@@ -1631,11 +1645,24 @@ impl SubscriptionHub {
     ) -> Result<(), ApiError> {
         let dispatch = {
             let mut guard = self.state.lock().await;
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
             let Some(cached) = guard.topics.get_mut(&pending.topic_key) else {
                 return Ok(());
             };
-            if cached.dashboard_materializer.is_none()
-                || cached.dashboard_base_revision != pending.revision.base_revision
+            let expected_revision =
+                cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .and_then(|materializer| {
+                        materializer.revision(
+                            cached.dashboard_base_revision,
+                            current.as_deref(),
+                            network.as_deref(),
+                        )
+                    });
+            if cached.dashboard_base_revision != pending.revision.base_revision
+                || expected_revision != Some(pending.revision)
                 || cached.dashboard_materialized_revision == Some(pending.revision)
             {
                 return Ok(());
@@ -5558,6 +5585,101 @@ mod tests {
         assert_eq!(
             live_point.get("uploadBytes").and_then(Value::as_i64),
             Some(768)
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_materialization_rejects_out_of_order_network_revisions() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind network cache");
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let topic_key = topic.cache_key().expect("network recent topic key");
+        let _lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register network recent topic");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prepare network recent topic");
+        let cursor_before = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network recent topic")
+            .cursor;
+
+        let older = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture older network slice")
+            .slice;
+        let mut newer = older.clone();
+        newer.revision = older.revision.saturating_add(1);
+        newer.recent.range_end = "2026-08-06T00:00:01.000Z".to_string();
+
+        let (stale_pending, stale_payload) = {
+            let mut guard = hub.state.lock().await;
+            guard.dashboard_network_slice = Some(Arc::new(older.clone()));
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard)
+                .into_iter()
+                .find(|pending| pending.topic_key == topic_key)
+                .expect("pending stale network revision");
+            let payload = pending
+                .materializer
+                .serialize(
+                    guard.dashboard_current_slice.as_deref(),
+                    guard.dashboard_network_slice.as_deref(),
+                )
+                .expect("serialize stale network revision");
+            (pending, payload)
+        };
+        state.pool.close().await;
+
+        hub.materialize_dashboard_network_slice(newer.clone()).await;
+        hub.commit_dashboard_materialized_frame(stale_pending, stale_payload)
+            .await
+            .expect("stale materialization commit should be harmless");
+        hub.materialize_dashboard_network_slice(older).await;
+
+        let guard = hub.state.lock().await;
+        assert_eq!(
+            guard
+                .dashboard_network_slice
+                .as_ref()
+                .map(|slice| slice.revision),
+            Some(newer.revision),
+            "a late slice must not regress the hub dependency revision",
+        );
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached network recent topic");
+        assert_eq!(
+            cached.dashboard_materialized_revision,
+            Some(DashboardTopicRevision {
+                base_revision: cached.dashboard_base_revision,
+                current_revision: None,
+                network_revision: Some(newer.revision),
+            }),
+            "a delayed frame must not replace the latest materialized revision",
+        );
+        assert_eq!(
+            cached.cursor,
+            cursor_before + 1,
+            "only the newest revision should advance the SSE cursor",
+        );
+        assert_eq!(
+            cached.snapshot_frame.payload_value()["rangeEnd"],
+            json!(newer.recent.range_end),
         );
     }
 
