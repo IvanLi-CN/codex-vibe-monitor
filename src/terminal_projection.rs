@@ -759,11 +759,7 @@ pub(crate) async fn register_terminal_projection_before_enqueue(
     record: &ApiInvocation,
 ) -> TerminalProjectionRegistration {
     let dashboard = apply_dashboard_activity_terminal_record(state, record).await;
-    if state
-        .subscription_hub
-        .has_active_dashboard_activity_live_topic_sync()
-        && let Some(delta) = dashboard.terminal_delta.clone()
-    {
+    if let Some(delta) = dashboard.terminal_delta.clone() {
         state
             .proxy_runtime_invocations
             .record_dashboard_terminal_delta(delta);

@@ -2284,14 +2284,16 @@ mod tests {
             source_scope: InvocationSourceScope::All,
             network_open_buckets: HashMap::new(),
         };
-        hub.install_persistence_baseline_if_generation(
-            baseline_snapshot,
-            baseline,
-            "startup_restore",
-            hub.dashboard_generation(),
-        )
-        .expect("install startup baseline")
-        .expect("baseline generation should match");
+        let installed = hub
+            .install_persistence_baseline_if_generation(
+                baseline_snapshot,
+                baseline,
+                "startup_restore",
+                hub.dashboard_generation(),
+            )
+            .expect("install startup baseline")
+            .expect("baseline generation should match");
+        assert_eq!(installed.snapshot.revision, 1);
 
         hub.upsert(live_record(
             "runtime-only",
@@ -2304,6 +2306,7 @@ mod tests {
             .capture_memory_snapshot()
             .expect("merged runtime projection snapshot");
 
+        assert_eq!(capture.snapshot.revision, 2);
         assert_eq!(capture.snapshot.in_progress_invocation_count, 2);
         assert_eq!(capture.snapshot.in_progress_phase_counts.requesting, 1);
         assert_eq!(capture.snapshot.in_progress_phase_counts.responding, 1);
@@ -2890,6 +2893,26 @@ mod tests {
                 .live_path_db_read_count,
             0
         );
+    }
+
+    #[test]
+    fn active_network_slice_rearms_without_waking_current_projection() {
+        let hub = RuntimeProjectionHub::new(RuntimeProjectionMode::Auto);
+        hub.mark_dashboard_network_dirty();
+        let pending = hub
+            .pending_dashboard_publish_window()
+            .expect("network publish window");
+        let active = hub
+            .begin_dashboard_publish_window(pending)
+            .expect("begin network publish window");
+
+        complete_dashboard_projection_publish_window(&hub, active, true);
+
+        let rearmed = hub
+            .pending_dashboard_publish_window()
+            .expect("rearmed network publish window");
+        assert_eq!(rearmed.slice, DashboardProjectionSlice::Network);
+        assert!(hub.pending_dashboard_deadline().is_none());
     }
 
     #[test]
@@ -4099,17 +4122,22 @@ pub(crate) fn schedule_dashboard_network_projection(state: &AppState) {
 }
 
 pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState) {
-    if state.shutdown.is_cancelled()
-        || state
-            .proxy_runtime_invocations
-            .pending_dashboard_publish_window()
-            .is_none()
+    if state.shutdown.is_cancelled() {
+        return;
+    }
+    if state
+        .proxy_runtime_invocations
+        .pending_dashboard_publish_window()
+        .is_none()
     {
         return;
     }
     if !state
-        .subscription_hub
-        .has_active_dashboard_activity_live_topic_sync()
+        .proxy_runtime_invocations
+        .has_pending_dashboard_terminal_publish()
+        && !state
+            .subscription_hub
+            .has_active_dashboard_activity_live_topic_sync()
     {
         return;
     }
@@ -4282,10 +4310,25 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
             } else if window.slice == DashboardProjectionSlice::Terminal {
                 let _ = proxy_runtime_invocations.capture_terminal_slice();
             }
-            proxy_runtime_invocations.complete_dashboard_publish_window(window);
+            complete_dashboard_projection_publish_window(
+                proxy_runtime_invocations.as_ref(),
+                window,
+                has_active_subscribers,
+            );
             delivered_seq = sent_seq;
         }
     });
+}
+
+fn complete_dashboard_projection_publish_window(
+    hub: &RuntimeProjectionHub,
+    window: DashboardProjectionPublishWindow,
+    has_active_subscribers: bool,
+) {
+    hub.complete_dashboard_publish_window(window);
+    if has_active_subscribers && window.slice == DashboardProjectionSlice::Network {
+        hub.mark_dashboard_network_dirty();
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

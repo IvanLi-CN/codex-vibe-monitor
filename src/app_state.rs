@@ -762,6 +762,13 @@ impl RuntimeProjectionHub {
         .min_by_key(|window| window.deadline)
     }
 
+    pub(crate) fn has_pending_dashboard_terminal_publish(&self) -> bool {
+        self.dashboard
+            .lock()
+            .map(|dashboard| dashboard.pending_terminal_deadline.is_some())
+            .unwrap_or(false)
+    }
+
     pub(crate) fn begin_dashboard_publish_window(
         &self,
         window: DashboardProjectionPublishWindow,
@@ -1117,21 +1124,14 @@ impl RuntimeProjectionHub {
         }
         core.accounts
             .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        let dashboard_network_speed_cache = self
-            .dashboard_network_speed_cache
-            .get()
-            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
-        let mut snapshot = overlay_dashboard_network_live_snapshot(
-            core.clone(),
-            &baseline.network_open_buckets,
-            dashboard_network_speed_cache.as_ref(),
-        );
+        let mut snapshot = core.clone();
         let changed = dashboard
             .last_good
             .as_ref()
             .is_none_or(|current| !dashboard_current_snapshot_content_eq(current, &snapshot));
         let snapshot = if changed {
-            snapshot.revision = reserve_dashboard_activity_live_revision();
+            dashboard.current_revision = dashboard.current_revision.saturating_add(1);
+            snapshot.revision = dashboard.current_revision;
             self.dashboard_topology_counters
                 .current
                 .revision_count

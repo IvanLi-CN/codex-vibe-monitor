@@ -19470,7 +19470,7 @@ mod dashboard_activity_read_model_tests {
     }
 
     #[tokio::test]
-    async fn terminal_slice_does_not_queue_without_an_owner_subscription() {
+    async fn terminal_slice_without_an_owner_is_still_drainable() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -19489,6 +19489,30 @@ mod dashboard_activity_read_model_tests {
             )
             .await;
 
+        assert_eq!(
+            state
+                .proxy_runtime_invocations
+                .pending_terminal_slice_count(),
+            1
+        );
+        let pending = state
+            .proxy_runtime_invocations
+            .pending_dashboard_publish_window()
+            .expect("terminal publish window");
+        assert_eq!(pending.slice, DashboardProjectionSlice::Terminal);
+        let active = state
+            .proxy_runtime_invocations
+            .begin_dashboard_publish_window(pending)
+            .expect("begin terminal publish window");
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .capture_terminal_slice()
+                .is_some()
+        );
+        state
+            .proxy_runtime_invocations
+            .complete_dashboard_publish_window(active);
         assert_eq!(
             state
                 .proxy_runtime_invocations
