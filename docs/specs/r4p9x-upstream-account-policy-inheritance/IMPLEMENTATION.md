@@ -94,7 +94,7 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `priorityTier`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
 
-Sticky routing now treats a reusable `fallback` source as a comparison candidate on every subsequent request when automatic cut-out is allowed. The resolver admits only strictly higher `normal` / `primary` candidates into that comparison, keeps the existing composite score ordering, and leaves the fallback source selected when no higher candidate wins. A fresh handoff carries the captured sticky generation and is rebound only by the existing successful-route CAS path.
+Sticky routing now treats a reusable `fallback` source as a comparison candidate on every subsequent request when automatic cut-out is allowed. The resolver enables the priority filter only after the sticky source resolves as a sendable account, so hard failures, capability rejection, and other non-reusable sources retain the existing fresh failover behavior. It admits only strictly higher `normal` / `primary` candidates into the proactive comparison, keeps the existing composite score ordering, and leaves the fallback source selected when no higher candidate wins. A fresh handoff carries the captured sticky generation and is rebound only by the existing successful-route CAS path.
 
 Request compression extends the same inheritance contract with one root-only field.
 
