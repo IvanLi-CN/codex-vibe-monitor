@@ -627,7 +627,7 @@ PR: none
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: page
-- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- evidence_bound_sha: 4ad12e654b59df65d273efb70a8d28f8b1113a84
 - requested_viewport: desktop
 - viewport_strategy: ui-demo-source
 - margin_policy: trim_only
@@ -643,7 +643,7 @@ PR: none
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: page
-- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- evidence_bound_sha: 4ad12e654b59df65d273efb70a8d28f8b1113a84
 - requested_viewport: 393x852
 - viewport_strategy: ui-demo-source
 - margin_policy: trim_only
@@ -659,7 +659,7 @@ PR: none
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: page
-- evidence_bound_sha: 5ca75c37c6f3854bc79f8571d114dd4f3ce8d6b4
+- evidence_bound_sha: 4ad12e654b59df65d273efb70a8d28f8b1113a84
 - requested_viewport: 393x852
 - viewport_strategy: ui-demo-source
 - margin_policy: trim_only
