@@ -789,7 +789,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
   viewport_strategy: browser viewport override for mobile
   margin_policy: trim_only
   evidence_surface: page
-  evidence_bound_sha: 4ad12e654b59df65d273efb70a8d28f8b1113a84
+  evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
   target_program: mock-only
   capture_scope: page
   sensitive_exclusion: fixture-only invocation and conversation data
