@@ -4268,14 +4268,9 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                             match proxy_runtime_invocations.capture_network_slice() {
                                 Ok(capture) if capture.changed => {
                                     let revision = capture.slice.revision;
-                                    let Some(snapshot) = proxy_runtime_invocations
-                                        .legacy_live_snapshot_for_network(&capture.slice)
-                                    else {
-                                        continue;
-                                    };
                                     if let Err(err) =
-                                        broadcaster.send(BroadcastPayload::DashboardActivityLive {
-                                            snapshot: Box::new(snapshot),
+                                        broadcaster.send(BroadcastPayload::DashboardNetworkSlice {
+                                            slice: Box::new(capture.slice),
                                         })
                                     {
                                         warn!(
@@ -4294,16 +4289,8 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                         }
                     }
                     DashboardProjectionSlice::Terminal => {
-                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
-                            && let Some(capture) =
-                                proxy_runtime_invocations.capture_terminal_slice()
-                        {
-                            let _ = broadcaster.send(BroadcastPayload::DashboardTerminalSlice {
-                                slice: Box::new(DashboardTerminalProjectionSlice {
-                                    revision: capture.revision,
-                                    deltas: capture.deltas,
-                                }),
-                            });
+                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                            let _ = proxy_runtime_invocations.capture_terminal_slice();
                         }
                     }
                 }
