@@ -1156,8 +1156,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 if !excluded_upstream_route_keys
                                     .contains(&account.upstream_route_key())
                                 {
-                                    sticky_fallback_handoff_enabled =
-                                        sticky_fallback_handoff_policy_enabled;
                                     let route_binding_failure_penalty =
                                         route_binding_failure_penalty_for_account(
                                             state,
@@ -1165,9 +1163,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             &route_binding_failure_penalties,
                                         )
                                         .await;
+                                    sticky_fallback_handoff_enabled =
+                                        sticky_fallback_handoff_policy_enabled
+                                            && route_binding_failure_penalty == 0
+                                            && sticky_model_penalty == ModelRoutePenalty::Normal;
                                     if route_binding_failure_penalty > 0
                                         || sticky_model_penalty != ModelRoutePenalty::Normal
-                                        || sticky_fallback_handoff_enabled
+                                        || sticky_fallback_handoff_policy_enabled
                                     {
                                         if sticky_source_cut_out_guard_applies {
                                             return Ok(PoolAccountResolution::Resolved(

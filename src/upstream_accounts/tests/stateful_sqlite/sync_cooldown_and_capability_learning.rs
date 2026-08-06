@@ -4866,6 +4866,70 @@ async fn resolver_keeps_fallback_sticky_when_no_higher_priority_candidate_exists
 }
 
 #[tokio::test]
+async fn resolver_preserves_same_tier_fallback_penalty_failover_during_proactive_handoff() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Penalized Fallback Sticky Source",
+        "sk-penalized-fallback-sticky-source",
+        Some("fallback-sticky-penalty"),
+        Some("https://penalized-fallback-sticky-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let peer_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Healthy Fallback Peer",
+        "sk-healthy-fallback-peer",
+        Some("fallback-sticky-penalty"),
+        Some("https://healthy-fallback-peer.example.com/backend-api/codex"),
+    )
+    .await;
+    for account_id in [sticky_account_id, peer_account_id] {
+        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind(TagPriorityTier::Fallback.as_str())
+            .execute(&state.pool)
+            .await
+            .expect("set fallback penalty priority");
+    }
+
+    let requested_model = "gpt-fallback-penalty";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, ?2, 'degraded', 'demoted', 1, ?3, ?3, ?3, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(sticky_account_id)
+    .bind(requested_model)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("seed fallback model penalty");
+    let sticky_key = "fallback-sticky-penalty";
+    upsert_sticky_route(&state.pool, sticky_key, sticky_account_id, &now_iso)
+        .await
+        .expect("seed penalized fallback sticky route");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        &state,
+        Some(sticky_key),
+        Some(requested_model),
+        &[],
+        &HashSet::new(),
+        None,
+    )
+    .await
+    .expect("resolve fallback penalty failover");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected healthy same-tier fallback peer to win");
+    };
+    assert_eq!(account.account_id, peer_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
 async fn resolver_allows_fallback_failover_when_sticky_source_is_unusable() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_account_id = insert_test_pool_api_key_account_with_options(
