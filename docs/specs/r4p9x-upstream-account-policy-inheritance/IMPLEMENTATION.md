@@ -94,6 +94,8 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `priorityTier`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
 
+Sticky routing now treats a reusable `fallback` source as a comparison candidate on every subsequent request when automatic cut-out is allowed. The resolver admits only strictly higher `normal` / `primary` candidates into that comparison, keeps the existing composite score ordering, and leaves the fallback source selected when no higher candidate wins. A fresh handoff carries the captured sticky generation and is rebound only by the existing successful-route CAS path.
+
 Request compression extends the same inheritance contract with one root-only field.
 
 - `pool_routing_settings` stores the global `request_compression_algorithm` and `request_compression_level_preset`
@@ -178,6 +180,7 @@ Validation covers:
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving API-key live temporary reasons target exact-model health, disabled reasons and missing models stay diagnostic-only, background sync remains non-punitive, and OAuth/hard account failures retain their prior behavior
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
+- backend regressions covering proactive fallback sticky comparison, higher-priority handoff without pre-success sticky mutation, same/lower-priority retention, and generation-guarded successful rebinding
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
 - frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
