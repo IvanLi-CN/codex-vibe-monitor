@@ -35,8 +35,6 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
-  renderInvocationModelBadge,
-  renderInvocationModelRoutingSummary,
   renderReasoningEffortBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
@@ -412,10 +410,57 @@ export function InvocationCardList({
     ],
   );
 
+  const listSummary = useMemo(() => {
+    const successful = rows.filter((row) => row.meta.variant === "success").length;
+    const failed = rows.filter((row) => row.meta.variant === "error").length;
+    const running = rows.filter((row) => row.livePhase != null).length;
+    const firstTokenSamples = rows
+      .map((row) => row.record.firstTokenMs)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const responseSamples = rows
+      .map((row) => row.record.tUpstreamStreamMs)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const totalCost = rows.reduce(
+      (sum, row) => sum + (typeof row.record.cost === "number" ? row.record.cost : 0),
+      0,
+    );
+    const totalTokens = rows.reduce(
+      (sum, row) => sum + (typeof row.record.totalTokens === "number" ? row.record.totalTokens : 0),
+      0,
+    );
+    const cacheRead = rows.reduce(
+      (sum, row) => sum + Math.max(0, row.record.cacheInputTokens ?? 0),
+      0,
+    );
+    const cacheWrite = rows.reduce(
+      (sum, row) => sum + Math.max(0, row.record.cacheWriteTokens ?? 0),
+      0,
+    );
+    const cacheHitRate =
+      cacheRead + cacheWrite > 0 ? Math.round((cacheRead / (cacheRead + cacheWrite)) * 100) : null;
+
+    return {
+      successful,
+      failed,
+      running,
+      totalCost,
+      totalTokens,
+      cacheHitRate,
+      averageFirstToken:
+        firstTokenSamples.length > 0
+          ? firstTokenSamples.reduce((sum, value) => sum + value, 0) / firstTokenSamples.length
+          : null,
+      averageResponse:
+        responseSamples.length > 0
+          ? responseSamples.reduce((sum, value) => sum + value, 0) / responseSamples.length
+          : null,
+    };
+  }, [rows]);
+
   const estimateRowSize = useCallback(
     (index: number) => {
       const baseSize =
-        expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 154 : 250;
+        expandedId === rows[index]?.rowKey ? (isMdUp ? 360 : 520) : isMdUp ? 106 : 132;
       return baseSize + (index < rows.length - 1 ? INVOCATION_CARD_GAP_PX : 0);
     },
     [expandedId, isMdUp, rows],
@@ -631,6 +676,58 @@ export function InvocationCardList({
     })} s`;
   };
 
+  const formatSummaryDuration = (value: number | null) => {
+    if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+    const seconds = value / 1000;
+    return `${seconds.toLocaleString(localeTag, {
+      useGrouping: false,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: seconds >= 10 ? 1 : 2,
+    })} s`;
+  };
+
+  const formatSummaryNumber = (value: number) => numberFormatter.format(value);
+
+  const summaryTitle =
+    locale === "zh" ? `最近 ${rows.length} 条调用` : `${rows.length} most recent calls`;
+  const summaryMetrics = [
+    {
+      key: "ttft",
+      label: locale === "zh" ? "TTFT" : "TTFT",
+      value: formatSummaryDuration(listSummary.averageFirstToken),
+      detail: formatSummaryDuration(listSummary.averageResponse),
+      icon: "timer-outline" as const,
+      tone: "text-info",
+    },
+    {
+      key: "requests",
+      label: locale === "zh" ? "请求数" : "Requests",
+      value: formatSummaryNumber(rows.length),
+      detail: `${listSummary.successful} ${locale === "zh" ? "成功" : "ok"} · ${listSummary.failed} ${locale === "zh" ? "失败" : "failed"}`,
+      icon: "counter" as const,
+      tone: "text-success",
+    },
+    {
+      key: "cost",
+      label: locale === "zh" ? "成本" : "Cost",
+      value: listSummary.totalCost > 0 ? `$${listSummary.totalCost.toFixed(4)}` : FALLBACK_CELL,
+      detail: `${listSummary.running} ${locale === "zh" ? "进行中" : "in flight"}`,
+      icon: "currency-usd" as const,
+      tone: "text-warning",
+    },
+    {
+      key: "tokens",
+      label: locale === "zh" ? "TOKEN" : "Tokens",
+      value: formatSummaryNumber(listSummary.totalTokens),
+      detail:
+        listSummary.cacheHitRate == null
+          ? FALLBACK_CELL
+          : `${listSummary.cacheHitRate}% ${locale === "zh" ? "命中" : "cache hit"}`,
+      icon: "database-outline" as const,
+      tone: "text-success",
+    },
+  ];
+
   const renderCard = (row: InvocationRowViewModel, virtualIndex: number) => {
     const cardDetailId = `invocation-card-details-${invocationStableDomKey(row.rowKey)}`;
     const isExpanded = expandedId === row.rowKey;
@@ -675,6 +772,22 @@ export function InvocationCardList({
       cacheHitDenominator > 0
         ? `${Math.round((cacheReadTokens / cacheHitDenominator) * 100)}%`
         : FALLBACK_CELL;
+    const shortInvocationId = row.record.invokeId.slice(-6).toUpperCase();
+    const modelLabel = row.modelHasMismatch
+      ? `${row.requestModelValue} → ${row.responseModelValue}`
+      : row.modelValue;
+    const secondaryBadges = [
+      row.reasoningEffortValue !== FALLBACK_CELL ? (
+        <span key="reasoning" className="inline-flex items-center">
+          {renderReasoningEffortBadge(row.reasoningEffortValue)}
+        </span>
+      ) : null,
+      row.fastIndicatorState !== "none" ? (
+        <span key="fast" className="inline-flex items-center">
+          {renderFastIndicator(row.fastIndicatorState, t)}
+        </span>
+      ) : null,
+    ].filter(Boolean);
 
     return (
       <article
@@ -699,7 +812,7 @@ export function InvocationCardList({
         onClick={handleCardClick}
         onKeyDown={handleKeyDown}
         className={cn(
-          "surface-card min-w-0 overflow-hidden rounded-lg px-3 py-3.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-4",
+          "surface-card min-w-0 overflow-hidden rounded-lg px-3 py-2.5 text-left outline-none transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:border-primary/65 focus-visible:ring-2 focus-visible:ring-primary/35 motion-reduce:transition-none md:px-3.5 md:py-2.5",
           virtualIndex < rows.length - 1 && "mb-3",
           isHighlighted && "border-primary/55 bg-primary/10",
         )}
@@ -719,46 +832,60 @@ export function InvocationCardList({
         >
           {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
         </button>
-        <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {row.livePhase ? (
-                <InvocationPhaseBadge phase={row.livePhase} appearance="inline" motion="dynamic" />
-              ) : (
-                <Badge variant={row.meta.variant} data-testid="invocation-proxy-badge">
-                  {row.statusLabel}
-                </Badge>
-              )}
-              <FittedInvocationId
-                invokeId={row.record.invokeId}
-                className="min-w-[7rem] flex-1 font-mono text-sm font-semibold text-info select-text"
-              />
-              {renderInvocationTransportBadge(row.record)}
-              <span
-                className="min-w-0 max-w-full truncate text-xs text-base-content/70"
-                title={row.endpointValue}
-              >
-                {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
-              </span>
-            </div>
-            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums text-base-content/78">
-              <span
-                data-testid="invocation-card-ttft"
-                title={`${t("table.column.firstTokenShort")}: ${firstTokenValue}`}
-              >
-                {t("table.column.firstTokenShort")} {firstTokenValue}
-              </span>
-              <span
-                data-testid="invocation-card-response"
-                title={`${t("table.column.responseDurationShort")}: ${responseDurationValue}`}
-              >
-                {t("table.column.responseDurationShort")} {responseDurationValue}
-              </span>
-            </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Badge
+            variant="secondary"
+            className="border-primary/45 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.04em] tone-ink-primary"
+            title={row.record.invokeId}
+          >
+            {shortInvocationId}
+          </Badge>
+          <FittedInvocationId
+            invokeId={row.record.invokeId}
+            className="max-w-[9rem] flex-none font-mono text-[11px] font-semibold text-base-content/88 select-text sm:max-w-[13rem]"
+          />
+          {row.livePhase ? (
+            <InvocationPhaseBadge phase={row.livePhase} appearance="inline" motion="dynamic" />
+          ) : (
+            <Badge
+              variant={row.meta.variant}
+              className="px-1.5 py-0 text-[10px]"
+              data-testid="invocation-proxy-badge"
+            >
+              {row.statusLabel}
+            </Badge>
+          )}
+          {renderInvocationTransportBadge(row.record)}
+          <span
+            className="min-w-0 max-w-[10rem] truncate text-[11px] text-base-content/68"
+            title={row.endpointValue}
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              {renderEndpointSummary(row.endpointDisplay, t, "text-[11px]")}
+              {renderImageIntentBadge(row.imageIntentDisplay, t, "h-5 px-1.5 text-[10px]")}
+            </span>
+          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums text-info">
+            <span
+              className="inline-flex items-center gap-1"
+              data-testid="invocation-card-ttft"
+              title={`${t("table.column.firstTokenShort")}: ${firstTokenValue}`}
+            >
+              <AppIcon name="timer-outline" className="h-3.5 w-3.5" aria-hidden />
+              {t("table.column.firstTokenShort")} {firstTokenValue}
+            </span>
+            <span
+              className="inline-flex items-center gap-1"
+              data-testid="invocation-card-response"
+              title={`${t("table.column.responseDurationShort")}: ${responseDurationValue}`}
+            >
+              <AppIcon name="timer-refresh-outline" className="h-3.5 w-3.5" aria-hidden />
+              {t("table.column.responseDurationShort")} {responseDurationValue}
+            </span>
           </div>
           <button
             type="button"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             onClick={(event) => {
               event.stopPropagation();
               handleToggle();
@@ -778,95 +905,58 @@ export function InvocationCardList({
           </button>
         </div>
 
-        <div className="mt-3 grid min-w-0 gap-3 border-t border-base-300/65 pt-3 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.5fr)]">
-          <div className="min-w-0 space-y-1 text-xs">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-base-content/78">
-              <span className="text-base-content/55">{row.occurredDate}</span>
-              <span className="font-mono tabular-nums">{row.occurredTime}</span>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <span data-testid="invocation-account-name" className="min-w-0 max-w-full">
-                {renderAccountValue(
-                  row.accountLabel,
-                  row.accountId,
-                  row.accountClickable,
-                  cn(
-                    "max-w-full truncate font-medium text-base-content",
-                    row.accountRoutingInProgress &&
-                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                  ),
-                )}
-              </span>
-              {row.accountPlanType ? (
-                <span className="text-base-content/55">{row.accountPlanType}</span>
-              ) : null}
-            </div>
-            <div
-              className="min-w-0 truncate text-base-content/65"
-              title={row.proxyDisplayName}
-              data-testid="invocation-proxy-name"
-            >
-              {row.proxyDisplayName}
-            </div>
-          </div>
-          <div className="min-w-0 space-y-1 text-xs">
-            <div className="flex min-w-0 flex-wrap items-center gap-1" title={row.modelValue}>
-              {row.modelHasMismatch
-                ? renderInvocationModelRoutingSummary({
-                    requestModelValue: row.requestModelValue,
-                    responseModelValue: row.responseModelValue,
-                    hasMismatch: true,
-                    t,
-                    adornments: renderFastIndicator(row.fastIndicatorState, t),
-                  })
-                : renderInvocationModelBadge(row.modelValue, {
-                    t,
-                    hasMismatch: false,
-                    textClassName: "max-w-full truncate text-xs",
-                    testId: "invocation-table-model",
-                  })}
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-1 text-base-content/70">
-              {renderReasoningEffortBadge(row.reasoningEffortValue)}
-              {renderFastIndicator(row.fastIndicatorState, t)}
-              {renderImageIntentBadge(row.imageIntentDisplay, t, "h-5 px-2 text-[10px]")}
-            </div>
-            <div
-              className="truncate text-base-content/65"
-              title={`${row.requestModelValue} → ${row.responseModelValue}`}
-            >
-              {row.modelHasMismatch
-                ? `${row.requestModelValue} → ${row.responseModelValue}`
-                : row.serviceTierValue}
-            </div>
-          </div>
-          <div className="grid min-w-0 grid-cols-2 gap-x-3 gap-y-1 text-xs sm:grid-cols-3">
-            <span className="text-base-content/55">
-              {t("table.card.cacheHitRate")} {cacheHitRate}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.column.inputTokens")} {row.inputTokensValue}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.column.cacheInputTokens")} {row.cacheInputTokensValue}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.card.cacheWrite")} {row.cacheWriteTokensValue}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.column.outputTokens")} {row.outputTokensValue}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.column.totalTokens")} {row.totalTokensValue}
-            </span>
-            <span className="font-mono tabular-nums">
-              {t("table.card.cost")} {row.costValue}
-            </span>
-            <span className="font-mono tabular-nums">{row.outputReasoningBreakdownValue}</span>
-            <span className="text-base-content/55">
-              {t("table.card.requestCompression")} {row.requestCompressionAlgorithmValue}
-            </span>
-          </div>
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-base-content/68">
+          <span className="font-mono tabular-nums text-base-content/82">
+            {row.occurredDate} {row.occurredTime}
+          </span>
+          <span className="text-base-content/35">·</span>
+          <span data-testid="invocation-account-name" className="min-w-0 max-w-[9rem] truncate">
+            {renderAccountValue(
+              row.accountLabel,
+              row.accountId,
+              row.accountClickable,
+              cn(
+                "max-w-full truncate font-medium text-base-content/82",
+                row.accountRoutingInProgress && INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+              ),
+            )}
+          </span>
+          {row.accountPlanType ? (
+            <span className="text-base-content/55">{row.accountPlanType}</span>
+          ) : null}
+          <span className="text-base-content/35">·</span>
+          <span
+            className="min-w-0 max-w-[10rem] truncate"
+            title={row.proxyDisplayName}
+            data-testid="invocation-proxy-name"
+          >
+            {row.proxyDisplayName}
+          </span>
+          <span className="text-base-content/35">·</span>
+          <span
+            className="min-w-0 max-w-[13rem] truncate"
+            title={modelLabel}
+            data-testid="invocation-table-model"
+          >
+            {modelLabel}
+          </span>
+          {secondaryBadges.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap items-center gap-1">{secondaryBadges}</span>
+          ) : null}
+        </div>
+
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-base-300/55 pt-1.5 text-[10px] text-base-content/65">
+          <span className="min-w-0 font-mono tabular-nums">
+            Hit {cacheHitRate} · {t("table.column.inputTokens")} {row.inputTokensValue} ·{" "}
+            {t("table.column.cacheInputTokens")} {row.cacheInputTokensValue} ·{" "}
+            {t("table.column.outputTokens")} {row.outputTokensValue}
+          </span>
+          <span className="min-w-0 font-mono tabular-nums text-base-content/82">
+            {row.outputReasoningBreakdownValue} · {t("table.card.cacheWrite")}{" "}
+            {row.cacheWriteTokensValue} · {t("table.card.requestCompression")}{" "}
+            <span>{row.requestCompressionAlgorithmValue}</span> · {t("table.column.totalTokens")}{" "}
+            {row.totalTokensValue} · {row.costValue}
+          </span>
         </div>
 
         {row.collapsedErrorSummary ? (
@@ -905,6 +995,58 @@ export function InvocationCardList({
       onPointerDownCapture={scheduleHighlightClear}
       onKeyDownCapture={scheduleHighlightClear}
     >
+      <section
+        className="border-b border-base-300/65 pb-3"
+        aria-label={summaryTitle}
+        data-testid="invocation-card-summary"
+      >
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <h3 className="text-sm font-semibold text-base-content">{summaryTitle}</h3>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-base-content/62">
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+              {locale === "zh" ? "成功" : "Success"} {listSummary.successful}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-error" aria-hidden />
+              {locale === "zh" ? "失败" : "Failed"} {listSummary.failed}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-info" aria-hidden />
+              {locale === "zh" ? "进行中" : "In flight"} {listSummary.running}
+            </span>
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+          {summaryMetrics.map((metric) => (
+            <div
+              key={metric.key}
+              className="min-w-0 rounded-md border border-base-300/75 bg-base-200/35 px-2.5 py-2"
+              data-testid={`invocation-card-summary-${metric.key}`}
+            >
+              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.06em] text-base-content/58">
+                <AppIcon
+                  name={metric.icon}
+                  className={cn("h-3.5 w-3.5", metric.tone)}
+                  aria-hidden
+                />
+                <span>{metric.label}</span>
+              </div>
+              <div
+                className={cn(
+                  "mt-1 truncate font-mono text-base font-semibold tabular-nums",
+                  metric.tone,
+                )}
+              >
+                {metric.value}
+              </div>
+              <div className="mt-0.5 truncate text-[10px] text-base-content/58">
+                {metric.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
       <div data-testid="invocation-card-list" data-invocation-card-list>
         {paddingTop > 0 ? <div aria-hidden="true" style={{ height: paddingTop }} /> : null}
         {fallbackVirtualRows.map((virtualRow) => {

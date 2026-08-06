@@ -1965,8 +1965,8 @@ export const TtftAndResponseDuration: Story = {
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText(/9\.36 s/)).toBeInTheDocument();
-    await expect(canvas.getByText(/10\.08 s/)).toBeInTheDocument();
+    await expect(canvas.getAllByTestId("invocation-card-ttft")[0]).toHaveTextContent("9.36 s");
+    await expect(canvas.getAllByTestId("invocation-card-response")[0]).toHaveTextContent("10.08 s");
   },
 };
 
