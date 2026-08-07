@@ -18766,6 +18766,50 @@ mod model_performance_duration_override_tests {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SummaryTopicTerminalConsistentBase {
+    pub(crate) response: StatsResponse,
+    pub(crate) pending_terminal_deltas: Vec<DashboardActivityTerminalDelta>,
+    pub(crate) terminal_sequence: u64,
+}
+
+/// Builds an open summary topic base behind the terminal-writer barrier. The response and
+/// terminal watermark must observe the same durable SQLite boundary, otherwise an ACK between
+/// those reads can make a cached terminal slice appear already applied when it is absent.
+pub(crate) async fn build_summary_topic_terminal_consistent_base(
+    state: &AppState,
+    params: &SummaryQuery,
+) -> Result<SummaryTopicTerminalConsistentBase, ApiError> {
+    let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+    let reconcile_guard = reconcile_gate.lock().await;
+    let barrier = begin_dashboard_activity_consistency_barrier(&state.pool).await?;
+    // Once the SQLite write barrier is owned, the writer can retain new terminal work while the
+    // base captures both the durable response and its pending in-memory overlay.
+    drop(reconcile_guard);
+
+    let response = load_summary_response_from_query(state, params, SummaryBuildRoute::Topic).await;
+    let (pending_terminal_deltas, terminal_sequence) = {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        (
+            cache
+                .read_model
+                .pending_terminal_deltas
+                .iter()
+                .filter(|delta| delta.persisted_row_id.is_none())
+                .cloned()
+                .collect(),
+            cache.read_model.next_terminal_sequence,
+        )
+    };
+    finish_dashboard_activity_consistency_barrier(barrier, response.is_ok()).await?;
+
+    Ok(SummaryTopicTerminalConsistentBase {
+        response: response?,
+        pending_terminal_deltas,
+        terminal_sequence,
+    })
+}
+
 pub(crate) async fn load_summary_response_from_query(
     state: &AppState,
     params: &SummaryQuery,

@@ -4287,26 +4287,12 @@ impl SubscriptionTopic {
                         parse_summary_window(&query, state.config.list_limit_max as i64)?;
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
                     let source_scope = resolve_default_source_scope(&state.pool).await?;
-                    let response = load_summary_response_from_query(
-                        state.as_ref(),
-                        &query,
-                        SummaryBuildRoute::Topic,
-                    )
-                    .await?;
-                    let (pending_terminal_deltas, terminal_sequence) = {
-                        let cache = state.dashboard_activity_snapshot_cache.lock().await;
-                        (
-                            cache
-                                .read_model
-                                .pending_terminal_deltas
-                                .iter()
-                                .filter(|delta| delta.persisted_row_id.is_none())
-                                .cloned()
-                                .collect::<Vec<_>>(),
-                            cache.read_model.next_terminal_sequence,
-                        )
-                    };
-                    let mut response = response;
+                    let SummaryTopicTerminalConsistentBase {
+                        mut response,
+                        pending_terminal_deltas,
+                        terminal_sequence,
+                    } = build_summary_topic_terminal_consistent_base(state.as_ref(), &query)
+                        .await?;
                     let mut replayed_terminal_sequence = 0;
                     apply_dashboard_terminal_slice_to_summary_response(
                         &mut response,
@@ -6190,6 +6176,82 @@ mod tests {
         let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
         assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
         assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn summary_topic_base_preserves_pending_terminal_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-summary-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        let query = SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+            upstream_account_id: None,
+        };
+        let summary_window = parse_summary_window(&query, state.config.list_limit_max as i64)
+            .expect("summary window");
+        let SummaryTopicTerminalConsistentBase {
+            mut response,
+            pending_terminal_deltas,
+            terminal_sequence,
+        } = build_summary_topic_terminal_consistent_base(state.as_ref(), &query)
+            .await
+            .expect("build terminal-consistent summary base");
+        assert_eq!(terminal_sequence, delta.terminal_sequence);
+        assert_eq!(pending_terminal_deltas.len(), 1);
+
+        let initial_slice = DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas: pending_terminal_deltas,
+        };
+        let mut replayed_terminal_sequence = 0;
+        apply_dashboard_terminal_slice_to_summary_response(
+            &mut response,
+            &mut replayed_terminal_sequence,
+            &summary_window,
+            Shanghai,
+            InvocationSourceScope::ProxyOnly,
+            None,
+            &initial_slice,
+        );
+        let payload = DashboardTopicMaterializer::Summary {
+            base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
+                response,
+                terminal_sequence,
+            ))),
+            window: summary_window,
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::ProxyOnly,
+            upstream_account_id: None,
+        }
+        .serialize(
+            None,
+            None,
+            Some(&DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: vec![delta],
+            }),
+        )
+        .expect("serialize summary terminal base");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
     }
 
     #[tokio::test]
