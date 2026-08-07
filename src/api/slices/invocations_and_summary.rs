@@ -12156,14 +12156,22 @@ impl DashboardActivityTopicMaterializedBase {
         let Some(accounts) = self.response.accounts.as_mut() else {
             return;
         };
+        let mut account_indexes = accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| (account.upstream_account_id, index))
+            .collect::<HashMap<_, _>>();
         let mut updated_account_ids = HashSet::new();
         for delta in deltas {
-            if !accounts
-                .iter()
-                .any(|account| account.upstream_account_id == delta.upstream_account_id)
+            let account_index = if let Some(index) = account_indexes.get(&delta.upstream_account_id)
             {
+                *index
+            } else {
                 accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
-            }
+                let index = accounts.len() - 1;
+                account_indexes.insert(delta.upstream_account_id, index);
+                index
+            };
 
             if self.model_performance_accumulator_ready {
                 let accumulator = self
@@ -12176,10 +12184,7 @@ impl DashboardActivityTopicMaterializedBase {
                 .entry(delta.upstream_account_id)
                 .or_default()
                 .add_terminal_delta(delta);
-            let account = accounts
-                .iter_mut()
-                .find(|account| account.upstream_account_id == delta.upstream_account_id)
-                .expect("terminal account inserted when absent");
+            let account = &mut accounts[account_index];
             apply_dashboard_activity_terminal_delta_to_account(account, delta);
             if self.include_recent {
                 account.recent_invocations = merge_dashboard_activity_recent_invocations(
@@ -12191,10 +12196,9 @@ impl DashboardActivityTopicMaterializedBase {
             updated_account_ids.insert(delta.upstream_account_id);
         }
         for upstream_account_id in updated_account_ids {
-            let account = accounts
-                .iter_mut()
-                .find(|account| account.upstream_account_id == upstream_account_id)
-                .expect("terminal account inserted when absent");
+            let account = &mut accounts[*account_indexes
+                .get(&upstream_account_id)
+                .expect("terminal account index inserted when absent")];
             self.account_latency_accumulators
                 .get(&upstream_account_id)
                 .expect("terminal latency accumulator inserted")

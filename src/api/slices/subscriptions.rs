@@ -6179,6 +6179,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activity_materializer_handles_maximum_distinct_account_terminal_slice() {
+        let delta_state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let base_state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let mut base = build_dashboard_activity_topic_materialized_base(
+            base_state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(false),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut deltas = Vec::with_capacity(10_000);
+        for account_id in 1..=10_000_i64 {
+            let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+            terminal.id = 0;
+            terminal.invoke_id = format!("dashboard-runtime-terminal-account-{account_id}");
+            terminal.upstream_account_id = Some(account_id);
+            terminal.upstream_account_name = Some(format!("Account {account_id}"));
+            terminal.status = Some("success".to_string());
+            terminal.live_phase = None;
+            terminal.total_tokens = Some(1);
+            terminal.output_tokens = Some(1);
+            deltas.push(
+                apply_dashboard_activity_terminal_record(delta_state.as_ref(), &terminal)
+                    .await
+                    .terminal_delta
+                    .expect("accepted distinct terminal delta"),
+            );
+        }
+
+        base.apply_terminal_slice(
+            Shanghai,
+            InvocationSourceScope::ProxyOnly,
+            &DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas,
+            },
+        );
+
+        assert_eq!(base.response().summary.stats.total_count, 10_000);
+        assert_eq!(
+            base.response().accounts.as_ref().map(Vec::len),
+            Some(10_000),
+            "each distinct account should be materialized once",
+        );
+    }
+
+    #[tokio::test]
     async fn summary_topic_base_preserves_pending_terminal_overlay() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
