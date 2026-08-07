@@ -1,6 +1,8 @@
 use super::*;
 use axum::http::header;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,11 +21,6 @@ const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
 const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
-#[cfg(not(test))]
-const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_millis(50);
-
 #[cfg(not(test))]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -349,8 +346,6 @@ pub(crate) struct SubscriptionHub {
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
     #[cfg(test)]
     dashboard_topology_sse_frame_observations: Mutex<DashboardTopologySseFrameObservations>,
-    #[cfg(test)]
-    server_push_test_suspensions: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -427,6 +422,10 @@ enum DashboardTopicMaterializer {
 }
 
 impl DashboardTopicMaterializer {
+    fn clones_typed_base(&self) -> bool {
+        matches!(self, Self::Activity { .. } | Self::Summary { .. })
+    }
+
     fn revision(
         &self,
         base_revision: u64,
@@ -446,13 +445,28 @@ impl DashboardTopicMaterializer {
                 current_revision: Some(slice.revision),
                 network_revision: None,
             }),
-            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => {
-                network.map(|slice| DashboardTopicRevision {
+            Self::NetworkTimeseries {
+                base,
+                upstream_account_id,
+            } => network
+                .filter(|slice| {
+                    dashboard_network_timeseries_live_point(
+                        base.as_ref(),
+                        *upstream_account_id,
+                        Some(slice),
+                    )
+                    .is_some()
+                })
+                .map(|slice| DashboardTopicRevision {
                     base_revision,
                     current_revision: None,
                     network_revision: Some(slice.revision),
-                })
-            }
+                }),
+            Self::NetworkRecent { .. } => network.map(|slice| DashboardTopicRevision {
+                base_revision,
+                current_revision: None,
+                network_revision: Some(slice.revision),
+            }),
             _ => None,
         }
     }
@@ -479,17 +493,94 @@ impl DashboardTopicMaterializer {
             Self::NetworkTimeseries {
                 base,
                 upstream_account_id,
-            } => serde_json::to_vec(&materialize_dashboard_network_timeseries_response(
-                base.as_ref(),
-                *upstream_account_id,
+            } => serde_json::to_vec(&DashboardNetworkTimeseriesPayload {
+                base,
+                upstream_account_id: *upstream_account_id,
                 network,
-            ))
+            })
             .map_err(ApiError::from),
-            Self::NetworkRecent { base } => serde_json::to_vec(
-                &network.map_or_else(|| base.as_ref().clone(), |slice| slice.recent.clone()),
-            )
-            .map_err(ApiError::from),
+            Self::NetworkRecent { base } => {
+                serde_json::to_vec(&DashboardNetworkRecentPayload { base, network })
+                    .map_err(ApiError::from)
+            }
         }
+    }
+}
+
+struct DashboardNetworkTimeseriesPayload<'a> {
+    base: &'a DashboardNetworkTimeseriesResponse,
+    upstream_account_id: Option<i64>,
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+}
+
+impl Serialize for DashboardNetworkTimeseriesPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let live_point = dashboard_network_timeseries_live_point(
+            self.base,
+            self.upstream_account_id,
+            self.network,
+        );
+        let mut response = serializer.serialize_struct("DashboardNetworkTimeseriesResponse", 6)?;
+        response.serialize_field("range", &self.base.range)?;
+        response.serialize_field("rangeStart", &self.base.range_start)?;
+        if let Some((_, _)) = live_point {
+            let now = Utc::now();
+            response.serialize_field("rangeEnd", &format_utc_iso_precise(now))?;
+            response.serialize_field("snapshotId", &now.timestamp_millis())?;
+        } else {
+            response.serialize_field("rangeEnd", &self.base.range_end)?;
+            response.serialize_field("snapshotId", &self.base.snapshot_id)?;
+        }
+        response.serialize_field("bucketSeconds", &self.base.bucket_seconds)?;
+        response.serialize_field(
+            "points",
+            &DashboardNetworkTimeseriesPoints {
+                points: &self.base.points,
+                live_point,
+            },
+        )?;
+        response.end()
+    }
+}
+
+struct DashboardNetworkTimeseriesPoints<'a> {
+    points: &'a [DashboardNetworkTimeseriesPointResponse],
+    live_point: Option<(usize, &'a DashboardNetworkTimeseriesPointResponse)>,
+}
+
+impl Serialize for DashboardNetworkTimeseriesPoints<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut points = serializer.serialize_seq(Some(self.points.len()))?;
+        for (index, point) in self.points.iter().enumerate() {
+            let point = self
+                .live_point
+                .filter(|(live_index, _)| *live_index == index)
+                .map_or(point, |(_, live_point)| live_point);
+            points.serialize_element(point)?;
+        }
+        points.end()
+    }
+}
+
+struct DashboardNetworkRecentPayload<'a> {
+    base: &'a DashboardRecentNetworkWindowResponse,
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+}
+
+impl Serialize for DashboardNetworkRecentPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.network
+            .map_or(self.base, |slice| &slice.recent)
+            .serialize(serializer)
     }
 }
 
@@ -824,8 +915,6 @@ impl SubscriptionHub {
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
             #[cfg(test)]
             dashboard_topology_sse_frame_observations: Mutex::new(HashMap::new()),
-            #[cfg(test)]
-            server_push_test_suspensions: Mutex::new(HashSet::new()),
         }
     }
 
@@ -898,22 +987,6 @@ impl SubscriptionHub {
             .lock()
             .await
             .clear();
-    }
-
-    #[cfg(test)]
-    async fn suspend_server_push_for_test(&self, topic_key: &str) {
-        self.server_push_test_suspensions
-            .lock()
-            .await
-            .insert(topic_key.to_string());
-    }
-
-    #[cfg(test)]
-    async fn server_push_is_suspended_for_test(&self, topic_key: &str) -> bool {
-        self.server_push_test_suspensions
-            .lock()
-            .await
-            .contains(topic_key)
     }
 
     fn record_dashboard_topology_lag(&self, topic_names: &[String], skipped: u64) {
@@ -1398,7 +1471,10 @@ impl SubscriptionHub {
         self.dashboard_topology_counters
             .record_materialization(topic.name());
         let mut built_payload = topic.build_cached_payload(state.clone()).await?;
-        if matches!(&built_payload, BuiltSubscriptionTopicPayload::Dashboard(_)) {
+        if matches!(
+            &built_payload,
+            BuiltSubscriptionTopicPayload::Dashboard(materializer) if materializer.clones_typed_base()
+        ) {
             self.dashboard_topology_counters
                 .record_payload_clone(topic.name());
         }
@@ -1675,8 +1751,10 @@ impl SubscriptionHub {
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
                 .record_materialization(pending.topic_name);
-            self.dashboard_topology_counters
-                .record_payload_clone(pending.topic_name);
+            if pending.materializer.clones_typed_base() {
+                self.dashboard_topology_counters
+                    .record_payload_clone(pending.topic_name);
+            }
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
@@ -3224,45 +3302,27 @@ fn materialize_dashboard_summary_response(
     response
 }
 
-fn materialize_dashboard_network_timeseries_response(
-    base: &DashboardNetworkTimeseriesResponse,
+fn dashboard_network_timeseries_live_point<'a>(
+    base: &'a DashboardNetworkTimeseriesResponse,
     upstream_account_id: Option<i64>,
-    network: Option<&DashboardNetworkProjectionSlice>,
-) -> DashboardNetworkTimeseriesResponse {
-    let mut response = base.clone();
-    let Some(network) = network else {
-        return response;
-    };
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+) -> Option<(usize, &'a DashboardNetworkTimeseriesPointResponse)> {
+    let network = network?;
     let bucket = match upstream_account_id {
-        None => network.network_live_bucket.clone(),
+        None => network.network_live_bucket.as_ref(),
         Some(upstream_account_id) => network
             .accounts
             .iter()
             .find(|account| account.upstream_account_id == Some(upstream_account_id))
-            .and_then(|account| account.network_live_bucket.clone()),
+            .and_then(|account| account.network_live_bucket.as_ref()),
     };
-    let Some(bucket) = bucket else {
-        return response;
-    };
+    let bucket = bucket?;
     let bucket_start = &bucket.bucket_start;
-    let point_index = response
-        .points
+    base.points
         .iter()
         .position(|point| point.bucket_start == *bucket_start)
-        .or_else(|| {
-            response
-                .points
-                .iter()
-                .position(|point| point.is_live_bucket)
-        });
-    let Some(point_index) = point_index else {
-        return response;
-    };
-    let now = Utc::now();
-    response.points[point_index] = bucket;
-    response.range_end = format_utc_iso_precise(now);
-    response.snapshot_id = now.timestamp_millis();
-    response
+        .or_else(|| base.points.iter().position(|point| point.is_live_bucket))
+        .map(|point_index| (point_index, bucket))
 }
 
 async fn run_server_push_topic_loop(
@@ -3271,73 +3331,18 @@ async fn run_server_push_topic_loop(
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
-    if matches!(&topic, SubscriptionTopic::DashboardNetworkRecentCurrent)
-        && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
-        && let Err(err) = state
-            .proxy_runtime_invocations
-            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
-    {
-        warn!(
-            ?err,
-            "failed to bind dashboard network cache for recent topic push"
-        );
-        hub.clear_server_push_task(&topic_key).await;
-        return;
-    }
-
-    if topic.is_closed_summary_topic() {
-        loop {
-            tokio::select! {
-                _ = state.shutdown.cancelled() => {
-                    hub.clear_server_push_task(&topic_key).await;
-                    break;
-                }
-                _ = tokio::time::sleep(subscription_calendar_rollover_delay(&topic)) => {
-                    if hub.stop_server_push_task_if_idle(&topic_key).await {
-                        break;
-                    }
-                    if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
-                        warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval.tick().await;
-
     loop {
         tokio::select! {
             _ = state.shutdown.cancelled() => {
                 hub.clear_server_push_task(&topic_key).await;
                 break;
             }
-            _ = interval.tick() => {
-                #[cfg(test)]
-                if hub.server_push_is_suspended_for_test(&topic_key).await {
-                    continue;
-                }
+            _ = tokio::time::sleep(subscription_calendar_rollover_delay(&topic)) => {
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
-                if matches!(&topic, SubscriptionTopic::DashboardNetworkRecentCurrent)
-                    && state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
-                {
-                    match state.proxy_runtime_invocations.capture_network_slice() {
-                        Ok(capture) => {
-                            hub.materialize_dashboard_network_slice(capture.slice).await;
-                        }
-                        Err(err) => {
-                            warn!(?err, "failed to capture dashboard network recent slice");
-                        }
-                    }
-                    continue;
-                }
                 if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
-                    warn!(?err, topic = %topic.name(), "failed to push subscription topic cadence");
+                    warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
                 }
             }
         }
@@ -3499,7 +3504,7 @@ pub(crate) async fn topic_sse_stream(
 
 impl SubscriptionTopic {
     fn uses_server_push_cadence(&self) -> bool {
-        matches!(self, Self::DashboardNetworkRecentCurrent) || self.is_closed_summary_topic()
+        self.is_closed_summary_topic()
     }
 
     fn uses_dashboard_activity_live_overlay(&self) -> bool {
@@ -5021,15 +5026,6 @@ mod tests {
             .map(SubscriptionTopic::from_descriptor)
             .collect::<Result<Vec<_>, _>>()
             .expect("dashboard topology topics");
-        let network_recent_key = topics
-            .last()
-            .expect("network recent topic")
-            .cache_key()
-            .expect("network recent topic key");
-        state
-            .subscription_hub
-            .suspend_server_push_for_test(&network_recent_key)
-            .await;
         let first_response = topic_sse_stream(
             State(state.clone()),
             Query(dashboard_runtime_topology_stream_query(1)),
@@ -5056,16 +5052,13 @@ mod tests {
         {
             let guard = state.subscription_hub.state.lock().await;
             assert_eq!(
-                guard
-                    .server_push_subscribers
-                    .get(&network_recent_key)
-                    .copied(),
-                Some(2),
-                "SSE entrypoint should register both network recent cadence owners",
+                guard.server_push_subscribers.len(),
+                0,
+                "network topics must not start subscription-owned cadence tasks",
             );
             assert!(
-                guard.server_push_tasks.contains(&network_recent_key),
-                "SSE entrypoint should start the shared network recent cadence task",
+                guard.server_push_tasks.is_empty(),
+                "network topics must be driven by the shared projection cadence",
             );
         }
         spawn_subscription_broadcast_listener(state.clone());
@@ -5195,12 +5188,7 @@ mod tests {
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
         }
-        for topic in [
-            delivery.activity,
-            delivery.summary,
-            delivery.network_timeseries,
-            delivery.network_recent,
-        ] {
+        for topic in [delivery.activity, delivery.summary] {
             assert_eq!(
                 topic.serialization_count, topic.materialization_count,
                 "each materialized topic revision should serialize exactly once"
@@ -5208,6 +5196,16 @@ mod tests {
             assert_eq!(
                 topic.payload_clone_count, topic.materialization_count,
                 "each materialized topic revision should clone its typed base once"
+            );
+        }
+        for topic in [delivery.network_timeseries, delivery.network_recent] {
+            assert_eq!(
+                topic.serialization_count, topic.materialization_count,
+                "each materialized network topic revision should serialize exactly once"
+            );
+            assert_eq!(
+                topic.payload_clone_count, 0,
+                "network topic materialization must borrow its typed base"
             );
         }
     }
@@ -5550,7 +5548,7 @@ mod tests {
         hub.handle_internal_broadcast(
             state.clone(),
             BroadcastPayload::DashboardNetworkSlice {
-                slice: Box::new(slice),
+                slice: Box::new(slice.clone()),
             },
         )
         .await;
@@ -5586,6 +5584,37 @@ mod tests {
             live_point.get("uploadBytes").and_then(Value::as_i64),
             Some(768)
         );
+        drop(guard);
+
+        let delivery_before = hub.dashboard_topology_counters();
+        hub.handle_internal_broadcast(
+            state,
+            BroadcastPayload::DashboardNetworkSlice {
+                slice: Box::new(slice),
+            },
+        )
+        .await;
+        let delivery_after = hub.dashboard_topology_counters();
+        let cursor_after_unchanged = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        assert_eq!(cursor_after_unchanged, cursor_after);
+        assert_eq!(
+            delivery_after.network_timeseries.materialization_count,
+            delivery_before.network_timeseries.materialization_count,
+            "unchanged network revisions must not rematerialize a topic",
+        );
+        assert_eq!(
+            delivery_after.network_timeseries.serialization_count,
+            delivery_before.network_timeseries.serialization_count,
+            "unchanged network revisions must not serialize a topic",
+        );
+        assert_eq!(delivery_after.network_timeseries.payload_clone_count, 0);
     }
 
     #[tokio::test]
@@ -6064,121 +6093,25 @@ mod tests {
         assert_eq!(invoke_ids.len(), 75);
     }
 
-    #[tokio::test]
-    async fn dashboard_network_recent_topic_push_cadence_emits_live_payload() {
-        let state =
-            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
-                .await;
-        let hub = Arc::new(SubscriptionHub::new());
-        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
-        let descriptor = topic.descriptor();
-        let mut receiver = hub.subscribe();
+    #[test]
+    fn dashboard_network_topics_use_projection_cadence_not_subscription_push_tasks() {
+        let topics = [
+            SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+                range: "today".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::DashboardNetworkRecentCurrent,
+        ];
 
-        let prepared = hub
-            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
-            .await
-            .expect("prepare recent network topic");
-
-        assert_eq!(prepared.initial.len(), 1);
-        assert!(topic.uses_server_push_cadence());
-
-        let _lease = hub
-            .register_server_push_topics(state.clone(), vec![topic])
-            .await
-            .expect("register recent network push topic");
-        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
-        state.dashboard_network_speed_cache.record_request_bytes(
-            "recent-network-cadence",
-            &crate::proxy::shanghai_now_string(),
-            None,
-            Some("api.openai.com"),
-            128,
-            Utc::now(),
-        );
-
-        let dispatch = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
-            .await
-            .expect("recent network push should be emitted")
-            .expect("recent network dispatch");
-
-        assert_eq!(dispatch.frame.descriptor, descriptor);
-        assert_eq!(
-            dispatch.frame.schema_epoch,
-            "dashboard.network-recent.current/v1"
-        );
-        let dispatch_payload = dispatch.frame.payload_value();
-        assert_eq!(
-            dispatch_payload
-                .get("windowSeconds")
-                .and_then(Value::as_i64),
-            Some(300)
-        );
-        assert_eq!(
-            dispatch_payload
-                .get("sampleSeconds")
-                .and_then(Value::as_i64),
-            Some(1)
-        );
-        assert_eq!(
-            dispatch_payload
-                .get("points")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(300)
-        );
-    }
-
-    #[tokio::test]
-    async fn dashboard_network_recent_topic_push_cadence_is_shared_across_subscribers() {
-        let state =
-            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
-                .await;
-        let hub = Arc::new(SubscriptionHub::new());
-        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
-        let topic_key = topic.cache_key().expect("recent topic key");
-        let descriptor = topic.descriptor();
-
-        hub.prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
-            .await
-            .expect("prepare first recent network topic connection");
-        let first_lease = hub
-            .register_server_push_topics(state.clone(), vec![topic.clone()])
-            .await
-            .expect("register first recent network push topic");
-        hub.prepare_connection(state.clone(), vec![descriptor], Vec::new())
-            .await
-            .expect("prepare second recent network topic connection");
-        let second_lease = hub
-            .register_server_push_topics(state, vec![topic])
-            .await
-            .expect("register second recent network push topic");
-
-        {
-            let guard = hub.state.lock().await;
-            assert_eq!(
-                guard.server_push_subscribers.get(&topic_key).copied(),
-                Some(2)
+        for topic in topics {
+            assert!(topic.uses_dashboard_network_live_snapshot());
+            assert!(
+                !topic.uses_server_push_cadence(),
+                "{} must be driven by the shared network projection cadence",
+                topic.name()
             );
-            assert_eq!(guard.server_push_tasks.len(), 1);
-            assert!(guard.server_push_tasks.contains(&topic_key));
         }
-
-        drop(first_lease);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        {
-            let guard = hub.state.lock().await;
-            assert_eq!(
-                guard.server_push_subscribers.get(&topic_key).copied(),
-                Some(1)
-            );
-            assert_eq!(guard.server_push_tasks.len(), 1);
-        }
-
-        drop(second_lease);
-        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
-        let guard = hub.state.lock().await;
-        assert_eq!(guard.server_push_subscribers.get(&topic_key), None);
-        assert!(!guard.server_push_tasks.contains(&topic_key));
     }
 
     #[test]
