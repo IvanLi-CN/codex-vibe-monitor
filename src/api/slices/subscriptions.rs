@@ -6119,6 +6119,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activity_materializer_skips_terminal_delta_already_persisted_in_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-persisted-activity-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        terminal.id = 748_004;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, total_tokens, output_tokens, cost,
+                status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.model.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(terminal.status.as_deref())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal baseline row");
+
+        let base = build_dashboard_activity_topic_materialized_base(
+            state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(true),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        assert_eq!(base.response().terminal_sequence, delta.terminal_sequence);
+        let payload = DashboardTopicMaterializer::Activity {
+            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(base))),
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::ProxyOnly,
+        }
+        .serialize(
+            None,
+            None,
+            Some(&DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: vec![delta],
+            }),
+        )
+        .expect("serialize persisted activity base");
+        let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
+        assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
+        assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
     async fn summary_materializer_skips_terminal_delta_already_folded_into_base() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),

@@ -12142,18 +12142,21 @@ impl DashboardActivityTopicMaterializedBase {
             if self.model_performance_accumulator_ready {
                 self.summary_model_performance_accumulator
                     .add_terminal_delta(delta);
-                self.response.summary.model_performance = self
-                    .summary_model_performance_accumulator
-                    .clone()
-                    .into_response(range, model_performance_available);
             }
             self.response.terminal_sequence =
                 self.response.terminal_sequence.max(delta.terminal_sequence);
+        }
+        if self.model_performance_accumulator_ready {
+            self.response.summary.model_performance = self
+                .summary_model_performance_accumulator
+                .clone()
+                .into_response(range, model_performance_available);
         }
 
         let Some(accounts) = self.response.accounts.as_mut() else {
             return;
         };
+        let mut updated_account_ids = HashSet::new();
         for delta in deltas {
             if !accounts
                 .iter()
@@ -12162,43 +12165,47 @@ impl DashboardActivityTopicMaterializedBase {
                 accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
             }
 
-            let account_model_performance = if self.model_performance_accumulator_ready {
+            if self.model_performance_accumulator_ready {
                 let accumulator = self
                     .account_model_performance_accumulators
                     .entry(delta.upstream_account_id)
                     .or_default();
                 accumulator.add_terminal_delta(delta);
-                Some(
-                    accumulator
-                        .clone()
-                        .into_response(range, model_performance_available),
-                )
-            } else {
-                None
-            };
-            let account_latency = {
-                let accumulator = self
-                    .account_latency_accumulators
-                    .entry(delta.upstream_account_id)
-                    .or_default();
-                accumulator.add_terminal_delta(delta);
-                *accumulator
-            };
+            }
+            self.account_latency_accumulators
+                .entry(delta.upstream_account_id)
+                .or_default()
+                .add_terminal_delta(delta);
             let account = accounts
                 .iter_mut()
                 .find(|account| account.upstream_account_id == delta.upstream_account_id)
                 .expect("terminal account inserted when absent");
             apply_dashboard_activity_terminal_delta_to_account(account, delta);
-            account_latency.apply_to_account(account);
-            if let Some(account_model_performance) = account_model_performance {
-                account.model_performance = account_model_performance;
-            }
             if self.include_recent {
                 account.recent_invocations = merge_dashboard_activity_recent_invocations(
                     vec![delta.recent_invocation.clone()],
                     std::mem::take(&mut account.recent_invocations),
                     self.recent_limit,
                 );
+            }
+            updated_account_ids.insert(delta.upstream_account_id);
+        }
+        for upstream_account_id in updated_account_ids {
+            let account = accounts
+                .iter_mut()
+                .find(|account| account.upstream_account_id == upstream_account_id)
+                .expect("terminal account inserted when absent");
+            self.account_latency_accumulators
+                .get(&upstream_account_id)
+                .expect("terminal latency accumulator inserted")
+                .apply_to_account(account);
+            if self.model_performance_accumulator_ready {
+                account.model_performance = self
+                    .account_model_performance_accumulators
+                    .get(&upstream_account_id)
+                    .expect("terminal model-performance accumulator inserted")
+                    .clone()
+                    .into_response(range, model_performance_available);
             }
         }
         sort_dashboard_activity_accounts(accounts);
@@ -12620,15 +12627,18 @@ fn replay_dashboard_activity_pending_deltas_without_expiry(
         let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
             continue;
         };
-        if dashboard_activity_selection_includes_compact_terminal(selection, delta, occurred_at)
-            && !dashboard_activity_baseline_includes_pending_delta(
+        if dashboard_activity_selection_includes_compact_terminal(selection, delta, occurred_at) {
+            if dashboard_activity_baseline_includes_pending_delta(
                 delta,
                 baseline_cursor,
                 persisted_terminal_ids,
-            )
-        {
-            apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
-            replayed += 1;
+            ) {
+                snapshot.terminal_sequence =
+                    snapshot.terminal_sequence.max(delta.terminal_sequence);
+            } else {
+                apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
+                replayed += 1;
+            }
         }
     }
     replayed
@@ -16886,6 +16896,8 @@ async fn load_dashboard_activity_snapshot_cached(
                         snapshot_cursor_after_build,
                         &persisted_terminal_ids_after_build,
                     ) {
+                        snapshot.terminal_sequence =
+                            snapshot.terminal_sequence.max(delta.terminal_sequence);
                         continue;
                     }
                     if expiry_tracking_failure_reason.is_none()
