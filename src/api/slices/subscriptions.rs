@@ -6152,27 +6152,42 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_network_recent_legacy_push_cadence_emits_live_payload() {
-        let state =
-            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
-                .await;
-        let hub = Arc::new(SubscriptionHub::new());
+        let state = crate::tests::test_state_with_openai_base_and_runtime_projection_mode(
+            Url::parse("http://127.0.0.1:9").unwrap(),
+            RuntimeProjectionMode::Legacy,
+        )
+        .await;
         let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let topic_key = topic.cache_key().expect("legacy recent topic key");
         let descriptor = topic.descriptor();
-        let mut receiver = hub.subscribe();
-
-        let prepared = hub
-            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
-            .await
-            .expect("prepare legacy recent network topic");
-
-        assert_eq!(prepared.initial.len(), 1);
+        let mut receiver = state.subscription_hub.subscribe();
         assert!(!topic.uses_server_push_cadence(RuntimeProjectionMode::Auto));
         assert!(topic.uses_server_push_cadence(RuntimeProjectionMode::Legacy));
 
-        let _lease = hub
-            .register_server_push_topics(state.clone(), vec![topic])
-            .await
-            .expect("register legacy recent network push topic");
+        let _response = topic_sse_stream(
+            State(state.clone()),
+            Query(SubscriptionStreamQuery {
+                topics: Some(
+                    serde_json::to_string(std::slice::from_ref(&descriptor))
+                        .expect("serialize legacy recent topic"),
+                ),
+                resume: None,
+                attempt: Some(1),
+                reason: Some("legacy-network-cadence-test".to_string()),
+            }),
+        )
+        .await
+        .expect("open legacy recent network SSE stream");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            assert_eq!(
+                guard.server_push_subscribers.get(&topic_key).copied(),
+                Some(1),
+                "legacy SSE entrypoint must retain the recent cadence owner",
+            );
+            assert!(guard.server_push_tasks.contains(&topic_key));
+        }
+
         tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
         state.dashboard_network_speed_cache.record_request_bytes(
             "legacy-recent-network-cadence",
