@@ -410,6 +410,7 @@ struct DashboardTopicRevision {
 #[derive(Debug)]
 struct DashboardActivityMaterializerState {
     base: DashboardActivityTopicMaterializedBase,
+    rebase_range_start: Option<DateTime<Utc>>,
     current_revision: Option<u64>,
     network_revision: Option<u64>,
     terminal_revision: Option<u64>,
@@ -417,8 +418,10 @@ struct DashboardActivityMaterializerState {
 
 impl DashboardActivityMaterializerState {
     fn new(base: DashboardActivityTopicMaterializedBase) -> Self {
+        let rebase_range_start = parse_to_utc_datetime(&base.response().range_start);
         Self {
             base,
+            rebase_range_start,
             current_revision: None,
             network_revision: None,
             terminal_revision: None,
@@ -432,15 +435,21 @@ struct DashboardSummaryMaterializerState {
     current_revision: Option<u64>,
     terminal_revision: Option<u64>,
     terminal_sequence: u64,
+    range_start: Option<DateTime<Utc>>,
 }
 
 impl DashboardSummaryMaterializerState {
-    fn new(response: StatsResponse, terminal_sequence: u64) -> Self {
+    fn new(
+        response: StatsResponse,
+        terminal_sequence: u64,
+        range_start: Option<DateTime<Utc>>,
+    ) -> Self {
         Self {
             response,
             current_revision: None,
             terminal_revision: None,
             terminal_sequence,
+            range_start,
         }
     }
 }
@@ -520,6 +529,48 @@ impl DashboardTopicMaterializer {
                 terminal_revision: None,
             }),
             _ => None,
+        }
+    }
+
+    fn requires_terminal_window_rebase(&self) -> bool {
+        match self {
+            Self::Activity {
+                base, reporting_tz, ..
+            } => {
+                let base = base.lock().expect("activity materializer state lock");
+                let Ok(range) = resolve_dashboard_activity_cached_range(
+                    &base.base.response().range,
+                    *reporting_tz,
+                ) else {
+                    return true;
+                };
+                if parse_duration_spec(&base.base.response().range).is_ok() {
+                    return rolling_dashboard_window_requires_rebase(
+                        base.rebase_range_start,
+                        Some(range.start),
+                    );
+                }
+                base.rebase_range_start != Some(range.start)
+            }
+            Self::Summary {
+                base,
+                window,
+                reporting_tz,
+                ..
+            } => {
+                let base = base.lock().expect("summary materializer state lock");
+                let current_range_start = summary_window_range(window, *reporting_tz, Utc::now())
+                    .ok()
+                    .flatten()
+                    .map(|(start, _)| start);
+                match (window, base.range_start, current_range_start) {
+                    (SummaryWindow::Duration(_), base_start, current_start) => {
+                        rolling_dashboard_window_requires_rebase(base_start, current_start)
+                    }
+                    (_, base_start, current_start) => base_start != current_start,
+                }
+            }
+            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
         }
     }
 
@@ -1603,10 +1654,38 @@ impl SubscriptionHub {
                 guard.dashboard_network_slice.as_deref(),
                 guard.dashboard_terminal_slice.as_deref(),
             )?;
-            if let Some(existing) = guard.topics.get_mut(&topic_key)
-                && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
-            {
-                return Ok(Some(existing));
+            let refreshed_dashboard_materializer = built_payload.dashboard_materializer();
+            let current_slice = guard.dashboard_current_slice.clone();
+            let network_slice = guard.dashboard_network_slice.clone();
+            let terminal_slice = guard.dashboard_terminal_slice.clone();
+            if let Some(existing) = guard.topics.get_mut(&topic_key) {
+                if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
+                    && existing.dirty
+                    && existing.dashboard_materializer.is_some()
+                    && refreshed_dashboard_materializer.is_some()
+                {
+                    existing.dirty = false;
+                    existing.refresh_scheduled = false;
+                    existing.snapshot_built_at = Instant::now();
+                    existing.dashboard_materializer = refreshed_dashboard_materializer.clone();
+                    existing.dashboard_base_revision = existing.cursor;
+                    existing.dashboard_materialized_revision = refreshed_dashboard_materializer
+                        .as_ref()
+                        .and_then(|materializer| {
+                            materializer.revision(
+                                existing.cursor,
+                                current_slice.as_deref(),
+                                network_slice.as_deref(),
+                                terminal_slice.as_deref(),
+                            )
+                        });
+                    existing.snapshot_payload = built_payload.snapshot_payload();
+                    return Ok(Some(existing.clone()));
+                }
+                if let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
+                {
+                    return Ok(Some(existing));
+                }
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
@@ -1625,7 +1704,7 @@ impl SubscriptionHub {
                 serialized_payload,
             )?);
             let payload_bytes = frame.payload_bytes.len();
-            let dashboard_materializer = built_payload.dashboard_materializer();
+            let dashboard_materializer = refreshed_dashboard_materializer;
             let dashboard_materialized_revision =
                 dashboard_materializer.as_ref().and_then(|materializer| {
                     materializer.revision(
@@ -1798,6 +1877,7 @@ impl SubscriptionHub {
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
             let terminal = guard.dashboard_terminal_slice.clone();
+            mark_dashboard_terminal_window_rebase_topics(&mut guard);
             let pending = collect_pending_dashboard_topic_materializations(&mut guard);
             (pending, current, network, terminal)
         };
@@ -2162,6 +2242,41 @@ impl SubscriptionHub {
     }
 }
 
+fn rolling_dashboard_window_requires_rebase(
+    base_start: Option<DateTime<Utc>>,
+    current_start: Option<DateTime<Utc>>,
+) -> bool {
+    match (base_start, current_start) {
+        (Some(base_start), Some(current_start)) => {
+            current_start < base_start
+                || current_start - base_start
+                    >= ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64)
+        }
+        (base_start, current_start) => base_start != current_start,
+    }
+}
+
+fn mark_dashboard_terminal_window_rebase_topics(guard: &mut SubscriptionHubState) {
+    let active_subscribers = guard.active_subscribers.clone();
+    for (topic_key, cached) in &mut guard.topics {
+        if cached.dirty
+            || !cached
+                .dashboard_materializer
+                .as_ref()
+                .is_some_and(DashboardTopicMaterializer::requires_terminal_window_rebase)
+        {
+            continue;
+        }
+        cached.dirty = true;
+        cached.refresh_scheduled = active_subscribers
+            .get(topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        cached.latest_live_snapshot = None;
+    }
+}
+
 fn collect_pending_dashboard_topic_materializations(
     guard: &mut SubscriptionHubState,
 ) -> Vec<PendingDashboardTopicMaterialization> {
@@ -2373,6 +2488,49 @@ impl SubscriptionHub {
             cached.dirty = true;
             cached.refresh_scheduled = false;
             cached.latest_live_snapshot = None;
+        }
+    }
+
+    pub(crate) async fn reconcile_dashboard_terminal_window_bases(&self, state: Arc<AppState>) {
+        let topics = {
+            let mut guard = self.state.lock().await;
+            mark_dashboard_terminal_window_rebase_topics(&mut guard);
+            let active_subscribers = guard.active_subscribers.clone();
+            guard
+                .topics
+                .iter()
+                .filter(|(topic_key, cached)| {
+                    cached.dirty
+                        && cached.refresh_scheduled
+                        && active_subscribers
+                            .get(*topic_key)
+                            .copied()
+                            .unwrap_or_default()
+                            > 0
+                        && cached.dashboard_materializer.as_ref().is_some_and(
+                            DashboardTopicMaterializer::requires_terminal_window_rebase,
+                        )
+                })
+                .map(|(_, cached)| cached.topic.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for topic in topics {
+            tracing::debug!(
+                topic = %topic.name(),
+                refresh_reason = "runtime_reconcile_window_rebase",
+                "rebuilding typed Dashboard base after moving-window boundary"
+            );
+            if let Err(err) = self
+                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %topic.name(),
+                    "runtime Dashboard window rebase failed; retaining last-good frame"
+                );
+            }
         }
     }
 
@@ -4306,11 +4464,15 @@ impl SubscriptionTopic {
                             deltas: pending_terminal_deltas,
                         },
                     );
+                    let range_start =
+                        summary_window_range(&summary_window, reporting_tz, Utc::now())?
+                            .map(|(start, _)| start);
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::Summary {
                             base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
                                 response,
                                 terminal_sequence,
+                                range_start,
                             ))),
                             window: summary_window,
                             reporting_tz,
@@ -6238,6 +6400,498 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_materializers_detect_stale_moving_window_bases() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let activity_materializer = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build activity base")
+            .dashboard_materializer()
+            .expect("activity typed materializer");
+        let summary_materializer = summary
+            .build_cached_payload(state)
+            .await
+            .expect("build summary base")
+            .dashboard_materializer()
+            .expect("summary typed materializer");
+
+        assert!(
+            !activity_materializer.requires_terminal_window_rebase(),
+            "a freshly built activity base must remain on the terminal delivery path",
+        );
+        assert!(
+            !summary_materializer.requires_terminal_window_rebase(),
+            "a freshly built duration base must wait for the reconcile boundary",
+        );
+
+        let DashboardTopicMaterializer::Activity { base, .. } = &activity_materializer else {
+            panic!("expected activity materializer");
+        };
+        base.lock()
+            .expect("activity materializer state lock")
+            .rebase_range_start = Some(Utc::now() - ChronoDuration::days(1));
+        let DashboardTopicMaterializer::Summary { base, .. } = &summary_materializer else {
+            panic!("expected summary materializer");
+        };
+        base.lock()
+            .expect("summary materializer state lock")
+            .range_start = Some(Utc::now() - ChronoDuration::days(2));
+
+        assert!(activity_materializer.requires_terminal_window_rebase());
+        assert!(summary_materializer.requires_terminal_window_rebase());
+    }
+
+    #[tokio::test]
+    async fn terminal_slice_keeps_fresh_moving_summary_base_off_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register active summary topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            !cached.dirty,
+            "a fresh duration base must not schedule a SQLite rebase from terminal delivery",
+        );
+        assert!(
+            !cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+                .requires_terminal_window_rebase(),
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_slice_keeps_fresh_rolling_activity_base_off_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&activity))
+            .await
+            .expect("register active rolling activity topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![activity.descriptor()], Vec::new())
+            .await
+            .expect("prepare rolling activity base");
+        let activity_key = activity.cache_key().expect("activity topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Activity { base, .. } = guard.topics[&activity_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed activity materializer")
+            else {
+                panic!("expected activity materializer");
+            };
+            let mut base = base.lock().expect("activity materializer state lock");
+            let current_start = base.rebase_range_start.expect("activity base range start");
+            base.rebase_range_start = Some(current_start - ChronoDuration::seconds(1));
+        }
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&activity_key];
+        assert!(
+            !cached.dirty,
+            "a fresh rolling activity base must not schedule a SQLite rebase from terminal delivery",
+        );
+        assert!(
+            !cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed activity materializer")
+                .requires_terminal_window_rebase(),
+        );
+    }
+
+    #[tokio::test]
+    async fn rolling_activity_terminal_slice_preserves_rebase_anchor() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let materializer = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build rolling activity base")
+            .dashboard_materializer()
+            .expect("typed activity materializer");
+        let DashboardTopicMaterializer::Activity { base, .. } = &materializer else {
+            panic!("expected activity materializer");
+        };
+        let stale_anchor = resolve_dashboard_activity_cached_range("1d", Shanghai)
+            .expect("rolling activity range")
+            .start
+            - ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64);
+        base.lock()
+            .expect("activity materializer state lock")
+            .rebase_range_start = Some(stale_anchor);
+
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-rolling-activity-anchor".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted terminal delta");
+
+        materializer
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta.clone()],
+                }),
+            )
+            .expect("apply nonempty terminal slice");
+
+        let base = base.lock().expect("activity materializer state lock");
+        assert_eq!(base.rebase_range_start, Some(stale_anchor));
+        assert_eq!(
+            base.base.response().terminal_sequence,
+            delta.terminal_sequence
+        );
+        drop(base);
+        assert!(
+            materializer.requires_terminal_window_rebase(),
+            "terminal delivery must not reset a rolling activity rebase boundary",
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_runtime_window_rebase_retains_an_isolated_last_good_frame() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register active summary topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Summary { base, .. } = guard.topics[&summary_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        }
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        assert!(
+            state.subscription_hub.state.lock().await.topics[&summary_key].dirty,
+            "terminal delivery must isolate a stale base without starting a database rebase",
+        );
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            cached.dirty && cached.refresh_scheduled,
+            "a failed rebase must preserve its last-good frame and isolate every slice",
+        );
+        assert!(
+            cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+                .requires_terminal_window_rebase(),
+            "the next runtime reconcile must retry the unresolved window rebase",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_reconcile_rebases_stale_activity_and_summary_window_bases() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let topics = vec![activity.clone(), summary.clone()];
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register active Dashboard topics");
+        state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                topics.iter().map(SubscriptionTopic::descriptor).collect(),
+                Vec::new(),
+            )
+            .await
+            .expect("prepare Dashboard topic bases");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        let summary_cursor_before = {
+            let mut guard = state.subscription_hub.state.lock().await;
+            let activity_cached = guard
+                .topics
+                .get_mut(&activity.cache_key().expect("activity topic key"))
+                .expect("activity cache entry");
+            let DashboardTopicMaterializer::Activity { base, .. } = activity_cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("activity materializer")
+            else {
+                panic!("expected activity materializer");
+            };
+            base.lock()
+                .expect("activity materializer state lock")
+                .rebase_range_start = Some(Utc::now() - ChronoDuration::days(1));
+            let summary_cached = guard
+                .topics
+                .get_mut(&summary_key)
+                .expect("summary cache entry");
+            let DashboardTopicMaterializer::Summary { base, .. } = summary_cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+            summary_cached.cursor
+        };
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        for topic_key in [
+            activity.cache_key().expect("activity topic key"),
+            summary_key.clone(),
+        ] {
+            let cached = &guard.topics[&topic_key];
+            assert!(
+                !cached.dirty
+                    && !cached
+                        .dashboard_materializer
+                        .as_ref()
+                        .expect("typed Dashboard materializer")
+                        .requires_terminal_window_rebase(),
+                "runtime reconciliation should replace stale terminal-window bases",
+            );
+        }
+        assert_eq!(
+            guard.topics[&summary_key].cursor, summary_cursor_before,
+            "a byte-identical summary rebase should retain its shared frame cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_reconcile_marks_inactive_stale_window_bases_dirty_for_reconnect() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let initial_lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register initial summary owner");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Summary { base, .. } = guard.topics[&summary_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        }
+        drop(initial_lease);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !state
+                    .subscription_hub
+                    .state
+                    .lock()
+                    .await
+                    .active_subscribers
+                    .contains_key(&summary_key)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("initial owner should release before the reconcile scan");
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let cached = &guard.topics[&summary_key];
+            assert!(
+                cached.dirty && !cached.refresh_scheduled,
+                "an inactive stale base must defer its authoritative rebuild to reconnect",
+            );
+        }
+
+        let _returned_lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register returning summary owner");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("rebuild stale summary base on reconnect");
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            !cached.dirty
+                && !cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .expect("typed summary materializer")
+                    .requires_terminal_window_rebase(),
+            "reconnecting must receive an authoritative moving-window base",
+        );
+    }
+
+    #[tokio::test]
     async fn summary_topic_base_preserves_pending_terminal_overlay() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -6293,6 +6947,9 @@ mod tests {
             base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
                 response,
                 terminal_sequence,
+                summary_window_range(&summary_window, Shanghai, Utc::now())
+                    .expect("summary range")
+                    .map(|(start, _)| start),
             ))),
             window: summary_window,
             reporting_tz: Shanghai,

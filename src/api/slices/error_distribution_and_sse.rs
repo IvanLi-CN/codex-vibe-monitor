@@ -3748,6 +3748,10 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
             };
             match reconcile_dashboard_runtime_projection_once(state.as_ref()).await {
                 Ok(capture) => {
+                    state
+                        .subscription_hub
+                        .reconcile_dashboard_terminal_window_bases(state.clone())
+                        .await;
                     tracing::debug!(
                         projection = "dashboard_current",
                         revision = capture.snapshot.revision,
