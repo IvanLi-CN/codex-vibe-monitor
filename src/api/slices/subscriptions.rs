@@ -6150,6 +6150,71 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn dashboard_network_recent_legacy_push_cadence_emits_live_payload() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let descriptor = topic.descriptor();
+        let mut receiver = hub.subscribe();
+
+        let prepared = hub
+            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+            .await
+            .expect("prepare legacy recent network topic");
+
+        assert_eq!(prepared.initial.len(), 1);
+        assert!(!topic.uses_server_push_cadence(RuntimeProjectionMode::Auto));
+        assert!(topic.uses_server_push_cadence(RuntimeProjectionMode::Legacy));
+
+        let _lease = hub
+            .register_server_push_topics(state.clone(), vec![topic])
+            .await
+            .expect("register legacy recent network push topic");
+        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "legacy-recent-network-cadence",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+
+        let dispatch = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("legacy recent network push should be emitted")
+            .expect("legacy recent network dispatch");
+
+        assert_eq!(dispatch.frame.descriptor, descriptor);
+        assert_eq!(
+            dispatch.frame.schema_epoch,
+            "dashboard.network-recent.current/v1"
+        );
+        let dispatch_payload = dispatch.frame.payload_value();
+        assert_eq!(
+            dispatch_payload
+                .get("windowSeconds")
+                .and_then(Value::as_i64),
+            Some(300)
+        );
+        assert_eq!(
+            dispatch_payload
+                .get("sampleSeconds")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            dispatch_payload
+                .get("points")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(300)
+        );
+    }
+
     #[test]
     fn prune_replay_window_enforces_event_cap() {
         let mut events = VecDeque::new();
