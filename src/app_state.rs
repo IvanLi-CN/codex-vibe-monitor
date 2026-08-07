@@ -1420,6 +1420,9 @@ fn dashboard_network_slice_content_eq(
 ) -> bool {
     left.network_live_bucket == right.network_live_bucket
         && left.network_realtime_rate == right.network_realtime_rate
+        && left.recent == right.recent
+        && left.current_snapshot == right.current_snapshot
+        && left.current_snapshot_by_account == right.current_snapshot_by_account
         && left.accounts.len() == right.accounts.len()
         && left.accounts.iter().all(|left| {
             right

@@ -42,18 +42,16 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 - Runtime mutations update a compact account-level live aggregate in place. The 250-millisecond producer clones only the bounded account snapshot and overlays network counters; it does not clone or traverse retained `ApiInvocation` records.
 - `runtimePressureHealth.requestPipeline` exposes the active mode, latest snapshot kind, cumulative semantic parse and whole-body materialization counts, rewrite buffer peak and latest fallback reason from in-memory counters.
 
-`SerializedTopicFrame` 已用于 cache、replay 与 subscriber 共享字节，但 producer 到 topic materialization 的边界尚未完成：
+`SerializedTopicFrame` is now materialized directly from typed Dashboard bases and immutable projection slices:
 
-- committed frame 之后的 cache、replay 与 subscriber 已共享不可变 `Arc`。
-- Dashboard live producer 仍广播完整业务 snapshot；多个受影响 topic 仍会克隆 cached payload、应用 JSON overlay 并分别序列化。这是当前需要迁移的生产热点，不能标记为已完成。
-- Byte-identical projections retain the current frame and cursor. Subscriber-free topics remain dirty and rebuild an authoritative snapshot when ownership returns.
-- 现有 focused tests 只覆盖单 topic Arc identity、owner-count scaling、unchanged cursor suppression 和 replay compatibility；后续验证必须覆盖一个 Dashboard tab 同时激活全部相关 topic 的真实 producer 拓扑。
+- `DashboardTopicMaterializer` retains one typed `Arc` base per cached topic and derives a `DashboardTopicRevision` from the base cursor plus only its dependencies: activity uses current and network, summary uses current, and network timeseries/recent use network.
+- In `auto` mode, the producer broadcasts only `DashboardCurrentSlice` or `DashboardNetworkSlice`. The subscription hub serializes each affected topic revision once, commits one shared `Arc<SerializedTopicFrame>` to cache/replay/broadcast, and SSE owners retain frame references rather than business payloads or mutable generic JSON.
+- Incoming slices and detached materialization commits are monotonic: stale slice revisions are rejected and the dependency graph is revalidated under the hub lock before a frame can update cache, replay or cursor state.
+- Revision delivery never rebuilds a topic base, reads SQLite, or reconciles. The network-recent cadence captures the memory slice directly; byte-identical output retains its frame and cursor. Subscriber-free topics remain dirty and rebuild an authoritative base when ownership returns.
+- The `legacy` kill switch keeps the pre-existing `DashboardActivityLive` and JSON-overlay delivery path intact. Terminal totals continue through the exact Records refresh path.
+- The full topology contract opens two real `topic_sse_stream` Dashboard connections, verifies one shared frame identity for activity, summary, network timeseries and network recent, asserts zero business-payload broadcasts and JSON overlays, one serialization/base clone per materialized revision, zero live-path SQLite reads, and no lag or skipped frames. Focused coverage also exercises cold network-only materialization, recent cadence sharing, revision independence and the current-state p95 gate.
 
-Dashboard full-topology contract opens real `topic_sse_stream` connections for the Dashboard topics and records producer, materialization and serialization amplification. It remains the gate for the later typed-materializer migration; the projection-slice wave does not claim topic-level clone or serialization removal.
-
-Runtime projection now maintains independent current/phase, network/rate and terminal-total dirty generations, revisions and non-extending `250ms`, `1s` and `5s` deadlines. Network-only changes do not build or advance the current slice; active network topics rearm only the network cadence so rates and recent windows decay without waking current projection. Until the typed topic migration lands, current slices use the existing `DashboardActivityLive` compatibility payload, while network slices update only the cached activity/network-timeseries JSON and shared frame without rebuilding from SQLite. Terminal totals continue through the exact Records refresh path. Terminal slice staging is bounded and drained on its fixed deadline even without subscribers, preventing subscriber-free retention. Unit coverage verifies deadline and revision independence, network isolation, terminal hard-limit behavior, cold network-only zero-SQL delivery and unchanged exact refresh semantics.
-
-The next delivery waves will attach the revisioned slices to typed `TopicMaterializer` implementations and generate shared frames directly. The existing `DashboardActivityLive` compatibility handoff remains until that migration is complete and production evidence permits its removal.
+Runtime projection maintains independent current/phase, network/rate and terminal-total dirty generations, revisions and non-extending `250ms`, `1s` and `5s` deadlines. Network-only changes do not build or advance the current slice; active network topics rearm only the network cadence so rates and recent windows decay without waking current projection. Terminal slice staging is bounded and drained on its fixed deadline even without subscribers, preventing subscriber-free retention.
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
 

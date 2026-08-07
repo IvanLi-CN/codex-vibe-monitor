@@ -655,6 +655,39 @@ pub(crate) async fn wait_for_pool_attempt_status(
     panic!("timed out waiting for attempt {attempt_index} to reach status {expected}");
 }
 
+async fn wait_for_pool_attempt_terminal_observation(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    attempt_index: i64,
+    expected_status: &str,
+    expected_http_status: i64,
+) {
+    for _ in 0..100 {
+        let observation: Option<(String, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT status, http_status
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id = ?1
+              AND attempt_index = ?2
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(attempt_index)
+        .fetch_optional(pool)
+        .await
+        .expect("load pool attempt terminal observation");
+        if observation.as_ref().is_some_and(|(status, http_status)| {
+            status == expected_status && *http_status == Some(expected_http_status)
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "timed out waiting for invocation {invoke_id} attempt {attempt_index} to reach {expected_status} with HTTP {expected_http_status}"
+    );
+}
+
 #[tokio::test]
 async fn pool_route_retries_upstream_413_once_on_same_account_then_succeeds() {
     #[derive(Debug, sqlx::FromRow)]
@@ -2682,28 +2715,43 @@ async fn pool_route_fails_over_on_unsupported_model_bad_request() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
+    let cvm_id = response
+        .headers()
+        .get(CVM_INVOKE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .expect("failover response should expose x-cvm-invoke-id");
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failover success body");
     let payload: Value = serde_json::from_slice(&body).expect("decode failover success body");
     assert_eq!(payload["authorization"], "Bearer upstream-secondary");
 
-    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
-    wait_for_pool_attempt_status(
+    wait_for_pool_attempt_terminal_observation(
         &state.pool,
+        &cvm_id,
         1,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        400,
     )
     .await;
-    wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-        .await;
+    wait_for_pool_attempt_terminal_observation(
+        &state.pool,
+        &cvm_id,
+        2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        200,
+    )
+    .await;
     let attempt_rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>)>(
         r#"
         SELECT attempt_index, http_status, failure_kind
         FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
         ORDER BY attempt_index ASC
         "#,
     )
+    .bind(&cvm_id)
     .fetch_all(&state.pool)
     .await
     .expect("load unsupported-model attempt rows");
