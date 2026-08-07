@@ -22,6 +22,11 @@ const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
 #[cfg(not(test))]
+const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_millis(50);
+
+#[cfg(not(test))]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
@@ -3331,6 +3336,30 @@ async fn run_server_push_topic_loop(
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
+    if !topic.is_closed_summary_topic() {
+        let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => {
+                    hub.clear_server_push_task(&topic_key).await;
+                    break;
+                }
+                _ = interval.tick() => {
+                    if hub.stop_server_push_task_if_idle(&topic_key).await {
+                        break;
+                    }
+                    if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                        warn!(?err, topic = %topic.name(), "failed to push legacy network recent topic cadence");
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     loop {
         tokio::select! {
             _ = state.shutdown.cancelled() => {
@@ -3435,9 +3464,10 @@ pub(crate) async fn topic_sse_stream(
         last_sent_cursors: last_seen_by_topic,
         outcomes: _,
     } = prepared;
+    let runtime_projection_mode = state.proxy_runtime_invocations.mode();
     let server_push_topics = selected_topics
         .iter()
-        .filter(|topic| topic.uses_server_push_cadence())
+        .filter(|topic| topic.uses_server_push_cadence(runtime_projection_mode))
         .cloned()
         .collect::<Vec<_>>();
     let server_push_lease = state
@@ -3503,8 +3533,10 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
-    fn uses_server_push_cadence(&self) -> bool {
+    fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
+            || (mode == RuntimeProjectionMode::Legacy
+                && matches!(self, Self::DashboardNetworkRecentCurrent))
     }
 
     fn uses_dashboard_activity_live_overlay(&self) -> bool {
@@ -5442,7 +5474,7 @@ mod tests {
                 upstream_account_id: None,
             };
 
-            assert!(topic.uses_server_push_cadence());
+            assert!(topic.uses_server_push_cadence(RuntimeProjectionMode::Auto));
             assert!(
                 subscription_calendar_rollover_delay(&topic) <= Duration::from_secs(24 * 60 * 60)
             );
@@ -6107,11 +6139,15 @@ mod tests {
         for topic in topics {
             assert!(topic.uses_dashboard_network_live_snapshot());
             assert!(
-                !topic.uses_server_push_cadence(),
+                !topic.uses_server_push_cadence(RuntimeProjectionMode::Auto),
                 "{} must be driven by the shared network projection cadence",
                 topic.name()
             );
         }
+        assert!(
+            SubscriptionTopic::DashboardNetworkRecentCurrent
+                .uses_server_push_cadence(RuntimeProjectionMode::Legacy)
+        );
     }
 
     #[test]
