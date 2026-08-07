@@ -5,7 +5,10 @@ use serde::de::DeserializeOwned;
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex as StdMutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -290,12 +293,6 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
-    fn record_payload_clone(&self, topic_name: &str) {
-        if let Some(topic) = self.for_topic(topic_name) {
-            topic.payload_clone_count.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     fn record_lag(&self, topic_name: &str, skipped: u64) {
         if let Some(topic) = self.for_topic(topic_name) {
             topic.lagged_count.fetch_add(1, Ordering::Relaxed);
@@ -363,6 +360,7 @@ struct SubscriptionHubState {
     server_push_tasks: HashSet<String>,
     dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
+    dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
 }
 
 #[derive(Debug, Clone)]
@@ -406,15 +404,62 @@ struct DashboardTopicRevision {
     base_revision: u64,
     current_revision: Option<u64>,
     network_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+}
+
+#[derive(Debug)]
+struct DashboardActivityMaterializerState {
+    response: DashboardActivityResponse,
+    current_revision: Option<u64>,
+    network_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+    terminal_sequence: u64,
+}
+
+impl DashboardActivityMaterializerState {
+    fn new(response: DashboardActivityResponse) -> Self {
+        let terminal_sequence = response.terminal_sequence;
+        Self {
+            response,
+            current_revision: None,
+            network_revision: None,
+            terminal_revision: None,
+            terminal_sequence,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DashboardSummaryMaterializerState {
+    response: StatsResponse,
+    current_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+    terminal_sequence: u64,
+}
+
+impl DashboardSummaryMaterializerState {
+    fn new(response: StatsResponse, terminal_sequence: u64) -> Self {
+        Self {
+            response,
+            current_revision: None,
+            terminal_revision: None,
+            terminal_sequence,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 enum DashboardTopicMaterializer {
     Activity {
-        base: Arc<DashboardActivityResponse>,
+        base: Arc<StdMutex<DashboardActivityMaterializerState>>,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
     },
     Summary {
-        base: Arc<StatsResponse>,
+        base: Arc<StdMutex<DashboardSummaryMaterializerState>>,
+        window: SummaryWindow,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
         upstream_account_id: Option<i64>,
     },
     NetworkTimeseries {
@@ -427,29 +472,32 @@ enum DashboardTopicMaterializer {
 }
 
 impl DashboardTopicMaterializer {
-    fn clones_typed_base(&self) -> bool {
-        matches!(self, Self::Activity { .. } | Self::Summary { .. })
-    }
-
     fn revision(
         &self,
         base_revision: u64,
         current: Option<&DashboardCurrentProjectionSlice>,
         network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
     ) -> Option<DashboardTopicRevision> {
         match self {
-            Self::Activity { .. } if current.is_some() || network.is_some() => {
+            Self::Activity { .. }
+                if current.is_some() || network.is_some() || terminal.is_some() =>
+            {
                 Some(DashboardTopicRevision {
                     base_revision,
                     current_revision: current.map(|slice| slice.revision),
                     network_revision: network.map(|slice| slice.revision),
+                    terminal_revision: terminal.map(|slice| slice.revision),
                 })
             }
-            Self::Summary { .. } => current.map(|slice| DashboardTopicRevision {
-                base_revision,
-                current_revision: Some(slice.revision),
-                network_revision: None,
-            }),
+            Self::Summary { .. } if current.is_some() || terminal.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: None,
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
             Self::NetworkTimeseries {
                 base,
                 upstream_account_id,
@@ -466,11 +514,13 @@ impl DashboardTopicMaterializer {
                     base_revision,
                     current_revision: None,
                     network_revision: Some(slice.revision),
+                    terminal_revision: None,
                 }),
             Self::NetworkRecent { .. } => network.map(|slice| DashboardTopicRevision {
                 base_revision,
                 current_revision: None,
                 network_revision: Some(slice.revision),
+                terminal_revision: None,
             }),
             _ => None,
         }
@@ -480,21 +530,75 @@ impl DashboardTopicMaterializer {
         &self,
         current: Option<&DashboardCurrentProjectionSlice>,
         network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
     ) -> Result<Vec<u8>, ApiError> {
         match self {
-            Self::Activity { base } => serde_json::to_vec(
-                &materialize_dashboard_activity_response(base.as_ref(), current, network),
-            )
-            .map_err(ApiError::from),
+            Self::Activity {
+                base,
+                reporting_tz,
+                source_scope,
+            } => {
+                let mut base = base.lock().expect("activity materializer state lock");
+                if current.is_some_and(|slice| base.current_revision < Some(slice.revision)) {
+                    apply_dashboard_activity_slices(&mut base.response, current, None);
+                    base.current_revision = current.map(|slice| slice.revision);
+                }
+                if network.is_some_and(|slice| base.network_revision < Some(slice.revision)) {
+                    apply_dashboard_activity_slices(&mut base.response, None, network);
+                    base.network_revision = network.map(|slice| slice.revision);
+                }
+                if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
+                    let DashboardActivityMaterializerState {
+                        response,
+                        terminal_sequence,
+                        ..
+                    } = &mut *base;
+                    apply_dashboard_terminal_slice_to_activity_response(
+                        response,
+                        terminal_sequence,
+                        *reporting_tz,
+                        *source_scope,
+                        terminal.expect("terminal slice checked above"),
+                    );
+                    base.terminal_revision = terminal.map(|slice| slice.revision);
+                }
+                serde_json::to_vec(&base.response).map_err(ApiError::from)
+            }
             Self::Summary {
                 base,
+                window,
+                reporting_tz,
+                source_scope,
                 upstream_account_id,
-            } => serde_json::to_vec(&materialize_dashboard_summary_response(
-                base.as_ref(),
-                *upstream_account_id,
-                current,
-            ))
-            .map_err(ApiError::from),
+            } => {
+                let mut base = base.lock().expect("summary materializer state lock");
+                if current.is_some_and(|slice| base.current_revision < Some(slice.revision)) {
+                    apply_dashboard_current_slice_to_summary_response(
+                        &mut base.response,
+                        *upstream_account_id,
+                        current,
+                    );
+                    base.current_revision = current.map(|slice| slice.revision);
+                }
+                if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
+                    let DashboardSummaryMaterializerState {
+                        response,
+                        terminal_sequence,
+                        ..
+                    } = &mut *base;
+                    apply_dashboard_terminal_slice_to_summary_response(
+                        response,
+                        terminal_sequence,
+                        window,
+                        *reporting_tz,
+                        *source_scope,
+                        *upstream_account_id,
+                        terminal.expect("terminal slice checked above"),
+                    );
+                    base.terminal_revision = terminal.map(|slice| slice.revision);
+                }
+                serde_json::to_vec(&base.response).map_err(ApiError::from)
+            }
             Self::NetworkTimeseries {
                 base,
                 upstream_account_id,
@@ -607,10 +711,11 @@ impl BuiltSubscriptionTopicPayload {
         &self,
         current: Option<&DashboardCurrentProjectionSlice>,
         network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
     ) -> Result<Vec<u8>, ApiError> {
         match self {
             Self::Json(payload) => serde_json::to_vec(payload).map_err(ApiError::from),
-            Self::Dashboard(materializer) => materializer.serialize(current, network),
+            Self::Dashboard(materializer) => materializer.serialize(current, network, terminal),
         }
     }
 
@@ -1476,13 +1581,6 @@ impl SubscriptionHub {
         self.dashboard_topology_counters
             .record_materialization(topic.name());
         let mut built_payload = topic.build_cached_payload(state.clone()).await?;
-        if matches!(
-            &built_payload,
-            BuiltSubscriptionTopicPayload::Dashboard(materializer) if materializer.clones_typed_base()
-        ) {
-            self.dashboard_topology_counters
-                .record_payload_clone(topic.name());
-        }
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1513,6 +1611,7 @@ impl SubscriptionHub {
             let serialized_payload = built_payload.serialize(
                 guard.dashboard_current_slice.as_deref(),
                 guard.dashboard_network_slice.as_deref(),
+                guard.dashboard_terminal_slice.as_deref(),
             )?;
             if let Some(existing) = guard.topics.get_mut(&topic_key)
                 && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
@@ -1543,6 +1642,7 @@ impl SubscriptionHub {
                         next_cursor,
                         guard.dashboard_current_slice.as_deref(),
                         guard.dashboard_network_slice.as_deref(),
+                        guard.dashboard_terminal_slice.as_deref(),
                     )
                 });
             let mut next = CachedSubscriptionTopic {
@@ -1647,7 +1747,7 @@ impl SubscriptionHub {
         &self,
         slice: DashboardCurrentProjectionSlice,
     ) {
-        let (pending, current, network) = {
+        let (pending, current, network, terminal) = {
             let mut guard = self.state.lock().await;
             if guard
                 .dashboard_current_slice
@@ -1659,10 +1759,11 @@ impl SubscriptionHub {
             guard.dashboard_current_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
             let pending = collect_pending_dashboard_topic_materializations(&mut guard);
-            (pending, current, network)
+            (pending, current, network, terminal)
         };
-        self.materialize_pending_dashboard_topics(pending, current, network)
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
             .await;
     }
 
@@ -1670,7 +1771,7 @@ impl SubscriptionHub {
         &self,
         slice: DashboardNetworkProjectionSlice,
     ) {
-        let (pending, current, network) = {
+        let (pending, current, network, terminal) = {
             let mut guard = self.state.lock().await;
             if guard
                 .dashboard_network_slice
@@ -1682,10 +1783,35 @@ impl SubscriptionHub {
             guard.dashboard_network_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
             let pending = collect_pending_dashboard_topic_materializations(&mut guard);
-            (pending, current, network)
+            (pending, current, network, terminal)
         };
-        self.materialize_pending_dashboard_topics(pending, current, network)
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
+    pub(crate) async fn materialize_dashboard_terminal_slice(
+        &self,
+        slice: DashboardTerminalProjectionSlice,
+    ) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_terminal_slice
+                .as_ref()
+                .is_some_and(|terminal| terminal.revision >= slice.revision)
+            {
+                return;
+            }
+            guard.dashboard_terminal_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
             .await;
     }
 
@@ -1694,12 +1820,14 @@ impl SubscriptionHub {
         pending: Vec<PendingDashboardTopicMaterialization>,
         current: Option<Arc<DashboardCurrentProjectionSlice>>,
         network: Option<Arc<DashboardNetworkProjectionSlice>>,
+        terminal: Option<Arc<DashboardTerminalProjectionSlice>>,
     ) {
         for pending in pending {
-            let serialized_payload = match pending
-                .materializer
-                .serialize(current.as_deref(), network.as_deref())
-            {
+            let serialized_payload = match pending.materializer.serialize(
+                current.as_deref(),
+                network.as_deref(),
+                terminal.as_deref(),
+            ) {
                 Ok(payload) => payload,
                 Err(err) => {
                     warn!(
@@ -1728,6 +1856,7 @@ impl SubscriptionHub {
             let mut guard = self.state.lock().await;
             let current = guard.dashboard_current_slice.clone();
             let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
             let Some(cached) = guard.topics.get_mut(&pending.topic_key) else {
                 return Ok(());
             };
@@ -1740,6 +1869,7 @@ impl SubscriptionHub {
                             cached.dashboard_base_revision,
                             current.as_deref(),
                             network.as_deref(),
+                            terminal.as_deref(),
                         )
                     });
             if cached.dashboard_base_revision != pending.revision.base_revision
@@ -1756,10 +1886,6 @@ impl SubscriptionHub {
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
                 .record_materialization(pending.topic_name);
-            if pending.materializer.clones_typed_base() {
-                self.dashboard_topology_counters
-                    .record_payload_clone(pending.topic_name);
-            }
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
@@ -1810,7 +1936,12 @@ impl SubscriptionHub {
             {
                 return;
             }
-            BroadcastPayload::DashboardTerminalSlice { .. } => return,
+            BroadcastPayload::DashboardTerminalSlice { slice } => {
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_terminal_slice(*slice).await;
+                }
+                return;
+            }
             _ => {}
         }
         let affected = {
@@ -1849,6 +1980,19 @@ impl SubscriptionHub {
         };
 
         for cached in affected {
+            if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+                && matches!(
+                    &payload,
+                    BroadcastPayload::Records { records }
+                        if records
+                            .iter()
+                            .any(crate::app_state::runtime_store_record_is_terminal)
+                )
+                && (cached.topic.uses_summary_live_overlay()
+                    || cached.topic.uses_dashboard_activity_live_overlay())
+            {
+                continue;
+            }
             if cached.topic.uses_summary_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
@@ -2035,6 +2179,7 @@ fn collect_pending_dashboard_topic_materializations(
     let server_push_subscribers = guard.server_push_subscribers.clone();
     let current = guard.dashboard_current_slice.clone();
     let network = guard.dashboard_network_slice.clone();
+    let terminal = guard.dashboard_terminal_slice.clone();
     guard
         .topics
         .iter_mut()
@@ -2061,6 +2206,7 @@ fn collect_pending_dashboard_topic_materializations(
                 cached.dashboard_base_revision,
                 current.as_deref(),
                 network.as_deref(),
+                terminal.as_deref(),
             )?;
             (cached.dashboard_materialized_revision != Some(revision)).then(|| {
                 PendingDashboardTopicMaterialization {
@@ -3114,13 +3260,11 @@ fn dashboard_activity_response_exact_range(
     })
 }
 
-fn materialize_dashboard_activity_response(
-    base: &DashboardActivityResponse,
+fn apply_dashboard_activity_slices(
+    response: &mut DashboardActivityResponse,
     current: Option<&DashboardCurrentProjectionSlice>,
     network: Option<&DashboardNetworkProjectionSlice>,
-) -> DashboardActivityResponse {
-    let mut response = base.clone();
-
+) {
     if let Some(current) = current {
         response.live_revision = current.revision;
         response.summary.stats.in_progress_conversation_count =
@@ -3132,7 +3276,7 @@ fn materialize_dashboard_activity_response(
         .then_some(current.in_progress_wait_sum_ms / current.in_progress_wait_sample_count as f64);
         response.summary.stats.in_progress_phase_counts = Some(current.in_progress_phase_counts);
 
-        let exact_range = dashboard_activity_response_exact_range(&response);
+        let exact_range = dashboard_activity_response_exact_range(response);
         let model_performance_available = response.summary.model_performance.available;
         if let Some(accounts) = response.accounts.as_mut() {
             let current_by_key = current
@@ -3229,8 +3373,6 @@ fn materialize_dashboard_activity_response(
             }
         }
     }
-
-    response
 }
 
 fn apply_dashboard_current_slice_to_activity_account(
@@ -3264,14 +3406,13 @@ fn apply_dashboard_current_rate_to_activity_account(
     account.current_avg_response_ms = current.avg_response_duration_ms();
 }
 
-fn materialize_dashboard_summary_response(
-    base: &StatsResponse,
+fn apply_dashboard_current_slice_to_summary_response(
+    response: &mut StatsResponse,
     upstream_account_id: Option<i64>,
     current: Option<&DashboardCurrentProjectionSlice>,
-) -> StatsResponse {
-    let mut response = base.clone();
+) {
     let Some(current) = current else {
-        return response;
+        return;
     };
     let account = upstream_account_id.and_then(|account_id| {
         current
@@ -3304,7 +3445,96 @@ fn materialize_dashboard_summary_response(
     response.in_progress_retry_conversation_count = Some(retry_count);
     response.in_progress_avg_wait_ms = wait_ms;
     response.in_progress_phase_counts = Some(phase_counts);
-    response
+}
+
+fn terminal_delta_matches_source_scope(
+    delta: &DashboardActivityTerminalDelta,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    source_scope != InvocationSourceScope::ProxyOnly || delta.source == SOURCE_PROXY
+}
+
+fn terminal_delta_is_within_range(
+    delta: &DashboardActivityTerminalDelta,
+    range: ExactUtcRange,
+) -> bool {
+    parse_to_utc_datetime(&delta.occurred_at)
+        .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
+}
+
+fn apply_dashboard_terminal_slice_to_activity_response(
+    response: &mut DashboardActivityResponse,
+    terminal_sequence: &mut u64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    slice: &DashboardTerminalProjectionSlice,
+) {
+    let Ok(range) = resolve_dashboard_activity_cached_range(&response.range, reporting_tz) else {
+        return;
+    };
+    let deltas = slice
+        .deltas
+        .iter()
+        .filter(|delta| {
+            terminal_delta_matches_source_scope(delta, source_scope)
+                && delta.terminal_sequence > *terminal_sequence
+                && terminal_delta_is_within_range(delta, range)
+        })
+        .collect::<Vec<_>>();
+    if deltas.is_empty() {
+        return;
+    }
+
+    response.range_start = format_utc_iso_precise(range.start);
+    response.range_end = format_utc_iso_precise(range.end);
+    response.snapshot_id = range.end.timestamp_millis();
+    for delta in &deltas {
+        apply_dashboard_activity_terminal_delta_to_stats(&mut response.summary.stats, delta);
+        *terminal_sequence = (*terminal_sequence).max(delta.terminal_sequence);
+    }
+    if let Some(accounts) = response.accounts.as_mut() {
+        for delta in deltas {
+            if !accounts
+                .iter()
+                .any(|account| account.upstream_account_id == delta.upstream_account_id)
+            {
+                accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
+            }
+            let account = accounts
+                .iter_mut()
+                .find(|account| account.upstream_account_id == delta.upstream_account_id)
+                .expect("terminal account inserted when absent");
+            apply_dashboard_activity_terminal_delta_to_account(account, delta);
+        }
+        sort_dashboard_activity_accounts(accounts);
+    }
+}
+
+fn apply_dashboard_terminal_slice_to_summary_response(
+    response: &mut StatsResponse,
+    terminal_sequence: &mut u64,
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    slice: &DashboardTerminalProjectionSlice,
+) {
+    let range = summary_window_range(window, reporting_tz, Utc::now())
+        .ok()
+        .flatten()
+        .map(|(start, end)| ExactUtcRange { start, end });
+    for delta in &slice.deltas {
+        if !terminal_delta_matches_source_scope(delta, source_scope)
+            || delta.terminal_sequence <= *terminal_sequence
+            || upstream_account_id
+                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
+        {
+            continue;
+        }
+        apply_dashboard_activity_terminal_delta_to_stats(response, delta);
+        *terminal_sequence = (*terminal_sequence).max(delta.terminal_sequence);
+    }
 }
 
 fn dashboard_network_timeseries_live_point<'a>(
@@ -4076,6 +4306,8 @@ impl SubscriptionTopic {
                     include_accounts,
                     include_recent,
                 } if range != "yesterday" => {
+                    let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let source_scope = resolve_default_source_scope(&state.pool).await?;
                     let Json(response) = fetch_dashboard_activity(
                         State(state),
                         Query(DashboardActivityQuery {
@@ -4089,7 +4321,11 @@ impl SubscriptionTopic {
                     .await?;
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::Activity {
-                            base: Arc::new(response),
+                            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(
+                                response,
+                            ))),
+                            reporting_tz,
+                            source_scope,
                         },
                     ));
                 }
@@ -4099,20 +4335,58 @@ impl SubscriptionTopic {
                     limit,
                     upstream_account_id,
                 } if !matches!(window.as_str(), "yesterday" | "previous7d") => {
+                    let query = SummaryQuery {
+                        window: Some(window.clone()),
+                        limit: *limit,
+                        time_zone: Some(time_zone.clone()),
+                        upstream_account_id: *upstream_account_id,
+                    };
+                    let summary_window =
+                        parse_summary_window(&query, state.config.list_limit_max as i64)?;
+                    let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let source_scope = resolve_default_source_scope(&state.pool).await?;
                     let response = load_summary_response_from_query(
                         state.as_ref(),
-                        &SummaryQuery {
-                            window: Some(window.clone()),
-                            limit: *limit,
-                            time_zone: Some(time_zone.clone()),
-                            upstream_account_id: *upstream_account_id,
-                        },
+                        &query,
                         SummaryBuildRoute::Topic,
                     )
                     .await?;
+                    let (pending_terminal_deltas, terminal_sequence) = {
+                        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+                        (
+                            cache
+                                .read_model
+                                .pending_terminal_deltas
+                                .iter()
+                                .filter(|delta| delta.persisted_row_id.is_none())
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                            cache.read_model.next_terminal_sequence,
+                        )
+                    };
+                    let mut response = response;
+                    let mut replayed_terminal_sequence = 0;
+                    apply_dashboard_terminal_slice_to_summary_response(
+                        &mut response,
+                        &mut replayed_terminal_sequence,
+                        &summary_window,
+                        reporting_tz,
+                        source_scope,
+                        *upstream_account_id,
+                        &DashboardTerminalProjectionSlice {
+                            revision: 0,
+                            deltas: pending_terminal_deltas,
+                        },
+                    );
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::Summary {
-                            base: Arc::new(response),
+                            base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
+                                response,
+                                terminal_sequence,
+                            ))),
+                            window: summary_window,
+                            reporting_tz,
+                            source_scope,
                             upstream_account_id: *upstream_account_id,
                         },
                     ));
@@ -5226,8 +5500,8 @@ mod tests {
                 "each materialized topic revision should serialize exactly once"
             );
             assert_eq!(
-                topic.payload_clone_count, topic.materialization_count,
-                "each materialized topic revision should clone its typed base once"
+                topic.payload_clone_count, 0,
+                "activity and summary must mutate typed bases without complete payload clones"
             );
         }
         for topic in [delivery.network_timeseries, delivery.network_recent] {
@@ -5650,6 +5924,229 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_slice_materializes_activity_and_summary_without_live_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let topics = vec![activity.clone(), summary.clone()];
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register active Dashboard topics");
+        state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                topics.iter().map(SubscriptionTopic::descriptor).collect(),
+                Vec::new(),
+            )
+            .await
+            .expect("prepare Dashboard topic bases");
+
+        let activity_key = activity.cache_key().expect("activity topic key");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        let (activity_cursor_before, summary_cursor_before) = {
+            let guard = state.subscription_hub.state.lock().await;
+            (
+                guard.topics[&activity_key].cursor,
+                guard.topics[&summary_key].cursor,
+            )
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.invoke_id = "dashboard-runtime-terminal-materialization".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome.terminal_delta.expect("accepted terminal delta");
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardTerminalSlice {
+                    slice: Box::new(DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: vec![delta],
+                    }),
+                },
+            )
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let activity_cached = &guard.topics[&activity_key];
+        let summary_cached = &guard.topics[&summary_key];
+        assert_eq!(activity_cached.cursor, activity_cursor_before + 1);
+        assert_eq!(summary_cached.cursor, summary_cursor_before + 1);
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["summary"]["stats"]["totalCount"],
+            json!(1)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["upstreamAccountId"],
+            json!(42)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["totalTokens"],
+            json!(42)
+        );
+        assert_eq!(
+            summary_cached.snapshot_frame.payload_value()["totalCount"],
+            json!(1)
+        );
+        drop(guard);
+
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardTerminalSlice {
+                    slice: Box::new(DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: Vec::new(),
+                    }),
+                },
+            )
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        assert_eq!(
+            guard.topics[&activity_key].cursor,
+            activity_cursor_before + 1,
+            "an unchanged terminal revision must not advance the activity cursor",
+        );
+        assert_eq!(
+            guard.topics[&summary_key].cursor,
+            summary_cursor_before + 1,
+            "an unchanged terminal revision must not advance the summary cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_materializer_skips_terminal_delta_already_folded_into_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.invoke_id = "dashboard-runtime-folded-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome.terminal_delta.expect("accepted terminal delta");
+
+        let payload = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build typed activity base")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize folded activity base");
+        let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
+        assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
+        assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn summary_materializer_skips_terminal_delta_already_folded_into_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 748_002;
+        terminal.invoke_id = "dashboard-runtime-summary-folded-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, total_tokens, output_tokens, cost,
+                status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.model.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(terminal.status.as_deref())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal baseline row");
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome
+            .terminal_delta
+            .expect("accepted persisted terminal delta");
+
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build typed summary base")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize folded summary base");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
     async fn dashboard_materialization_rejects_out_of_order_network_revisions() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -5699,6 +6196,7 @@ mod tests {
                 .serialize(
                     guard.dashboard_current_slice.as_deref(),
                     guard.dashboard_network_slice.as_deref(),
+                    guard.dashboard_terminal_slice.as_deref(),
                 )
                 .expect("serialize stale network revision");
             (pending, payload)
@@ -5730,6 +6228,7 @@ mod tests {
                 base_revision: cached.dashboard_base_revision,
                 current_revision: None,
                 network_revision: Some(newer.revision),
+                terminal_revision: None,
             }),
             "a delayed frame must not replace the latest materialized revision",
         );

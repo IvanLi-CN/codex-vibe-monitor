@@ -2207,6 +2207,8 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) snapshot_id: i64,
+    #[serde(skip)]
+    pub(crate) terminal_sequence: u64,
     pub(crate) live_revision: u64,
     pub(crate) rate_window: DashboardActivityRateWindowResponse,
     pub(crate) summary: DashboardActivitySummaryResponse,

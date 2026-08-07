@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::DashboardTerminalProjectionSlice;
 use serde_json::json;
 
 async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
@@ -16052,7 +16053,7 @@ async fn dashboard_activity_subscription_projection_slices_update_cached_frame_w
 }
 
 #[tokio::test]
-async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl() {
+async fn dashboard_activity_subscription_terminal_slice_updates_without_ttl_refresh() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -16104,7 +16105,7 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
     .bind("{}")
     .execute(&state.pool)
     .await
-    .expect("insert terminal invocation for deferred dashboard topic refresh");
+    .expect("insert terminal invocation for dashboard topic materialization");
 
     let terminal_record = crate::api::ApiInvocation {
         id: 93_101_i64,
@@ -16187,13 +16188,19 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
         t_persist_ms: None,
         created_at: occurred_at.clone(),
     };
-    apply_dashboard_activity_terminal_record(state.as_ref(), &terminal_record).await;
+    let terminal_delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal_record)
+        .await
+        .terminal_delta
+        .expect("accept persisted terminal delta");
     state
         .subscription_hub
         .handle_internal_broadcast(
             state.clone(),
-            BroadcastPayload::Records {
-                records: vec![terminal_record],
+            BroadcastPayload::DashboardTerminalSlice {
+                slice: Box::new(DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![terminal_delta],
+                }),
             },
         )
         .await;
@@ -16206,7 +16213,7 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
             vec![],
         )
         .await
-        .expect("prepare dashboard activity topic before deferred refresh window");
+        .expect("prepare dashboard activity topic after terminal slice materialization");
     let immediate_payload = extract_subscription_snapshot_payload(immediate_prepared);
     assert_eq!(
         immediate_payload
@@ -16217,39 +16224,8 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
             .and_then(|stats| stats.get("totalCount"))
             .and_then(Value::as_i64)
             .unwrap_or_default(),
-        0
+        1
     );
-
-    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-
-    let refresh_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    let refreshed_total_count = loop {
-        let refreshed_prepared = state
-            .subscription_hub
-            .prepare_connection(
-                state.clone(),
-                vec![dashboard_activity_topic_descriptor()],
-                vec![],
-            )
-            .await
-            .expect("prepare dashboard activity topic after deferred refresh window");
-        let refreshed_payload = extract_subscription_snapshot_payload(refreshed_prepared);
-        let refreshed_total_count = refreshed_payload
-            .get("summary")
-            .and_then(Value::as_object)
-            .and_then(|summary| summary.get("stats"))
-            .and_then(Value::as_object)
-            .and_then(|stats| stats.get("totalCount"))
-            .and_then(Value::as_i64);
-        if refreshed_total_count == Some(1) {
-            break refreshed_total_count;
-        }
-        if tokio::time::Instant::now() >= refresh_deadline {
-            break refreshed_total_count;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
-    assert_eq!(refreshed_total_count, Some(1));
 }
 
 #[tokio::test]

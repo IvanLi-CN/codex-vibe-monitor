@@ -12072,6 +12072,7 @@ pub(crate) struct DashboardActivitySnapshot {
     range: String,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    terminal_sequence: u64,
     accounts: Vec<DashboardActivityAccountResponse>,
     summary: DashboardActivitySummaryResponse,
     summary_model_performance_accumulator: ModelPerformanceAccumulator,
@@ -12107,6 +12108,7 @@ impl DashboardActivitySnapshot {
             range: range.to_string(),
             range_start: now,
             range_end: now + ChronoDuration::minutes(1),
+            terminal_sequence: 0,
             accounts: Vec::new(),
             summary: DashboardActivitySummaryResponse {
                 stats: StatsResponse {
@@ -12742,6 +12744,19 @@ fn dashboard_activity_terminal_account(
     snapshot: &DashboardActivitySnapshot,
     delta: &DashboardActivityTerminalDelta,
 ) -> DashboardActivityAccountResponse {
+    dashboard_activity_terminal_account_for_range(
+        ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        },
+        delta,
+    )
+}
+
+pub(crate) fn dashboard_activity_terminal_account_for_range(
+    range: ExactUtcRange,
+    delta: &DashboardActivityTerminalDelta,
+) -> DashboardActivityAccountResponse {
     let upstream_account_id = delta.upstream_account_id;
     DashboardActivityAccountResponse {
         account_key: upstream_account_id
@@ -12787,13 +12802,7 @@ fn dashboard_activity_terminal_account(
             costs: None,
             models: Vec::new(),
         },
-        model_performance: ModelPerformanceAccumulator::default().into_response(
-            ExactUtcRange {
-                start: snapshot.range_start,
-                end: snapshot.range_end,
-            },
-            false,
-        ),
+        model_performance: ModelPerformanceAccumulator::default().into_response(range, false),
         cache_hit_rate: None,
         tokens_per_minute: None,
         spend_rate: None,
@@ -12821,6 +12830,7 @@ fn apply_dashboard_activity_compact_terminal_delta(
     snapshot: &mut DashboardActivitySnapshot,
     delta: &DashboardActivityTerminalDelta,
 ) {
+    snapshot.terminal_sequence = snapshot.terminal_sequence.max(delta.terminal_sequence);
     apply_dashboard_activity_terminal_delta_to_stats(&mut snapshot.summary.stats, delta);
 
     let model_performance_available = snapshot.summary.model_performance.available;
@@ -12898,7 +12908,7 @@ pub(crate) fn apply_dashboard_activity_terminal_delta_to_stats(
     }
 }
 
-fn apply_dashboard_activity_terminal_delta_to_account(
+pub(crate) fn apply_dashboard_activity_terminal_delta_to_account(
     account: &mut DashboardActivityAccountResponse,
     delta: &DashboardActivityTerminalDelta,
 ) {
@@ -15369,6 +15379,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
+        terminal_sequence: 0,
         accounts: Vec::new(),
         summary: DashboardActivitySummaryResponse {
             stats,
@@ -15463,6 +15474,7 @@ async fn load_dashboard_activity_snapshot_for_range(
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
+        terminal_sequence: 0,
         accounts: build.accounts,
         summary,
         summary_model_performance_accumulator: build.summary_model_performance_accumulator,
@@ -16972,6 +16984,7 @@ pub(crate) async fn fetch_dashboard_activity(
         range_start: range_start.clone(),
         range_end: range_end.clone(),
         snapshot_id: snapshot.range_end.timestamp_millis(),
+        terminal_sequence: snapshot.terminal_sequence,
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
             start: format_utc_iso_precise(current_rate_window.start),

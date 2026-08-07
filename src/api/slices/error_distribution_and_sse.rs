@@ -4333,8 +4333,24 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                         }
                     }
                     DashboardProjectionSlice::Terminal => {
-                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
-                            let _ = proxy_runtime_invocations.capture_terminal_slice();
+                        if proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+                            && let Some(capture) =
+                                proxy_runtime_invocations.capture_terminal_slice()
+                        {
+                            let revision = capture.revision;
+                            if let Err(err) =
+                                broadcaster.send(BroadcastPayload::DashboardTerminalSlice {
+                                    slice: Box::new(DashboardTerminalProjectionSlice {
+                                        revision: capture.revision,
+                                        deltas: capture.deltas,
+                                    }),
+                                })
+                            {
+                                warn!(
+                                    ?err,
+                                    revision, "failed to broadcast dashboard terminal slice"
+                                );
+                            }
                         }
                     }
                 }
