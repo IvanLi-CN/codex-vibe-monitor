@@ -409,22 +409,19 @@ struct DashboardTopicRevision {
 
 #[derive(Debug)]
 struct DashboardActivityMaterializerState {
-    response: DashboardActivityResponse,
+    base: DashboardActivityTopicMaterializedBase,
     current_revision: Option<u64>,
     network_revision: Option<u64>,
     terminal_revision: Option<u64>,
-    terminal_sequence: u64,
 }
 
 impl DashboardActivityMaterializerState {
-    fn new(response: DashboardActivityResponse) -> Self {
-        let terminal_sequence = response.terminal_sequence;
+    fn new(base: DashboardActivityTopicMaterializedBase) -> Self {
         Self {
-            response,
+            base,
             current_revision: None,
             network_revision: None,
             terminal_revision: None,
-            terminal_sequence,
         }
     }
 }
@@ -540,29 +537,22 @@ impl DashboardTopicMaterializer {
             } => {
                 let mut base = base.lock().expect("activity materializer state lock");
                 if current.is_some_and(|slice| base.current_revision < Some(slice.revision)) {
-                    apply_dashboard_activity_slices(&mut base.response, current, None);
+                    apply_dashboard_activity_slices(base.base.response_mut(), current, None);
                     base.current_revision = current.map(|slice| slice.revision);
                 }
                 if network.is_some_and(|slice| base.network_revision < Some(slice.revision)) {
-                    apply_dashboard_activity_slices(&mut base.response, None, network);
+                    apply_dashboard_activity_slices(base.base.response_mut(), None, network);
                     base.network_revision = network.map(|slice| slice.revision);
                 }
                 if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
-                    let DashboardActivityMaterializerState {
-                        response,
-                        terminal_sequence,
-                        ..
-                    } = &mut *base;
-                    apply_dashboard_terminal_slice_to_activity_response(
-                        response,
-                        terminal_sequence,
+                    base.base.apply_terminal_slice(
                         *reporting_tz,
                         *source_scope,
                         terminal.expect("terminal slice checked above"),
                     );
                     base.terminal_revision = terminal.map(|slice| slice.revision);
                 }
-                serde_json::to_vec(&base.response).map_err(ApiError::from)
+                serde_json::to_vec(base.base.response()).map_err(ApiError::from)
             }
             Self::Summary {
                 base,
@@ -3462,54 +3452,6 @@ fn terminal_delta_is_within_range(
         .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
 }
 
-fn apply_dashboard_terminal_slice_to_activity_response(
-    response: &mut DashboardActivityResponse,
-    terminal_sequence: &mut u64,
-    reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-    slice: &DashboardTerminalProjectionSlice,
-) {
-    let Ok(range) = resolve_dashboard_activity_cached_range(&response.range, reporting_tz) else {
-        return;
-    };
-    let deltas = slice
-        .deltas
-        .iter()
-        .filter(|delta| {
-            terminal_delta_matches_source_scope(delta, source_scope)
-                && delta.terminal_sequence > *terminal_sequence
-                && terminal_delta_is_within_range(delta, range)
-        })
-        .collect::<Vec<_>>();
-    if deltas.is_empty() {
-        return;
-    }
-
-    response.range_start = format_utc_iso_precise(range.start);
-    response.range_end = format_utc_iso_precise(range.end);
-    response.snapshot_id = range.end.timestamp_millis();
-    for delta in &deltas {
-        apply_dashboard_activity_terminal_delta_to_stats(&mut response.summary.stats, delta);
-        *terminal_sequence = (*terminal_sequence).max(delta.terminal_sequence);
-    }
-    if let Some(accounts) = response.accounts.as_mut() {
-        for delta in deltas {
-            if !accounts
-                .iter()
-                .any(|account| account.upstream_account_id == delta.upstream_account_id)
-            {
-                accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
-            }
-            let account = accounts
-                .iter_mut()
-                .find(|account| account.upstream_account_id == delta.upstream_account_id)
-                .expect("terminal account inserted when absent");
-            apply_dashboard_activity_terminal_delta_to_account(account, delta);
-        }
-        sort_dashboard_activity_accounts(accounts);
-    }
-}
-
 fn apply_dashboard_terminal_slice_to_summary_response(
     response: &mut StatsResponse,
     terminal_sequence: &mut u64,
@@ -4308,21 +4250,21 @@ impl SubscriptionTopic {
                 } if range != "yesterday" => {
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
                     let source_scope = resolve_default_source_scope(&state.pool).await?;
-                    let Json(response) = fetch_dashboard_activity(
-                        State(state),
-                        Query(DashboardActivityQuery {
+                    let base = build_dashboard_activity_topic_materialized_base(
+                        state.as_ref(),
+                        &DashboardActivityQuery {
                             range: range.clone(),
                             recent_limit: Some(*recent_limit),
                             time_zone: Some(time_zone.clone()),
                             include_accounts: *include_accounts,
                             include_recent: Some(*include_recent),
-                        }),
+                        },
                     )
                     .await?;
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::Activity {
                             base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(
-                                response,
+                                base,
                             ))),
                             reporting_tz,
                             source_scope,
@@ -5388,6 +5330,39 @@ mod tests {
         state
             .proxy_runtime_invocations
             .upsert(dashboard_runtime_topology_live_record(&occurred_at));
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 748_003;
+        terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        terminal.t_total_ms = Some(3_450.0);
+        terminal.t_req_read_ms = Some(10.0);
+        terminal.t_req_parse_ms = Some(12.0);
+        terminal.t_upstream_connect_ms = Some(18.0);
+        terminal.t_upstream_ttfb_ms = Some(508.0);
+        terminal.first_token_ms = Some(650.0);
+        terminal.t_upstream_stream_ms = Some(2_800.0);
+        let terminal_delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept terminal projection delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(terminal_delta);
+        let terminal_capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture one terminal projection slice");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: terminal_capture.revision,
+                deltas: terminal_capture.deltas,
+            })
+            .await;
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -5449,6 +5424,35 @@ mod tests {
                 "topic {topic} should reuse one serialized frame across SSE owners",
             );
         }
+        for (topic, terminal_total) in [
+            ("dashboard.activity.current", json!(1)),
+            ("stats.summary.current", json!(1)),
+        ] {
+            let first_owner_frames = first_observations
+                .get(topic)
+                .expect("first owner should observe terminal Dashboard frame");
+            let second_owner_frames = second_observations
+                .get(topic)
+                .expect("second owner should observe terminal Dashboard frame");
+            let terminal_frame = first_owner_frames
+                .iter()
+                .find(|frame| {
+                    let payload = frame.payload_value();
+                    let total = if topic == "dashboard.activity.current" {
+                        &payload["summary"]["stats"]["totalCount"]
+                    } else {
+                        &payload["totalCount"]
+                    };
+                    total == &terminal_total
+                })
+                .expect("first owner should observe the terminal slice frame");
+            assert!(
+                second_owner_frames
+                    .iter()
+                    .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
+                "terminal topic {topic} must reuse one frame across two SSE owners",
+            );
+        }
 
         let projection = state
             .proxy_runtime_invocations
@@ -5459,8 +5463,8 @@ mod tests {
         assert_eq!(projection.network.build_count, 1);
         assert_eq!(projection.network.revision_count, 1);
         assert_eq!(projection.network.cadence_miss_count, 0);
-        assert_eq!(projection.terminal.build_count, 0);
-        assert_eq!(projection.terminal.revision_count, 0);
+        assert_eq!(projection.terminal.build_count, 1);
+        assert_eq!(projection.terminal.revision_count, 1);
         assert_eq!(projection.terminal.cadence_miss_count, 0);
         assert_eq!(
             state
@@ -5975,6 +5979,16 @@ mod tests {
         terminal.total_tokens = Some(42);
         terminal.output_tokens = Some(16);
         terminal.cost = Some(0.25);
+        terminal.prompt_cache_key = Some("terminal-materialized-recent".to_string());
+        terminal.request_model = Some("gpt-5".to_string());
+        terminal.response_model = Some("gpt-5".to_string());
+        terminal.t_total_ms = Some(3_450.0);
+        terminal.t_req_read_ms = Some(10.0);
+        terminal.t_req_parse_ms = Some(12.0);
+        terminal.t_upstream_connect_ms = Some(18.0);
+        terminal.t_upstream_ttfb_ms = Some(508.0);
+        terminal.first_token_ms = Some(650.0);
+        terminal.t_upstream_stream_ms = Some(2_800.0);
         let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
         let delta = outcome.terminal_delta.expect("accepted terminal delta");
         state.pool.close().await;
@@ -6008,6 +6022,28 @@ mod tests {
         assert_eq!(
             activity_cached.snapshot_frame.payload_value()["accounts"][0]["totalTokens"],
             json!(42)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["summary"]["modelPerformance"]["total"]
+                ["cumulativeUsageDurationMs"],
+            json!(3_450.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["firstTokenAvgMs"],
+            json!(650.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["avgTotalMs"],
+            json!(3_450.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["modelPerformance"]["models"]
+                [0]["model"],
+            json!("gpt-5")
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["recentInvocations"][0]["invokeId"],
+            json!("dashboard-runtime-terminal-materialization")
         );
         assert_eq!(
             summary_cached.snapshot_frame.payload_value()["totalCount"],

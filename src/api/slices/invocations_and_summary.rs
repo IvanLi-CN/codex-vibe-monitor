@@ -12084,6 +12084,127 @@ pub(crate) struct DashboardActivitySnapshot {
     build_telemetry: DashboardActivityBuildTelemetry,
 }
 
+/// Stateful typed base used only by Auto dashboard topic delivery. It retains the aggregate
+/// inputs that are intentionally absent from the public response so terminal slices can preserve
+/// the existing model-performance, latency, and recent-invocation response semantics.
+#[derive(Debug)]
+pub(crate) struct DashboardActivityTopicMaterializedBase {
+    response: DashboardActivityResponse,
+    summary_model_performance_accumulator: ModelPerformanceAccumulator,
+    account_model_performance_accumulators: HashMap<Option<i64>, ModelPerformanceAccumulator>,
+    account_latency_accumulators: HashMap<Option<i64>, DashboardActivityAccountLatencyAccumulator>,
+    model_performance_accumulator_ready: bool,
+    recent_limit: usize,
+    include_recent: bool,
+}
+
+impl DashboardActivityTopicMaterializedBase {
+    pub(crate) fn response(&self) -> &DashboardActivityResponse {
+        &self.response
+    }
+
+    pub(crate) fn response_mut(&mut self) -> &mut DashboardActivityResponse {
+        &mut self.response
+    }
+
+    pub(crate) fn apply_terminal_slice(
+        &mut self,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
+        slice: &DashboardTerminalProjectionSlice,
+    ) {
+        let Ok(range) = resolve_dashboard_activity_cached_range(&self.response.range, reporting_tz)
+        else {
+            return;
+        };
+        let deltas = slice
+            .deltas
+            .iter()
+            .filter(|delta| {
+                dashboard_activity_terminal_delta_matches_source_scope(delta, source_scope)
+                    && delta.terminal_sequence > self.response.terminal_sequence
+                    && dashboard_activity_terminal_delta_is_within_range(delta, range)
+            })
+            .collect::<Vec<_>>();
+        if deltas.is_empty() {
+            return;
+        }
+
+        self.response.range_start = format_utc_iso_precise(range.start);
+        self.response.range_end = format_utc_iso_precise(range.end);
+        self.response.snapshot_id = range.end.timestamp_millis();
+        let model_performance_available = self.response.summary.model_performance.available;
+        for delta in &deltas {
+            apply_dashboard_activity_terminal_delta_to_stats(
+                &mut self.response.summary.stats,
+                delta,
+            );
+            if self.model_performance_accumulator_ready {
+                self.summary_model_performance_accumulator
+                    .add_terminal_delta(delta);
+                self.response.summary.model_performance = self
+                    .summary_model_performance_accumulator
+                    .clone()
+                    .into_response(range, model_performance_available);
+            }
+            self.response.terminal_sequence =
+                self.response.terminal_sequence.max(delta.terminal_sequence);
+        }
+
+        let Some(accounts) = self.response.accounts.as_mut() else {
+            return;
+        };
+        for delta in deltas {
+            if !accounts
+                .iter()
+                .any(|account| account.upstream_account_id == delta.upstream_account_id)
+            {
+                accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
+            }
+
+            let account_model_performance = if self.model_performance_accumulator_ready {
+                let accumulator = self
+                    .account_model_performance_accumulators
+                    .entry(delta.upstream_account_id)
+                    .or_default();
+                accumulator.add_terminal_delta(delta);
+                Some(
+                    accumulator
+                        .clone()
+                        .into_response(range, model_performance_available),
+                )
+            } else {
+                None
+            };
+            let account_latency = {
+                let accumulator = self
+                    .account_latency_accumulators
+                    .entry(delta.upstream_account_id)
+                    .or_default();
+                accumulator.add_terminal_delta(delta);
+                *accumulator
+            };
+            let account = accounts
+                .iter_mut()
+                .find(|account| account.upstream_account_id == delta.upstream_account_id)
+                .expect("terminal account inserted when absent");
+            apply_dashboard_activity_terminal_delta_to_account(account, delta);
+            account_latency.apply_to_account(account);
+            if let Some(account_model_performance) = account_model_performance {
+                account.model_performance = account_model_performance;
+            }
+            if self.include_recent {
+                account.recent_invocations = merge_dashboard_activity_recent_invocations(
+                    vec![delta.recent_invocation.clone()],
+                    std::mem::take(&mut account.recent_invocations),
+                    self.recent_limit,
+                );
+            }
+        }
+        sort_dashboard_activity_accounts(accounts);
+    }
+}
+
 #[cfg(test)]
 impl DashboardActivitySnapshot {
     pub(crate) fn exact_range(&self) -> ExactUtcRange {
@@ -12570,6 +12691,50 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         + model.len()
         + reasoning_effort.as_ref().map_or(0, String::len)
         + upstream_account_name.as_ref().map_or(0, String::len);
+    let recent_projection_string_bytes = record.invoke_id.len()
+        + record.prompt_cache_key.as_ref().map_or(0, String::len)
+        + record.occurred_at.len()
+        + record.status.as_ref().map_or(0, String::len)
+        + record.live_phase.as_ref().map_or(0, String::len)
+        + record.failure_class.as_ref().map_or(0, String::len)
+        + record.route_mode.as_ref().map_or(0, String::len)
+        + record.model.as_ref().map_or(0, String::len)
+        + record.request_model.as_ref().map_or(0, String::len)
+        + record.response_model.as_ref().map_or(0, String::len)
+        + record.proxy_display_name.as_ref().map_or(0, String::len)
+        + record.upstream_account_name.as_ref().map_or(0, String::len)
+        + record.endpoint.as_ref().map_or(0, String::len)
+        + record
+            .compaction_request_kind
+            .as_ref()
+            .map_or(0, String::len)
+        + record
+            .compaction_response_kind
+            .as_ref()
+            .map_or(0, String::len)
+        + record.image_intent.as_ref().map_or(0, String::len)
+        + record.reasoning_effort.as_ref().map_or(0, String::len)
+        + record.error_message.as_ref().map_or(0, String::len)
+        + record
+            .downstream_error_message
+            .as_ref()
+            .map_or(0, String::len)
+        + record.failure_kind.as_ref().map_or(0, String::len)
+        + record
+            .response_content_encoding
+            .as_ref()
+            .map_or(0, String::len)
+        + record
+            .request_compression_algorithm
+            .as_ref()
+            .map_or(0, String::len)
+        + record.transport.as_ref().map_or(0, String::len)
+        + record
+            .requested_service_tier
+            .as_ref()
+            .map_or(0, String::len)
+        + record.service_tier.as_ref().map_or(0, String::len)
+        + record.billing_service_tier.as_ref().map_or(0, String::len);
     DashboardActivityTerminalDelta {
         terminal_sequence: 0,
         invoke_id: record.invoke_id.clone(),
@@ -12615,9 +12780,27 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
         first_token_ms: record.first_token_ms,
         t_upstream_stream_ms: record.t_upstream_stream_ms,
+        recent_invocation: invocation_preview_from_runtime_record(record),
         persisted_row_id: (record.id > 0).then_some(record.id),
-        estimated_bytes: std::mem::size_of::<DashboardActivityTerminalDelta>() + string_bytes,
+        estimated_bytes: std::mem::size_of::<DashboardActivityTerminalDelta>()
+            + string_bytes
+            + recent_projection_string_bytes,
     }
+}
+
+fn dashboard_activity_terminal_delta_matches_source_scope(
+    delta: &DashboardActivityTerminalDelta,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    source_scope != InvocationSourceScope::ProxyOnly || delta.source == SOURCE_PROXY
+}
+
+fn dashboard_activity_terminal_delta_is_within_range(
+    delta: &DashboardActivityTerminalDelta,
+    range: ExactUtcRange,
+) -> bool {
+    parse_to_utc_datetime(&delta.occurred_at)
+        .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
 }
 
 fn add_dashboard_activity_terminal_usage(
@@ -16906,6 +17089,113 @@ pub(crate) fn dashboard_account_to_upstream_account(
             .effective_routing_rule
             .unwrap_or_else(crate::upstream_accounts::default_effective_routing_rule),
         recent_invocations: account.recent_invocations,
+    })
+}
+
+pub(crate) async fn build_dashboard_activity_topic_materialized_base(
+    state: &AppState,
+    params: &DashboardActivityQuery,
+) -> Result<DashboardActivityTopicMaterializedBase, ApiError> {
+    let recent_limit = validate_dashboard_activity_params(
+        "dashboard-activity",
+        params.range.as_str(),
+        params.recent_limit,
+    )?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let live = if params.range != "yesterday" {
+        Some(capture_dashboard_activity_live_snapshot(state).await?)
+    } else {
+        None
+    };
+    let network_live_bucket = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_live_bucket.clone());
+    let network_realtime_rate = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_realtime_rate.clone());
+    let include_recent = params.include_recent.unwrap_or(true);
+    let request_range =
+        resolve_dashboard_activity_exact_range(params.range.as_str(), reporting_tz)?;
+    let (mut snapshot, _) = load_dashboard_activity_snapshot_cached(
+        state,
+        params.range.as_str(),
+        reporting_tz,
+        recent_limit,
+        params.include_accounts,
+        include_recent,
+        live.as_ref()
+            .map(dashboard_live_snapshot_in_progress_counts),
+    )
+    .await?;
+    snapshot.range_start = request_range.start;
+    snapshot.range_end = request_range.end;
+    let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);
+    if let Some(live) = live {
+        overlay_dashboard_activity_live_accounts(
+            state,
+            &mut snapshot,
+            live,
+            request_range,
+            params.include_accounts,
+            include_recent,
+            recent_limit,
+        )
+        .await?;
+    }
+    let current_rate_window = if params.range == "yesterday" {
+        dashboard_activity_last_complete_minute_window(ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        })
+    } else {
+        ExactUtcRange {
+            start: snapshot.range_end
+                - ChronoDuration::seconds(DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS),
+            end: snapshot.range_end,
+        }
+    };
+    let DashboardActivitySnapshot {
+        range,
+        range_start,
+        range_end,
+        terminal_sequence,
+        accounts,
+        summary,
+        summary_model_performance_accumulator,
+        account_model_performance_accumulators,
+        account_latency_accumulators,
+        model_performance_accumulator_ready,
+        ..
+    } = snapshot;
+    Ok(DashboardActivityTopicMaterializedBase {
+        response: DashboardActivityResponse {
+            range,
+            range_start: format_utc_iso_precise(range_start),
+            range_end: format_utc_iso_precise(range_end),
+            snapshot_id: range_end.timestamp_millis(),
+            terminal_sequence,
+            live_revision,
+            rate_window: DashboardActivityRateWindowResponse {
+                start: format_utc_iso_precise(current_rate_window.start),
+                end: format_utc_iso_precise(current_rate_window.end),
+                window_minutes: 1,
+                mode: if params.range == "yesterday" {
+                    "last_complete_1m_sma".to_string()
+                } else {
+                    "rolling_60s_live_mean".to_string()
+                },
+            },
+            summary,
+            network_live_bucket,
+            network_realtime_rate,
+            accounts: params.include_accounts.then_some(accounts),
+        },
+        summary_model_performance_accumulator,
+        account_model_performance_accumulators,
+        account_latency_accumulators,
+        model_performance_accumulator_ready,
+        recent_limit,
+        include_recent,
     })
 }
 
