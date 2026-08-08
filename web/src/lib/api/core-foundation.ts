@@ -2168,6 +2168,15 @@ export interface RuntimePressureWriterAccountingHealth {
   degradedReason?: string;
 }
 
+export interface RuntimePressureProxySqliteWriteCoordinatorHealth {
+  mode: string;
+  activeWriteClass?: string;
+  p1WaiterCount: number;
+  interactiveWaiterCount: number;
+  p2WaiterCount: number;
+  directWriteBypassCount: number;
+}
+
 export interface RuntimePressureDashboardProjectionHealth {
   mode: string;
   state: string;
@@ -2227,6 +2236,7 @@ export interface RuntimePressureHealth {
   process: RuntimePressureProcessHealth;
   allocator: { mallocArenaMax: string };
   writerAccounting: RuntimePressureWriterAccountingHealth;
+  proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
   requestPipeline?: RuntimePressureRequestPipelineHealth;
@@ -4096,6 +4106,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const process = (payload.process ?? {}) as Record<string, unknown>;
   const allocator = (payload.allocator ?? {}) as Record<string, unknown>;
   const writer = (payload.writerAccounting ?? {}) as Record<string, unknown>;
+  const writeCoordinator = payload.proxySqliteWriteCoordinator as
+    | Record<string, unknown>
+    | undefined;
   const projection = (payload.dashboardProjection ?? {}) as Record<string, unknown>;
   const projectionSlices = (projection.sliceCounters ?? {}) as Record<string, unknown>;
   const delivery = (payload.delivery ?? {}) as Record<string, unknown>;
@@ -4145,6 +4158,16 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       invariantViolationCount: number(writer.invariantViolationCount),
       degradedReason: optionalString(writer.degradedReason),
     },
+    proxySqliteWriteCoordinator: writeCoordinator
+      ? {
+          mode: optionalString(writeCoordinator.mode) ?? "unknown",
+          activeWriteClass: optionalString(writeCoordinator.activeWriteClass),
+          p1WaiterCount: number(writeCoordinator.p1WaiterCount),
+          interactiveWaiterCount: number(writeCoordinator.interactiveWaiterCount),
+          p2WaiterCount: number(writeCoordinator.p2WaiterCount),
+          directWriteBypassCount: number(writeCoordinator.directWriteBypassCount),
+        }
+      : undefined,
     dashboardProjection: {
       mode: optionalString(projection.mode) ?? "unknown",
       state: optionalString(projection.state) ?? "unknown",

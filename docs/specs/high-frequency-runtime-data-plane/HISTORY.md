@@ -2,6 +2,8 @@
 
 ## Key Decisions
 
+- 统一代理 terminal、attempt、route 与派生写的 SQLite admission，删除 P1 retained batch 固定 250ms 重试语义，并限制 P2 rollup 单事务工作量。
+
 - 高频路径的边界由类型依赖和计数测试约束，不再仅依赖“memory-first”命名或日志字段。
 - request body 只允许一个 replay snapshot 和一个语义投影；file-backed body 不因 dispatch/rewrite 再变成完整内存副本。
 - Dashboard current-state 与 terminal totals 使用不同 cadence：前者 `250ms`，后者 `5s`；SQLite reconcile 保持 `60s`。

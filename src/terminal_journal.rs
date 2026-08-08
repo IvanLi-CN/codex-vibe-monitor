@@ -109,6 +109,41 @@ pub(crate) struct TerminalJournal {
 }
 
 impl TerminalJournal {
+    pub(crate) fn quarantine(
+        &mut self,
+        terminal: &BatchedTerminalInvocationWrite,
+        error: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct QuarantineEntry<'a> {
+            invoke_id: &'a str,
+            occurred_at: &'a str,
+            raw_capture: bool,
+            error: &'a str,
+            record: &'a ProxyCaptureRecord,
+        }
+
+        let path = self.directory.join("quarantine.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open terminal quarantine {}", path.display()))?;
+        let entry = QuarantineEntry {
+            invoke_id: &terminal.record.invoke_id,
+            occurred_at: &terminal.record.occurred_at,
+            raw_capture: terminal.raw_capture,
+            error,
+            record: &terminal.record,
+        };
+        serde_json::to_writer(&mut file, &entry).context("failed to encode terminal quarantine")?;
+        file.write_all(b"\n")
+            .context("failed to append terminal quarantine delimiter")?;
+        file.sync_data()
+            .context("failed to sync terminal quarantine")?;
+        Ok(())
+    }
+
     pub(crate) fn open(database_path: &Path) -> Result<Self> {
         let directory = terminal_journal_directory(database_path);
         fs::create_dir_all(&directory).with_context(|| {

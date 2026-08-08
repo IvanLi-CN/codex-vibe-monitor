@@ -127,3 +127,10 @@
 - Terminal admission, projection updates, and persistence acknowledgements are separate ownership boundaries. P1 raw durability must not wait for P2 rollups, account touches, or maintenance writes; each consumer needs its own cursor and dirty-last-good state.
 - A fixed publish deadline must not invalidate a database snapshot on every terminal event. Publish current-state changes from memory, reconcile baselines on a longer cadence, and defer reconciliation during writer pressure with explicit last-good age and defer telemetry.
 - memory-first 只能排除数据库成本，不能自动排除 CPU 放大。projection snapshot、topic overlay 与 delivery frame 必须形成单向 typed 边界；完整业务对象广播、cached JSON 深拷贝和多 topic 重复序列化仍会在零 SQL 情况下制造高 CPU 与 subscription lag。
+
+## Proxy hot-write coordination
+
+- SQLite 的单 writer 约束要求代理 terminal、attempt、route/account 状态和派生统计共享同一个 admission 面；只给后台任务加 pressure gate 不能阻止前台 helper 相互争锁。
+- P1 batch 必须同时限定条数、估算字节和 admission 时间。锁冲突要保留完整未提交批次并指数退避；固定短 ticker 会把一次外部锁放大为稳定 CPU/日志风暴。
+- 同步 attempt/route 可以保留原返回语义，但应在事务前按优先级等待。P2 只有在 P1 与同步 waiter 为空时运行，并且 cursor replay 必须按 chunk 让出 writer。
+- 健康诊断必须展示 active write class、waiter、retry generation、下一次 retry、batch rows/bytes 与 direct bypass；否则“排队成功”仍可能掩盖未迁移的直写入口。

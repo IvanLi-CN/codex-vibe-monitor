@@ -112,6 +112,8 @@ PR: none
 
 ## Runtime Data Plane Boundary
 
+代理热路径中的 attempt begin/progress/final、response capture 与 route/account 状态写保持同步结果语义，但必须通过统一 SQLite 写协调器排队。该约束不改变请求转发、failover 或 body 解析语义；大请求解析 CPU 只做 thread-clock 归因，达到独立门槛后另行优化。
+
 - 本 topic 的 request body 语义受 [`high-frequency-runtime-data-plane`](../high-frequency-runtime-data-plane/SPEC.md) 约束：每个请求只允许一份 replay snapshot 与一次 `RequestSemanticProjection`。
 - `>1 MiB` 的 file-backed snapshot 不得在 dispatch、routing、rewrite 或 raw capture 中整体 `into_vec()`；需要转换时使用至多 `64 KiB` 业务缓冲。
 - legacy 模式只用于运维回退，不得被视为健康路径或性能验收证据。
