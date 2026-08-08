@@ -2602,6 +2602,10 @@ mod tests {
             .expect("install raced baseline");
 
         assert!(installed.is_some());
+        assert_eq!(
+            installed.as_ref().map(|capture| capture.snapshot_origin),
+            Some("reconcile_replayed")
+        );
         let capture = hub
             .capture_memory_snapshot()
             .expect("baseline plus runtime mutation snapshot");
@@ -3547,9 +3551,17 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
             .proxy_runtime_invocations
             .complete_dashboard_publish_window(window);
     }
-    Ok(state
-        .proxy_runtime_invocations
-        .legacy_live_snapshot(capture.snapshot))
+    let mut snapshot = capture.snapshot;
+    if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy {
+        snapshot = state
+            .proxy_runtime_invocations
+            .legacy_live_snapshot(snapshot);
+    } else {
+        state
+            .proxy_runtime_invocations
+            .apply_network_overlay_to_snapshot(&mut snapshot);
+    }
+    Ok(snapshot)
 }
 
 async fn capture_dashboard_activity_live_snapshot_with_outcome(

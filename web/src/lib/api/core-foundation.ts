@@ -2180,6 +2180,37 @@ export interface RuntimePressureDashboardProjectionHealth {
   lastGoodAgeMs?: number;
   degradedReason?: string;
   lastDeferReason?: string;
+  sliceCounters: RuntimePressureProjectionSliceCounters;
+}
+
+export interface RuntimePressureProjectionSliceHealth {
+  buildCount: number;
+  revisionCount: number;
+  cadenceMissCount: number;
+}
+
+export interface RuntimePressureProjectionSliceCounters {
+  current: RuntimePressureProjectionSliceHealth;
+  network: RuntimePressureProjectionSliceHealth;
+  terminal: RuntimePressureProjectionSliceHealth;
+}
+
+export interface RuntimePressureDeliveryTopicHealth {
+  materializationCount: number;
+  serializationCount: number;
+  payloadCloneCount: number;
+  frameBytesCount: number;
+  laggedCount: number;
+  skippedCount: number;
+  businessPayloadCount: number;
+  jsonOverlayCount: number;
+}
+
+export interface RuntimePressureDeliveryHealth {
+  activity: RuntimePressureDeliveryTopicHealth;
+  summary: RuntimePressureDeliveryTopicHealth;
+  networkTimeseries: RuntimePressureDeliveryTopicHealth;
+  networkRecent: RuntimePressureDeliveryTopicHealth;
 }
 
 export interface RuntimePressureRequestPipelineHealth {
@@ -2197,6 +2228,7 @@ export interface RuntimePressureHealth {
   allocator: { mallocArenaMax: string };
   writerAccounting: RuntimePressureWriterAccountingHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
+  delivery: RuntimePressureDeliveryHealth;
   requestPipeline?: RuntimePressureRequestPipelineHealth;
 }
 
@@ -4065,9 +4097,32 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const allocator = (payload.allocator ?? {}) as Record<string, unknown>;
   const writer = (payload.writerAccounting ?? {}) as Record<string, unknown>;
   const projection = (payload.dashboardProjection ?? {}) as Record<string, unknown>;
+  const projectionSlices = (projection.sliceCounters ?? {}) as Record<string, unknown>;
+  const delivery = (payload.delivery ?? {}) as Record<string, unknown>;
   const requestPipeline = payload.requestPipeline as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
+  const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
+    const slice = (raw ?? {}) as Record<string, unknown>;
+    return {
+      buildCount: number(slice.buildCount),
+      revisionCount: number(slice.revisionCount),
+      cadenceMissCount: number(slice.cadenceMissCount),
+    };
+  };
+  const normalizeDeliveryTopic = (raw: unknown): RuntimePressureDeliveryTopicHealth => {
+    const topic = (raw ?? {}) as Record<string, unknown>;
+    return {
+      materializationCount: number(topic.materializationCount),
+      serializationCount: number(topic.serializationCount),
+      payloadCloneCount: number(topic.payloadCloneCount),
+      frameBytesCount: number(topic.frameBytesCount),
+      laggedCount: number(topic.laggedCount),
+      skippedCount: number(topic.skippedCount),
+      businessPayloadCount: number(topic.businessPayloadCount),
+      jsonOverlayCount: number(topic.jsonOverlayCount),
+    };
+  };
   return {
     state: optionalString(payload.state) ?? "unknown",
     process: {
@@ -4102,6 +4157,17 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       lastGoodAgeMs: normalizeFiniteNumber(projection.lastGoodAgeMs) ?? undefined,
       degradedReason: optionalString(projection.degradedReason),
       lastDeferReason: optionalString(projection.lastDeferReason),
+      sliceCounters: {
+        current: normalizeSlice(projectionSlices.current),
+        network: normalizeSlice(projectionSlices.network),
+        terminal: normalizeSlice(projectionSlices.terminal),
+      },
+    },
+    delivery: {
+      activity: normalizeDeliveryTopic(delivery.activity),
+      summary: normalizeDeliveryTopic(delivery.summary),
+      networkTimeseries: normalizeDeliveryTopic(delivery.networkTimeseries),
+      networkRecent: normalizeDeliveryTopic(delivery.networkRecent),
     },
     requestPipeline: requestPipeline
       ? {

@@ -1639,6 +1639,9 @@ const baseTranslations = {
     "system.status.runtimePressure.writerQueue": "Writer queue depth / bytes",
     "system.status.runtimePressure.dashboardProducer": "Dashboard producer",
     "system.status.runtimePressure.liveDbReads": "Live-path DB reads",
+    "system.status.runtimePressure.cadenceMisses": "Projection cadence misses",
+    "system.status.runtimePressure.deliveryFrames": "Delivery serializations / frame bytes",
+    "system.status.runtimePressure.deliveryLag": "Delivery lagged / skipped",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "Background tasks",
     "system.tasks.description":
@@ -4512,6 +4515,9 @@ const baseTranslations = {
     "system.status.runtimePressure.writerQueue": "写入队列深度 / 字节",
     "system.status.runtimePressure.dashboardProducer": "Dashboard producer",
     "system.status.runtimePressure.liveDbReads": "实时路径数据库读取",
+    "system.status.runtimePressure.cadenceMisses": "投影节奏错过次数",
+    "system.status.runtimePressure.deliveryFrames": "投递序列化次数 / 帧字节数",
+    "system.status.runtimePressure.deliveryLag": "投递滞后 / 跳过次数",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "后台任务",
     "system.tasks.description":

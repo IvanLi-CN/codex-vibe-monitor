@@ -392,14 +392,16 @@ pub(crate) struct DashboardTerminalProjectionCapture {
     pub(crate) deltas: Vec<DashboardActivityTerminalDelta>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardProjectionSliceCounterSnapshot {
     pub(crate) build_count: u64,
     pub(crate) revision_count: u64,
     pub(crate) cadence_miss_count: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardRuntimeTopologyCounterSnapshot {
     pub(crate) current: DashboardProjectionSliceCounterSnapshot,
     pub(crate) network: DashboardProjectionSliceCounterSnapshot,
@@ -468,6 +470,7 @@ pub(crate) struct RuntimeProjectionHealthSnapshot {
     pub(crate) last_good_age_ms: Option<u64>,
     pub(crate) degraded_reason: Option<String>,
     pub(crate) last_defer_reason: Option<String>,
+    pub(crate) slice_counters: DashboardRuntimeTopologyCounterSnapshot,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -1090,7 +1093,7 @@ impl RuntimeProjectionHub {
         _snapshot: DashboardActivityLiveSnapshot,
         mut baseline: DashboardRuntimeProjectionBaseline,
         snapshot_origin: &'static str,
-        _expected_generation: u64,
+        expected_generation: u64,
     ) -> Result<Option<DashboardProjectionCapture>> {
         let mut projection_records = baseline
             .records
@@ -1134,6 +1137,19 @@ impl RuntimeProjectionHub {
             .dashboard
             .lock()
             .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
+        if dashboard.dirty_generation < expected_generation {
+            tracing::warn!(
+                expected_generation,
+                actual_generation = dashboard.dirty_generation,
+                "rejecting persistence baseline with an impossible generation rollback"
+            );
+            return Ok(None);
+        }
+        let snapshot_origin = if dashboard.dirty_generation > expected_generation {
+            "reconcile_replayed"
+        } else {
+            snapshot_origin
+        };
         let mut core = empty_dashboard_live_core();
         for record in projection_records.values() {
             update_dashboard_live_core(&mut core, record, true);
@@ -1310,6 +1326,7 @@ impl RuntimeProjectionHub {
         &self,
         active_subscriber_count: usize,
     ) -> RuntimeProjectionHealthSnapshot {
+        let slice_counters = self.dashboard_topology_counters.snapshot();
         let dashboard = self.dashboard.lock().ok();
         let last_good_age_ms = dashboard
             .as_ref()
@@ -1351,6 +1368,18 @@ impl RuntimeProjectionHub {
                 .as_ref()
                 .and_then(|state| state.last_reconcile_defer_reason)
                 .map(str::to_string),
+            slice_counters,
+        }
+    }
+
+    pub(crate) fn apply_network_overlay_to_snapshot(
+        &self,
+        snapshot: &mut DashboardActivityLiveSnapshot,
+    ) {
+        if let Ok(dashboard) = self.dashboard.lock()
+            && let Some(network) = dashboard.network_last_good.as_ref()
+        {
+            apply_dashboard_network_slice_to_live_snapshot(snapshot, network);
         }
     }
 }

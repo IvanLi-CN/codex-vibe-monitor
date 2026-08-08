@@ -96,7 +96,7 @@
 
 ## Visual Evidence
 
-以下证据由 mock-only `ui_demo` 在真实浏览器视口生成，不依赖生产数据或登录状态。
+以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态；桌面使用 `1660x900`，移动使用 `393x852` CSS px。
 
 PR: include
 

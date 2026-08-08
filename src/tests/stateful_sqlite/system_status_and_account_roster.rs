@@ -258,6 +258,11 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         response_json["runtimePressureHealth"]["requestPipeline"]["mode"],
         "projection"
     );
+    assert!(response_json["runtimePressureHealth"]["dashboardProjection"]["sliceCounters"]["current"]["buildCount"].is_u64());
+    assert!(
+        response_json["runtimePressureHealth"]["delivery"]["activity"]["serializationCount"]
+            .is_u64()
+    );
     assert!(
         response_json["runtimePressureHealth"]["requestPipeline"]["semanticParseCount"].is_u64()
     );
@@ -384,6 +389,10 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert_eq!(payload["dashboardProjection"]["livePathDbReadCount"], 0);
     assert!(payload["dashboardProjection"]["buildCount"].is_u64());
     assert!(payload["dashboardProjection"]["activeSubscriberCount"].is_u64());
+    assert!(
+        payload["dashboardProjection"]["sliceCounters"]["terminal"]["cadenceMissCount"].is_u64()
+    );
+    assert!(payload["delivery"]["summary"]["frameBytesCount"].is_u64());
     assert_eq!(payload["requestPipeline"]["lastSnapshotKind"], "file");
     assert_eq!(payload["requestPipeline"]["semanticParseCount"], 1);
     assert_eq!(

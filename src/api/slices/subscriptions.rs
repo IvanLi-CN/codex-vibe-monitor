@@ -200,7 +200,8 @@ impl SerializedTopicFrame {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) materialization_count: u64,
     pub(crate) serialization_count: u64,
@@ -212,7 +213,8 @@ pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) json_overlay_count: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
     pub(crate) activity: DashboardTopicTopologyCounterSnapshot,
     pub(crate) summary: DashboardTopicTopologyCounterSnapshot,
@@ -319,6 +321,23 @@ impl DashboardDeliveryTopologyCounters {
             network_timeseries: self.network_timeseries.snapshot(),
             network_recent: self.network_recent.snapshot(),
         }
+    }
+
+    fn has_degraded_signal(&self) -> bool {
+        let snapshot = self.snapshot();
+        [
+            snapshot.activity,
+            snapshot.summary,
+            snapshot.network_timeseries,
+            snapshot.network_recent,
+        ]
+        .into_iter()
+        .any(|topic| {
+            topic.lagged_count > 0
+                || topic.skipped_count > 0
+                || topic.payload_clone_count > 0
+                || topic.json_overlay_count > 0
+        })
     }
 
     #[cfg(test)]
@@ -1094,9 +1113,12 @@ impl SubscriptionHub {
         self.serialization_count.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
     pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         self.dashboard_topology_counters.snapshot()
+    }
+
+    pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
+        self.dashboard_topology_counters.has_degraded_signal()
     }
 
     #[cfg(test)]
