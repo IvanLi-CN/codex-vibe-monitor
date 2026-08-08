@@ -8,7 +8,7 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &s
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum SummaryWindow {
     All,
     Current(i64),

@@ -12072,6 +12072,7 @@ pub(crate) struct DashboardActivitySnapshot {
     range: String,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    terminal_sequence: u64,
     accounts: Vec<DashboardActivityAccountResponse>,
     summary: DashboardActivitySummaryResponse,
     summary_model_performance_accumulator: ModelPerformanceAccumulator,
@@ -12081,6 +12082,138 @@ pub(crate) struct DashboardActivitySnapshot {
     materialized_archive_fallback_totals: StatsTotals,
     materialized_archive_details_limited: bool,
     build_telemetry: DashboardActivityBuildTelemetry,
+}
+
+/// Stateful typed base used only by Auto dashboard topic delivery. It retains the aggregate
+/// inputs that are intentionally absent from the public response so terminal slices can preserve
+/// the existing model-performance, latency, and recent-invocation response semantics.
+#[derive(Debug)]
+pub(crate) struct DashboardActivityTopicMaterializedBase {
+    response: DashboardActivityResponse,
+    summary_model_performance_accumulator: ModelPerformanceAccumulator,
+    account_model_performance_accumulators: HashMap<Option<i64>, ModelPerformanceAccumulator>,
+    account_latency_accumulators: HashMap<Option<i64>, DashboardActivityAccountLatencyAccumulator>,
+    model_performance_accumulator_ready: bool,
+    recent_limit: usize,
+    include_recent: bool,
+}
+
+impl DashboardActivityTopicMaterializedBase {
+    pub(crate) fn response(&self) -> &DashboardActivityResponse {
+        &self.response
+    }
+
+    pub(crate) fn response_mut(&mut self) -> &mut DashboardActivityResponse {
+        &mut self.response
+    }
+
+    pub(crate) fn apply_terminal_slice(
+        &mut self,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
+        slice: &DashboardTerminalProjectionSlice,
+    ) {
+        let Ok(range) = resolve_dashboard_activity_cached_range(&self.response.range, reporting_tz)
+        else {
+            return;
+        };
+        let deltas = slice
+            .deltas
+            .iter()
+            .filter(|delta| {
+                dashboard_activity_terminal_delta_matches_source_scope(delta, source_scope)
+                    && delta.terminal_sequence > self.response.terminal_sequence
+                    && dashboard_activity_terminal_delta_is_within_range(delta, range)
+            })
+            .collect::<Vec<_>>();
+        if deltas.is_empty() {
+            return;
+        }
+
+        self.response.range_start = format_utc_iso_precise(range.start);
+        self.response.range_end = format_utc_iso_precise(range.end);
+        self.response.snapshot_id = range.end.timestamp_millis();
+        let model_performance_available = self.response.summary.model_performance.available;
+        for delta in &deltas {
+            apply_dashboard_activity_terminal_delta_to_stats(
+                &mut self.response.summary.stats,
+                delta,
+            );
+            if self.model_performance_accumulator_ready {
+                self.summary_model_performance_accumulator
+                    .add_terminal_delta(delta);
+            }
+            self.response.terminal_sequence =
+                self.response.terminal_sequence.max(delta.terminal_sequence);
+        }
+        if self.model_performance_accumulator_ready {
+            self.response.summary.model_performance = self
+                .summary_model_performance_accumulator
+                .clone()
+                .into_response(range, model_performance_available);
+        }
+
+        let Some(accounts) = self.response.accounts.as_mut() else {
+            return;
+        };
+        let mut account_indexes = accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| (account.upstream_account_id, index))
+            .collect::<HashMap<_, _>>();
+        let mut updated_account_ids = HashSet::new();
+        for delta in deltas {
+            let account_index = if let Some(index) = account_indexes.get(&delta.upstream_account_id)
+            {
+                *index
+            } else {
+                accounts.push(dashboard_activity_terminal_account_for_range(range, delta));
+                let index = accounts.len() - 1;
+                account_indexes.insert(delta.upstream_account_id, index);
+                index
+            };
+
+            if self.model_performance_accumulator_ready {
+                let accumulator = self
+                    .account_model_performance_accumulators
+                    .entry(delta.upstream_account_id)
+                    .or_default();
+                accumulator.add_terminal_delta(delta);
+            }
+            self.account_latency_accumulators
+                .entry(delta.upstream_account_id)
+                .or_default()
+                .add_terminal_delta(delta);
+            let account = &mut accounts[account_index];
+            apply_dashboard_activity_terminal_delta_to_account(account, delta);
+            if self.include_recent {
+                account.recent_invocations = merge_dashboard_activity_recent_invocations(
+                    vec![delta.recent_invocation.clone()],
+                    std::mem::take(&mut account.recent_invocations),
+                    self.recent_limit,
+                );
+            }
+            updated_account_ids.insert(delta.upstream_account_id);
+        }
+        for upstream_account_id in updated_account_ids {
+            let account = &mut accounts[*account_indexes
+                .get(&upstream_account_id)
+                .expect("terminal account index inserted when absent")];
+            self.account_latency_accumulators
+                .get(&upstream_account_id)
+                .expect("terminal latency accumulator inserted")
+                .apply_to_account(account);
+            if self.model_performance_accumulator_ready {
+                account.model_performance = self
+                    .account_model_performance_accumulators
+                    .get(&upstream_account_id)
+                    .expect("terminal model-performance accumulator inserted")
+                    .clone()
+                    .into_response(range, model_performance_available);
+            }
+        }
+        sort_dashboard_activity_accounts(accounts);
+    }
 }
 
 #[cfg(test)]
@@ -12107,6 +12240,7 @@ impl DashboardActivitySnapshot {
             range: range.to_string(),
             range_start: now,
             range_end: now + ChronoDuration::minutes(1),
+            terminal_sequence: 0,
             accounts: Vec::new(),
             summary: DashboardActivitySummaryResponse {
                 stats: StatsResponse {
@@ -12497,15 +12631,18 @@ fn replay_dashboard_activity_pending_deltas_without_expiry(
         let Some(occurred_at) = parse_to_utc_datetime(&delta.occurred_at) else {
             continue;
         };
-        if dashboard_activity_selection_includes_compact_terminal(selection, delta, occurred_at)
-            && !dashboard_activity_baseline_includes_pending_delta(
+        if dashboard_activity_selection_includes_compact_terminal(selection, delta, occurred_at) {
+            if dashboard_activity_baseline_includes_pending_delta(
                 delta,
                 baseline_cursor,
                 persisted_terminal_ids,
-            )
-        {
-            apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
-            replayed += 1;
+            ) {
+                snapshot.terminal_sequence =
+                    snapshot.terminal_sequence.max(delta.terminal_sequence);
+            } else {
+                apply_dashboard_activity_compact_terminal_delta(snapshot, delta);
+                replayed += 1;
+            }
         }
     }
     replayed
@@ -12568,6 +12705,50 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         + model.len()
         + reasoning_effort.as_ref().map_or(0, String::len)
         + upstream_account_name.as_ref().map_or(0, String::len);
+    let recent_projection_string_bytes = record.invoke_id.len()
+        + record.prompt_cache_key.as_ref().map_or(0, String::len)
+        + record.occurred_at.len()
+        + record.status.as_ref().map_or(0, String::len)
+        + record.live_phase.as_ref().map_or(0, String::len)
+        + record.failure_class.as_ref().map_or(0, String::len)
+        + record.route_mode.as_ref().map_or(0, String::len)
+        + record.model.as_ref().map_or(0, String::len)
+        + record.request_model.as_ref().map_or(0, String::len)
+        + record.response_model.as_ref().map_or(0, String::len)
+        + record.proxy_display_name.as_ref().map_or(0, String::len)
+        + record.upstream_account_name.as_ref().map_or(0, String::len)
+        + record.endpoint.as_ref().map_or(0, String::len)
+        + record
+            .compaction_request_kind
+            .as_ref()
+            .map_or(0, String::len)
+        + record
+            .compaction_response_kind
+            .as_ref()
+            .map_or(0, String::len)
+        + record.image_intent.as_ref().map_or(0, String::len)
+        + record.reasoning_effort.as_ref().map_or(0, String::len)
+        + record.error_message.as_ref().map_or(0, String::len)
+        + record
+            .downstream_error_message
+            .as_ref()
+            .map_or(0, String::len)
+        + record.failure_kind.as_ref().map_or(0, String::len)
+        + record
+            .response_content_encoding
+            .as_ref()
+            .map_or(0, String::len)
+        + record
+            .request_compression_algorithm
+            .as_ref()
+            .map_or(0, String::len)
+        + record.transport.as_ref().map_or(0, String::len)
+        + record
+            .requested_service_tier
+            .as_ref()
+            .map_or(0, String::len)
+        + record.service_tier.as_ref().map_or(0, String::len)
+        + record.billing_service_tier.as_ref().map_or(0, String::len);
     DashboardActivityTerminalDelta {
         terminal_sequence: 0,
         invoke_id: record.invoke_id.clone(),
@@ -12613,9 +12794,27 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
         first_token_ms: record.first_token_ms,
         t_upstream_stream_ms: record.t_upstream_stream_ms,
+        recent_invocation: invocation_preview_from_runtime_record(record),
         persisted_row_id: (record.id > 0).then_some(record.id),
-        estimated_bytes: std::mem::size_of::<DashboardActivityTerminalDelta>() + string_bytes,
+        estimated_bytes: std::mem::size_of::<DashboardActivityTerminalDelta>()
+            + string_bytes
+            + recent_projection_string_bytes,
     }
+}
+
+fn dashboard_activity_terminal_delta_matches_source_scope(
+    delta: &DashboardActivityTerminalDelta,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    source_scope != InvocationSourceScope::ProxyOnly || delta.source == SOURCE_PROXY
+}
+
+fn dashboard_activity_terminal_delta_is_within_range(
+    delta: &DashboardActivityTerminalDelta,
+    range: ExactUtcRange,
+) -> bool {
+    parse_to_utc_datetime(&delta.occurred_at)
+        .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
 }
 
 fn add_dashboard_activity_terminal_usage(
@@ -12742,6 +12941,19 @@ fn dashboard_activity_terminal_account(
     snapshot: &DashboardActivitySnapshot,
     delta: &DashboardActivityTerminalDelta,
 ) -> DashboardActivityAccountResponse {
+    dashboard_activity_terminal_account_for_range(
+        ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        },
+        delta,
+    )
+}
+
+pub(crate) fn dashboard_activity_terminal_account_for_range(
+    range: ExactUtcRange,
+    delta: &DashboardActivityTerminalDelta,
+) -> DashboardActivityAccountResponse {
     let upstream_account_id = delta.upstream_account_id;
     DashboardActivityAccountResponse {
         account_key: upstream_account_id
@@ -12787,13 +12999,7 @@ fn dashboard_activity_terminal_account(
             costs: None,
             models: Vec::new(),
         },
-        model_performance: ModelPerformanceAccumulator::default().into_response(
-            ExactUtcRange {
-                start: snapshot.range_start,
-                end: snapshot.range_end,
-            },
-            false,
-        ),
+        model_performance: ModelPerformanceAccumulator::default().into_response(range, false),
         cache_hit_rate: None,
         tokens_per_minute: None,
         spend_rate: None,
@@ -12821,6 +13027,7 @@ fn apply_dashboard_activity_compact_terminal_delta(
     snapshot: &mut DashboardActivitySnapshot,
     delta: &DashboardActivityTerminalDelta,
 ) {
+    snapshot.terminal_sequence = snapshot.terminal_sequence.max(delta.terminal_sequence);
     apply_dashboard_activity_terminal_delta_to_stats(&mut snapshot.summary.stats, delta);
 
     let model_performance_available = snapshot.summary.model_performance.available;
@@ -12898,7 +13105,7 @@ pub(crate) fn apply_dashboard_activity_terminal_delta_to_stats(
     }
 }
 
-fn apply_dashboard_activity_terminal_delta_to_account(
+pub(crate) fn apply_dashboard_activity_terminal_delta_to_account(
     account: &mut DashboardActivityAccountResponse,
     delta: &DashboardActivityTerminalDelta,
 ) {
@@ -15369,6 +15576,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
+        terminal_sequence: 0,
         accounts: Vec::new(),
         summary: DashboardActivitySummaryResponse {
             stats,
@@ -15463,6 +15671,7 @@ async fn load_dashboard_activity_snapshot_for_range(
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
+        terminal_sequence: 0,
         accounts: build.accounts,
         summary,
         summary_model_performance_accumulator: build.summary_model_performance_accumulator,
@@ -16691,6 +16900,8 @@ async fn load_dashboard_activity_snapshot_cached(
                         snapshot_cursor_after_build,
                         &persisted_terminal_ids_after_build,
                     ) {
+                        snapshot.terminal_sequence =
+                            snapshot.terminal_sequence.max(delta.terminal_sequence);
                         continue;
                     }
                     if expiry_tracking_failure_reason.is_none()
@@ -16897,6 +17108,113 @@ pub(crate) fn dashboard_account_to_upstream_account(
     })
 }
 
+pub(crate) async fn build_dashboard_activity_topic_materialized_base(
+    state: &AppState,
+    params: &DashboardActivityQuery,
+) -> Result<DashboardActivityTopicMaterializedBase, ApiError> {
+    let recent_limit = validate_dashboard_activity_params(
+        "dashboard-activity",
+        params.range.as_str(),
+        params.recent_limit,
+    )?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let live = if params.range != "yesterday" {
+        Some(capture_dashboard_activity_live_snapshot(state).await?)
+    } else {
+        None
+    };
+    let network_live_bucket = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_live_bucket.clone());
+    let network_realtime_rate = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_realtime_rate.clone());
+    let include_recent = params.include_recent.unwrap_or(true);
+    let request_range =
+        resolve_dashboard_activity_exact_range(params.range.as_str(), reporting_tz)?;
+    let (mut snapshot, _) = load_dashboard_activity_snapshot_cached(
+        state,
+        params.range.as_str(),
+        reporting_tz,
+        recent_limit,
+        params.include_accounts,
+        include_recent,
+        live.as_ref()
+            .map(dashboard_live_snapshot_in_progress_counts),
+    )
+    .await?;
+    snapshot.range_start = request_range.start;
+    snapshot.range_end = request_range.end;
+    let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);
+    if let Some(live) = live {
+        overlay_dashboard_activity_live_accounts(
+            state,
+            &mut snapshot,
+            live,
+            request_range,
+            params.include_accounts,
+            include_recent,
+            recent_limit,
+        )
+        .await?;
+    }
+    let current_rate_window = if params.range == "yesterday" {
+        dashboard_activity_last_complete_minute_window(ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        })
+    } else {
+        ExactUtcRange {
+            start: snapshot.range_end
+                - ChronoDuration::seconds(DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS),
+            end: snapshot.range_end,
+        }
+    };
+    let DashboardActivitySnapshot {
+        range,
+        range_start,
+        range_end,
+        terminal_sequence,
+        accounts,
+        summary,
+        summary_model_performance_accumulator,
+        account_model_performance_accumulators,
+        account_latency_accumulators,
+        model_performance_accumulator_ready,
+        ..
+    } = snapshot;
+    Ok(DashboardActivityTopicMaterializedBase {
+        response: DashboardActivityResponse {
+            range,
+            range_start: format_utc_iso_precise(range_start),
+            range_end: format_utc_iso_precise(range_end),
+            snapshot_id: range_end.timestamp_millis(),
+            terminal_sequence,
+            live_revision,
+            rate_window: DashboardActivityRateWindowResponse {
+                start: format_utc_iso_precise(current_rate_window.start),
+                end: format_utc_iso_precise(current_rate_window.end),
+                window_minutes: 1,
+                mode: if params.range == "yesterday" {
+                    "last_complete_1m_sma".to_string()
+                } else {
+                    "rolling_60s_live_mean".to_string()
+                },
+            },
+            summary,
+            network_live_bucket,
+            network_realtime_rate,
+            accounts: params.include_accounts.then_some(accounts),
+        },
+        summary_model_performance_accumulator,
+        account_model_performance_accumulators,
+        account_latency_accumulators,
+        model_performance_accumulator_ready,
+        recent_limit,
+        include_recent,
+    })
+}
+
 pub(crate) async fn fetch_dashboard_activity(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DashboardActivityQuery>,
@@ -16972,6 +17290,7 @@ pub(crate) async fn fetch_dashboard_activity(
         range_start: range_start.clone(),
         range_end: range_end.clone(),
         snapshot_id: snapshot.range_end.timestamp_millis(),
+        terminal_sequence: snapshot.terminal_sequence,
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
             start: format_utc_iso_precise(current_rate_window.start),
@@ -18449,6 +18768,50 @@ mod model_performance_duration_override_tests {
             Some(2_000.0)
         );
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct SummaryTopicTerminalConsistentBase {
+    pub(crate) response: StatsResponse,
+    pub(crate) pending_terminal_deltas: Vec<DashboardActivityTerminalDelta>,
+    pub(crate) terminal_sequence: u64,
+}
+
+/// Builds an open summary topic base behind the terminal-writer barrier. The response and
+/// terminal watermark must observe the same durable SQLite boundary, otherwise an ACK between
+/// those reads can make a cached terminal slice appear already applied when it is absent.
+pub(crate) async fn build_summary_topic_terminal_consistent_base(
+    state: &AppState,
+    params: &SummaryQuery,
+) -> Result<SummaryTopicTerminalConsistentBase, ApiError> {
+    let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+    let reconcile_guard = reconcile_gate.lock().await;
+    let barrier = begin_dashboard_activity_consistency_barrier(&state.pool).await?;
+    // Once the SQLite write barrier is owned, the writer can retain new terminal work while the
+    // base captures both the durable response and its pending in-memory overlay.
+    drop(reconcile_guard);
+
+    let response = load_summary_response_from_query(state, params, SummaryBuildRoute::Topic).await;
+    let (pending_terminal_deltas, terminal_sequence) = {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        (
+            cache
+                .read_model
+                .pending_terminal_deltas
+                .iter()
+                .filter(|delta| delta.persisted_row_id.is_none())
+                .cloned()
+                .collect(),
+            cache.read_model.next_terminal_sequence,
+        )
+    };
+    finish_dashboard_activity_consistency_barrier(barrier, response.is_ok()).await?;
+
+    Ok(SummaryTopicTerminalConsistentBase {
+        response: response?,
+        pending_terminal_deltas,
+        terminal_sequence,
+    })
 }
 
 pub(crate) async fn load_summary_response_from_query(
