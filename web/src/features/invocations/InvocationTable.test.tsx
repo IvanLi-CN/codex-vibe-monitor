@@ -29,7 +29,7 @@ import {
   buildInvocationDetailViewModel,
   InvocationExpandedDetails,
 } from "./invocation-details-shared";
-import { getReasoningEffortTone } from "./invocation-table-reasoning";
+import { formatReasoningEffort, getReasoningEffortTone } from "./invocation-table-reasoning";
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
@@ -714,12 +714,21 @@ describe("getReasoningEffortTone", () => {
     expect(getReasoningEffortTone("medium")).toBe("medium");
     expect(getReasoningEffortTone("high")).toBe("high");
     expect(getReasoningEffortTone("xhigh")).toBe("xhigh");
+    expect(getReasoningEffortTone("max")).toBe("max");
+    expect(getReasoningEffortTone("ultra")).toBe("ultra");
   });
 
   it("treats unknown raw strings as unknown tone", () => {
     expect(getReasoningEffortTone("custom-tier")).toBe("unknown");
     expect(getReasoningEffortTone("constructor")).toBe("unknown");
     expect(getReasoningEffortTone("__proto__")).toBe("unknown");
+  });
+
+  it("normalizes display values and preserves the shared missing fallback", () => {
+    expect(formatReasoningEffort(" MAX ")).toBe("max");
+    expect(formatReasoningEffort("ULTRA")).toBe("ultra");
+    expect(formatReasoningEffort("CUSTOM-TIER")).toBe("custom-tier");
+    expect(formatReasoningEffort(null)).toBe("—");
   });
 });
 
@@ -1815,6 +1824,33 @@ describe("InvocationTable", () => {
     expect(html).toContain("custom-tier");
     expect(html).toContain('data-reasoning-effort-tone="unknown"');
     expect(html).toContain("border-dashed");
+  });
+
+  it("renders max and ultra with their highest-intensity shared tones", () => {
+    const html = renderTable([
+      {
+        ...createInvocationRecord(0),
+        id: 4,
+        invokeId: "invocation-reasoning-max",
+        model: "gpt-5.6",
+        reasoningEffort: " MAX ",
+      },
+      {
+        ...createInvocationRecord(1),
+        id: 5,
+        invokeId: "invocation-reasoning-ultra",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "ULTRA",
+      },
+    ]);
+
+    expect(html).toContain('data-reasoning-effort-tone="max"');
+    expect(html).toContain('data-reasoning-effort-tone="ultra"');
+    expect(html).toContain("text-error");
+    expect(html).toContain('title="max"');
+    expect(html).toContain('title="ultra"');
+    expect(html).toContain('data-model-identity="gpt-5.6"');
+    expect(html).toContain('data-model-identity="gpt-5.6-luna"');
   });
 
   it("renders effective and requested-only fast indicators with distinct states", () => {

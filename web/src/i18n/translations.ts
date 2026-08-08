@@ -2063,13 +2063,6 @@ const baseTranslations = {
     "dashboard.modelPerformance.unavailable":
       "Retained raw calls are unavailable for this time range, so model performance cannot be calculated.",
     "dashboard.modelPerformance.close": "Close model performance details",
-    "dashboard.modelPerformance.effort.unspecified": "Unspecified",
-    "dashboard.modelPerformance.effort.none": "None",
-    "dashboard.modelPerformance.effort.minimal": "Minimal",
-    "dashboard.modelPerformance.effort.low": "Low",
-    "dashboard.modelPerformance.effort.medium": "Medium",
-    "dashboard.modelPerformance.effort.high": "High",
-    "dashboard.modelPerformance.effort.xhigh": "Extra high",
     "dashboard.today.inProgressConversationsDescription":
       "Current requesting or responding invocations. Multiple in-flight invocations from one conversation are counted separately.",
     "dashboard.today.queuedInvocationsDescription":
@@ -4917,13 +4910,6 @@ const baseTranslations = {
     "dashboard.modelPerformance.empty": "当前范围内没有成功且已计费的调用。",
     "dashboard.modelPerformance.unavailable": "当前范围的原始调用明细不可用，无法计算模型性能。",
     "dashboard.modelPerformance.close": "关闭模型性能详情",
-    "dashboard.modelPerformance.effort.unspecified": "未指定",
-    "dashboard.modelPerformance.effort.none": "无",
-    "dashboard.modelPerformance.effort.minimal": "最少",
-    "dashboard.modelPerformance.effort.low": "低",
-    "dashboard.modelPerformance.effort.medium": "中",
-    "dashboard.modelPerformance.effort.high": "高",
-    "dashboard.modelPerformance.effort.xhigh": "极高",
     "dashboard.today.inProgressConversationsDescription":
       "当前处于请求中或响应中的调用数；同一对话下的多个进行中调用会分别计数。",
     "dashboard.today.queuedInvocationsDescription": "当前尚未开始请求上游的排队中调用数。",

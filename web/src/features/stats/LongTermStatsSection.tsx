@@ -28,6 +28,7 @@ import { chartBaseTokens } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import { ModelPerformanceModelIdentity } from "../dashboard/ModelPerformanceModelIdentity";
 import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
+import { formatReasoningEffort } from "../shared/reasoningEffort";
 import { type LongTermSeriesVisual, resolveLongTermSeriesVisuals } from "./longTermSeriesVisuals";
 
 type MetricKey =
@@ -471,7 +472,6 @@ function LongTermChartLegend({
   visuals: ReadonlyMap<string, LongTermSeriesVisual>;
   modelSeries: boolean;
 }) {
-  const { t } = useTranslation();
   if (series.length === 0) return null;
 
   return (
@@ -483,9 +483,7 @@ function LongTermChartLegend({
         const visual = visuals.get(item.seriesKey);
         if (!visual) return null;
         const showIcon = modelSeries && resolveModelIdentityIcon(item.displayName) !== null;
-        const visibleLabel = showIcon
-          ? item.reasoningEffort?.trim() || t("stats.longTerm.unspecified")
-          : visual.label;
+        const visibleLabel = showIcon ? formatReasoningEffort(item.reasoningEffort) : visual.label;
         return (
           <span
             key={item.seriesKey}
@@ -704,7 +702,6 @@ function SeriesTable({
                     {modelEntries ? (
                       <ModelPerformanceModelIdentity
                         model={entry.displayName}
-                        effort={entry.reasoningEffort ?? t("stats.longTerm.unspecified")}
                         effortValue={entry.reasoningEffort}
                         className="max-w-full"
                         testId={`long-term-model-identity-${entry.seriesKey}`}
@@ -784,14 +781,13 @@ export function LongTermStatsSection({
       ),
     [fetchedUpstreamSeries?.series, overview?.upstreams, overviewOverride, upstreamSeriesOverride],
   );
-  const unspecifiedLabel = t("stats.longTerm.unspecified");
   const modelVisuals = useMemo(
-    () => resolveLongTermSeriesVisuals(modelSeries, "model", themeMode, unspecifiedLabel),
-    [modelSeries, themeMode, unspecifiedLabel],
+    () => resolveLongTermSeriesVisuals(modelSeries, "model", themeMode),
+    [modelSeries, themeMode],
   );
   const upstreamVisuals = useMemo(
-    () => resolveLongTermSeriesVisuals(upstreamSeries, "upstream", themeMode, unspecifiedLabel),
-    [themeMode, unspecifiedLabel, upstreamSeries],
+    () => resolveLongTermSeriesVisuals(upstreamSeries, "upstream", themeMode),
+    [themeMode, upstreamSeries],
   );
 
   useEffect(() => {

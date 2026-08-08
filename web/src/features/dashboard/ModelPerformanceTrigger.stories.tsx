@@ -18,7 +18,7 @@ const modelPerformance: ModelPerformance = {
   models: [
     {
       model: "gpt-5.6-sol",
-      reasoningEffort: "high",
+      reasoningEffort: " MAX ",
       tokensPerMinute: 1098,
       streamingResponseRate: 182.4,
       avgResponseMs: 5150,
@@ -40,7 +40,7 @@ const modelPerformance: ModelPerformance = {
     },
     {
       model: "gpt-5.6-luna",
-      reasoningEffort: "medium",
+      reasoningEffort: "ULTRA",
       tokensPerMinute: 648,
       streamingResponseRate: 141.8,
       avgResponseMs: 4380,
@@ -148,7 +148,9 @@ export const DesktopTooltip: Story = {
     await expect(details).toBeVisible();
     await expect(details).toHaveTextContent("Model performance");
     await expect(within(details).getByRole("rowheader", { name: "Total" })).toBeInTheDocument();
-    await expect(within(details).getByText("Unspecified")).toBeInTheDocument();
+    await expect(within(details).getByText("max")).toBeInTheDocument();
+    await expect(within(details).getByText("ultra")).toBeInTheDocument();
+    await expect(within(details).getAllByText("—").length).toBeGreaterThan(0);
     await expect(details).toHaveTextContent("Wall clock");
     await expect(details).toHaveTextContent("Cumulative");
     await expect(details).toHaveTextContent("x1.31");

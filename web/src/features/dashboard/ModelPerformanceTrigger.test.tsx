@@ -20,7 +20,7 @@ const modelPerformance: ModelPerformance = {
   models: [
     {
       model: "gpt-5.6-sol",
-      reasoningEffort: "high",
+      reasoningEffort: " MAX ",
       tokensPerMinute: 1200,
       streamingResponseRate: null,
       avgResponseMs: null,
@@ -119,7 +119,8 @@ describe("ModelPerformanceTrigger", () => {
     expect(modelContexts?.[0]?.getAttribute("data-model-context-display")).toBe("model-badge");
     expect(modelContexts?.[0]?.getAttribute("title")).toContain("gpt-5.6-sol");
     expect(modelContexts?.[0]?.querySelector('[data-testid$="-name"]')).toBeNull();
-    expect(modelContexts?.[0]?.querySelector('[data-reasoning-effort-tone="high"]')).not.toBeNull();
+    expect(modelContexts?.[0]?.querySelector('[data-reasoning-effort-tone="max"]')).not.toBeNull();
+    expect(modelContexts?.[0]?.textContent).toContain("max");
     expect(modelContexts?.[1]?.getAttribute("data-model-context-display")).toBe("name-and-effort");
     expect(modelContexts?.[1]?.querySelector('[data-testid$="-name"]')?.getAttribute("title")).toBe(
       "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",

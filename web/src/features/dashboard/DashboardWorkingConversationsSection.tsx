@@ -3268,13 +3268,6 @@ function DashboardUpstreamAccountActivityCard({
           tokenUnavailable: "Token 分项未提供",
           unknownModel: "未标识模型",
           reasoningEffort: "思考等级",
-          unspecifiedEffort: "未指定",
-          effortNone: "无",
-          effortMinimal: "最小",
-          effortLow: "低",
-          effortMedium: "中",
-          effortHigh: "高",
-          effortXhigh: "极高",
         }
       : {
           total: "Total",
@@ -3291,13 +3284,6 @@ function DashboardUpstreamAccountActivityCard({
           tokenUnavailable: "Token breakdown unavailable",
           unknownModel: "Unidentified model",
           reasoningEffort: "Reasoning effort",
-          unspecifiedEffort: "Unspecified",
-          effortNone: "None",
-          effortMinimal: "Minimal",
-          effortLow: "Low",
-          effortMedium: "Medium",
-          effortHigh: "High",
-          effortXhigh: "XHigh",
         };
   const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
   const formatBreakdownRatio = (value: number | null) =>

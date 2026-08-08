@@ -47,16 +47,6 @@ function formatParallelism(value: number | null | undefined, localeTag: string) 
   }).format(value)}`;
 }
 
-function effortLabel(
-  effort: string | null | undefined,
-  labels: Record<string, string>,
-  unspecified: string,
-) {
-  const normalized = effort?.trim().toLowerCase();
-  if (!normalized) return unspecified;
-  return labels[normalized] ?? effort?.trim() ?? unspecified;
-}
-
 export function ModelPerformanceDetails({
   title,
   performance,
@@ -72,14 +62,6 @@ export function ModelPerformanceDetails({
     wallClockDuration: t("dashboard.modelPerformance.columns.wallClockDuration"),
     cumulativeDuration: t("dashboard.modelPerformance.columns.cumulativeDuration"),
     parallelism: t("dashboard.modelPerformance.columns.parallelism"),
-  };
-  const effortLabels = {
-    none: t("dashboard.modelPerformance.effort.none"),
-    minimal: t("dashboard.modelPerformance.effort.minimal"),
-    low: t("dashboard.modelPerformance.effort.low"),
-    medium: t("dashboard.modelPerformance.effort.medium"),
-    high: t("dashboard.modelPerformance.effort.high"),
-    xhigh: t("dashboard.modelPerformance.effort.xhigh"),
   };
   const valuesFor = (metrics: ModelPerformance["total"]) => [
     formatNumber(metrics.tokensPerMinute, localeTag, 0),
@@ -139,11 +121,6 @@ export function ModelPerformanceDetails({
             <ModelPerformanceModelIdentity
               model={model.model}
               effortValue={model.reasoningEffort}
-              effort={effortLabel(
-                model.reasoningEffort,
-                effortLabels,
-                t("dashboard.modelPerformance.effort.unspecified"),
-              )}
               className="w-full"
               modelClassName="text-sm font-semibold text-base-content"
               testId="model-performance-drawer-model-context"
@@ -215,11 +192,6 @@ export function ModelPerformanceDetails({
                   <ModelPerformanceModelIdentity
                     model={model.model}
                     effortValue={model.reasoningEffort}
-                    effort={effortLabel(
-                      model.reasoningEffort,
-                      effortLabels,
-                      t("dashboard.modelPerformance.effort.unspecified"),
-                    )}
                     className="w-full"
                     modelClassName="font-semibold text-base-content/85"
                     testId="model-performance-table-model-context"

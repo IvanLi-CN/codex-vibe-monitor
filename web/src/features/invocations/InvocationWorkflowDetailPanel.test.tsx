@@ -656,7 +656,15 @@ function createBlockedPoolWorkflowResponse(): ApiInvocationWorkflowDetailRespons
 
 describe("InvocationWorkflowDetailPanel", () => {
   it("renders hero information, timeline blocks, and detail sections from the workflow API", async () => {
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailResponse());
+    const workflowDetail = createWorkflowDetailResponse();
+    const routeEntry = workflowDetail.timeline.find((entry) => entry.kind === "routingDecision");
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!routeEntry?.detail?.request || !attemptEntry?.attempt?.requestSummary) {
+      throw new Error("workflow fixture must contain route and attempt request summaries");
+    }
+    routeEntry.detail.request.reasoningEffort = " MAX ";
+    attemptEntry.attempt.requestSummary.reasoningEffort = "ULTRA";
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
     apiMocks.fetchInvocationRequestBody.mockResolvedValue({
       available: true,
       bodyText: failedWorkflowRequestBodyText,
@@ -712,6 +720,7 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
     expect(host?.textContent ?? "").toContain(requestBodySizeLabel);
     expect(host?.textContent ?? "").toContain("priority");
+    expect(host?.textContent ?? "").toContain("ultra");
     expect(host?.textContent ?? "").toContain(responseBodySizeLabel);
     expect(host?.textContent ?? "").toContain("monitor-ui/1.0");
     expect(host?.textContent ?? "").toContain("tokyo-edge-01");
@@ -748,6 +757,9 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("图片工具协议");
     expect(host?.textContent ?? "").toContain("responses_lite");
     expect(host?.textContent ?? "").toContain("responses_lite_client_owned_tools");
+    expect(host?.textContent ?? "").toContain("max");
+    expect(host?.textContent ?? "").not.toContain("MAX");
+    expect(host?.textContent ?? "").not.toContain("ULTRA");
 
     const requestBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
       (candidate): candidate is HTMLButtonElement =>

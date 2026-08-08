@@ -31,6 +31,7 @@ import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ModelIdentity } from "../shared/ModelIdentity";
+import { formatReasoningEffort } from "../shared/reasoningEffort";
 import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
@@ -211,11 +212,12 @@ export function formatDetailTimestamp(value: string | null | undefined) {
 }
 
 export function renderReasoningEffortBadge(value: string) {
-  if (value === FALLBACK_CELL) {
+  const displayValue = formatReasoningEffort(value);
+  if (displayValue === FALLBACK_CELL) {
     return <span className="font-mono text-sm text-base-content/70">{FALLBACK_CELL}</span>;
   }
 
-  const tone = getReasoningEffortTone(value);
+  const tone = getReasoningEffortTone(displayValue);
 
   return (
     <Badge
@@ -224,10 +226,10 @@ export function renderReasoningEffortBadge(value: string) {
         "max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]",
         REASONING_EFFORT_TONE_CLASSNAMES[tone],
       )}
-      title={value}
+      title={displayValue}
       data-reasoning-effort-tone={tone}
     >
-      <span className="block max-w-full truncate whitespace-nowrap">{value}</span>
+      <span className="block max-w-full truncate whitespace-nowrap">{displayValue}</span>
     </Badge>
   );
 }
@@ -671,7 +673,7 @@ export function buildInvocationDetailViewModel({
     record.serviceTier,
     record.billingServiceTier,
   );
-  const reasoningEffortValue = formatOptionalText(record.reasoningEffort);
+  const reasoningEffortValue = formatReasoningEffort(record.reasoningEffort);
   const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter);
   const cacheWriteTokensValue = formatOptionalNumber(
     record.cacheWriteTokens ??

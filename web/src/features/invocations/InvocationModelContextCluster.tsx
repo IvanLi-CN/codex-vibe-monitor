@@ -2,15 +2,16 @@ import type { useTranslation } from "../../i18n";
 import type { FastIndicatorState } from "../../lib/invocation";
 import { cn } from "../../lib/utils";
 import {
+  formatReasoningEffort,
+  getReasoningEffortTone,
+  REASONING_EFFORT_TONE_CLASSNAMES,
+  type ReasoningEffortTone,
+} from "../shared/reasoningEffort";
+import {
   FALLBACK_CELL,
   renderFastIndicator,
   renderInvocationModelBadge,
 } from "./invocation-details-shared";
-import {
-  getReasoningEffortTone,
-  REASONING_EFFORT_TONE_CLASSNAMES,
-  type ReasoningEffortTone,
-} from "./invocation-table-reasoning";
 
 const REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES: Record<ReasoningEffortTone, string> = {
   none: "text-base-content/68",
@@ -18,7 +19,9 @@ const REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES: Record<ReasoningEffortTone, stri
   low: "tone-ink-info",
   medium: "tone-ink-primary",
   high: "tone-ink-warning",
-  xhigh: "tone-ink-error",
+  xhigh: "tone-ink-warning",
+  max: "tone-ink-error",
+  ultra: "font-bold tone-ink-error",
   unknown: "text-base-content/62",
 };
 
@@ -28,7 +31,9 @@ const REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, st
   low: "bg-info/80",
   medium: "bg-primary/80",
   high: "bg-warning/85",
-  xhigh: "bg-error/85",
+  xhigh: "bg-warning",
+  max: "bg-error/85",
+  ultra: "bg-error",
   unknown: "bg-base-content/38",
 };
 
@@ -51,30 +56,31 @@ export function InvocationReasoningEffortBadge({
   value: string;
   testId?: string;
 }) {
-  if (value === FALLBACK_CELL) {
+  const displayValue = formatReasoningEffort(value);
+  if (displayValue === FALLBACK_CELL) {
     return (
       <span
         data-testid={testId}
-        className="inline-flex shrink-0 items-center font-mono text-[0.625rem] font-semibold text-base-content/48"
-        title={value}
+        className="inline-flex shrink-0 items-center font-mono text-xs font-semibold text-base-content/48"
+        title={displayValue}
       >
-        {value}
+        {displayValue}
       </span>
     );
   }
 
-  const tone = getReasoningEffortTone(value);
+  const tone = getReasoningEffortTone(displayValue);
   return (
     <span
       data-testid={testId}
       data-reasoning-effort-tone={tone}
       className={cn(
-        "inline-flex min-h-5 max-w-[5rem] shrink-0 items-center rounded-full border px-2 py-0.5 text-[0.625rem] font-semibold leading-none tracking-[0.01em]",
+        "inline-flex min-h-5 max-w-[5rem] shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-semibold leading-none tracking-[0.01em]",
         REASONING_EFFORT_TONE_CLASSNAMES[tone],
       )}
-      title={value}
+      title={displayValue}
     >
-      <span className="truncate whitespace-nowrap">{value}</span>
+      <span className="truncate whitespace-nowrap">{displayValue}</span>
     </span>
   );
 }
@@ -90,6 +96,7 @@ export function InvocationModelContextCluster({
   testId,
   modelTestId,
 }: InvocationModelContextClusterProps) {
+  const displayReasoningEffort = formatReasoningEffort(reasoningEffortValue);
   const fastIndicator = renderFastIndicator(fastIndicatorState, t);
   const fastLabel =
     fastIndicatorState === "effective"
@@ -99,12 +106,15 @@ export function InvocationModelContextCluster({
         : null;
   const modelLabel = [
     modelValue,
-    reasoningEffortValue === FALLBACK_CELL ? null : reasoningEffortValue,
+    displayReasoningEffort === FALLBACK_CELL ? null : displayReasoningEffort,
     fastLabel,
   ]
     .filter(Boolean)
     .join(" · ");
-  const reasoningTone = getReasoningEffortTone(reasoningEffortValue);
+  const reasoningTone =
+    displayReasoningEffort === FALLBACK_CELL
+      ? "none"
+      : getReasoningEffortTone(displayReasoningEffort);
   const model = renderInvocationModelBadge(modelValue, {
     t,
     hasMismatch: modelHasMismatch,
@@ -140,10 +150,10 @@ export function InvocationModelContextCluster({
           data-model-context-part="reasoning-effort"
           data-reasoning-effort-tone={reasoningTone}
           className={cn(
-            "flex min-w-0 items-center gap-1 px-1.5 text-[0.625rem] font-semibold",
+            "flex min-w-0 items-center gap-1 px-1.5 text-xs font-semibold",
             REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
           )}
-          title={reasoningEffortValue}
+          title={displayReasoningEffort}
         >
           <span
             className={cn(
@@ -152,7 +162,7 @@ export function InvocationModelContextCluster({
             )}
             aria-hidden
           />
-          <span className="truncate whitespace-nowrap">{reasoningEffortValue}</span>
+          <span className="truncate whitespace-nowrap">{displayReasoningEffort}</span>
         </span>
         {fastIndicator ? (
           <>
@@ -183,7 +193,7 @@ export function InvocationModelContextCluster({
       </span>
       <span className="shrink-0 text-base-content/28">·</span>
       <InvocationReasoningEffortBadge
-        value={reasoningEffortValue}
+        value={displayReasoningEffort}
         testId={testId ? `${testId}-reasoning-effort` : undefined}
       />
       {fastIndicator ? (

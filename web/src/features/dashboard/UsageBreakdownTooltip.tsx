@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
 import { ModelIdentity } from "../shared/ModelIdentity";
+import { formatReasoningEffort } from "../shared/reasoningEffort";
 
 type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 
@@ -19,13 +20,6 @@ export interface UsageBreakdownTooltipProps {
     output: string;
     unknownModel: string;
     reasoningEffort: string;
-    unspecifiedEffort: string;
-    effortNone: string;
-    effortMinimal: string;
-    effortLow: string;
-    effortMedium: string;
-    effortHigh: string;
-    effortXhigh: string;
   };
 }
 
@@ -53,33 +47,13 @@ function modelLabel(model: string, unknownModel: string) {
   return model === "unknown" ? unknownModel : model;
 }
 
-function effortLabel(
-  effort: string | null | undefined,
-  labels: UsageBreakdownTooltipProps["labels"],
-) {
-  const normalized = effort?.trim().toLowerCase();
-  if (!normalized) return labels.unspecifiedEffort;
-  return (
-    {
-      none: labels.effortNone,
-      minimal: labels.effortMinimal,
-      low: labels.effortLow,
-      medium: labels.effortMedium,
-      high: labels.effortHigh,
-      xhigh: labels.effortXhigh,
-    }[normalized] ??
-    effort?.trim() ??
-    labels.unspecifiedEffort
-  );
-}
-
 function groupKey(model: UsageBreakdownModel) {
   return `${model.model}\u0000${model.reasoningEffort?.trim() ?? ""}`;
 }
 
 function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipProps["labels"]) {
   const modelName = modelLabel(model.model, labels.unknownModel);
-  const effort = effortLabel(model.reasoningEffort, labels);
+  const effort = formatReasoningEffort(model.reasoningEffort);
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
       {model.model === "unknown" ? (

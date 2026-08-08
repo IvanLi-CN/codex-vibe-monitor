@@ -1,6 +1,7 @@
 import type { LongTermSeries, LongTermStatsDimension } from "../../lib/api";
 import { longTermSeriesPalette, withOpacity } from "../../lib/chartTheme";
 import type { ThemeMode } from "../../theme";
+import { formatReasoningEffort } from "../shared/reasoningEffort";
 
 export interface LongTermSeriesVisual {
   color: string;
@@ -22,6 +23,8 @@ const REASONING_STYLES: Record<string, ReasoningStyle> = {
   medium: { fillOpacity: 0.36, strokeDasharray: "9 3", strokeOpacity: 0.9 },
   high: { fillOpacity: 0.48, strokeDasharray: "13 3", strokeOpacity: 1 },
   xhigh: { fillOpacity: 0.56, strokeDasharray: "1 2", strokeOpacity: 0.96 },
+  max: { fillOpacity: 0.64, strokeDasharray: "3 2", strokeOpacity: 1 },
+  ultra: { fillOpacity: 0.72, strokeOpacity: 1 },
   unknown: { fillOpacity: 0.24, strokeDasharray: "7 2 1 2", strokeOpacity: 0.76 },
 };
 
@@ -41,10 +44,9 @@ function resolveFamilyKey(item: LongTermSeries, dimension: LongTermStatsDimensio
 export function longTermSeriesLabel(
   item: LongTermSeries,
   dimension: LongTermStatsDimension,
-  unspecifiedLabel: string,
 ): string {
   if (dimension !== "model") return item.displayName;
-  const effort = item.reasoningEffort?.trim() || unspecifiedLabel;
+  const effort = formatReasoningEffort(item.reasoningEffort);
   return `${item.displayName} · ${effort}`;
 }
 
@@ -52,7 +54,6 @@ export function resolveLongTermSeriesVisuals(
   series: readonly LongTermSeries[],
   dimension: LongTermStatsDimension,
   themeMode: ThemeMode,
-  unspecifiedLabel: string,
 ): Map<string, LongTermSeriesVisual> {
   const familyKeys = [...new Set(series.map((item) => resolveFamilyKey(item, dimension)))].sort(
     (left, right) => left.localeCompare(right),
@@ -76,7 +77,7 @@ export function resolveLongTermSeriesVisuals(
           color,
           fill: color,
           fillOpacity: reasoningStyle.fillOpacity,
-          label: longTermSeriesLabel(item, dimension, unspecifiedLabel),
+          label: longTermSeriesLabel(item, dimension),
           stroke: withOpacity(color, reasoningStyle.strokeOpacity),
           strokeDasharray: reasoningStyle.strokeDasharray,
         },
