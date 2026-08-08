@@ -3918,4 +3918,32 @@ mod dispatch_tests {
         assert!(!proxy_stream_write_error_is_post_terminal(false));
         assert!(proxy_stream_write_error_is_post_terminal(true));
     }
+
+    #[test]
+    fn standalone_search_capture_and_capability_require_post() {
+        assert_eq!(
+            capture_target_for_request("/v1/alpha/search", &Method::GET),
+            None
+        );
+        assert_eq!(
+            capture_target_for_request("/v1/alpha/search", &Method::POST),
+            Some(ProxyCaptureTarget::StandaloneSearch)
+        );
+        assert!(
+            !RequestCapabilityRequirements::from_endpoint_and_image_intent_for_method(
+                "/v1/alpha/search",
+                ImageIntent::No,
+                false,
+            )
+            .standalone_search
+        );
+        assert!(
+            RequestCapabilityRequirements::from_endpoint_and_image_intent_for_method(
+                "/v1/alpha/search",
+                ImageIntent::No,
+                true,
+            )
+            .standalone_search
+        );
+    }
 }

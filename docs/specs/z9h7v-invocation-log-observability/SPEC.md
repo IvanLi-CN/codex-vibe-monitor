@@ -1,5 +1,11 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles）（#z9h7v）
 
+## Shared invocation card presentation
+
+Live and conversation-detail invocation windows use a compact three-segment card projection. The card keeps the invocation ID, status/phase, transport, endpoint, account/plan, proxy, model routing, reasoning/FAST state, cache and token/cost diagnostics, compression, and conditional error summary. Conversation identity is supplied by the surrounding drawer and is not repeated in each card. The Records search result remains a table.
+
+For in-flight records, missing TTFT and response duration values display elapsed time from `occurredAt` on a one-second presentation clock. Authoritative `firstTokenMs` and `tUpstreamStreamMs` values immediately replace the elapsed values; terminal missing values display `—`, and `tTotalMs` is never used to infer either metric. Card activation, keyboard toggling, deep-link focus, stable-key replacement, virtual measurement, and account navigation retain the existing contracts.
+
 ## 背景 / 问题陈述
 
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
@@ -167,6 +173,7 @@
 - 若号池达到不同账号尝试上限，前端应明确说明终态记录未发起新的上游请求，并可保留上一失败账号与上一错误状态作为诊断上下文。
 - 当 body logging 开关关闭导致新记录没有 raw 路径或 preview 时，详情页、回填与异常查看都要把它当作“未保留 body”，不是“raw 文件丢失”。
 - 上游返回 standalone search 的 HTTP 404/5xx 时，网关必须将其作为 upstream failure 记录并透传既有错误语义；不得把它误记为本地不支持路由。
+- API Key 号池的 standalone search attempt 可同时更新账号级 endpoint capability：成功记录支持，裸 404/405 记录不支持，明确 unsupported endpoint/path/route 的 400 记录不支持；该旁路不得改变父 invocation、attempt 或 rollup 计数语义。OAuth bridge 不参与此能力学习。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -186,6 +193,7 @@
 - 搜索响应不会因为包含 `output`、`results` 或 `encrypted_output` 而生成 token/cost/usage；没有明确 usage 证据时对应字段保持 unavailable。
 - request/response raw 文件与 inline preview 完全遵循 `requestBodyLoggingEnabled` / `responseBodyLoggingEnabled`。
 - 号池重试按一个父 invocation 和多个既有 upstream attempts 记录，source-level hourly rollup 只计一次父 invocation。
+- 账号能力学习以每次真实 API Key attempt 为单位；failover 可更新多个实际尝试账号，但不得增加父 invocation 或 rollup 请求量。
 
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 
@@ -773,6 +781,39 @@
   submission_gate: approved
   image:
   ![Responses Lite image-tool rewrite audit](./assets/responses-lite-image-tool-rewrite-audit.png)
+
+- source_type: ui_demo
+  story_id_or_title: Shared Invocation Cards / Live and Conversation Calls
+  state: three-segment invocation cards with a live elapsed-timing row
+  requested_viewport: desktop and 393x852
+  viewport_strategy: browser viewport override for mobile
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_bound_sha: 11a047d6e41de8d6f17c889fb0bc1272345b42d9
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only invocation and conversation data
+  submission_gate: approved
+  demo_route: `/#/live?demoScene=attention&demoTheme=dark`
+  evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, and keep the existing detail drawer interaction.
+  PR: include
+  ![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
+
+- state: compact desktop summary strip plus three-line cards with invocation ID, status, timing, routing metadata, token/cost diagnostics, and the in-flight elapsed timer.
+
+PR: include
+![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: semantic wrapping keeps the card readable without horizontal overflow or a repeated conversation ID.
+
+PR: include
+![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
+
+- requested_viewport: 393x852
+- viewport_strategy: ui-demo-source
+- state: the existing InvocationWorkflowDetailPanel expands inside the same card boundary and remains available from the card body/chevron.
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

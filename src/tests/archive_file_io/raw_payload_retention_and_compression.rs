@@ -2524,6 +2524,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 image_endpoint_capability: CapabilitySupport::Unknown,
                 response_image_tool_capability: CapabilitySupport::Unknown,
                 codex_imagegen_capability: CapabilitySupport::Unknown,
+                standalone_search_capability: CapabilitySupport::Unknown,
                 upstream_base_url: Url::parse("https://api.openai.com/")
                     .expect("valid upstream base"),
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
@@ -5158,6 +5159,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
 
     let mut upstream = send_pool_request_with_failover(
@@ -5287,6 +5289,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -5431,6 +5434,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         codex_imagegen_capability: CapabilitySupport::Unknown,
+        standalone_search_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(

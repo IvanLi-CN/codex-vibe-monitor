@@ -86,7 +86,7 @@ import {
   type EffectiveRoutingRuleCardRowKey,
   type EffectiveRoutingRuleCardRowValueOverride,
 } from "../account-pool/EffectiveRoutingRuleCard";
-import { InvocationTable } from "../invocations/InvocationTable";
+import { InvocationCardList } from "../invocations/InvocationTable";
 import { AppIcon } from "../shared/AppIcon";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import { FALLBACK_CELL, findVisibleConversationChartMax } from "./keyedConversationChart";
@@ -763,7 +763,7 @@ function PromptCacheConversationInvocationTable({
             <span>{error}</span>
           </Alert>
         ) : null}
-        <InvocationTable
+        <InvocationCardList
           records={records}
           isLoading={false}
           error={null}
@@ -776,7 +776,7 @@ function PromptCacheConversationInvocationTable({
   }
 
   return (
-    <InvocationTable
+    <InvocationCardList
       records={records}
       isLoading={isLoading}
       error={error}

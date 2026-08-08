@@ -952,6 +952,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     } else {
         false
     };
+    let sticky_fallback_handoff_policy_enabled = sticky_source_rule
+        .as_ref()
+        .is_some_and(|rule| rule.priority_tier == TagPriorityTier::Fallback)
+        && binding_constraint.is_none()
+        && !sticky_source_transport_decode_escape
+        && !sticky_cut_out_blocked_by_policy;
+    let mut sticky_fallback_handoff_enabled = false;
     let bypass_requested_model_filter = binding_constraint.is_some();
     let conversation_available_models_override =
         conversation_override.is_some_and(|policy| policy.available_models.is_some());
@@ -1083,6 +1090,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             row.policy_codex_imagegen_capability_override.as_deref(),
                         ),
                     ),
+                    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+                        effective_capability_support(
+                            decode_capability_support(row.standalone_search_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_standalone_search_capability_override.as_deref(),
+                            ),
+                        )
+                    } else {
+                        CapabilitySupport::Supported
+                    },
                 ) {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
@@ -1146,8 +1163,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             &route_binding_failure_penalties,
                                         )
                                         .await;
+                                    sticky_fallback_handoff_enabled =
+                                        sticky_fallback_handoff_policy_enabled
+                                            && route_binding_failure_penalty == 0
+                                            && sticky_model_penalty == ModelRoutePenalty::Normal;
                                     if route_binding_failure_penalty > 0
                                         || sticky_model_penalty != ModelRoutePenalty::Normal
+                                        || sticky_fallback_handoff_policy_enabled
                                     {
                                         if sticky_source_cut_out_guard_applies {
                                             return Ok(PoolAccountResolution::Resolved(
@@ -1160,7 +1182,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             route_binding_failure_penalty;
                                         evaluation.resolved_account = Some(account);
                                         resolved_candidates.push(evaluation);
-                                        sticky_route_was_excluded = true;
+                                        sticky_route_was_excluded = route_binding_failure_penalty
+                                            > 0
+                                            || sticky_model_penalty != ModelRoutePenalty::Normal;
                                         saw_other_non_rate_limited_routing_candidate = true;
                                     } else {
                                         return Ok(PoolAccountResolution::Resolved(
@@ -1432,6 +1456,21 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
             continue;
         };
+        if sticky_fallback_handoff_enabled
+            && effective_rule.priority_tier.routing_rank()
+                >= sticky_source_rule
+                    .as_ref()
+                    .expect("fallback sticky source rule should be loaded")
+                    .priority_tier
+                    .routing_rank()
+        {
+            push_routing_selection_audit_exclusion(
+                &mut selection_audit_exclusions,
+                &row,
+                "notHigherPriorityThanStickyFallback",
+            );
+            continue;
+        }
         if (!bypass_requested_model_filter || conversation_available_models_override)
             && !account_accepts_requested_model(requested_model, effective_rule)
         {
@@ -1482,6 +1521,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     row.policy_codex_imagegen_capability_override.as_deref(),
                 ),
             ),
+            if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+                effective_capability_support(
+                    decode_capability_support(row.standalone_search_capability.as_deref()),
+                    decode_capability_override(
+                        row.policy_standalone_search_capability_override.as_deref(),
+                    ),
+                )
+            } else {
+                CapabilitySupport::Supported
+            },
         ) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
@@ -1877,6 +1926,7 @@ mod tests {
             CapabilitySupport::Supported,
             CapabilitySupport::Supported,
             CapabilitySupport::Unsupported,
+            CapabilitySupport::Unknown,
         ));
         assert!(account_accepts_request_capabilities(
             force_add,
@@ -1888,6 +1938,7 @@ mod tests {
                 CapabilitySupport::Unsupported,
                 Some(CapabilitySupport::Supported),
             ),
+            CapabilitySupport::Unknown,
         ));
 
         let image_model = request_capability_requirements_after_codex_imagegen_rewrite(

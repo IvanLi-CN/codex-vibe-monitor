@@ -2,6 +2,8 @@
 
 ## Key Decisions
 
+- 2026-08-06: Owner approved the shared invocation card evidence. The desktop, narrow, and expanded narrow `ui_demo` snapshots are now persisted as stable Spec assets; this Spec remains owner-facing only while the invocation observability Spec publishes the selected images in the PR body.
+
 - 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while the entire captured HTTP snapshot, including page 1, remains frozen; cached Calls hydration survives direct opens, and away-from-top head refreshes retain existing visible rows while only new stable keys enter the reveal count. Overview builds its summary and samples through one SQLite read transaction plus captured runtime overlay with a fixed accepted page width. Its SSE-disabled HTTP fallback captures an unpinned head and re-reads it with the returned snapshot for summary, samples, and full-range bounds, while a cached binding fallback baseline remains scope-local. Records changes coalesce, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.
 - 2026-05-25: Created a dedicated topic spec because per-conversation routing bindings introduce a new stable runtime contract distinct from invocation observability.
 - 2026-05-25: Chose hard-constraint routing semantics so bound conversations never silently fall back to unrelated accounts or groups.
@@ -36,3 +38,4 @@
 - 2026-07-24: Clarified the conversation image-tool override with a focusable help icon: Full Responses may be rewritten, while Responses Lite client-owned tools stay unchanged.
 - 2026-07-26: Bounded automatic sticky escape after consecutive upstream stream errors to a five-minute, latest-failure-based expiry. Account roster and detail APIs now expose the shared expiry/reason state, active entries are classified as degraded work with normal health, node-shunt hard blocks take precedence, and the UI shows a live countdown before one silent recovery refresh.
 - 2026-07-26: Added nullable conversation-level `codexImagegenRewriteMode`. It inherits after root/group/account policy, applies only to explicitly identified Codex requests, and remains visually distinct from the existing hosted image-tool override.
+- 2026-08-05: Shared Calls consumers now use three-segment invocation cards with invocation IDs, complete diagnostics, presentation-only in-flight timing, and the existing workflow detail interaction; conversation identity remains in the drawer header only.

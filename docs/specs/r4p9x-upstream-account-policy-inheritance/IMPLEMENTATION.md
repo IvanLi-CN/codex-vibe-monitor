@@ -67,20 +67,22 @@ Status-change side effects are now gated by the resolved per-reason policy.
 - for account-scoped failure families, disabling a reason preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
 - suppressed sync failures still advance the non-health sync timestamp so maintenance cadence does not collapse into immediate retries
 
-Endpoint capability routing is now endpoint-aware instead of response-family wide.
+Endpoint capability routing is endpoint-aware instead of response-family wide.
 
 - `pool_upstream_accounts` persists `chat_completions_capability`, its observed timestamp/reason, and `policy_chat_completions_capability_override`
 - runtime requirement inference now keys off `endpoint + image_intent`, so Responses, Chat Completions, direct image, and Responses image-tool learning are independent
 - `/v1/chat/completions` no longer participates in `response_endpoint_capability` or `response_image_tool_capability`
 - startup schema maintenance performs a one-time cutover that clears legacy mixed Responses observed state and overrides, seeds the new Chat axis as `unknown`, and records completion in `pool_routing_settings.capability_axis_split_migrated`
+- API-key accounts persist an independent `standalone_search_capability`, observed timestamp/reason, and nullable policy override. Exact `/v1/alpha/search` routing filters on its effective value; successful attempts learn support, bare `404`/`405` learn non-support, and ambiguous failures preserve the current observation.
 
-The account detail Overview now renders five independent capability cards.
+The API-key account detail Overview renders six independent capability cards in a three-column desktop grid.
 
 - Responses card: `/v1/responses`, `/v1/responses/compact`
 - Chat Completions card: `/v1/chat/completions`
 - Image card: `/v1/images/generations`, `/v1/images/edits`
 - Codex imagegen card: `image_gen` namespace compatibility, including observed reason and an explicit supported/unsupported override for a deliberate post-repair retest
 - Response image-tool card: Responses-family image-tool eligibility only
+- Standalone Search card: exact `/v1/alpha/search` eligibility with automatic learning and persistent supported/unsupported override
 
 ## API and Resolution
 
@@ -91,6 +93,10 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 - value writes the override, including boolean `false`
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `priorityTier`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
+Sticky routing now treats a reusable `fallback` source as a comparison candidate on every subsequent request when automatic cut-out is allowed. The resolver enables the priority filter only after the sticky source resolves as a sendable account, so hard failures, capability rejection, and other non-reusable sources retain the existing fresh failover behavior. It admits only strictly higher `normal` / `primary` candidates into the proactive comparison, keeps the existing composite score ordering, and leaves the fallback source selected when no higher candidate wins. A fresh handoff carries the captured sticky generation and is rebound only by the existing successful-route CAS path.
+
+Penalty-bearing sticky sources keep the existing comparison path: recent route-binding failures and model-route demotions still allow healthy same-tier fallback peers to win on the composite score. The higher-priority-only filter is limited to reusable, unpenalized fallback sticky sources.
 
 Request compression extends the same inheritance contract with one root-only field.
 
@@ -176,6 +182,7 @@ Validation covers:
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving API-key live temporary reasons target exact-model health, disabled reasons and missing models stay diagnostic-only, background sync remains non-punitive, and OAuth/hard account failures retain their prior behavior
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
+- backend regressions covering proactive fallback sticky comparison, higher-priority handoff without pre-success sticky mutation, same/lower-priority retention, and generation-guarded successful rebinding
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
 - frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability

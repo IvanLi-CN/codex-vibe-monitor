@@ -1277,6 +1277,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
     "accountPool.upstreamAccounts.capability.codexImagegen.description":
       "Controls whether this account can receive Codex requests after image_gen namespace injection.",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.title": "Standalone Search endpoint",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.description":
+      "Controls routing eligibility for the Codex standalone search endpoint only.",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "Rewrite policy is not capability routing",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
@@ -2697,6 +2700,10 @@ const baseTranslations = {
     "table.column.responseDurationShort": "Response",
     "table.column.httpCompressionShort": "HTTP",
     "table.column.requestCompressionShort": "Request",
+    "table.card.cacheHitRate": "Cache hit",
+    "table.card.cacheWrite": "Cache write",
+    "table.card.cost": "Cost",
+    "table.card.requestCompression": "Compression",
     "table.latency.firstByteTotal": "First byte / Elapsed",
     "table.latency.firstTokenResponse": "TTFT / Response time",
     "table.column.error": "Error",
@@ -4181,6 +4188,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
     "accountPool.upstreamAccounts.capability.codexImagegen.description":
       "控制该账号能否接收已注入 image_gen 命名空间的 Codex 请求。",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.title": "Standalone Search 端点",
+    "accountPool.upstreamAccounts.capability.standaloneSearch.description":
+      "仅控制 Codex standalone search 端点的路由可选性。",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "rewrite 策略不等于 capability 路由",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
@@ -5516,6 +5526,10 @@ const baseTranslations = {
     "table.column.responseDurationShort": "响应",
     "table.column.httpCompressionShort": "HTTP",
     "table.column.requestCompressionShort": "请求",
+    "table.card.cacheHitRate": "缓存命中",
+    "table.card.cacheWrite": "缓存写入",
+    "table.card.cost": "成本",
+    "table.card.requestCompression": "压缩",
     "table.latency.firstByteTotal": "TTFT / 用时",
     "table.latency.firstTokenResponse": "TTFT / 响应用时",
     "table.column.error": "错误",

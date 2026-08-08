@@ -724,13 +724,9 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
-  it("shows selectable invoke IDs only when explicitly enabled", async () => {
+  it("always shows the invocation ID without repeating conversation identity", async () => {
     const records = [createInvocationRecord(0)];
     await renderInteractiveTable(records);
-    expect(document.querySelector('[data-testid="invocation-id"]')).toBeNull();
-    expect(document.querySelector("thead th")?.className).toContain("xl:w-[10%]");
-
-    await renderInteractiveTable(records, { showInvokeId: true });
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.textContent).toBe("virtual-row-1");
     expect(invokeId?.className).toContain("select-text");
@@ -739,7 +735,8 @@ describe("InvocationTable", () => {
     expect(invokeId?.className).not.toContain("truncate");
     expect(invokeId?.className).not.toContain("break-all");
     expect(invokeId?.getAttribute("title")).toBe(invokeId?.textContent);
-    expect(document.querySelector("thead th")?.className).toContain("xl:w-[16%]");
+    expect(document.querySelector("table")).toBeNull();
+    expect(document.querySelector('[data-testid="invocation-card-list"]')).toBeTruthy();
   });
 
   it("virtualizes large desktop datasets without mounting every row", async () => {
@@ -747,7 +744,7 @@ describe("InvocationTable", () => {
       Array.from({ length: 1_000 }, (_, index) => createInvocationRecord(index)),
     );
 
-    const mountedRows = Array.from(document.querySelectorAll("tbody tr"));
+    const mountedRows = Array.from(document.querySelectorAll('[data-testid="invocation-card"]'));
     const mountedText = mountedRows.map((row) => row.textContent ?? "").join(" ");
 
     expect(mountedRows.length).toBeGreaterThan(0);
@@ -767,14 +764,10 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable(
       Array.from({ length: 20 }, (_, index) => createInvocationRecord(index)),
-      { showInvokeId: true },
     );
 
-    expect(document.querySelector('[data-testid="invocation-list"]')).toBeTruthy();
-    expect(
-      document.querySelectorAll('[data-testid="invocation-list-item"]').length,
-    ).toBeGreaterThan(0);
-    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
+    expect(document.querySelector('[data-testid="invocation-card-list"]')).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid="invocation-card"]').length).toBeGreaterThan(0);
     const invokeId = document.querySelector('[data-testid="invocation-id"]');
     expect(invokeId?.className).toContain("whitespace-nowrap");
     expect(invokeId?.className).toContain("overflow-hidden");
@@ -794,8 +787,7 @@ describe("InvocationTable", () => {
     });
     const highlightedRow = document.querySelector('[aria-current="true"]');
     expect(highlightedRow?.className).toContain("outline-none");
-    expect(highlightedRow?.className).toContain("ring-1");
-    expect(highlightedRow?.className).not.toContain("ring-2");
+    expect(highlightedRow?.className).toContain("border-primary/55");
   });
 
   it("uses a single border highlight for a located mobile card", async () => {
@@ -815,7 +807,35 @@ describe("InvocationTable", () => {
     const highlightedCard = document.querySelector('[aria-current="true"]');
     expect(highlightedCard?.className).toContain("outline-none");
     expect(highlightedCard?.className).toContain("border-primary/55");
-    expect(highlightedCard?.className).not.toContain("ring-");
+    expect(highlightedCard?.className).toContain("border-primary/55");
+  });
+
+  it("auto-expands a located card and clears its highlight after interaction", async () => {
+    vi.useFakeTimers();
+    const record = createInvocationRecord(0);
+    await renderInteractiveTable([record], {
+      scrollTarget: { invokeId: record.invokeId, attemptId: "attempt-target", version: 1 },
+    });
+
+    const card = document.querySelector('[data-testid="invocation-card"]');
+    expect(card?.getAttribute("data-expanded")).toBe("true");
+    expect(card?.querySelector("[data-invocation-detail]")).toBeTruthy();
+    expect(card?.getAttribute("aria-current")).toBe("true");
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(card?.getAttribute("aria-current")).toBe("true");
+
+    await act(async () => {
+      card?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      vi.advanceTimersByTime(1_499);
+    });
+    expect(card?.getAttribute("aria-current")).toBe("true");
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(card?.getAttribute("aria-current")).toBeNull();
   });
 
   it("renders the WS transport badge for websocket records", () => {
@@ -986,8 +1006,6 @@ describe("InvocationTable", () => {
 
     const html = renderTable(records);
 
-    expect(html).toContain("推理强度");
-    expect(html).toContain("推理 Tokens");
     expect(html).toContain("high");
     expect(html).toContain("推理 41");
     expect(html).toContain("推理 —");
@@ -1049,11 +1067,8 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(html).toContain("账号");
-    expect(html).toContain("代理");
-    expect(html).toContain("响应耗时");
     expect(html).toContain("TTFT");
-    expect(html).toContain("响应耗时 / HTTP 请求压缩");
+    expect(html).toContain("响应");
     expect(html).toContain("0.648 s");
     expect(html).toContain("0.26 s");
     expect(html).toContain("pool-account-a");
@@ -1382,7 +1397,7 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    const modelCell = host?.querySelector('td:nth-child(4) [title="gpt-image-1"]')?.parentElement;
+    const modelCell = host?.querySelector('[data-testid="invocation-table-model"]')?.parentElement;
     const endpointCell = host?.querySelector(
       '[data-testid="invocation-image-tool-badge"]',
     )?.parentElement;
@@ -1976,7 +1991,7 @@ describe("InvocationTable", () => {
     await renderInteractiveTable([record]);
 
     expect(document.body.textContent).toContain("9.36 s");
-    expect(document.body.textContent).toContain("10.08 s ·");
+    expect(document.body.textContent).toContain("响应 10.08 s");
     expect(document.body.textContent).not.toContain("19.46 s");
 
     const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
@@ -2009,7 +2024,9 @@ describe("InvocationTable", () => {
     expect(text).toContain("0 ms");
   });
 
-  it("does not derive TTFT or response duration from a running total", async () => {
+  it("advances both missing in-flight timings once per second", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-16T09:10:31Z"));
     await renderInteractiveTable([
       {
         id: -91,
@@ -2025,7 +2042,21 @@ describe("InvocationTable", () => {
     ]);
 
     expect(document.body.textContent).toContain("TTFT");
-    expect(document.body.textContent).toContain("— · —");
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+      "1 s",
+    );
+    expect(
+      document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
+    ).toContain("1 s");
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+      "4 s",
+    );
+    expect(
+      document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
+    ).toContain("4 s");
   });
 
   it("forwards pool account clicks to the shared upstream account controller", async () => {
@@ -2066,6 +2097,48 @@ describe("InvocationTable", () => {
     });
 
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha");
+    expect(
+      document.querySelector('[data-testid="invocation-card"]')?.getAttribute("data-expanded"),
+    ).toBe("false");
+  });
+
+  it("toggles the existing detail panel from card click and keyboard activation", async () => {
+    const record = createInvocationRecord(0);
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+      createWorkflowDetailFixture(record),
+    );
+    await renderInteractiveTable([record]);
+
+    const card = document.querySelector('[data-testid="invocation-card"]') as HTMLElement;
+    expect(card.getAttribute("data-expanded")).toBe("false");
+
+    await act(async () => {
+      card.click();
+      await Promise.resolve();
+    });
+    await waitForCondition(() => card.getAttribute("data-expanded") === "true");
+    expect(document.body.textContent).toContain("工作流时间线");
+
+    await act(async () => {
+      card.focus();
+      card.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(card.getAttribute("data-expanded")).toBe("false");
+
+    const chevron = Array.from(document.querySelectorAll("button")).find(
+      (button) =>
+        button.getAttribute("aria-label") === "展开详情" ||
+        button.getAttribute("aria-label") === "Show details",
+    ) as HTMLButtonElement | undefined;
+    expect(chevron).toBeTruthy();
+    await act(async () => {
+      chevron?.focus();
+      chevron?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      chevron?.click();
+      await Promise.resolve();
+    });
+    expect(card.getAttribute("data-expanded")).toBe("true");
   });
 
   it("does not render a local account detail drawer after clicking a pool account name", async () => {

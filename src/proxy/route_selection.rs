@@ -1595,6 +1595,7 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
         account.image_endpoint_capability,
         account.response_image_tool_capability,
         account.codex_imagegen_capability,
+        account.standalone_search_capability,
     );
     Ok(model_matches && model_route_allowed && image_matches)
 }
@@ -1724,6 +1725,11 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let capability_endpoint = if method == Method::POST {
+        original_uri.path()
+    } else {
+        ""
+    };
     let codex_imagegen_rewrite = codex_imagegen_protocol_from_headers(headers)
         .filter(|_| {
             account.codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
@@ -2430,7 +2436,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 status,
                 &route_error_message,
                 None,
-                original_uri.path(),
+                capability_endpoint,
                 request_image_intent,
                 pending_attempt_record
                     .as_ref()
@@ -3242,6 +3248,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let body_limit = state.config.openai_proxy_max_request_body_bytes;
         let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
         let capture_target = capture_target_for_request(original_uri.path(), &method);
+        let capability_endpoint = if method == Method::POST {
+            original_uri.path()
+        } else {
+            ""
+        };
         let codex_imagegen_request = codex_imagegen_protocol_from_headers(&headers).is_some();
         let handshake_timeout =
             proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
@@ -3421,7 +3432,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 None,
                                 &[],
                                 &HashSet::new(),
-                                original_uri.path(),
+                                capability_endpoint,
                                 request_image_intent,
                                 codex_imagegen_request,
                             )
@@ -3454,7 +3465,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         None,
                                         &excluded_ids,
                                         &excluded_upstream_route_keys,
-                                        original_uri.path(),
+                                        capability_endpoint,
                                         request_image_intent,
                                         codex_imagegen_request,
                                     )
@@ -3983,7 +3994,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
 	                        true,
 	                        &mut no_available_wait_deadline,
 	                        pre_attempt_total_timeout_deadline,
-	                        original_uri.path(),
+	                        capability_endpoint,
 	                        request_image_intent,
 	                        codex_imagegen_request,
 	                    )
@@ -4012,7 +4023,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     state.as_ref(),
                                     &account,
                                     requested_model.as_deref(),
-                                    original_uri.path(),
+                                    capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
                                 )
@@ -4032,7 +4043,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         true,
                                         &mut no_available_wait_deadline,
                                         pre_attempt_total_timeout_deadline,
-                                        original_uri.path(),
+                                        capability_endpoint,
                                         request_image_intent,
                                         codex_imagegen_request,
                                     )
@@ -4068,7 +4079,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         true,
                                         &mut no_available_wait_deadline,
                                         pre_attempt_total_timeout_deadline,
-                                        original_uri.path(),
+                                        capability_endpoint,
                                         request_image_intent,
                                         codex_imagegen_request,
                                     )
@@ -4104,7 +4115,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     true,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
-                                    original_uri.path(),
+                                    capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
                                 )
@@ -4216,7 +4227,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
-                            original_uri.path(),
+                            capability_endpoint,
                             request_image_intent,
                             codex_imagegen_request,
                         )
@@ -4232,7 +4243,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     true,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
-                                    original_uri.path(),
+                                    capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
                                 )
@@ -4437,7 +4448,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 live_body_sticky_key.as_deref(),
                                                 live_prompt_cache_key.as_deref(),
                                                 upstream_invoke_id.as_deref(),
-                                                original_uri.path(),
+                                                capability_endpoint,
                                                 request_image_intent,
                                                 codex_imagegen_rewrite.as_ref(),
                                                 pending_pool_attempt_record
@@ -4468,7 +4479,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 .as_deref()
                                                 .unwrap_or("upstream request failed"),
                                             upstream_invoke_id.as_deref(),
-                                            original_uri.path(),
+                                            capability_endpoint,
                                             request_image_intent,
                                             pending_pool_attempt_record
                                                 .as_ref()
@@ -4511,7 +4522,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     live_request_contains_encrypted_content;
                                 let upstream_content_encoding_for_task =
                                     upstream_content_encoding.clone();
-                                let request_path_for_record = original_uri.path().to_string();
+                                let request_path_for_record = capability_endpoint.to_string();
                                 let codex_imagegen_rewrite_for_record =
                                     codex_imagegen_rewrite.clone();
                                 let proxy_request_permit_for_task = proxy_request_permit;
@@ -4899,9 +4910,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
-                    original_uri.path(),
-                    request_image_intent,
-                    codex_imagegen_request,
+                        capability_endpoint,
+                        request_image_intent,
+                        codex_imagegen_request,
                 )
                 .await;
                         let (initial_account, no_available_wait_deadline) =
@@ -5157,7 +5168,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         sticky_key.as_deref(),
                         prompt_cache_key.as_deref(),
                         upstream_invoke_id.as_deref(),
-                        original_uri.path(),
+                        capability_endpoint,
                         request_image_intent,
                         codex_imagegen_rewrite.as_ref(),
                         pending_pool_attempt_record
@@ -5222,7 +5233,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .as_deref()
                             .unwrap_or("upstream request failed"),
                         upstream_invoke_id.as_deref(),
-                        original_uri.path(),
+                        capability_endpoint,
                         request_image_intent,
                         pending_pool_attempt_record
                             .as_ref()
@@ -5259,7 +5270,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
         let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
         let upstream_content_encoding_for_task = upstream_content_encoding.clone();
-        let request_path_for_record = original_uri.path().to_string();
+        let request_path_for_record = capability_endpoint.to_string();
         let codex_imagegen_rewrite_for_record = codex_imagegen_rewrite.clone();
         let proxy_request_permit_for_task = proxy_request_permit;
         let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();

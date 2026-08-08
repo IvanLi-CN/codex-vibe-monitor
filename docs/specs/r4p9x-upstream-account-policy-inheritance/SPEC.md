@@ -80,6 +80,7 @@ Accounts also track read-only system signals alongside editable policy:
 - observed direct image endpoint capability
 - observed Responses image-tool capability
 - observed Codex `image_gen` namespace capability
+- observed API-key standalone search endpoint capability
 - transport capability badges such as `unsupported_transport:websocket`
 
 ## Resolution
@@ -172,6 +173,8 @@ Capability learning and gating follow the real request endpoint:
 - successful or explicit unsupported `/v1/chat/completions` requests update only the Chat Completions axis
 - successful or explicit unsupported direct-image requests update only the direct image axis
 - Chat Completions does not have a separate image-tool axis
+- `standaloneSearchCapability` applies only to API-key accounts and exact `/v1/alpha/search` requests. Success learns `supported`; bare `404`/`405` learns `unsupported`; `400` learns `unsupported` only when the error explicitly identifies the search endpoint/path/route as unsupported. Authentication, rate-limit, other client, server, timeout, and transport failures preserve the prior observation.
+- standalone search uses the same persistent `supported | unsupported | null(auto)` operator override contract as ordinary endpoint capabilities. It does not use the one-shot Codex imagegen retest claim.
 
 Startup schema maintenance performs one capability-axis cutover:
 
@@ -210,6 +213,10 @@ The image-tool layer remains separate from the system-tag signal model:
 ## Sticky Transfer Policy
 
 `allow cut-out` is an automatic-routing boundary for the sticky source account. When the effective source policy forbids cut-out, the resolver must keep the conversation assigned to that account and fail there rather than automatically selecting another account, even when the sticky account has a transport failure, first-byte timeout, temporary route-key exclusion, cooldown, or other failover pressure.
+
+When a sticky source account has effective `priorityTier=fallback`, has no explicit conversation binding, and cut-out is allowed, every subsequent request must compare that reusable source against eligible higher-priority candidates. The proactive comparison is enabled only after the sticky source itself passes the existing reusable-account resolution; an unavailable, capability-rejected, or otherwise non-reusable source continues through the existing fresh failover path. Only `normal` and `primary` candidates participate in this proactive handoff; fallback and `no_new` candidates cannot displace the current fallback source. The existing composite routing comparator remains authoritative, so capacity lane, route/model penalties, node readiness, and other health constraints may keep the fallback source selected.
+
+A higher-priority handoff is temporary until the request succeeds. The selected fresh candidate carries the captured sticky generation, and only its successful route completion may replace the sticky target through the existing generation-guarded mutation. Failed or 4xx attempts leave the fallback target unchanged, and a stale completion cannot overwrite a newer sticky target.
 
 The only supported exception is an explicit Prompt Cache conversation binding written by an operator. A manual upstream-account or group binding may move the conversation out of a no-cut-out sticky source; the target side still honors the binding contract and its existing target eligibility rules.
 
@@ -373,6 +380,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 - upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
+- API-key upstream account detail Overview showing six capability cards in a three-column desktop grid, including standalone search observation, effective state, reason, and persistent override
 
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
@@ -495,3 +503,105 @@ PR: include
   submission_gate: approved
   image:
   ![Codex imagegen rewrite policies](./assets/codex-imagegen-rewrite-policies.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview with the six capability cards visible
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the desktop capability area uses a three-column, two-row layout and includes Standalone Search as the sixth independent capability.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability desktop grid](./assets/standalone-search-capability-desktop-grid.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview scrolled to the Standalone Search capability card
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the card exposes the exact endpoint, observed value, persistent override, effective value, observation time, and reason.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability desktop details](./assets/standalone-search-capability-desktop-1920.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview Mobile`
+  state: narrow API-key account overview scrolled to the Standalone Search capability card
+  requested_viewport: 390x844
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the capability cards collapse to one column without horizontal overflow while preserving all Standalone Search controls and state.
+  candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Standalone Search capability mobile](./assets/standalone-search-capability-mobile-390.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview with compact six-card capability layout
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact desktop layout keeps six capability cards in three columns and two rows while retaining the status summary, override control, timestamp, and reason fields.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability desktop](./assets/standalone-search-capability-compact-desktop-viewport.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview`
+  state: API-key account overview focused on the compact Standalone Search card
+  requested_viewport: 1920x1080
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact card preserves the exact endpoint, three-value status summary, persistent override selector, observation time, and reason without excessive vertical padding.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability details](./assets/standalone-search-capability-compact-desktop-search.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts Page Overlays / Detail Drawer Overview Mobile`
+  state: narrow API-key account overview focused on the compact Standalone Search card
+  requested_viewport: 390x844
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact single-column card remains readable on narrow screens, keeps the override control usable, and produces no horizontal overflow.
+  candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only API-key account data
+  submission_gate: approved
+  image:
+  ![Compact standalone search capability mobile](./assets/standalone-search-capability-compact-mobile-390.png)

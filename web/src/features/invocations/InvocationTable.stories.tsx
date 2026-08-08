@@ -1618,7 +1618,7 @@ function Recent20StreamingPreview() {
 }
 
 const meta = {
-  title: "Monitoring/InvocationTable",
+  title: "Monitoring/InvocationCardList",
   component: InvocationTable,
   tags: ["autodocs"],
   parameters: {
@@ -1626,7 +1626,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Shows recent invocation records with status, account attribution, proxy metadata, `TTFT / 响应耗时 / HTTP 请求压缩` summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, TTFT as the primary timing value, response duration as the secondary timing value, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, request compression, and response compression diagnostics.",
+          "Shows recent invocation records as compact three-segment cards with status, account attribution, proxy metadata, `TTFT / 响应耗时 / 请求压缩` summaries, and expandable request details. Conversation identity is intentionally supplied by the surrounding drawer and is not repeated in each card. The default story includes pool-routed and reverse-proxy records so you can verify model routing, reasoning/FAST signals, token/cost fields, and the account drawer trigger. The standalone Records search table is not this component.\n\nUse this component to verify desktop and 393px card wrapping, the running-to-terminal live update story, the presentation-only elapsed clock, and the expanded detail section for request metadata, timing stages, account attribution, request compression, and response diagnostics.",
       },
     },
   },
@@ -1634,14 +1634,14 @@ const meta = {
     records: {
       control: "object",
       description:
-        "Invocation rows rendered by the table. Include `reasoningEffort` to show the summary badge and `reasoningTokens` to populate both the output-column breakdown and the expanded detail field; missing values render as `—`.",
+        "Invocation rows rendered by the card list. Include `reasoningEffort` and `reasoningTokens` to exercise the diagnostic segment; missing values render as `—`.",
       table: {
         type: { summary: "ApiInvocation[]" },
       },
     },
     isLoading: {
       control: "boolean",
-      description: "Displays the loading spinner state while the table is waiting for records.",
+      description: "Displays the loading spinner state while the card list is waiting for records.",
       table: {
         type: { summary: "boolean" },
         defaultValue: { summary: "false" },
@@ -1649,7 +1649,8 @@ const meta = {
     },
     error: {
       control: "text",
-      description: "Optional request error message rendered above the table when loading fails.",
+      description:
+        "Optional request error message rendered above the card list when loading fails.",
       table: {
         type: { summary: "string | null" },
         defaultValue: { summary: "null" },
@@ -1702,6 +1703,36 @@ export const Default: Story = {
           "Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated elapsed/compression column, and the reasoning-token breakdown in the output summary.",
       },
     },
+  },
+};
+
+export const CardInteraction: Story = {
+  args: defaultArgs,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Interaction coverage for the shared card contract: the whole card and keyboard activation toggle the existing workflow detail panel, while the nested account action remains a separate navigation affordance.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = canvas.getAllByTestId("invocation-card")[0];
+    expect(card).toHaveAttribute("data-expanded", "false");
+
+    card.focus();
+    await userEvent.keyboard("{Enter}", { delay: 0 });
+    expect(card).toHaveAttribute("data-expanded", "true");
+
+    await userEvent.keyboard(" ", { delay: 0 });
+    expect(card).toHaveAttribute("data-expanded", "false");
+
+    const accountButton = canvas.queryByRole("button", { name: /Codex Team Alpha/i });
+    if (accountButton) {
+      await userEvent.click(accountButton);
+      expect(card).toHaveAttribute("data-expanded", "false");
+    }
   },
 };
 
@@ -1874,7 +1905,7 @@ export const Recent20StreamingSimulation: Story = {
 
     await waitFor(
       async () => {
-        const rowCount = canvasElement.querySelectorAll("tbody > tr").length;
+        const rowCount = canvasElement.querySelectorAll('[data-testid="invocation-card"]').length;
         expect(rowCount).toBeGreaterThanOrEqual(12);
       },
       { timeout: 3000 },
@@ -1934,8 +1965,8 @@ export const TtftAndResponseDuration: Story = {
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText(/9\.36 s/)).toBeInTheDocument();
-    await expect(canvas.getByText(/10\.08 s/)).toBeInTheDocument();
+    await expect(canvas.getAllByTestId("invocation-card-ttft")[0]).toHaveTextContent("9.36 s");
+    await expect(canvas.getAllByTestId("invocation-card-response")[0]).toHaveTextContent("10.08 s");
   },
 };
 

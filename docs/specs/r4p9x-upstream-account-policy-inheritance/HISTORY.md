@@ -4,6 +4,14 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-08-05: Added an API-key-only standalone search capability axis for exact `/v1/alpha/search` routing. Real successes learn support; bare `404`/`405` and explicit unsupported-route `400` responses learn non-support; persistent operator overrides take precedence. OAuth routing remains outside this capability gate.
+
+2026-08-06: Made `fallback` sticky accounts proactively compare against eligible `normal` / `primary` candidates on each subsequent request. The existing composite comparator remains authoritative, lower-priority candidates cannot displace the fallback source, and successful handoff rebinding continues through the generation-guarded sticky mutation path.
+
+2026-08-06: Restricted proactive fallback comparison to sticky sources that remain reusable after the normal eligibility, capability, node, and policy checks. Unusable sticky sources continue through the existing fresh failover path instead of suppressing fallback peers.
+
+2026-08-06: Kept penalty-driven sticky comparison separate from proactive priority handoff. A reusable fallback source with a recent route-binding or model-route penalty still competes with healthy same-tier fallback peers through the existing composite score; only unpenalized fallback sources apply the higher-priority-only filter.
+
 2026-08-01: Narrowed inherited `statusChangeReasons` for API-key temporary failures to exact-model health. Live `5xx`, `429`, logical overload, and transport/handshake/stream failures now degrade or cool down only the attempted model when exact model evidence exists; disabled reasons, missing models, and background sync temporary failures remain diagnostic-only. Hard account failures and OAuth behavior are unchanged.
 
 2026-07-28: Header-sticky reuse now derives its capability requirement from the same final Codex imagegen rewrite-aware resolver as automatic and sticky candidate selection, so an account learned as namespace-incompatible cannot bypass the gate. A successful request carrying the canonical namespace now restores the observed capability to supported. The `supported` operator override is atomically claimed before its one canonical-namespace upstream attempt, preventing concurrent requests or already-present namespace payloads from turning the retest into a persistent routing bypass.
