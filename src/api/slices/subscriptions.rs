@@ -1,9 +1,14 @@
 use super::*;
 use axum::http::header;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex as StdMutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -29,6 +34,8 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
 const CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -193,16 +200,173 @@ impl SerializedTopicFrame {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardTopicTopologyCounterSnapshot {
+    pub(crate) materialization_count: u64,
+    pub(crate) serialization_count: u64,
+    pub(crate) payload_clone_count: u64,
+    pub(crate) frame_bytes_count: u64,
+    pub(crate) lagged_count: u64,
+    pub(crate) skipped_count: u64,
+    pub(crate) business_payload_count: u64,
+    pub(crate) json_overlay_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
+    pub(crate) activity: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) summary: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) network_timeseries: DashboardTopicTopologyCounterSnapshot,
+    pub(crate) network_recent: DashboardTopicTopologyCounterSnapshot,
+}
+
+#[derive(Debug, Default)]
+struct DashboardTopicTopologyCounters {
+    materialization_count: AtomicU64,
+    serialization_count: AtomicU64,
+    payload_clone_count: AtomicU64,
+    frame_bytes_count: AtomicU64,
+    lagged_count: AtomicU64,
+    skipped_count: AtomicU64,
+    business_payload_count: AtomicU64,
+    json_overlay_count: AtomicU64,
+}
+
+impl DashboardTopicTopologyCounters {
+    fn snapshot(&self) -> DashboardTopicTopologyCounterSnapshot {
+        DashboardTopicTopologyCounterSnapshot {
+            materialization_count: self.materialization_count.load(Ordering::Relaxed),
+            serialization_count: self.serialization_count.load(Ordering::Relaxed),
+            payload_clone_count: self.payload_clone_count.load(Ordering::Relaxed),
+            frame_bytes_count: self.frame_bytes_count.load(Ordering::Relaxed),
+            lagged_count: self.lagged_count.load(Ordering::Relaxed),
+            skipped_count: self.skipped_count.load(Ordering::Relaxed),
+            business_payload_count: self.business_payload_count.load(Ordering::Relaxed),
+            json_overlay_count: self.json_overlay_count.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.materialization_count.store(0, Ordering::Relaxed);
+        self.serialization_count.store(0, Ordering::Relaxed);
+        self.payload_clone_count.store(0, Ordering::Relaxed);
+        self.frame_bytes_count.store(0, Ordering::Relaxed);
+        self.lagged_count.store(0, Ordering::Relaxed);
+        self.skipped_count.store(0, Ordering::Relaxed);
+        self.business_payload_count.store(0, Ordering::Relaxed);
+        self.json_overlay_count.store(0, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardDeliveryTopologyCounters {
+    activity: DashboardTopicTopologyCounters,
+    summary: DashboardTopicTopologyCounters,
+    network_timeseries: DashboardTopicTopologyCounters,
+    network_recent: DashboardTopicTopologyCounters,
+}
+
+impl DashboardDeliveryTopologyCounters {
+    fn for_topic(&self, topic_name: &str) -> Option<&DashboardTopicTopologyCounters> {
+        match topic_name {
+            "dashboard.activity.current" => Some(&self.activity),
+            "stats.summary.current" => Some(&self.summary),
+            "dashboard.network-timeseries.window" => Some(&self.network_timeseries),
+            "dashboard.network-recent.current" => Some(&self.network_recent),
+            _ => None,
+        }
+    }
+
+    fn record_materialization(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.materialization_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_serialization(&self, topic_name: &str, frame_bytes: usize) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.serialization_count.fetch_add(1, Ordering::Relaxed);
+            topic
+                .frame_bytes_count
+                .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_lag(&self, topic_name: &str, skipped: u64) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.lagged_count.fetch_add(1, Ordering::Relaxed);
+            topic.skipped_count.fetch_add(skipped, Ordering::Relaxed);
+        }
+    }
+
+    fn record_business_payload(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.business_payload_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_json_overlay(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.json_overlay_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> DashboardDeliveryTopologyCounterSnapshot {
+        DashboardDeliveryTopologyCounterSnapshot {
+            activity: self.activity.snapshot(),
+            summary: self.summary.snapshot(),
+            network_timeseries: self.network_timeseries.snapshot(),
+            network_recent: self.network_recent.snapshot(),
+        }
+    }
+
+    fn has_degraded_signal(&self) -> bool {
+        let snapshot = self.snapshot();
+        [
+            snapshot.activity,
+            snapshot.summary,
+            snapshot.network_timeseries,
+            snapshot.network_recent,
+        ]
+        .into_iter()
+        .any(|topic| {
+            topic.lagged_count > 0
+                || topic.skipped_count > 0
+                || topic.payload_clone_count > 0
+                || topic.json_overlay_count > 0
+        })
+    }
+
+    #[cfg(test)]
+    fn reset(&self) {
+        self.activity.reset();
+        self.summary.reset();
+        self.network_timeseries.reset();
+        self.network_recent.reset();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionDispatchEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
 }
+
+#[cfg(test)]
+type DashboardTopologyFramesByTopic = BTreeMap<String, Vec<Arc<SerializedTopicFrame>>>;
+#[cfg(test)]
+type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFramesByTopic>;
 
 #[derive(Debug)]
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     serialization_count: AtomicU64,
+    dashboard_topology_counters: DashboardDeliveryTopologyCounters,
+    #[cfg(test)]
+    dashboard_topology_sse_frame_observations: Mutex<DashboardTopologySseFrameObservations>,
 }
 
 #[derive(Debug, Default)]
@@ -213,6 +377,9 @@ struct SubscriptionHubState {
     dashboard_live_subscriber_count: usize,
     server_push_subscribers: HashMap<String, usize>,
     server_push_tasks: HashSet<String>,
+    dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
+    dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
+    dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +401,9 @@ struct CachedSubscriptionTopic {
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
+    dashboard_materializer: Option<DashboardTopicMaterializer>,
+    dashboard_base_revision: u64,
+    dashboard_materialized_revision: Option<DashboardTopicRevision>,
     snapshot_payload: Value,
     snapshot_frame: Arc<SerializedTopicFrame>,
     snapshot_bytes: usize,
@@ -246,6 +416,383 @@ struct ReplayableTopicEvent {
     frame: Arc<SerializedTopicFrame>,
     bytes: usize,
     emitted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DashboardTopicRevision {
+    base_revision: u64,
+    current_revision: Option<u64>,
+    network_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+}
+
+#[derive(Debug)]
+struct DashboardActivityMaterializerState {
+    base: DashboardActivityTopicMaterializedBase,
+    rebase_range_start: Option<DateTime<Utc>>,
+    current_revision: Option<u64>,
+    network_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+}
+
+impl DashboardActivityMaterializerState {
+    fn new(base: DashboardActivityTopicMaterializedBase) -> Self {
+        let rebase_range_start = parse_to_utc_datetime(&base.response().range_start);
+        Self {
+            base,
+            rebase_range_start,
+            current_revision: None,
+            network_revision: None,
+            terminal_revision: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DashboardSummaryMaterializerState {
+    response: StatsResponse,
+    current_revision: Option<u64>,
+    terminal_revision: Option<u64>,
+    terminal_sequence: u64,
+    range_start: Option<DateTime<Utc>>,
+}
+
+impl DashboardSummaryMaterializerState {
+    fn new(
+        response: StatsResponse,
+        terminal_sequence: u64,
+        range_start: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            response,
+            current_revision: None,
+            terminal_revision: None,
+            terminal_sequence,
+            range_start,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum DashboardTopicMaterializer {
+    Activity {
+        base: Arc<StdMutex<DashboardActivityMaterializerState>>,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
+    },
+    Summary {
+        base: Arc<StdMutex<DashboardSummaryMaterializerState>>,
+        window: SummaryWindow,
+        reporting_tz: Tz,
+        source_scope: InvocationSourceScope,
+        upstream_account_id: Option<i64>,
+    },
+    NetworkTimeseries {
+        base: Arc<DashboardNetworkTimeseriesResponse>,
+        upstream_account_id: Option<i64>,
+    },
+    NetworkRecent {
+        base: Arc<DashboardRecentNetworkWindowResponse>,
+    },
+}
+
+impl DashboardTopicMaterializer {
+    fn revision(
+        &self,
+        base_revision: u64,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
+    ) -> Option<DashboardTopicRevision> {
+        match self {
+            Self::Activity { .. }
+                if current.is_some() || network.is_some() || terminal.is_some() =>
+            {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: network.map(|slice| slice.revision),
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
+            Self::Summary { .. } if current.is_some() || terminal.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: None,
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
+            Self::NetworkTimeseries {
+                base,
+                upstream_account_id,
+            } => network
+                .filter(|slice| {
+                    dashboard_network_timeseries_live_point(
+                        base.as_ref(),
+                        *upstream_account_id,
+                        Some(slice),
+                    )
+                    .is_some()
+                })
+                .map(|slice| DashboardTopicRevision {
+                    base_revision,
+                    current_revision: None,
+                    network_revision: Some(slice.revision),
+                    terminal_revision: None,
+                }),
+            Self::NetworkRecent { .. } => network.map(|slice| DashboardTopicRevision {
+                base_revision,
+                current_revision: None,
+                network_revision: Some(slice.revision),
+                terminal_revision: None,
+            }),
+            _ => None,
+        }
+    }
+
+    fn requires_terminal_window_rebase(&self) -> bool {
+        match self {
+            Self::Activity {
+                base, reporting_tz, ..
+            } => {
+                let base = base.lock().expect("activity materializer state lock");
+                let Ok(range) = resolve_dashboard_activity_cached_range(
+                    &base.base.response().range,
+                    *reporting_tz,
+                ) else {
+                    return true;
+                };
+                if parse_duration_spec(&base.base.response().range).is_ok() {
+                    return rolling_dashboard_window_requires_rebase(
+                        base.rebase_range_start,
+                        Some(range.start),
+                    );
+                }
+                base.rebase_range_start != Some(range.start)
+            }
+            Self::Summary {
+                base,
+                window,
+                reporting_tz,
+                ..
+            } => {
+                let base = base.lock().expect("summary materializer state lock");
+                let current_range_start = summary_window_range(window, *reporting_tz, Utc::now())
+                    .ok()
+                    .flatten()
+                    .map(|(start, _)| start);
+                match (window, base.range_start, current_range_start) {
+                    (SummaryWindow::Duration(_), base_start, current_start) => {
+                        rolling_dashboard_window_requires_rebase(base_start, current_start)
+                    }
+                    (_, base_start, current_start) => base_start != current_start,
+                }
+            }
+            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
+        }
+    }
+
+    fn serialize(
+        &self,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
+    ) -> Result<Vec<u8>, ApiError> {
+        match self {
+            Self::Activity {
+                base,
+                reporting_tz,
+                source_scope,
+            } => {
+                let mut base = base.lock().expect("activity materializer state lock");
+                if current.is_some_and(|slice| base.current_revision < Some(slice.revision)) {
+                    apply_dashboard_activity_slices(base.base.response_mut(), current, None);
+                    base.current_revision = current.map(|slice| slice.revision);
+                }
+                if network.is_some_and(|slice| base.network_revision < Some(slice.revision)) {
+                    apply_dashboard_activity_slices(base.base.response_mut(), None, network);
+                    base.network_revision = network.map(|slice| slice.revision);
+                }
+                if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
+                    base.base.apply_terminal_slice(
+                        *reporting_tz,
+                        *source_scope,
+                        terminal.expect("terminal slice checked above"),
+                    );
+                    base.terminal_revision = terminal.map(|slice| slice.revision);
+                }
+                serde_json::to_vec(base.base.response()).map_err(ApiError::from)
+            }
+            Self::Summary {
+                base,
+                window,
+                reporting_tz,
+                source_scope,
+                upstream_account_id,
+            } => {
+                let mut base = base.lock().expect("summary materializer state lock");
+                if current.is_some_and(|slice| base.current_revision < Some(slice.revision)) {
+                    apply_dashboard_current_slice_to_summary_response(
+                        &mut base.response,
+                        *upstream_account_id,
+                        current,
+                    );
+                    base.current_revision = current.map(|slice| slice.revision);
+                }
+                if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
+                    let DashboardSummaryMaterializerState {
+                        response,
+                        terminal_sequence,
+                        ..
+                    } = &mut *base;
+                    apply_dashboard_terminal_slice_to_summary_response(
+                        response,
+                        terminal_sequence,
+                        window,
+                        *reporting_tz,
+                        *source_scope,
+                        *upstream_account_id,
+                        terminal.expect("terminal slice checked above"),
+                    );
+                    base.terminal_revision = terminal.map(|slice| slice.revision);
+                }
+                serde_json::to_vec(&base.response).map_err(ApiError::from)
+            }
+            Self::NetworkTimeseries {
+                base,
+                upstream_account_id,
+            } => serde_json::to_vec(&DashboardNetworkTimeseriesPayload {
+                base,
+                upstream_account_id: *upstream_account_id,
+                network,
+            })
+            .map_err(ApiError::from),
+            Self::NetworkRecent { base } => {
+                serde_json::to_vec(&DashboardNetworkRecentPayload { base, network })
+                    .map_err(ApiError::from)
+            }
+        }
+    }
+}
+
+struct DashboardNetworkTimeseriesPayload<'a> {
+    base: &'a DashboardNetworkTimeseriesResponse,
+    upstream_account_id: Option<i64>,
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+}
+
+impl Serialize for DashboardNetworkTimeseriesPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let live_point = dashboard_network_timeseries_live_point(
+            self.base,
+            self.upstream_account_id,
+            self.network,
+        );
+        let mut response = serializer.serialize_struct("DashboardNetworkTimeseriesResponse", 6)?;
+        response.serialize_field("range", &self.base.range)?;
+        response.serialize_field("rangeStart", &self.base.range_start)?;
+        if let Some((_, _)) = live_point {
+            let now = Utc::now();
+            response.serialize_field("rangeEnd", &format_utc_iso_precise(now))?;
+            response.serialize_field("snapshotId", &now.timestamp_millis())?;
+        } else {
+            response.serialize_field("rangeEnd", &self.base.range_end)?;
+            response.serialize_field("snapshotId", &self.base.snapshot_id)?;
+        }
+        response.serialize_field("bucketSeconds", &self.base.bucket_seconds)?;
+        response.serialize_field(
+            "points",
+            &DashboardNetworkTimeseriesPoints {
+                points: &self.base.points,
+                live_point,
+            },
+        )?;
+        response.end()
+    }
+}
+
+struct DashboardNetworkTimeseriesPoints<'a> {
+    points: &'a [DashboardNetworkTimeseriesPointResponse],
+    live_point: Option<(usize, &'a DashboardNetworkTimeseriesPointResponse)>,
+}
+
+impl Serialize for DashboardNetworkTimeseriesPoints<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut points = serializer.serialize_seq(Some(self.points.len()))?;
+        for (index, point) in self.points.iter().enumerate() {
+            let point = self
+                .live_point
+                .filter(|(live_index, _)| *live_index == index)
+                .map_or(point, |(_, live_point)| live_point);
+            points.serialize_element(point)?;
+        }
+        points.end()
+    }
+}
+
+struct DashboardNetworkRecentPayload<'a> {
+    base: &'a DashboardRecentNetworkWindowResponse,
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+}
+
+impl Serialize for DashboardNetworkRecentPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.network
+            .map_or(self.base, |slice| &slice.recent)
+            .serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum BuiltSubscriptionTopicPayload {
+    Json(Value),
+    Dashboard(DashboardTopicMaterializer),
+}
+
+impl BuiltSubscriptionTopicPayload {
+    fn dashboard_materializer(&self) -> Option<DashboardTopicMaterializer> {
+        match self {
+            Self::Json(_) => None,
+            Self::Dashboard(materializer) => Some(materializer.clone()),
+        }
+    }
+
+    fn serialize(
+        &self,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
+    ) -> Result<Vec<u8>, ApiError> {
+        match self {
+            Self::Json(payload) => serde_json::to_vec(payload).map_err(ApiError::from),
+            Self::Dashboard(materializer) => materializer.serialize(current, network, terminal),
+        }
+    }
+
+    fn snapshot_payload(&self) -> Value {
+        match self {
+            Self::Json(payload) => payload.clone(),
+            Self::Dashboard(_) => Value::Null,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingDashboardTopicMaterialization {
+    topic_key: String,
+    topic_name: &'static str,
+    revision: DashboardTopicRevision,
+    materializer: DashboardTopicMaterializer,
 }
 
 struct ServerPushTopicLease {
@@ -535,6 +1082,9 @@ impl SubscriptionHub {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
             serialization_count: AtomicU64::new(0),
+            dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
+            #[cfg(test)]
+            dashboard_topology_sse_frame_observations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -553,12 +1103,70 @@ impl SubscriptionHub {
         let frame =
             serialize_topic_frame(descriptor, topic_key, schema_epoch, cursor, payload_bytes)?;
         self.serialization_count.fetch_add(1, Ordering::Relaxed);
+        self.dashboard_topology_counters
+            .record_serialization(&frame.descriptor.topic, frame.retained_bytes());
         Ok(frame)
     }
 
     #[cfg(test)]
     fn serialization_count(&self) -> u64 {
         self.serialization_count.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
+        self.dashboard_topology_counters.snapshot()
+    }
+
+    pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
+        self.dashboard_topology_counters.has_degraded_signal()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_dashboard_topology_counters(&self) {
+        self.dashboard_topology_counters.reset();
+    }
+
+    #[cfg(test)]
+    async fn record_dashboard_topology_sse_frame_delivery(
+        &self,
+        attempt: u64,
+        frame: &Arc<SerializedTopicFrame>,
+    ) {
+        let mut observations = self.dashboard_topology_sse_frame_observations.lock().await;
+        observations
+            .entry(attempt)
+            .or_default()
+            .entry(frame.descriptor.topic.clone())
+            .or_default()
+            .push(frame.clone());
+    }
+
+    #[cfg(test)]
+    async fn dashboard_topology_sse_frame_observations(
+        &self,
+        attempt: u64,
+    ) -> DashboardTopologyFramesByTopic {
+        self.dashboard_topology_sse_frame_observations
+            .lock()
+            .await
+            .get(&attempt)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    async fn reset_dashboard_topology_sse_frame_observations(&self) {
+        self.dashboard_topology_sse_frame_observations
+            .lock()
+            .await
+            .clear();
+    }
+
+    fn record_dashboard_topology_lag(&self, topic_names: &[String], skipped: u64) {
+        for topic_name in topic_names {
+            self.dashboard_topology_counters
+                .record_lag(topic_name, skipped);
+        }
     }
 
     pub(crate) async fn has_active_topic_name(&self, topic_name: &str) -> bool {
@@ -1033,7 +1641,9 @@ impl SubscriptionHub {
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
         let started = Instant::now();
-        let mut payload = topic.build_payload(state.clone()).await?;
+        self.dashboard_topology_counters
+            .record_materialization(topic.name());
+        let mut built_payload = topic.build_cached_payload(state.clone()).await?;
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1052,19 +1662,52 @@ impl SubscriptionHub {
                 }
                 return Ok(None);
             }
-            if let Some(live) = guard
-                .topics
-                .get(&topic_key)
-                .and_then(|cached| cached.latest_live_snapshot.as_ref())
-                .cloned()
+            if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
+                && let Some(live) = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| cached.latest_live_snapshot.as_ref())
+                    .cloned()
             {
-                apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
+                apply_topic_live_overlay_to_payload(state.as_ref(), &topic, payload, &live)?;
             }
-            let serialized_payload = serde_json::to_vec(&payload)?;
-            if let Some(existing) = guard.topics.get_mut(&topic_key)
-                && let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
-            {
-                return Ok(Some(existing));
+            let serialized_payload = built_payload.serialize(
+                guard.dashboard_current_slice.as_deref(),
+                guard.dashboard_network_slice.as_deref(),
+                guard.dashboard_terminal_slice.as_deref(),
+            )?;
+            let refreshed_dashboard_materializer = built_payload.dashboard_materializer();
+            let current_slice = guard.dashboard_current_slice.clone();
+            let network_slice = guard.dashboard_network_slice.clone();
+            let terminal_slice = guard.dashboard_terminal_slice.clone();
+            if let Some(existing) = guard.topics.get_mut(&topic_key) {
+                if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
+                    && existing.dirty
+                    && existing.dashboard_materializer.is_some()
+                    && refreshed_dashboard_materializer.is_some()
+                {
+                    existing.dirty = false;
+                    existing.refresh_scheduled = false;
+                    existing.snapshot_built_at = Instant::now();
+                    existing.dashboard_materializer = refreshed_dashboard_materializer.clone();
+                    existing.dashboard_base_revision = existing.cursor;
+                    existing.dashboard_materialized_revision = refreshed_dashboard_materializer
+                        .as_ref()
+                        .and_then(|materializer| {
+                            materializer.revision(
+                                existing.cursor,
+                                current_slice.as_deref(),
+                                network_slice.as_deref(),
+                                terminal_slice.as_deref(),
+                            )
+                        });
+                    existing.snapshot_payload = built_payload.snapshot_payload();
+                    return Ok(Some(existing.clone()));
+                }
+                if let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
+                {
+                    return Ok(Some(existing));
+                }
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
@@ -1083,6 +1726,16 @@ impl SubscriptionHub {
                 serialized_payload,
             )?);
             let payload_bytes = frame.payload_bytes.len();
+            let dashboard_materializer = refreshed_dashboard_materializer;
+            let dashboard_materialized_revision =
+                dashboard_materializer.as_ref().and_then(|materializer| {
+                    materializer.revision(
+                        next_cursor,
+                        guard.dashboard_current_slice.as_deref(),
+                        guard.dashboard_network_slice.as_deref(),
+                        guard.dashboard_terminal_slice.as_deref(),
+                    )
+                });
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -1125,7 +1778,10 @@ impl SubscriptionHub {
                     .and_then(|entry| entry.latest_live_snapshot.clone()),
                 calendar_anchor: subscription_calendar_anchor(&topic),
                 continuity_reset_cursor,
-                snapshot_payload: payload.clone(),
+                dashboard_materializer,
+                dashboard_base_revision: next_cursor,
+                dashboard_materialized_revision,
+                snapshot_payload: built_payload.snapshot_payload(),
                 snapshot_frame: frame.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -1178,11 +1834,208 @@ impl SubscriptionHub {
         Ok(Some(cached))
     }
 
+    pub(crate) async fn materialize_dashboard_current_slice(
+        &self,
+        slice: DashboardCurrentProjectionSlice,
+    ) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_current_slice
+                .as_ref()
+                .is_some_and(|current| current.revision >= slice.revision)
+            {
+                return;
+            }
+            guard.dashboard_current_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
+    pub(crate) async fn materialize_dashboard_network_slice(
+        &self,
+        slice: DashboardNetworkProjectionSlice,
+    ) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_network_slice
+                .as_ref()
+                .is_some_and(|network| network.revision >= slice.revision)
+            {
+                return;
+            }
+            guard.dashboard_network_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
+    pub(crate) async fn materialize_dashboard_terminal_slice(
+        &self,
+        slice: DashboardTerminalProjectionSlice,
+    ) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            if guard
+                .dashboard_terminal_slice
+                .as_ref()
+                .is_some_and(|terminal| terminal.revision >= slice.revision)
+            {
+                return;
+            }
+            guard.dashboard_terminal_slice = Some(Arc::new(slice));
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            mark_dashboard_terminal_window_rebase_topics(&mut guard);
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
+    async fn materialize_pending_dashboard_topics(
+        &self,
+        pending: Vec<PendingDashboardTopicMaterialization>,
+        current: Option<Arc<DashboardCurrentProjectionSlice>>,
+        network: Option<Arc<DashboardNetworkProjectionSlice>>,
+        terminal: Option<Arc<DashboardTerminalProjectionSlice>>,
+    ) {
+        for pending in pending {
+            let serialized_payload = match pending.materializer.serialize(
+                current.as_deref(),
+                network.as_deref(),
+                terminal.as_deref(),
+            ) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        topic = pending.topic_name,
+                        "failed to materialize dashboard topic frame"
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = self
+                .commit_dashboard_materialized_frame(pending, serialized_payload)
+                .await
+            {
+                warn!(?err, "failed to commit dashboard topic frame");
+            }
+        }
+    }
+
+    async fn commit_dashboard_materialized_frame(
+        &self,
+        pending: PendingDashboardTopicMaterialization,
+        serialized_payload: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let Some(cached) = guard.topics.get_mut(&pending.topic_key) else {
+                return Ok(());
+            };
+            let expected_revision =
+                cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .and_then(|materializer| {
+                        materializer.revision(
+                            cached.dashboard_base_revision,
+                            current.as_deref(),
+                            network.as_deref(),
+                            terminal.as_deref(),
+                        )
+                    });
+            if cached.dashboard_base_revision != pending.revision.base_revision
+                || expected_revision != Some(pending.revision)
+                || cached.dashboard_materialized_revision == Some(pending.revision)
+            {
+                return Ok(());
+            }
+            if cached.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice() {
+                cached.dashboard_materialized_revision = Some(pending.revision);
+                return Ok(());
+            }
+
+            let next_cursor = cached.cursor.saturating_add(1);
+            self.dashboard_topology_counters
+                .record_materialization(pending.topic_name);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                pending.topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serialized_payload,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.snapshot_frame = frame.clone();
+            cached.dashboard_materialized_revision = Some(pending.revision);
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            SubscriptionDispatchEvent { frame }
+        };
+        let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+
     pub(crate) async fn handle_internal_broadcast(
         &self,
         state: Arc<AppState>,
         payload: BroadcastPayload,
     ) {
+        match payload {
+            BroadcastPayload::DashboardNetworkSlice { slice } => {
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_network_slice(*slice).await;
+                } else {
+                    self.handle_dashboard_network_slice(state, slice).await;
+                }
+                return;
+            }
+            BroadcastPayload::DashboardCurrentSlice { slice } => {
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_current_slice(*slice).await;
+                }
+                return;
+            }
+            BroadcastPayload::DashboardActivityLive { .. }
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto =>
+            {
+                return;
+            }
+            BroadcastPayload::DashboardTerminalSlice { slice } => {
+                if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                    self.materialize_dashboard_terminal_slice(*slice).await;
+                }
+                return;
+            }
+            _ => {}
+        }
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();
@@ -1209,12 +2062,29 @@ impl SubscriptionHub {
                     {
                         cached.latest_live_snapshot = Some(snapshot.as_ref().clone());
                     }
+                    if matches!(payload, BroadcastPayload::DashboardActivityLive { .. }) {
+                        self.dashboard_topology_counters
+                            .record_business_payload(cached.topic.name());
+                    }
                     Some(cached.clone())
                 })
                 .collect::<Vec<_>>()
         };
 
         for cached in affected {
+            if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
+                && matches!(
+                    &payload,
+                    BroadcastPayload::Records { records }
+                        if records
+                            .iter()
+                            .any(crate::app_state::runtime_store_record_is_terminal)
+                )
+                && (cached.topic.uses_summary_live_overlay()
+                    || cached.topic.uses_dashboard_activity_live_overlay())
+            {
+                continue;
+            }
             if cached.topic.uses_summary_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
@@ -1335,6 +2205,146 @@ impl SubscriptionHub {
             }
         }
     }
+
+    async fn handle_dashboard_network_slice(
+        &self,
+        state: Arc<AppState>,
+        slice: Box<DashboardNetworkProjectionSlice>,
+    ) {
+        let topics = {
+            let guard = self.state.lock().await;
+            guard
+                .topics
+                .values()
+                .filter(|cached| {
+                    matches!(
+                        cached.topic,
+                        SubscriptionTopic::DashboardActivityCurrent { .. }
+                            | SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. }
+                    )
+                })
+                .filter(|cached| {
+                    cached
+                        .topic
+                        .cache_key()
+                        .ok()
+                        .and_then(|key| guard.active_subscribers.get(&key).copied())
+                        .unwrap_or_default()
+                        > 0
+                })
+                .map(|cached| cached.topic.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for topic in topics {
+            self.dashboard_topology_counters
+                .record_business_payload(topic.name());
+            let result = match &topic {
+                SubscriptionTopic::DashboardActivityCurrent { .. } => {
+                    if let Some(live) = state
+                        .proxy_runtime_invocations
+                        .legacy_live_snapshot_for_network(slice.as_ref())
+                    {
+                        self.apply_dashboard_activity_live_overlay(state.clone(), &topic, live)
+                            .await
+                    } else {
+                        Ok(())
+                    }
+                }
+                SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. } => {
+                    self.apply_dashboard_network_slice_to_timeseries(&topic, slice.as_ref())
+                        .await
+                }
+                _ => Ok(()),
+            };
+            if let Err(err) = result {
+                warn!(?err, topic = %topic.name(), "failed to apply dashboard network slice");
+            }
+        }
+    }
+}
+
+fn rolling_dashboard_window_requires_rebase(
+    base_start: Option<DateTime<Utc>>,
+    current_start: Option<DateTime<Utc>>,
+) -> bool {
+    match (base_start, current_start) {
+        (Some(base_start), Some(current_start)) => {
+            current_start < base_start
+                || current_start - base_start
+                    >= ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64)
+        }
+        (base_start, current_start) => base_start != current_start,
+    }
+}
+
+fn mark_dashboard_terminal_window_rebase_topics(guard: &mut SubscriptionHubState) {
+    let active_subscribers = guard.active_subscribers.clone();
+    for (topic_key, cached) in &mut guard.topics {
+        if cached.dirty
+            || !cached
+                .dashboard_materializer
+                .as_ref()
+                .is_some_and(DashboardTopicMaterializer::requires_terminal_window_rebase)
+        {
+            continue;
+        }
+        cached.dirty = true;
+        cached.refresh_scheduled = active_subscribers
+            .get(topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        cached.latest_live_snapshot = None;
+    }
+}
+
+fn collect_pending_dashboard_topic_materializations(
+    guard: &mut SubscriptionHubState,
+) -> Vec<PendingDashboardTopicMaterialization> {
+    let active_subscribers = guard.active_subscribers.clone();
+    let server_push_subscribers = guard.server_push_subscribers.clone();
+    let current = guard.dashboard_current_slice.clone();
+    let network = guard.dashboard_network_slice.clone();
+    let terminal = guard.dashboard_terminal_slice.clone();
+    guard
+        .topics
+        .iter_mut()
+        .filter_map(|(topic_key, cached)| {
+            let active = active_subscribers
+                .get(topic_key)
+                .copied()
+                .unwrap_or_default()
+                > 0
+                || server_push_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0;
+            if !active {
+                cached.dirty = true;
+                return None;
+            }
+            if cached.dirty {
+                return None;
+            }
+            let materializer = cached.dashboard_materializer.as_ref()?;
+            let revision = materializer.revision(
+                cached.dashboard_base_revision,
+                current.as_deref(),
+                network.as_deref(),
+                terminal.as_deref(),
+            )?;
+            (cached.dashboard_materialized_revision != Some(revision)).then(|| {
+                PendingDashboardTopicMaterialization {
+                    topic_key: topic_key.clone(),
+                    topic_name: cached.topic.name(),
+                    revision,
+                    materializer: materializer.clone(),
+                }
+            })
+        })
+        .collect()
 }
 
 impl Default for SubscriptionHub {
@@ -1500,6 +2510,49 @@ impl SubscriptionHub {
             cached.dirty = true;
             cached.refresh_scheduled = false;
             cached.latest_live_snapshot = None;
+        }
+    }
+
+    pub(crate) async fn reconcile_dashboard_terminal_window_bases(&self, state: Arc<AppState>) {
+        let topics = {
+            let mut guard = self.state.lock().await;
+            mark_dashboard_terminal_window_rebase_topics(&mut guard);
+            let active_subscribers = guard.active_subscribers.clone();
+            guard
+                .topics
+                .iter()
+                .filter(|(topic_key, cached)| {
+                    cached.dirty
+                        && cached.refresh_scheduled
+                        && active_subscribers
+                            .get(*topic_key)
+                            .copied()
+                            .unwrap_or_default()
+                            > 0
+                        && cached.dashboard_materializer.as_ref().is_some_and(
+                            DashboardTopicMaterializer::requires_terminal_window_rebase,
+                        )
+                })
+                .map(|(_, cached)| cached.topic.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for topic in topics {
+            tracing::debug!(
+                topic = %topic.name(),
+                refresh_reason = "runtime_reconcile_window_rebase",
+                "rebuilding typed Dashboard base after moving-window boundary"
+            );
+            if let Err(err) = self
+                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %topic.name(),
+                    "runtime Dashboard window rebase failed; retaining last-good frame"
+                );
+            }
         }
     }
 
@@ -1743,6 +2796,8 @@ impl SubscriptionHub {
         else {
             return Ok(());
         };
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let account = upstream_account_id.and_then(|account_id| {
             live.accounts
                 .iter()
@@ -1832,6 +2887,8 @@ impl SubscriptionHub {
         live: DashboardActivityLiveSnapshot,
     ) -> Result<(), ApiError> {
         let topic_key = topic.cache_key()?;
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
         let dispatch = {
             let mut guard = self.state.lock().await;
             let Some(cached) = guard.topics.get_mut(&topic_key) else {
@@ -1871,6 +2928,100 @@ impl SubscriptionHub {
             SubscriptionDispatchEvent { frame }
         };
 
+        let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+
+    async fn apply_dashboard_network_slice_to_timeseries(
+        &self,
+        topic: &SubscriptionTopic,
+        slice: &DashboardNetworkProjectionSlice,
+    ) -> Result<(), ApiError> {
+        let SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+            upstream_account_id,
+            ..
+        } = topic
+        else {
+            return Ok(());
+        };
+        let bucket = match upstream_account_id {
+            None => slice.network_live_bucket.clone(),
+            Some(upstream_account_id) => slice
+                .accounts
+                .iter()
+                .find(|account| account.upstream_account_id == Some(*upstream_account_id))
+                .and_then(|account| account.network_live_bucket.clone()),
+        };
+        let Some(bucket) = bucket else {
+            return Ok(());
+        };
+        let topic_key = topic.cache_key()?;
+        self.dashboard_topology_counters
+            .record_json_overlay(topic.name());
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            let mut payload = cached.snapshot_payload.clone();
+            let Some(object) = payload.as_object_mut() else {
+                return Ok(());
+            };
+            let bucket_value = serde_json::to_value(&bucket)?;
+            let bucket_start = bucket_value.get("bucketStart").cloned();
+            let Some(points) = object.get_mut("points").and_then(Value::as_array_mut) else {
+                return Ok(());
+            };
+            let point_index = points
+                .iter()
+                .position(|point| point.get("bucketStart") == bucket_start.as_ref())
+                .or_else(|| {
+                    points.iter().position(|point| {
+                        point
+                            .get("isLiveBucket")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                });
+            let Some(point_index) = point_index else {
+                return Ok(());
+            };
+            let now = Utc::now();
+            points[point_index] = bucket_value;
+            object.insert(
+                "rangeEnd".to_string(),
+                Value::String(format_utc_iso_precise(now)),
+            );
+            object.insert(
+                "snapshotId".to_string(),
+                Value::from(now.timestamp_millis()),
+            );
+            let serialized = serde_json::to_vec(&payload)?;
+            if cached.snapshot_frame.payload_bytes.as_ref() == serialized.as_slice() {
+                return Ok(());
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serialized,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_payload = payload;
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.snapshot_frame = frame.clone();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: now,
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            SubscriptionDispatchEvent { frame }
+        };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
     }
@@ -2270,25 +3421,290 @@ fn apply_dashboard_activity_live_overlay_to_payload(
     Ok(true)
 }
 
+fn dashboard_activity_response_exact_range(
+    response: &DashboardActivityResponse,
+) -> Option<ExactUtcRange> {
+    Some(ExactUtcRange {
+        start: parse_to_utc_datetime(&response.range_start)?,
+        end: parse_to_utc_datetime(&response.range_end)?,
+    })
+}
+
+fn apply_dashboard_activity_slices(
+    response: &mut DashboardActivityResponse,
+    current: Option<&DashboardCurrentProjectionSlice>,
+    network: Option<&DashboardNetworkProjectionSlice>,
+) {
+    if let Some(current) = current {
+        response.live_revision = current.revision;
+        response.summary.stats.in_progress_conversation_count =
+            Some(current.in_progress_invocation_count);
+        response.summary.stats.in_progress_retry_conversation_count =
+            Some(current.retry_invocation_count);
+        response.summary.stats.in_progress_avg_wait_ms = (current.in_progress_wait_sample_count
+            > 0)
+        .then_some(current.in_progress_wait_sum_ms / current.in_progress_wait_sample_count as f64);
+        response.summary.stats.in_progress_phase_counts = Some(current.in_progress_phase_counts);
+
+        let exact_range = dashboard_activity_response_exact_range(response);
+        let model_performance_available = response.summary.model_performance.available;
+        if let Some(accounts) = response.accounts.as_mut() {
+            let current_by_key = current
+                .accounts
+                .iter()
+                .map(|account| (account.account_key.as_str(), account))
+                .collect::<HashMap<_, _>>();
+            let existing_account_keys = accounts
+                .iter()
+                .map(|account| account.account_key.clone())
+                .collect::<HashSet<_>>();
+
+            for account in accounts.iter_mut() {
+                apply_dashboard_current_slice_to_activity_account(
+                    account,
+                    current_by_key.get(account.account_key.as_str()).copied(),
+                );
+            }
+
+            if let Some(exact_range) = exact_range {
+                for account in &current.accounts {
+                    if existing_account_keys.contains(&account.account_key) {
+                        continue;
+                    }
+                    let live_account = DashboardActivityLiveAccount {
+                        account_key: account.account_key.clone(),
+                        upstream_account_id: account.upstream_account_id,
+                        upstream_account_name: account.upstream_account_name.clone(),
+                        in_progress_invocation_count: account.in_progress_invocation_count,
+                        in_progress_phase_counts: account.in_progress_phase_counts,
+                        retry_invocation_count: account.retry_invocation_count,
+                        in_progress_wait_sum_ms: account.in_progress_wait_sum_ms,
+                        in_progress_wait_sample_count: account.in_progress_wait_sample_count,
+                        upload_bytes_per_second: 0.0,
+                        download_bytes_per_second: 0.0,
+                        network_live_bucket: None,
+                    };
+                    accounts.push(dashboard_activity_account_from_live(
+                        &live_account,
+                        None,
+                        exact_range,
+                        network
+                            .and_then(|slice| {
+                                slice
+                                    .current_snapshot_by_account
+                                    .get(&account.upstream_account_id)
+                                    .copied()
+                            })
+                            .unwrap_or_default(),
+                        model_performance_available,
+                        None,
+                        Vec::new(),
+                    ));
+                }
+                sort_dashboard_activity_accounts(accounts);
+            }
+        }
+    }
+
+    if let Some(network) = network {
+        response.network_live_bucket = network.network_live_bucket.clone();
+        response.network_realtime_rate = network.network_realtime_rate.clone();
+        response.summary.tokens_per_minute =
+            Some(network.current_snapshot.qualified_tokens.max(0) as f64);
+        response.summary.spend_rate = Some(network.current_snapshot.total_cost.max(0.0));
+        response.summary.current_first_response_byte_total_avg_ms =
+            network.current_snapshot.first_response_byte_total_avg_ms();
+        response.summary.current_first_token_avg_ms = network.current_snapshot.first_token_avg_ms();
+        response.summary.current_avg_total_ms = network.current_snapshot.avg_total_ms();
+        response.summary.current_avg_response_ms =
+            network.current_snapshot.avg_response_duration_ms();
+        if let Some(accounts) = response.accounts.as_mut() {
+            let network_by_account = network
+                .accounts
+                .iter()
+                .map(|account| (account.upstream_account_id, account))
+                .collect::<HashMap<_, _>>();
+            for account in accounts {
+                let network_account = network_by_account
+                    .get(&account.upstream_account_id)
+                    .copied();
+                account.upload_bytes_per_second =
+                    network_account.map_or(0.0, |value| value.upload_bytes_per_second);
+                account.download_bytes_per_second =
+                    network_account.map_or(0.0, |value| value.download_bytes_per_second);
+                apply_dashboard_current_rate_to_activity_account(
+                    account,
+                    network
+                        .current_snapshot_by_account
+                        .get(&account.upstream_account_id)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+}
+
+fn apply_dashboard_current_slice_to_activity_account(
+    account: &mut DashboardActivityAccountResponse,
+    current: Option<&DashboardCurrentProjectionAccountSlice>,
+) {
+    account.in_progress_invocation_count =
+        Some(current.map_or(0, |value| value.in_progress_invocation_count));
+    account.in_progress_phase_counts = Some(
+        current
+            .map(|value| value.in_progress_phase_counts)
+            .unwrap_or_default(),
+    );
+    account.retry_invocation_count = Some(current.map_or(0, |value| value.retry_invocation_count));
+    if let Some(current) = current {
+        account.request_count = account
+            .request_count
+            .max(current.in_progress_invocation_count.max(0));
+    }
+}
+
+fn apply_dashboard_current_rate_to_activity_account(
+    account: &mut DashboardActivityAccountResponse,
+    current: DashboardActivityCurrentSnapshot,
+) {
+    account.tokens_per_minute = Some(current.qualified_tokens.max(0) as f64);
+    account.spend_rate = Some(current.total_cost.max(0.0));
+    account.current_first_response_byte_total_avg_ms = current.first_response_byte_total_avg_ms();
+    account.current_first_token_avg_ms = current.first_token_avg_ms();
+    account.current_avg_total_ms = current.avg_total_ms();
+    account.current_avg_response_ms = current.avg_response_duration_ms();
+}
+
+fn apply_dashboard_current_slice_to_summary_response(
+    response: &mut StatsResponse,
+    upstream_account_id: Option<i64>,
+    current: Option<&DashboardCurrentProjectionSlice>,
+) {
+    let Some(current) = current else {
+        return;
+    };
+    let account = upstream_account_id.and_then(|account_id| {
+        current
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(account_id))
+    });
+    let (count, retry_count, phase_counts, wait_ms) = match account {
+        Some(account) => (
+            account.in_progress_invocation_count,
+            account.retry_invocation_count,
+            account.in_progress_phase_counts,
+            (account.in_progress_wait_sample_count > 0).then_some(
+                account.in_progress_wait_sum_ms / account.in_progress_wait_sample_count as f64,
+            ),
+        ),
+        None if upstream_account_id.is_some() => {
+            (0, 0, InvocationPhaseCountsResponse::default(), None)
+        }
+        None => (
+            current.in_progress_invocation_count,
+            current.retry_invocation_count,
+            current.in_progress_phase_counts,
+            (current.in_progress_wait_sample_count > 0).then_some(
+                current.in_progress_wait_sum_ms / current.in_progress_wait_sample_count as f64,
+            ),
+        ),
+    };
+    response.in_progress_conversation_count = Some(count);
+    response.in_progress_retry_conversation_count = Some(retry_count);
+    response.in_progress_avg_wait_ms = wait_ms;
+    response.in_progress_phase_counts = Some(phase_counts);
+}
+
+fn terminal_delta_matches_source_scope(
+    delta: &DashboardActivityTerminalDelta,
+    source_scope: InvocationSourceScope,
+) -> bool {
+    source_scope != InvocationSourceScope::ProxyOnly || delta.source == SOURCE_PROXY
+}
+
+fn terminal_delta_is_within_range(
+    delta: &DashboardActivityTerminalDelta,
+    range: ExactUtcRange,
+) -> bool {
+    parse_to_utc_datetime(&delta.occurred_at)
+        .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
+}
+
+fn apply_dashboard_terminal_slice_to_summary_response(
+    response: &mut StatsResponse,
+    terminal_sequence: &mut u64,
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    slice: &DashboardTerminalProjectionSlice,
+) {
+    let range = summary_window_range(window, reporting_tz, Utc::now())
+        .ok()
+        .flatten()
+        .map(|(start, end)| ExactUtcRange { start, end });
+    for delta in &slice.deltas {
+        if !terminal_delta_matches_source_scope(delta, source_scope)
+            || delta.terminal_sequence <= *terminal_sequence
+            || upstream_account_id
+                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
+        {
+            continue;
+        }
+        apply_dashboard_activity_terminal_delta_to_stats(response, delta);
+        *terminal_sequence = (*terminal_sequence).max(delta.terminal_sequence);
+    }
+}
+
+fn dashboard_network_timeseries_live_point<'a>(
+    base: &'a DashboardNetworkTimeseriesResponse,
+    upstream_account_id: Option<i64>,
+    network: Option<&'a DashboardNetworkProjectionSlice>,
+) -> Option<(usize, &'a DashboardNetworkTimeseriesPointResponse)> {
+    let network = network?;
+    let bucket = match upstream_account_id {
+        None => network.network_live_bucket.as_ref(),
+        Some(upstream_account_id) => network
+            .accounts
+            .iter()
+            .find(|account| account.upstream_account_id == Some(upstream_account_id))
+            .and_then(|account| account.network_live_bucket.as_ref()),
+    };
+    let bucket = bucket?;
+    let bucket_start = &bucket.bucket_start;
+    base.points
+        .iter()
+        .position(|point| point.bucket_start == *bucket_start)
+        .or_else(|| base.points.iter().position(|point| point.is_live_bucket))
+        .map(|point_index| (point_index, bucket))
+}
+
 async fn run_server_push_topic_loop(
     hub: Arc<SubscriptionHub>,
     state: Arc<AppState>,
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
-    if topic.is_closed_summary_topic() {
+    if !topic.is_closed_summary_topic() {
+        let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
         loop {
             tokio::select! {
                 _ = state.shutdown.cancelled() => {
                     hub.clear_server_push_task(&topic_key).await;
                     break;
                 }
-                _ = tokio::time::sleep(subscription_calendar_rollover_delay(&topic)) => {
+                _ = interval.tick() => {
                     if hub.stop_server_push_task_if_idle(&topic_key).await {
                         break;
                     }
                     if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
-                        warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
+                        warn!(?err, topic = %topic.name(), "failed to push legacy network recent topic cadence");
                     }
                 }
             }
@@ -2296,22 +3712,18 @@ async fn run_server_push_topic_loop(
         return;
     }
 
-    let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval.tick().await;
-
     loop {
         tokio::select! {
             _ = state.shutdown.cancelled() => {
                 hub.clear_server_push_task(&topic_key).await;
                 break;
             }
-            _ = interval.tick() => {
+            _ = tokio::time::sleep(subscription_calendar_rollover_delay(&topic)) => {
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
                 if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
-                    warn!(?err, topic = %topic.name(), "failed to push subscription topic cadence");
+                    warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
                 }
             }
         }
@@ -2356,6 +3768,26 @@ pub(crate) async fn topic_sse_stream(
         .iter()
         .map(SubscriptionTopic::cache_key)
         .collect::<Result<HashSet<_>, _>>()?;
+    let selected_dashboard_topology_topic_names = selected_topics
+        .iter()
+        .map(SubscriptionTopic::name)
+        .filter(|topic_name| {
+            matches!(
+                *topic_name,
+                "dashboard.activity.current"
+                    | "stats.summary.current"
+                    | "dashboard.network-timeseries.window"
+                    | "dashboard.network-recent.current"
+            )
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    #[cfg(test)]
+    let dashboard_topology_observer_attempt = (query.reason.as_deref()
+        == Some(DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON))
+    .then_some(query.attempt)
+    .flatten();
+    let dashboard_topology_hub = state.subscription_hub.clone();
     let topic_lease = state
         .subscription_hub
         .register_topic_subscribers(&selected_topics)
@@ -2384,9 +3816,10 @@ pub(crate) async fn topic_sse_stream(
         last_sent_cursors: last_seen_by_topic,
         outcomes: _,
     } = prepared;
+    let runtime_projection_mode = state.proxy_runtime_invocations.mode();
     let server_push_topics = selected_topics
         .iter()
-        .filter(|topic| topic.uses_server_push_cadence())
+        .filter(|topic| topic.uses_server_push_cadence(runtime_projection_mode))
         .cloned()
         .collect::<Vec<_>>();
     let server_push_lease = state
@@ -2420,11 +3853,21 @@ pub(crate) async fn topic_sse_stream(
                             continue;
                         }
                         last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        #[cfg(test)]
+                        if let Some(attempt) = dashboard_topology_observer_attempt {
+                            dashboard_topology_hub
+                                .record_dashboard_topology_sse_frame_delivery(attempt, &dispatch.frame)
+                                .await;
+                        }
                         for chunk in dispatch.frame.event_chunks(TopicFrameKind::Live) {
                             yield Ok::<_, Infallible>(chunk);
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        dashboard_topology_hub.record_dashboard_topology_lag(
+                            &selected_dashboard_topology_topic_names,
+                            skipped,
+                        );
                         warn!(skipped, "subscription live fanout lagged");
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -2442,8 +3885,10 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
-    fn uses_server_push_cadence(&self) -> bool {
-        matches!(self, Self::DashboardNetworkRecentCurrent) || self.is_closed_summary_topic()
+    fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
+        self.is_closed_summary_topic()
+            || (mode == RuntimeProjectionMode::Legacy
+                && matches!(self, Self::DashboardNetworkRecentCurrent))
     }
 
     fn uses_dashboard_activity_live_overlay(&self) -> bool {
@@ -2470,7 +3915,10 @@ impl SubscriptionTopic {
     }
 
     fn uses_dashboard_network_live_snapshot(&self) -> bool {
-        matches!(self, Self::DashboardNetworkTimeseriesWindow { .. })
+        matches!(
+            self,
+            Self::DashboardNetworkTimeseriesWindow { .. } | Self::DashboardNetworkRecentCurrent
+        )
     }
 
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
@@ -2948,12 +4396,16 @@ impl SubscriptionTopic {
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
-                    Self::DashboardActivityCurrent { .. }
-                        | Self::DashboardNetworkTimeseriesWindow { .. }
-                        | Self::DashboardNetworkRecentCurrent
-                        | Self::SummaryCurrent { .. }
+                    Self::DashboardActivityCurrent { .. } | Self::SummaryCurrent { .. }
                 )
             }
+            BroadcastPayload::DashboardNetworkSlice { .. } => matches!(
+                self,
+                Self::DashboardActivityCurrent { .. }
+                    | Self::DashboardNetworkTimeseriesWindow { .. }
+            ),
+            BroadcastPayload::DashboardCurrentSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. } => false,
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
                 self,
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
@@ -2961,6 +4413,136 @@ impl SubscriptionTopic {
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
         }
+    }
+
+    async fn build_cached_payload(
+        &self,
+        state: Arc<AppState>,
+    ) -> Result<BuiltSubscriptionTopicPayload, ApiError> {
+        if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+            match self {
+                Self::DashboardActivityCurrent {
+                    range,
+                    time_zone,
+                    recent_limit,
+                    include_accounts,
+                    include_recent,
+                } if range != "yesterday" => {
+                    let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let source_scope = resolve_default_source_scope(&state.pool).await?;
+                    let base = build_dashboard_activity_topic_materialized_base(
+                        state.as_ref(),
+                        &DashboardActivityQuery {
+                            range: range.clone(),
+                            recent_limit: Some(*recent_limit),
+                            time_zone: Some(time_zone.clone()),
+                            include_accounts: *include_accounts,
+                            include_recent: Some(*include_recent),
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Activity {
+                            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(
+                                base,
+                            ))),
+                            reporting_tz,
+                            source_scope,
+                        },
+                    ));
+                }
+                Self::SummaryCurrent {
+                    window,
+                    time_zone,
+                    limit,
+                    upstream_account_id,
+                } if !matches!(window.as_str(), "yesterday" | "previous7d") => {
+                    let query = SummaryQuery {
+                        window: Some(window.clone()),
+                        limit: *limit,
+                        time_zone: Some(time_zone.clone()),
+                        upstream_account_id: *upstream_account_id,
+                    };
+                    let summary_window =
+                        parse_summary_window(&query, state.config.list_limit_max as i64)?;
+                    let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let source_scope = resolve_default_source_scope(&state.pool).await?;
+                    let SummaryTopicTerminalConsistentBase {
+                        mut response,
+                        pending_terminal_deltas,
+                        terminal_sequence,
+                    } = build_summary_topic_terminal_consistent_base(state.as_ref(), &query)
+                        .await?;
+                    let mut replayed_terminal_sequence = 0;
+                    apply_dashboard_terminal_slice_to_summary_response(
+                        &mut response,
+                        &mut replayed_terminal_sequence,
+                        &summary_window,
+                        reporting_tz,
+                        source_scope,
+                        *upstream_account_id,
+                        &DashboardTerminalProjectionSlice {
+                            revision: 0,
+                            deltas: pending_terminal_deltas,
+                        },
+                    );
+                    let range_start =
+                        summary_window_range(&summary_window, reporting_tz, Utc::now())?
+                            .map(|(start, _)| start);
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Summary {
+                            base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
+                                response,
+                                terminal_sequence,
+                                range_start,
+                            ))),
+                            window: summary_window,
+                            reporting_tz,
+                            source_scope,
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::DashboardNetworkTimeseriesWindow {
+                    range,
+                    time_zone,
+                    upstream_account_id,
+                } => {
+                    let Json(response) = fetch_dashboard_network_timeseries(
+                        State(state),
+                        Query(DashboardNetworkTimeseriesQuery {
+                            range: range.clone(),
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        }),
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::NetworkTimeseries {
+                            base: Arc::new(response),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::DashboardNetworkRecentCurrent => {
+                    let Json(response) = fetch_dashboard_network_recent(
+                        State(state),
+                        Query(DashboardRecentNetworkWindowQuery::default()),
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::NetworkRecent {
+                            base: Arc::new(response),
+                        },
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(BuiltSubscriptionTopicPayload::Json(
+            self.build_payload(state).await?,
+        ))
     }
 
     async fn build_payload(&self, state: Arc<AppState>) -> Result<Value, ApiError> {
@@ -3635,6 +5217,479 @@ mod tests {
         ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
     }
 
+    fn dashboard_runtime_topology_descriptors() -> Vec<SubscriptionTopicDescriptor> {
+        vec![
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.activity.current".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "today".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                    ("recentLimit".to_string(), "16".to_string()),
+                    ("includeAccounts".to_string(), "true".to_string()),
+                    ("includeRecent".to_string(), "true".to_string()),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.summary.current".to_string(),
+                params: BTreeMap::from([
+                    ("window".to_string(), "current".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.network-timeseries.window".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "today".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.network-recent.current".to_string(),
+                params: BTreeMap::new(),
+            },
+        ]
+    }
+
+    fn dashboard_runtime_topology_live_record(occurred_at: &str) -> ApiInvocation {
+        ApiInvocation {
+            id: 748_001,
+            invoke_id: "dashboard-runtime-topology-live".to_string(),
+            occurred_at: occurred_at.to_string(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: Some("gpt-5".to_string()),
+            request_model: None,
+            response_model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            reasoning_effort: None,
+            total_tokens: None,
+            cost: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: None,
+            status: Some("running".to_string()),
+            live_phase: Some("requesting".to_string()),
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            blocked_binding: None,
+            blocked_binding_json: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: None,
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: Some(42),
+            upstream_account_name: Some("Topology Account".to_string()),
+            response_content_encoding: None,
+            request_compression_algorithm: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            cost_audit: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: occurred_at.to_string(),
+        }
+    }
+
+    fn dashboard_runtime_topology_stream_query(attempt: u64) -> SubscriptionStreamQuery {
+        SubscriptionStreamQuery {
+            topics: Some(
+                serde_json::to_string(&dashboard_runtime_topology_descriptors())
+                    .expect("serialize dashboard topology topics"),
+            ),
+            resume: None,
+            attempt: Some(attempt),
+            reason: Some(DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON.to_string()),
+        }
+    }
+
+    async fn collect_dashboard_runtime_topology_sse_events(
+        response: Response,
+    ) -> BTreeMap<String, Value> {
+        let expected = [
+            "dashboard.activity.current",
+            "stats.summary.current",
+            "dashboard.network-timeseries.window",
+            "dashboard.network-recent.current",
+        ];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut stream = response.into_body().into_data_stream();
+        let mut buffered = Vec::new();
+        let mut events = BTreeMap::new();
+        while events.len() < expected.len() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "dashboard topology SSE live event timeout; received={:?}",
+                events.keys()
+            );
+            let chunk = tokio::time::timeout(remaining, stream.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "dashboard topology SSE live event timeout; received={:?}",
+                        events.keys()
+                    )
+                })
+                .expect("dashboard topology SSE stream closed")
+                .expect("dashboard topology SSE stream chunk");
+            buffered.extend_from_slice(&chunk);
+            while let Some(event_end) = buffered.windows(2).position(|window| window == b"\n\n") {
+                let event = buffered.drain(..event_end + 2).collect::<Vec<_>>();
+                let Some(payload) = event
+                    .strip_prefix(b"data: ")
+                    .and_then(|payload| payload.strip_suffix(b"\n\n"))
+                else {
+                    continue;
+                };
+                let envelope: Value =
+                    serde_json::from_slice(payload).expect("Dashboard SSE envelope");
+                let Some(topic) = envelope
+                    .pointer("/topic/topic")
+                    .and_then(Value::as_str)
+                    .filter(|topic| expected.contains(topic))
+                else {
+                    continue;
+                };
+                if envelope.get("type").and_then(Value::as_str) == Some("live") {
+                    events.insert(topic.to_string(), envelope);
+                }
+            }
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind dashboard network cache");
+        state
+            .proxy_runtime_invocations
+            .capture_memory_snapshot()
+            .expect("establish in-memory dashboard projection");
+        if let Some(window) = state
+            .proxy_runtime_invocations
+            .pending_dashboard_publish_window()
+        {
+            let consumed = state
+                .proxy_runtime_invocations
+                .begin_dashboard_publish_window(window)
+                .expect("consume initial dashboard projection window");
+            state
+                .proxy_runtime_invocations
+                .complete_dashboard_publish_window(consumed);
+        }
+
+        let descriptors = dashboard_runtime_topology_descriptors();
+        let topics = descriptors
+            .iter()
+            .map(SubscriptionTopic::from_descriptor)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("dashboard topology topics");
+        let first_response = topic_sse_stream(
+            State(state.clone()),
+            Query(dashboard_runtime_topology_stream_query(1)),
+        )
+        .await
+        .expect("open first full Dashboard SSE topology");
+        let second_response = topic_sse_stream(
+            State(state.clone()),
+            Query(dashboard_runtime_topology_stream_query(2)),
+        )
+        .await
+        .expect("open second full Dashboard SSE topology");
+        for topic in &topics {
+            assert_eq!(
+                state
+                    .subscription_hub
+                    .active_topic_subscriber_count(topic.name())
+                    .await,
+                2,
+                "SSE entrypoint should retain both Dashboard owners for {}",
+                topic.name(),
+            );
+        }
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            assert_eq!(
+                guard.server_push_subscribers.len(),
+                0,
+                "network topics must not start subscription-owned cadence tasks",
+            );
+            assert!(
+                guard.server_push_tasks.is_empty(),
+                "network topics must be driven by the shared projection cadence",
+            );
+        }
+        spawn_subscription_broadcast_listener(state.clone());
+
+        let process_started_epoch_second = state
+            .dashboard_network_speed_cache
+            .process_started_at_utc()
+            .timestamp();
+        while Utc::now().timestamp() <= process_started_epoch_second.saturating_add(1) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        state
+            .proxy_runtime_invocations
+            .reset_dashboard_topology_counters();
+        state.subscription_hub.reset_dashboard_topology_counters();
+        state
+            .subscription_hub
+            .reset_dashboard_topology_sse_frame_observations()
+            .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        state
+            .proxy_runtime_invocations
+            .upsert(dashboard_runtime_topology_live_record(&occurred_at));
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 748_003;
+        terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        terminal.t_total_ms = Some(3_450.0);
+        terminal.t_req_read_ms = Some(10.0);
+        terminal.t_req_parse_ms = Some(12.0);
+        terminal.t_upstream_connect_ms = Some(18.0);
+        terminal.t_upstream_ttfb_ms = Some(508.0);
+        terminal.first_token_ms = Some(650.0);
+        terminal.t_upstream_stream_ms = Some(2_800.0);
+        let terminal_delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept terminal projection delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(terminal_delta);
+        let terminal_capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture one terminal projection slice");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: terminal_capture.revision,
+                deltas: terminal_capture.deltas,
+            })
+            .await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "dashboard-runtime-topology-network",
+            &occurred_at,
+            Some(42),
+            Some("api.openai.com"),
+            4096,
+            Utc::now() - ChronoDuration::seconds(1),
+        );
+        crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
+            state.as_ref(),
+        );
+        crate::api::slices::error_distribution_and_sse::schedule_dashboard_network_projection(
+            state.as_ref(),
+        );
+        state
+            .subscription_hub
+            .refresh_topic(
+                state.clone(),
+                topics.last().expect("network recent topic").clone(),
+                true,
+            )
+            .await
+            .expect("emit one deterministic network recent frame");
+        let (first_frames, second_frames) = tokio::join!(
+            collect_dashboard_runtime_topology_sse_events(first_response),
+            collect_dashboard_runtime_topology_sse_events(second_response),
+        );
+        state.shutdown.cancel();
+        assert_eq!(
+            first_frames, second_frames,
+            "both SSE owners should receive the same serialized live frames",
+        );
+        let first_observations = state
+            .subscription_hub
+            .dashboard_topology_sse_frame_observations(1)
+            .await;
+        let second_observations = state
+            .subscription_hub
+            .dashboard_topology_sse_frame_observations(2)
+            .await;
+        for topic in [
+            "dashboard.activity.current",
+            "stats.summary.current",
+            "dashboard.network-timeseries.window",
+            "dashboard.network-recent.current",
+        ] {
+            let first_owner_frames = first_observations
+                .get(topic)
+                .expect("first owner should observe each Dashboard live frame");
+            let second_owner_frames = second_observations
+                .get(topic)
+                .expect("second owner should observe each Dashboard live frame");
+            assert!(
+                first_owner_frames
+                    .iter()
+                    .any(|first_frame| second_owner_frames
+                        .iter()
+                        .any(|second_frame| Arc::ptr_eq(first_frame, second_frame))),
+                "topic {topic} should reuse one serialized frame across SSE owners",
+            );
+        }
+        for (topic, terminal_total) in [
+            ("dashboard.activity.current", json!(1)),
+            ("stats.summary.current", json!(1)),
+        ] {
+            let first_owner_frames = first_observations
+                .get(topic)
+                .expect("first owner should observe terminal Dashboard frame");
+            let second_owner_frames = second_observations
+                .get(topic)
+                .expect("second owner should observe terminal Dashboard frame");
+            let terminal_frame = first_owner_frames
+                .iter()
+                .find(|frame| {
+                    let payload = frame.payload_value();
+                    let total = if topic == "dashboard.activity.current" {
+                        &payload["summary"]["stats"]["totalCount"]
+                    } else {
+                        &payload["totalCount"]
+                    };
+                    total == &terminal_total
+                })
+                .expect("first owner should observe the terminal slice frame");
+            assert!(
+                second_owner_frames
+                    .iter()
+                    .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
+                "terminal topic {topic} must reuse one frame across two SSE owners",
+            );
+        }
+
+        let projection = state
+            .proxy_runtime_invocations
+            .dashboard_topology_counters();
+        assert_eq!(projection.current.build_count, 1);
+        assert_eq!(projection.current.revision_count, 1);
+        assert!(projection.current.cadence_miss_count <= 1);
+        assert_eq!(projection.network.build_count, 1);
+        assert_eq!(projection.network.revision_count, 1);
+        assert_eq!(projection.network.cadence_miss_count, 0);
+        assert_eq!(projection.terminal.build_count, 1);
+        assert_eq!(projection.terminal.revision_count, 1);
+        assert_eq!(projection.terminal.cadence_miss_count, 0);
+        assert_eq!(
+            state
+                .proxy_runtime_invocations
+                .health_snapshot(2)
+                .live_path_db_read_count,
+            0,
+            "active Dashboard producer must remain on the in-memory live path",
+        );
+
+        let delivery = state.subscription_hub.dashboard_topology_counters();
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(
+                topic.business_payload_count, 0,
+                "new Dashboard delivery must not fan out business payloads"
+            );
+            assert_eq!(
+                topic.json_overlay_count, 0,
+                "new Dashboard delivery must not mutate generic JSON payloads"
+            );
+            assert!(
+                topic.materialization_count >= 1,
+                "each active Dashboard topic should materialize an immutable frame"
+            );
+            assert!(topic.frame_bytes_count > 0);
+            assert_eq!(topic.lagged_count, 0);
+            assert_eq!(topic.skipped_count, 0);
+        }
+        for topic in [delivery.activity, delivery.summary] {
+            assert_eq!(
+                topic.serialization_count, topic.materialization_count,
+                "each materialized topic revision should serialize exactly once"
+            );
+            assert_eq!(
+                topic.payload_clone_count, 0,
+                "activity and summary must mutate typed bases without complete payload clones"
+            );
+        }
+        for topic in [delivery.network_timeseries, delivery.network_recent] {
+            assert_eq!(
+                topic.serialization_count, topic.materialization_count,
+                "each materialized network topic revision should serialize exactly once"
+            );
+            assert_eq!(
+                topic.payload_clone_count, 0,
+                "network topic materialization must borrow its typed base"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn inactive_topics_clear_dirty_when_rebuilt_payload_is_unchanged() {
         let state = crate::tests::test_state_with_openai_base(
@@ -3867,7 +5922,7 @@ mod tests {
                 upstream_account_id: None,
             };
 
-            assert!(topic.uses_server_push_cadence());
+            assert!(topic.uses_server_push_cadence(RuntimeProjectionMode::Auto));
             assert!(
                 subscription_calendar_rollover_delay(&topic) <= Duration::from_secs(24 * 60 * 60)
             );
@@ -3916,6 +5971,1188 @@ mod tests {
         assert!(hub.has_active_dashboard_activity_live_topic_sync());
     }
 
+    #[tokio::test]
+    async fn cold_network_only_slice_materializes_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind network cache");
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("network topic key");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prepare network topic");
+        let _lease = hub
+            .register_test_topic_name("dashboard.network-timeseries.window")
+            .await;
+        let cursor_before = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "cold-network-only",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            512,
+            Utc::now(),
+        );
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "cold-network-account",
+            &crate::proxy::shanghai_now_string(),
+            Some(42),
+            Some("api.openai.com"),
+            256,
+            Utc::now(),
+        );
+        let slice = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture network slice")
+            .slice;
+        state.pool.close().await;
+
+        hub.handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::DashboardNetworkSlice {
+                slice: Box::new(slice.clone()),
+            },
+        )
+        .await;
+
+        let cursor_after = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        assert_eq!(cursor_after, cursor_before + 1);
+        let guard = hub.state.lock().await;
+        let payload = guard
+            .topics
+            .get(&topic_key)
+            .map(|cached| cached.snapshot_frame.payload_value())
+            .expect("cached network frame");
+        let live_point = payload
+            .get("points")
+            .and_then(Value::as_array)
+            .and_then(|points| {
+                points.iter().find(|point| {
+                    point
+                        .get("isLiveBucket")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+            })
+            .expect("global live point");
+        assert_eq!(
+            live_point.get("uploadBytes").and_then(Value::as_i64),
+            Some(768)
+        );
+        drop(guard);
+
+        let delivery_before = hub.dashboard_topology_counters();
+        hub.handle_internal_broadcast(
+            state,
+            BroadcastPayload::DashboardNetworkSlice {
+                slice: Box::new(slice),
+            },
+        )
+        .await;
+        let delivery_after = hub.dashboard_topology_counters();
+        let cursor_after_unchanged = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network topic")
+            .cursor;
+        assert_eq!(cursor_after_unchanged, cursor_after);
+        assert_eq!(
+            delivery_after.network_timeseries.materialization_count,
+            delivery_before.network_timeseries.materialization_count,
+            "unchanged network revisions must not rematerialize a topic",
+        );
+        assert_eq!(
+            delivery_after.network_timeseries.serialization_count,
+            delivery_before.network_timeseries.serialization_count,
+            "unchanged network revisions must not serialize a topic",
+        );
+        assert_eq!(delivery_after.network_timeseries.payload_clone_count, 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_slice_materializes_activity_and_summary_without_live_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let topics = vec![activity.clone(), summary.clone()];
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register active Dashboard topics");
+        state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                topics.iter().map(SubscriptionTopic::descriptor).collect(),
+                Vec::new(),
+            )
+            .await
+            .expect("prepare Dashboard topic bases");
+
+        let activity_key = activity.cache_key().expect("activity topic key");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        let (activity_cursor_before, summary_cursor_before) = {
+            let guard = state.subscription_hub.state.lock().await;
+            (
+                guard.topics[&activity_key].cursor,
+                guard.topics[&summary_key].cursor,
+            )
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.invoke_id = "dashboard-runtime-terminal-materialization".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        terminal.prompt_cache_key = Some("terminal-materialized-recent".to_string());
+        terminal.request_model = Some("gpt-5".to_string());
+        terminal.response_model = Some("gpt-5".to_string());
+        terminal.t_total_ms = Some(3_450.0);
+        terminal.t_req_read_ms = Some(10.0);
+        terminal.t_req_parse_ms = Some(12.0);
+        terminal.t_upstream_connect_ms = Some(18.0);
+        terminal.t_upstream_ttfb_ms = Some(508.0);
+        terminal.first_token_ms = Some(650.0);
+        terminal.t_upstream_stream_ms = Some(2_800.0);
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome.terminal_delta.expect("accepted terminal delta");
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardTerminalSlice {
+                    slice: Box::new(DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: vec![delta],
+                    }),
+                },
+            )
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let activity_cached = &guard.topics[&activity_key];
+        let summary_cached = &guard.topics[&summary_key];
+        assert_eq!(activity_cached.cursor, activity_cursor_before + 1);
+        assert_eq!(summary_cached.cursor, summary_cursor_before + 1);
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["summary"]["stats"]["totalCount"],
+            json!(1)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["upstreamAccountId"],
+            json!(42)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["totalTokens"],
+            json!(42)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["summary"]["modelPerformance"]["total"]
+                ["cumulativeUsageDurationMs"],
+            json!(3_450.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["firstTokenAvgMs"],
+            json!(650.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["avgTotalMs"],
+            json!(3_450.0)
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["modelPerformance"]["models"]
+                [0]["model"],
+            json!("gpt-5")
+        );
+        assert_eq!(
+            activity_cached.snapshot_frame.payload_value()["accounts"][0]["recentInvocations"][0]["invokeId"],
+            json!("dashboard-runtime-terminal-materialization")
+        );
+        assert_eq!(
+            summary_cached.snapshot_frame.payload_value()["totalCount"],
+            json!(1)
+        );
+        drop(guard);
+
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardTerminalSlice {
+                    slice: Box::new(DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: Vec::new(),
+                    }),
+                },
+            )
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        assert_eq!(
+            guard.topics[&activity_key].cursor,
+            activity_cursor_before + 1,
+            "an unchanged terminal revision must not advance the activity cursor",
+        );
+        assert_eq!(
+            guard.topics[&summary_key].cursor,
+            summary_cursor_before + 1,
+            "an unchanged terminal revision must not advance the summary cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_materializer_skips_terminal_delta_already_folded_into_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.invoke_id = "dashboard-runtime-folded-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome.terminal_delta.expect("accepted terminal delta");
+
+        let payload = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build typed activity base")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize folded activity base");
+        let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
+        assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
+        assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn activity_materializer_skips_terminal_delta_already_persisted_in_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-persisted-activity-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        terminal.id = 748_004;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, total_tokens, output_tokens, cost,
+                status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.model.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(terminal.status.as_deref())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal baseline row");
+
+        let base = build_dashboard_activity_topic_materialized_base(
+            state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(true),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        assert_eq!(base.response().terminal_sequence, delta.terminal_sequence);
+        let payload = DashboardTopicMaterializer::Activity {
+            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(base))),
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::ProxyOnly,
+        }
+        .serialize(
+            None,
+            None,
+            Some(&DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: vec![delta],
+            }),
+        )
+        .expect("serialize persisted activity base");
+        let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
+        assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
+        assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn activity_materializer_handles_maximum_distinct_account_terminal_slice() {
+        let delta_state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let base_state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let mut base = build_dashboard_activity_topic_materialized_base(
+            base_state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(false),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut deltas = Vec::with_capacity(10_000);
+        for account_id in 1..=10_000_i64 {
+            let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+            terminal.id = 0;
+            terminal.invoke_id = format!("dashboard-runtime-terminal-account-{account_id}");
+            terminal.upstream_account_id = Some(account_id);
+            terminal.upstream_account_name = Some(format!("Account {account_id}"));
+            terminal.status = Some("success".to_string());
+            terminal.live_phase = None;
+            terminal.total_tokens = Some(1);
+            terminal.output_tokens = Some(1);
+            deltas.push(
+                apply_dashboard_activity_terminal_record(delta_state.as_ref(), &terminal)
+                    .await
+                    .terminal_delta
+                    .expect("accepted distinct terminal delta"),
+            );
+        }
+
+        base.apply_terminal_slice(
+            Shanghai,
+            InvocationSourceScope::ProxyOnly,
+            &DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas,
+            },
+        );
+
+        assert_eq!(base.response().summary.stats.total_count, 10_000);
+        assert_eq!(
+            base.response().accounts.as_ref().map(Vec::len),
+            Some(10_000),
+            "each distinct account should be materialized once",
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_materializers_detect_stale_moving_window_bases() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let activity_materializer = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build activity base")
+            .dashboard_materializer()
+            .expect("activity typed materializer");
+        let summary_materializer = summary
+            .build_cached_payload(state)
+            .await
+            .expect("build summary base")
+            .dashboard_materializer()
+            .expect("summary typed materializer");
+
+        assert!(
+            !activity_materializer.requires_terminal_window_rebase(),
+            "a freshly built activity base must remain on the terminal delivery path",
+        );
+        assert!(
+            !summary_materializer.requires_terminal_window_rebase(),
+            "a freshly built duration base must wait for the reconcile boundary",
+        );
+
+        let DashboardTopicMaterializer::Activity { base, .. } = &activity_materializer else {
+            panic!("expected activity materializer");
+        };
+        base.lock()
+            .expect("activity materializer state lock")
+            .rebase_range_start = Some(Utc::now() - ChronoDuration::days(1));
+        let DashboardTopicMaterializer::Summary { base, .. } = &summary_materializer else {
+            panic!("expected summary materializer");
+        };
+        base.lock()
+            .expect("summary materializer state lock")
+            .range_start = Some(Utc::now() - ChronoDuration::days(2));
+
+        assert!(activity_materializer.requires_terminal_window_rebase());
+        assert!(summary_materializer.requires_terminal_window_rebase());
+    }
+
+    #[tokio::test]
+    async fn terminal_slice_keeps_fresh_moving_summary_base_off_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register active summary topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            !cached.dirty,
+            "a fresh duration base must not schedule a SQLite rebase from terminal delivery",
+        );
+        assert!(
+            !cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+                .requires_terminal_window_rebase(),
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_slice_keeps_fresh_rolling_activity_base_off_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&activity))
+            .await
+            .expect("register active rolling activity topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![activity.descriptor()], Vec::new())
+            .await
+            .expect("prepare rolling activity base");
+        let activity_key = activity.cache_key().expect("activity topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Activity { base, .. } = guard.topics[&activity_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed activity materializer")
+            else {
+                panic!("expected activity materializer");
+            };
+            let mut base = base.lock().expect("activity materializer state lock");
+            let current_start = base.rebase_range_start.expect("activity base range start");
+            base.rebase_range_start = Some(current_start - ChronoDuration::seconds(1));
+        }
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&activity_key];
+        assert!(
+            !cached.dirty,
+            "a fresh rolling activity base must not schedule a SQLite rebase from terminal delivery",
+        );
+        assert!(
+            !cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed activity materializer")
+                .requires_terminal_window_rebase(),
+        );
+    }
+
+    #[tokio::test]
+    async fn rolling_activity_terminal_slice_preserves_rebase_anchor() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let materializer = activity
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build rolling activity base")
+            .dashboard_materializer()
+            .expect("typed activity materializer");
+        let DashboardTopicMaterializer::Activity { base, .. } = &materializer else {
+            panic!("expected activity materializer");
+        };
+        let stale_anchor = resolve_dashboard_activity_cached_range("1d", Shanghai)
+            .expect("rolling activity range")
+            .start
+            - ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64);
+        base.lock()
+            .expect("activity materializer state lock")
+            .rebase_range_start = Some(stale_anchor);
+
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-rolling-activity-anchor".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted terminal delta");
+
+        materializer
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta.clone()],
+                }),
+            )
+            .expect("apply nonempty terminal slice");
+
+        let base = base.lock().expect("activity materializer state lock");
+        assert_eq!(base.rebase_range_start, Some(stale_anchor));
+        assert_eq!(
+            base.base.response().terminal_sequence,
+            delta.terminal_sequence
+        );
+        drop(base);
+        assert!(
+            materializer.requires_terminal_window_rebase(),
+            "terminal delivery must not reset a rolling activity rebase boundary",
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_runtime_window_rebase_retains_an_isolated_last_good_frame() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register active summary topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Summary { base, .. } = guard.topics[&summary_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        }
+        state.pool.close().await;
+
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: Vec::new(),
+            })
+            .await;
+
+        assert!(
+            state.subscription_hub.state.lock().await.topics[&summary_key].dirty,
+            "terminal delivery must isolate a stale base without starting a database rebase",
+        );
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            cached.dirty && cached.refresh_scheduled,
+            "a failed rebase must preserve its last-good frame and isolate every slice",
+        );
+        assert!(
+            cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+                .requires_terminal_window_rebase(),
+            "the next runtime reconcile must retry the unresolved window rebase",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_reconcile_rebases_stale_activity_and_summary_window_bases() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let topics = vec![activity.clone(), summary.clone()];
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register active Dashboard topics");
+        state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                topics.iter().map(SubscriptionTopic::descriptor).collect(),
+                Vec::new(),
+            )
+            .await
+            .expect("prepare Dashboard topic bases");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        let summary_cursor_before = {
+            let mut guard = state.subscription_hub.state.lock().await;
+            let activity_cached = guard
+                .topics
+                .get_mut(&activity.cache_key().expect("activity topic key"))
+                .expect("activity cache entry");
+            let DashboardTopicMaterializer::Activity { base, .. } = activity_cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("activity materializer")
+            else {
+                panic!("expected activity materializer");
+            };
+            base.lock()
+                .expect("activity materializer state lock")
+                .rebase_range_start = Some(Utc::now() - ChronoDuration::days(1));
+            let summary_cached = guard
+                .topics
+                .get_mut(&summary_key)
+                .expect("summary cache entry");
+            let DashboardTopicMaterializer::Summary { base, .. } = summary_cached
+                .dashboard_materializer
+                .as_ref()
+                .expect("summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+            summary_cached.cursor
+        };
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        let guard = state.subscription_hub.state.lock().await;
+        for topic_key in [
+            activity.cache_key().expect("activity topic key"),
+            summary_key.clone(),
+        ] {
+            let cached = &guard.topics[&topic_key];
+            assert!(
+                !cached.dirty
+                    && !cached
+                        .dashboard_materializer
+                        .as_ref()
+                        .expect("typed Dashboard materializer")
+                        .requires_terminal_window_rebase(),
+                "runtime reconciliation should replace stale terminal-window bases",
+            );
+        }
+        assert_eq!(
+            guard.topics[&summary_key].cursor, summary_cursor_before,
+            "a byte-identical summary rebase should retain its shared frame cursor",
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_reconcile_marks_inactive_stale_window_bases_dirty_for_reconnect() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let initial_lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register initial summary owner");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("prepare moving summary base");
+        let summary_key = summary.cache_key().expect("summary topic key");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let DashboardTopicMaterializer::Summary { base, .. } = guard.topics[&summary_key]
+                .dashboard_materializer
+                .as_ref()
+                .expect("typed summary materializer")
+            else {
+                panic!("expected summary materializer");
+            };
+            base.lock()
+                .expect("summary materializer state lock")
+                .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        }
+        drop(initial_lease);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !state
+                    .subscription_hub
+                    .state
+                    .lock()
+                    .await
+                    .active_subscribers
+                    .contains_key(&summary_key)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("initial owner should release before the reconcile scan");
+
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            let cached = &guard.topics[&summary_key];
+            assert!(
+                cached.dirty && !cached.refresh_scheduled,
+                "an inactive stale base must defer its authoritative rebuild to reconnect",
+            );
+        }
+
+        let _returned_lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&summary))
+            .await
+            .expect("register returning summary owner");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![summary.descriptor()], Vec::new())
+            .await
+            .expect("rebuild stale summary base on reconnect");
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = &guard.topics[&summary_key];
+        assert!(
+            !cached.dirty
+                && !cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .expect("typed summary materializer")
+                    .requires_terminal_window_rebase(),
+            "reconnecting must receive an authoritative moving-window base",
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_topic_base_preserves_pending_terminal_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-summary-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        let query = SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+            upstream_account_id: None,
+        };
+        let summary_window = parse_summary_window(&query, state.config.list_limit_max as i64)
+            .expect("summary window");
+        let SummaryTopicTerminalConsistentBase {
+            mut response,
+            pending_terminal_deltas,
+            terminal_sequence,
+        } = build_summary_topic_terminal_consistent_base(state.as_ref(), &query)
+            .await
+            .expect("build terminal-consistent summary base");
+        assert_eq!(terminal_sequence, delta.terminal_sequence);
+        assert_eq!(pending_terminal_deltas.len(), 1);
+
+        let initial_slice = DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas: pending_terminal_deltas,
+        };
+        let mut replayed_terminal_sequence = 0;
+        apply_dashboard_terminal_slice_to_summary_response(
+            &mut response,
+            &mut replayed_terminal_sequence,
+            &summary_window,
+            Shanghai,
+            InvocationSourceScope::ProxyOnly,
+            None,
+            &initial_slice,
+        );
+        let payload = DashboardTopicMaterializer::Summary {
+            base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
+                response,
+                terminal_sequence,
+                summary_window_range(&summary_window, Shanghai, Utc::now())
+                    .expect("summary range")
+                    .map(|(start, _)| start),
+            ))),
+            window: summary_window,
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::ProxyOnly,
+            upstream_account_id: None,
+        }
+        .serialize(
+            None,
+            None,
+            Some(&DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: vec![delta],
+            }),
+        )
+        .expect("serialize summary terminal base");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn summary_materializer_skips_terminal_delta_already_folded_into_base() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 748_002;
+        terminal.invoke_id = "dashboard-runtime-summary-folded-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, total_tokens, output_tokens, cost,
+                status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.model.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(terminal.status.as_deref())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal baseline row");
+        let outcome = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal).await;
+        let delta = outcome
+            .terminal_delta
+            .expect("accepted persisted terminal delta");
+
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("build typed summary base")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize folded summary base");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn dashboard_materialization_rejects_out_of_order_network_revisions() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        state
+            .proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
+            .expect("bind network cache");
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let topic_key = topic.cache_key().expect("network recent topic key");
+        let _lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register network recent topic");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("prepare network recent topic");
+        let cursor_before = hub
+            .state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .expect("cached network recent topic")
+            .cursor;
+
+        let older = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture older network slice")
+            .slice;
+        let mut newer = older.clone();
+        newer.revision = older.revision.saturating_add(1);
+        newer.recent.range_end = "2026-08-06T00:00:01.000Z".to_string();
+
+        let (stale_pending, stale_payload) = {
+            let mut guard = hub.state.lock().await;
+            guard.dashboard_network_slice = Some(Arc::new(older.clone()));
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard)
+                .into_iter()
+                .find(|pending| pending.topic_key == topic_key)
+                .expect("pending stale network revision");
+            let payload = pending
+                .materializer
+                .serialize(
+                    guard.dashboard_current_slice.as_deref(),
+                    guard.dashboard_network_slice.as_deref(),
+                    guard.dashboard_terminal_slice.as_deref(),
+                )
+                .expect("serialize stale network revision");
+            (pending, payload)
+        };
+        state.pool.close().await;
+
+        hub.materialize_dashboard_network_slice(newer.clone()).await;
+        hub.commit_dashboard_materialized_frame(stale_pending, stale_payload)
+            .await
+            .expect("stale materialization commit should be harmless");
+        hub.materialize_dashboard_network_slice(older).await;
+
+        let guard = hub.state.lock().await;
+        assert_eq!(
+            guard
+                .dashboard_network_slice
+                .as_ref()
+                .map(|slice| slice.revision),
+            Some(newer.revision),
+            "a late slice must not regress the hub dependency revision",
+        );
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached network recent topic");
+        assert_eq!(
+            cached.dashboard_materialized_revision,
+            Some(DashboardTopicRevision {
+                base_revision: cached.dashboard_base_revision,
+                current_revision: None,
+                network_revision: Some(newer.revision),
+                terminal_revision: None,
+            }),
+            "a delayed frame must not replace the latest materialized revision",
+        );
+        assert_eq!(
+            cached.cursor,
+            cursor_before + 1,
+            "only the newest revision should advance the SSE cursor",
+        );
+        assert_eq!(
+            cached.snapshot_frame.payload_value()["rangeEnd"],
+            json!(newer.recent.range_end),
+        );
+    }
+
     fn seeded_cached_topic(
         topic: SubscriptionTopic,
         cursors: &[u64],
@@ -3959,6 +7196,9 @@ mod tests {
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
+            dashboard_materializer: None,
+            dashboard_base_revision: cursor,
+            dashboard_materialized_revision: None,
             snapshot_payload,
             snapshot_frame,
             snapshot_bytes: 32,
@@ -4036,7 +7276,7 @@ mod tests {
             records: Vec::new()
         }));
         assert!(
-            topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
+            !topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
                 snapshot: Box::new(DashboardActivityLiveSnapshot {
                     revision: 1,
                     generated_at: "2026-07-20T00:00:00.000Z".to_string(),
@@ -4294,33 +7534,83 @@ mod tests {
         assert_eq!(invoke_ids.len(), 75);
     }
 
+    #[test]
+    fn dashboard_network_topics_use_projection_cadence_not_subscription_push_tasks() {
+        let topics = [
+            SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+                range: "today".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::DashboardNetworkRecentCurrent,
+        ];
+
+        for topic in topics {
+            assert!(topic.uses_dashboard_network_live_snapshot());
+            assert!(
+                !topic.uses_server_push_cadence(RuntimeProjectionMode::Auto),
+                "{} must be driven by the shared network projection cadence",
+                topic.name()
+            );
+        }
+        assert!(
+            SubscriptionTopic::DashboardNetworkRecentCurrent
+                .uses_server_push_cadence(RuntimeProjectionMode::Legacy)
+        );
+    }
+
     #[tokio::test]
-    async fn dashboard_network_recent_topic_push_cadence_emits_live_payload() {
-        let state =
-            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
-                .await;
-        let hub = Arc::new(SubscriptionHub::new());
+    async fn dashboard_network_recent_legacy_push_cadence_emits_live_payload() {
+        let state = crate::tests::test_state_with_openai_base_and_runtime_projection_mode(
+            Url::parse("http://127.0.0.1:9").unwrap(),
+            RuntimeProjectionMode::Legacy,
+        )
+        .await;
         let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let topic_key = topic.cache_key().expect("legacy recent topic key");
         let descriptor = topic.descriptor();
-        let mut receiver = hub.subscribe();
+        let mut receiver = state.subscription_hub.subscribe();
+        assert!(!topic.uses_server_push_cadence(RuntimeProjectionMode::Auto));
+        assert!(topic.uses_server_push_cadence(RuntimeProjectionMode::Legacy));
 
-        let prepared = hub
-            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+        let _response = topic_sse_stream(
+            State(state.clone()),
+            Query(SubscriptionStreamQuery {
+                topics: Some(
+                    serde_json::to_string(std::slice::from_ref(&descriptor))
+                        .expect("serialize legacy recent topic"),
+                ),
+                resume: None,
+                attempt: Some(1),
+                reason: Some("legacy-network-cadence-test".to_string()),
+            }),
+        )
+        .await
+        .expect("open legacy recent network SSE stream");
+        {
+            let guard = state.subscription_hub.state.lock().await;
+            assert_eq!(
+                guard.server_push_subscribers.get(&topic_key).copied(),
+                Some(1),
+                "legacy SSE entrypoint must retain the recent cadence owner",
+            );
+            assert!(guard.server_push_tasks.contains(&topic_key));
+        }
+
+        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
+        state.dashboard_network_speed_cache.record_request_bytes(
+            "legacy-recent-network-cadence",
+            &crate::proxy::shanghai_now_string(),
+            None,
+            Some("api.openai.com"),
+            128,
+            Utc::now(),
+        );
+
+        let dispatch = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
             .await
-            .expect("prepare recent network topic");
-
-        assert_eq!(prepared.initial.len(), 1);
-        assert!(topic.uses_server_push_cadence());
-
-        let _lease = hub
-            .register_server_push_topics(state, vec![topic])
-            .await
-            .expect("register recent network push topic");
-
-        let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
-            .await
-            .expect("recent network push should be emitted")
-            .expect("recent network dispatch");
+            .expect("legacy recent network push should be emitted")
+            .expect("legacy recent network dispatch");
 
         assert_eq!(dispatch.frame.descriptor, descriptor);
         assert_eq!(
@@ -4347,59 +7637,6 @@ mod tests {
                 .map(Vec::len),
             Some(300)
         );
-    }
-
-    #[tokio::test]
-    async fn dashboard_network_recent_topic_push_cadence_is_shared_across_subscribers() {
-        let state =
-            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
-                .await;
-        let hub = Arc::new(SubscriptionHub::new());
-        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
-        let topic_key = topic.cache_key().expect("recent topic key");
-        let descriptor = topic.descriptor();
-
-        hub.prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
-            .await
-            .expect("prepare first recent network topic connection");
-        let first_lease = hub
-            .register_server_push_topics(state.clone(), vec![topic.clone()])
-            .await
-            .expect("register first recent network push topic");
-        hub.prepare_connection(state.clone(), vec![descriptor], Vec::new())
-            .await
-            .expect("prepare second recent network topic connection");
-        let second_lease = hub
-            .register_server_push_topics(state, vec![topic])
-            .await
-            .expect("register second recent network push topic");
-
-        {
-            let guard = hub.state.lock().await;
-            assert_eq!(
-                guard.server_push_subscribers.get(&topic_key).copied(),
-                Some(2)
-            );
-            assert_eq!(guard.server_push_tasks.len(), 1);
-            assert!(guard.server_push_tasks.contains(&topic_key));
-        }
-
-        drop(first_lease);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        {
-            let guard = hub.state.lock().await;
-            assert_eq!(
-                guard.server_push_subscribers.get(&topic_key).copied(),
-                Some(1)
-            );
-            assert_eq!(guard.server_push_tasks.len(), 1);
-        }
-
-        drop(second_lease);
-        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
-        let guard = hub.state.lock().await;
-        assert_eq!(guard.server_push_subscribers.get(&topic_key), None);
-        assert!(!guard.server_push_tasks.contains(&topic_key));
     }
 
     #[test]

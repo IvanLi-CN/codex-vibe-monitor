@@ -2143,7 +2143,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         chunk.len(),
                         Utc::now(),
                     );
-                schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+                schedule_dashboard_network_projection(state_for_task.as_ref());
             }
             stream_started_at = Some(Instant::now());
             last_upstream_chunk_received_at = Some(chunk_received_at);
@@ -2482,7 +2482,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 chunk.len(),
                                 Utc::now(),
                             );
-                        schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+                        schedule_dashboard_network_projection(state_for_task.as_ref());
                     }
                     last_upstream_chunk_received_at = Some(chunk_received_at);
                     if successful_terminal_in_chunk

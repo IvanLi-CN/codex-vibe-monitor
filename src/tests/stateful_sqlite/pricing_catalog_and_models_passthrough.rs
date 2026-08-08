@@ -1635,11 +1635,14 @@ async fn proxy_capture_persist_and_broadcast_emits_records_and_dashboard_live() 
             BroadcastPayload::Quota { snapshot } => {
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::DashboardActivityLive { .. } => {
+            BroadcastPayload::DashboardActivityLive { .. }
+            | BroadcastPayload::DashboardCurrentSlice { .. } => {
                 saw_dashboard_live = true;
             }
             BroadcastPayload::Version { .. }
             | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::DashboardNetworkSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. }
             | BroadcastPayload::PromptCacheConversationChanged { .. }
             | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => {}
         }

@@ -4563,7 +4563,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     chunk.len(),
                                                     Utc::now(),
                                                 );
-                                            schedule_dashboard_activity_live_snapshot(
+                                            schedule_dashboard_network_projection(
                                                 state_for_record.as_ref(),
                                             );
                                         }
@@ -4623,7 +4623,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                             chunk.len(),
                                                             Utc::now(),
                                                         );
-                                                    schedule_dashboard_activity_live_snapshot(
+                                                    schedule_dashboard_network_projection(
                                                         state_for_record.as_ref(),
                                                     );
                                                 }
@@ -5305,7 +5305,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             chunk.len(),
                             Utc::now(),
                         );
-                    schedule_dashboard_activity_live_snapshot(state_for_record.as_ref());
+                    schedule_dashboard_network_projection(state_for_record.as_ref());
                 }
                 if tx.send(Ok(chunk)).await.is_err() {
                     downstream_closed = true;
@@ -5354,7 +5354,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     chunk.len(),
                                     Utc::now(),
                                 );
-                            schedule_dashboard_activity_live_snapshot(state_for_record.as_ref());
+                            schedule_dashboard_network_projection(state_for_record.as_ref());
                         }
                         if tx.send(Ok(chunk)).await.is_err() {
                             let _ = proxy_request_permit_for_task.take();

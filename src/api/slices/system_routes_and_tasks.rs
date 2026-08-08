@@ -75,6 +75,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) allocator: SystemRuntimePressureAllocator,
     pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
     pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
+    pub(crate) delivery: DashboardDeliveryTopologyCounterSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
 }
 
@@ -108,12 +109,27 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let dashboard_projection = state
         .proxy_runtime_invocations
         .health_snapshot(active_subscriber_count);
+    let delivery = state.subscription_hub.dashboard_topology_counters();
     let request_pipeline = state
         .proxy_runtime_invocations
         .request_pipeline_health_snapshot();
+    let projection_cadence_missed = [
+        dashboard_projection.slice_counters.current,
+        dashboard_projection.slice_counters.network,
+        dashboard_projection.slice_counters.terminal,
+    ]
+    .into_iter()
+    .any(|slice| slice.cadence_miss_count > 0);
+    let delivery_degraded = state
+        .subscription_hub
+        .dashboard_delivery_has_degraded_signal();
     let state = if writer_accounting.state == "degraded" {
         "accounting_error".to_string()
-    } else if memory.pressure_level != "normal" || dashboard_projection.state == "degraded" {
+    } else if memory.pressure_level != "normal"
+        || dashboard_projection.state == "degraded"
+        || projection_cadence_missed
+        || delivery_degraded
+    {
         "degraded".to_string()
     } else if dashboard_projection.last_defer_reason.is_some() {
         "deferred".to_string()
@@ -137,6 +153,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         },
         writer_accounting,
         dashboard_projection,
+        delivery,
         request_pipeline,
     }
 }

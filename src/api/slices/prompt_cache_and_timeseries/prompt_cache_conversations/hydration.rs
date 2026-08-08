@@ -534,10 +534,18 @@ pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
     record: &ApiInvocation,
     prompt_cache_key: String,
 ) -> PromptCacheConversationInvocationPreviewResponse {
+    let mut preview = invocation_preview_from_runtime_record(record);
+    preview.prompt_cache_key = Some(prompt_cache_key);
+    preview
+}
+
+pub(crate) fn invocation_preview_from_runtime_record(
+    record: &ApiInvocation,
+) -> PromptCacheConversationInvocationPreviewResponse {
     PromptCacheConversationInvocationPreviewResponse {
         id: record.id,
         invoke_id: record.invoke_id.clone(),
-        prompt_cache_key: Some(prompt_cache_key),
+        prompt_cache_key: record.prompt_cache_key.clone(),
         occurred_at: record.occurred_at.clone(),
         status: record
             .status
