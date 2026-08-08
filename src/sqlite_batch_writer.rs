@@ -74,7 +74,7 @@ struct P2ScheduleState {
 
 impl P2ScheduleState {
     fn arm_if_idle(&mut self, now: Instant) {
-        if self.due_at.is_none() {
+        if self.due_at.is_none() && self.wake_reason.is_none() {
             self.due_at = Some(now + SQLITE_P2_COALESCE_INTERVAL);
             self.wake_reason = Some(P2WakeReason::CoalescedDeadline);
             self.deferred_since.get_or_insert(now);
@@ -88,6 +88,12 @@ impl P2ScheduleState {
     fn defer_pressure(&mut self, delay: Duration, reason: P2WakeReason) {
         self.due_at = Some(Instant::now() + delay.max(Duration::from_millis(1)));
         self.wake_reason = Some(reason);
+        self.deferred_since.get_or_insert_with(Instant::now);
+    }
+
+    fn defer_until_background_eligible(&mut self) {
+        self.due_at = None;
+        self.wake_reason = Some(P2WakeReason::BackgroundEligible);
         self.deferred_since.get_or_insert_with(Instant::now);
     }
 
@@ -850,6 +856,7 @@ impl PendingBatch {
 pub(crate) struct RetainedBatch {
     batch: PendingBatch,
     failed: bool,
+    p2_lock_failure: bool,
     p2_defer: Option<P2DeferReason>,
 }
 
@@ -859,6 +866,7 @@ impl RetainedBatch {
         Self {
             batch,
             failed,
+            p2_lock_failure: false,
             p2_defer: None,
         }
     }
@@ -868,7 +876,18 @@ impl RetainedBatch {
         Self {
             batch,
             failed: false,
+            p2_lock_failure: false,
             p2_defer: Some(reason),
+        }
+    }
+
+    fn p2_failed(mut batch: PendingBatch, lock_failure: bool) -> Self {
+        batch.retained_for_retry = true;
+        Self {
+            batch,
+            failed: true,
+            p2_lock_failure: lock_failure,
+            p2_defer: None,
         }
     }
 }
@@ -876,7 +895,7 @@ impl RetainedBatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum P2DeferReason {
     PressureCooldown(u64),
-    BackgroundBusy,
+    BackgroundBusy { observed_generation: u64 },
 }
 
 fn estimated_option_string_bytes(value: &Option<String>) -> usize {
@@ -1706,19 +1725,19 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     P2WakeReason::PressureCooldownElapsed,
                                 );
                             }
-                            Some(P2DeferReason::BackgroundBusy) => {
-                                p2_eligibility_generation = crate::db_pressure::global_db_pressure_gate()
-                                    .eligibility_generation();
-                                p2_schedule.defer_pressure(
-                                    SQLITE_P2_COALESCE_INTERVAL,
-                                    P2WakeReason::BackgroundEligible,
-                                );
+                            Some(P2DeferReason::BackgroundBusy {
+                                observed_generation,
+                            }) => {
+                                p2_eligibility_generation = observed_generation;
+                                p2_schedule.defer_until_background_eligible();
                             }
                             None if retained.failed && retained.batch.has_p2()
                                 && retained.batch.terminal_invocations.is_empty() => {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
                                 p2_schedule.failed(transaction_sequence);
-                                accounting.p2_lock_retried();
+                                if retained.p2_lock_failure {
+                                    accounting.p2_lock_retried();
+                                }
                             }
                             None if retained.batch.has_p2() => {
                                 p2_schedule.arm_if_idle(Instant::now());
@@ -1817,19 +1836,19 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     P2WakeReason::PressureCooldownElapsed,
                                 );
                             }
-                            Some(P2DeferReason::BackgroundBusy) => {
-                                p2_eligibility_generation = crate::db_pressure::global_db_pressure_gate()
-                                    .eligibility_generation();
-                                p2_schedule.defer_pressure(
-                                    SQLITE_P2_COALESCE_INTERVAL,
-                                    P2WakeReason::BackgroundEligible,
-                                );
+                            Some(P2DeferReason::BackgroundBusy {
+                                observed_generation,
+                            }) => {
+                                p2_eligibility_generation = observed_generation;
+                                p2_schedule.defer_until_background_eligible();
                             }
                             None if retained.failed && retained.batch.has_p2()
                                 && retained.batch.terminal_invocations.is_empty() => {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
                                 let delay = p2_schedule.failed(transaction_sequence);
-                                accounting.p2_lock_retried();
+                                if retained.p2_lock_failure {
+                                    accounting.p2_lock_retried();
+                                }
                                 warn!(
                                     write_class = "p2_derived",
                                     retry_generation = p2_schedule.generation as u64,
@@ -2155,9 +2174,20 @@ pub(crate) async fn flush_pending_batch(
     if batch.is_empty() {
         return None;
     }
-    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
+    let observed_eligibility_generation =
+        crate::db_pressure::global_db_pressure_gate().eligibility_generation();
+    let Some(write_permit) =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    else {
+        accounting.p2_pressure_deferred();
+        return Some(RetainedBatch::p2_deferred(
+            batch,
+            P2DeferReason::BackgroundBusy {
+                observed_generation: observed_eligibility_generation,
+            },
+        ));
+    };
 
     let permit = if reason.bypass_pressure_gate() {
         None
@@ -2180,7 +2210,9 @@ pub(crate) async fn flush_pending_batch(
                         P2DeferReason::PressureCooldown(remaining_ms)
                     }
                     crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                        P2DeferReason::BackgroundBusy
+                        P2DeferReason::BackgroundBusy {
+                            observed_generation: observed_eligibility_generation,
+                        }
                     }
                 };
                 return Some(RetainedBatch::p2_deferred(batch, reason));
@@ -2213,7 +2245,7 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            return Some(RetainedBatch::new(batch, true));
+            return Some(RetainedBatch::p2_failed(batch, is_sqlite_lock_error(&err)));
         }
     };
     drop(write_permit);
@@ -2640,6 +2672,23 @@ mod tests {
         assert_eq!(locked.retry_count, 1);
         assert_eq!(locked.p2_lock_retry_count, 1);
         assert_eq!(locked.p2_wake_reason.as_deref(), Some("lock_retry"));
+    }
+
+    #[test]
+    fn p2_background_busy_waits_for_eligibility_event_without_polling() {
+        let mut schedule = P2ScheduleState::default();
+        schedule.arm_if_idle(Instant::now());
+        schedule.defer_until_background_eligible();
+
+        assert!(!schedule.ready(Instant::now() + Duration::from_secs(30)));
+        assert_eq!(schedule.next_attempt_in_ms(), 0);
+        assert_eq!(schedule.wake_reason, Some(P2WakeReason::BackgroundEligible));
+
+        schedule.arm_if_idle(Instant::now());
+        assert!(schedule.due_at.is_none(), "new P2 work must only coalesce");
+
+        schedule.wake_background_eligible();
+        assert!(schedule.ready(Instant::now()));
     }
 
     #[test]

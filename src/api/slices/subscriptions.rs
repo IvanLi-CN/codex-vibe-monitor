@@ -397,6 +397,7 @@ pub(crate) struct SubscriptionHub {
 #[derive(Debug, Default)]
 struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
+    active_topics: HashMap<String, SubscriptionTopic>,
     active_subscribers: HashMap<String, usize>,
     active_topic_names: HashMap<String, usize>,
     dashboard_live_subscriber_count: usize,
@@ -405,6 +406,7 @@ struct SubscriptionHubState {
     dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
+    prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
 }
 
 #[derive(Debug, Clone)]
@@ -425,9 +427,14 @@ struct CachedSubscriptionTopic {
     summary_retry_backoff_ms: u64,
     prompt_cache_refresh_scheduled: bool,
     prompt_cache_pending_records: BTreeMap<String, PromptCacheTopicDelta>,
+    prompt_cache_applied_terminal_ids: HashSet<String>,
     prompt_cache_coalesced_event_count: u64,
     prompt_cache_full_hydration_count: u64,
+    prompt_cache_bounded_key_hydration_count: u64,
     prompt_cache_baseline_at: Option<Instant>,
+    prompt_cache_baseline_row_id: i64,
+    prompt_cache_response_source: &'static str,
+    prompt_cache_reconcile_required: bool,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
@@ -443,8 +450,10 @@ struct CachedSubscriptionTopic {
 
 #[derive(Debug, Clone)]
 struct PromptCacheTopicDelta {
+    row_id: i64,
     identity: String,
-    prompt_cache_key: String,
+    prompt_cache_key: Option<String>,
+    sticky_key: Option<String>,
     occurred_at: Value,
     status: String,
     is_terminal: bool,
@@ -456,20 +465,35 @@ struct PromptCacheTopicDelta {
     preview: Value,
 }
 
+struct PromptCacheBaselineBuild {
+    baseline_row_id: i64,
+    persisted_identities: HashSet<String>,
+}
+
 impl PromptCacheTopicDelta {
     fn from_record(record: &ApiInvocation) -> Result<Option<Self>, ApiError> {
-        let Some(prompt_cache_key) = record
+        let prompt_cache_key = record
             .prompt_cache_key
             .as_deref()
             .map(str::trim)
             .filter(|key| !key.is_empty())
-            .map(str::to_string)
-        else {
+            .map(str::to_string);
+        let sticky_key = record
+            .sticky_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string);
+        if prompt_cache_key.is_none() && sticky_key.is_none() {
             return Ok(None);
-        };
+        }
+        let preview_key = prompt_cache_key
+            .clone()
+            .or_else(|| sticky_key.clone())
+            .expect("at least one prompt cache identity");
         let preview = serde_json::to_value(prompt_cache_invocation_preview_from_runtime_record(
             record,
-            prompt_cache_key.clone(),
+            preview_key,
         ))?;
         let occurred_at = preview
             .get("occurredAt")
@@ -480,8 +504,10 @@ impl PromptCacheTopicDelta {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         Ok(Some(Self {
+            row_id: record.id,
             identity: format!("{}\0{}", record.invoke_id, record.occurred_at),
             prompt_cache_key,
+            sticky_key,
             occurred_at,
             is_terminal: prompt_invocation_status_counts_toward_terminal_totals(Some(&status)),
             is_success: prompt_invocation_status_is_success_like(
@@ -1201,6 +1227,13 @@ impl SubscriptionHub {
             snapshot.full_hydration_count = snapshot
                 .full_hydration_count
                 .saturating_add(cached.prompt_cache_full_hydration_count);
+            snapshot.bounded_key_hydration_count = snapshot
+                .bounded_key_hydration_count
+                .saturating_add(cached.prompt_cache_bounded_key_hydration_count);
+            snapshot.live_path_db_read_count = snapshot
+                .live_path_db_read_count
+                .saturating_add(cached.prompt_cache_full_hydration_count.saturating_sub(1))
+                .saturating_add(cached.prompt_cache_bounded_key_hydration_count);
             snapshot.baseline_age_ms = snapshot.baseline_age_ms.max(
                 cached
                     .prompt_cache_baseline_at
@@ -1209,6 +1242,8 @@ impl SubscriptionHub {
             );
             if cached.dirty {
                 snapshot.response_source = "dirty_last_good".to_string();
+            } else if cached.prompt_cache_response_source != "memory" {
+                snapshot.response_source = cached.prompt_cache_response_source.to_string();
             }
         }
         snapshot
@@ -1393,6 +1428,10 @@ impl SubscriptionHub {
             .map(str::to_string)
             .collect::<Vec<_>>();
         let mut guard = self.state.lock().await;
+        for topic in topics {
+            let topic_key = topic.cache_key()?;
+            guard.active_topics.insert(topic_key, topic.clone());
+        }
         for topic_key in &topic_keys {
             *guard
                 .active_subscribers
@@ -1468,6 +1507,8 @@ impl SubscriptionHub {
                 Some(count) if *count > 1 => *count -= 1,
                 Some(_) => {
                     guard.active_subscribers.remove(&topic_key);
+                    guard.active_topics.remove(&topic_key);
+                    guard.prompt_cache_prebaseline_records.remove(&topic_key);
                     if let Some(cached) = guard.topics.get_mut(&topic_key)
                         && matches!(
                             cached.topic,
@@ -1476,6 +1517,7 @@ impl SubscriptionHub {
                         )
                     {
                         cached.prompt_cache_pending_records.clear();
+                        cached.prompt_cache_applied_terminal_ids.clear();
                         cached.prompt_cache_refresh_scheduled = false;
                         cached.prompt_cache_baseline_at = None;
                         cached.dirty = true;
@@ -1780,6 +1822,63 @@ impl SubscriptionHub {
             .await
     }
 
+    async fn build_prompt_cache_consistent_baseline(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) -> Result<(BuiltSubscriptionTopicPayload, PromptCacheBaselineBuild), ApiError> {
+        for _ in 0..3 {
+            let mut observer = state.pool.acquire().await?;
+            let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            let baseline_row_id =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(&mut *observer)
+                    .await?;
+            let payload = topic.build_cached_payload(state.clone()).await?;
+            let candidate_identities = {
+                let guard = self.state.lock().await;
+                let topic_key = topic.cache_key()?;
+                guard
+                    .prompt_cache_prebaseline_records
+                    .get(&topic_key)
+                    .into_iter()
+                    .flat_map(|records| records.values())
+                    .chain(
+                        guard
+                            .topics
+                            .get(&topic_key)
+                            .into_iter()
+                            .flat_map(|cached| cached.prompt_cache_pending_records.values()),
+                    )
+                    .map(|delta| delta.identity.clone())
+                    .collect::<HashSet<_>>()
+            };
+            let persisted_identities = load_persisted_prompt_cache_identities(
+                &mut observer,
+                &candidate_identities,
+                baseline_row_id,
+            )
+            .await?;
+            let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            if version_before == version_after {
+                return Ok((
+                    payload,
+                    PromptCacheBaselineBuild {
+                        baseline_row_id,
+                        persisted_identities,
+                    },
+                ));
+            }
+        }
+        Err(ApiError::from(anyhow!(
+            "prompt cache baseline changed during build"
+        )))
+    }
+
     async fn refresh_topic_inner(
         &self,
         state: Arc<AppState>,
@@ -1791,9 +1890,21 @@ impl SubscriptionHub {
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
         let started = Instant::now();
+        let is_prompt_cache_topic = matches!(
+            topic,
+            SubscriptionTopic::PromptCacheWindow { .. }
+                | SubscriptionTopic::PromptCacheStickyWindow { .. }
+        );
+        let (mut built_payload, prompt_cache_build) = if is_prompt_cache_topic {
+            let (payload, build) = self
+                .build_prompt_cache_consistent_baseline(state.clone(), &topic)
+                .await?;
+            (payload, Some(build))
+        } else {
+            (topic.build_cached_payload(state.clone()).await?, None)
+        };
         self.dashboard_topology_counters
             .record_materialization(topic.name());
-        let mut built_payload = topic.build_cached_payload(state.clone()).await?;
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -1820,6 +1931,39 @@ impl SubscriptionHub {
                     .cloned()
             {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, payload, &live)?;
+            }
+            let mut prompt_cache_pending = guard
+                .prompt_cache_prebaseline_records
+                .remove(&topic_key)
+                .unwrap_or_default();
+            if let Some(existing) = guard.topics.get_mut(&topic_key) {
+                prompt_cache_pending.append(&mut existing.prompt_cache_pending_records);
+                existing.prompt_cache_refresh_scheduled = false;
+            }
+            let prompt_cache_replay = prompt_cache_build
+                .as_ref()
+                .map(|build| {
+                    prompt_cache_pending
+                        .into_values()
+                        .filter(|delta| {
+                            prompt_cache_delta_needs_replay(delta, &build.persisted_identities)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut prompt_cache_applied_terminal_ids = HashSet::new();
+            if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
+                && !prompt_cache_replay.is_empty()
+            {
+                apply_prompt_cache_records_to_payload(
+                    &topic,
+                    payload,
+                    &prompt_cache_replay,
+                    &mut prompt_cache_applied_terminal_ids,
+                    prompt_cache_build
+                        .as_ref()
+                        .map_or(0, |build| build.baseline_row_id),
+                )?;
             }
             let serialized_payload = built_payload.serialize(
                 guard.dashboard_current_slice.as_deref(),
@@ -1854,9 +1998,17 @@ impl SubscriptionHub {
                     existing.snapshot_payload = built_payload.snapshot_payload();
                     return Ok(Some(existing.clone()));
                 }
-                if let Some(existing) = reuse_unchanged_cached_topic(existing, &serialized_payload)
-                {
-                    return Ok(Some(existing));
+                if reuse_unchanged_cached_topic(existing, &serialized_payload).is_some() {
+                    if let Some(build) = &prompt_cache_build {
+                        existing.prompt_cache_full_hydration_count =
+                            existing.prompt_cache_full_hydration_count.saturating_add(1);
+                        existing.prompt_cache_baseline_at = Some(Instant::now());
+                        existing.prompt_cache_baseline_row_id = build.baseline_row_id;
+                        existing.prompt_cache_response_source = "database_reconcile";
+                        existing.prompt_cache_applied_terminal_ids =
+                            prompt_cache_applied_terminal_ids;
+                    }
+                    return Ok(Some(existing.clone()));
                 }
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
@@ -1926,11 +2078,20 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .is_some_and(|entry| entry.prompt_cache_refresh_scheduled),
-                prompt_cache_pending_records: guard
-                    .topics
-                    .get(&topic_key)
-                    .map(|entry| entry.prompt_cache_pending_records.clone())
-                    .unwrap_or_default(),
+                prompt_cache_pending_records: BTreeMap::new(),
+                prompt_cache_applied_terminal_ids: if matches!(
+                    topic,
+                    SubscriptionTopic::PromptCacheWindow { .. }
+                        | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                ) {
+                    prompt_cache_applied_terminal_ids
+                } else {
+                    guard
+                        .topics
+                        .get(&topic_key)
+                        .map(|entry| entry.prompt_cache_applied_terminal_ids.clone())
+                        .unwrap_or_default()
+                },
                 prompt_cache_coalesced_event_count: guard
                     .topics
                     .get(&topic_key)
@@ -1941,7 +2102,20 @@ impl SubscriptionHub {
                     .map_or(1, |entry| {
                         entry.prompt_cache_full_hydration_count.saturating_add(1)
                     }),
+                prompt_cache_bounded_key_hydration_count: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(0, |entry| entry.prompt_cache_bounded_key_hydration_count),
                 prompt_cache_baseline_at: Some(Instant::now()),
+                prompt_cache_baseline_row_id: prompt_cache_build
+                    .as_ref()
+                    .map_or(0, |build| build.baseline_row_id),
+                prompt_cache_response_source: if guard.topics.contains_key(&topic_key) {
+                    "database_reconcile"
+                } else {
+                    "initial_baseline"
+                },
+                prompt_cache_reconcile_required: false,
                 latest_live_snapshot: guard
                     .topics
                     .get(&topic_key)
@@ -2211,6 +2385,42 @@ impl SubscriptionHub {
         {
             self.schedule_prompt_cache_topic_projection(state.clone(), records)
                 .await;
+        }
+        if prompt_cache_topic_projection_enabled() {
+            match &payload {
+                BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_binding_projection(state.as_ref(), prompt_cache_key)
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            prompt_cache_key,
+                            "failed to apply bounded prompt cache binding projection"
+                        );
+                    }
+                }
+                BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                    sticky_key,
+                    previous_upstream_account_id,
+                    upstream_account_id,
+                } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_sticky_route_projection(
+                            sticky_key,
+                            *previous_upstream_account_id,
+                            *upstream_account_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            sticky_key, "failed to apply prompt cache sticky route projection"
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
         let affected = {
             let mut guard = self.state.lock().await;
@@ -2687,21 +2897,26 @@ impl SubscriptionHub {
 
         let scheduled = {
             let mut guard = self.state.lock().await;
-            let active_subscribers = guard.active_subscribers.clone();
+            let active_topics = guard.active_topics.clone();
             let mut scheduled = Vec::new();
-            for (topic_key, cached) in &mut guard.topics {
+            for (topic_key, topic) in active_topics {
                 if !matches!(
-                    cached.topic,
+                    topic,
                     SubscriptionTopic::PromptCacheWindow { .. }
                         | SubscriptionTopic::PromptCacheStickyWindow { .. }
-                ) || active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    == 0
-                {
+                ) {
                     continue;
                 }
+                let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                    let pending = guard
+                        .prompt_cache_prebaseline_records
+                        .entry(topic_key)
+                        .or_default();
+                    for record in &records {
+                        pending.insert(record.identity.clone(), record.clone());
+                    }
+                    continue;
+                };
                 let before = cached.prompt_cache_pending_records.len();
                 for record in &records {
                     cached
@@ -2719,7 +2934,7 @@ impl SubscriptionHub {
                     );
                 if !cached.prompt_cache_refresh_scheduled {
                     cached.prompt_cache_refresh_scheduled = true;
-                    scheduled.push(cached.topic.clone());
+                    scheduled.push(topic);
                 }
             }
             scheduled
@@ -2741,54 +2956,9 @@ impl SubscriptionHub {
                         "prompt cache in-memory topic materialization failed"
                     );
                     hub.mark_topic_dirty(&topic).await;
-                    return;
-                }
-                if hub.prompt_cache_topic_needs_reconcile(&topic).await {
-                    match crate::db_pressure::global_db_pressure_gate()
-                        .try_begin_background("prompt_cache_topic_reconcile")
-                    {
-                        Ok(_permit) => {
-                            match hub
-                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
-                                .await
-                            {
-                                Ok(_) => tracing::debug!(
-                                    topic = topic.name(),
-                                    reconcile_outcome = "accepted_baseline",
-                                    response_source = "database_reconcile",
-                                    "prompt cache topic projection reconciled"
-                                ),
-                                Err(err) => warn!(
-                                    ?err,
-                                    topic = topic.name(),
-                                    reconcile_outcome = "retained_last_good",
-                                    "prompt cache topic reconcile failed"
-                                ),
-                            }
-                        }
-                        Err(reason) => tracing::debug!(
-                            topic = topic.name(),
-                            reconcile_outcome = "pressure_deferred",
-                            defer_reason = %reason,
-                            "prompt cache topic reconcile deferred"
-                        ),
-                    }
                 }
             });
         }
-    }
-
-    async fn prompt_cache_topic_needs_reconcile(&self, topic: &SubscriptionTopic) -> bool {
-        let Ok(topic_key) = topic.cache_key() else {
-            return false;
-        };
-        self.state
-            .lock()
-            .await
-            .topics
-            .get(&topic_key)
-            .and_then(|cached| cached.prompt_cache_baseline_at)
-            .is_none_or(|baseline| baseline.elapsed() >= PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL)
     }
 
     async fn materialize_prompt_cache_topic(
@@ -2820,6 +2990,8 @@ impl SubscriptionHub {
                     topic,
                     &mut cached.snapshot_payload,
                     &records,
+                    &mut cached.prompt_cache_applied_terminal_ids,
+                    cached.prompt_cache_baseline_row_id,
                 )?
             {
                 return Ok(());
@@ -2843,6 +3015,7 @@ impl SubscriptionHub {
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.prompt_cache_response_source = "memory";
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
             tracing::debug!(
                 topic = topic.name(),
@@ -2858,6 +3031,272 @@ impl SubscriptionHub {
             SubscriptionDispatchEvent { frame }
         };
         let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+
+    async fn prompt_cache_reconcile_required(&self, topic_key: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .topics
+            .get(topic_key)
+            .is_some_and(|cached| {
+                cached.prompt_cache_reconcile_required
+                    || cached.dirty
+                    || !cached.prompt_cache_applied_terminal_ids.is_empty()
+            })
+    }
+
+    async fn expire_prompt_cache_topic_window(&self, topic_key: &str) -> Result<(), ApiError> {
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(topic_key) else {
+                return Ok(());
+            };
+            let now = Utc::now();
+            let activity_cutoff = match cached.topic {
+                SubscriptionTopic::PromptCacheWindow {
+                    selection: PromptCacheConversationSelection::Count(_),
+                    ..
+                }
+                | SubscriptionTopic::PromptCacheStickyWindow {
+                    selection: AccountStickyKeySelection::Count(_),
+                    ..
+                } => Some(now - ChronoDuration::hours(24)),
+                SubscriptionTopic::PromptCacheWindow {
+                    selection: PromptCacheConversationSelection::ActivityWindowHours(hours),
+                    ..
+                } => Some(now - ChronoDuration::hours(hours)),
+                SubscriptionTopic::PromptCacheWindow {
+                    selection: PromptCacheConversationSelection::ActivityWindowMinutes(minutes),
+                    ..
+                } => Some(now - ChronoDuration::minutes(minutes)),
+                SubscriptionTopic::PromptCacheStickyWindow {
+                    selection: AccountStickyKeySelection::ActivityWindow(hours),
+                    ..
+                } => Some(now - ChronoDuration::hours(hours)),
+                _ => None,
+            };
+            let Some(conversations) = cached
+                .snapshot_payload
+                .get_mut("conversations")
+                .and_then(Value::as_array_mut)
+            else {
+                return Ok(());
+            };
+            let before = conversations.len();
+            if let Some(cutoff) = activity_cutoff {
+                conversations.retain(|conversation| {
+                    conversation
+                        .get("lastActivityAt")
+                        .and_then(Value::as_str)
+                        .and_then(parse_to_utc_datetime)
+                        .is_some_and(|last_activity| last_activity >= cutoff)
+                });
+            }
+            let mut changed = conversations.len() != before;
+            if changed {
+                cached.prompt_cache_reconcile_required = true;
+            }
+            let request_cutoff = now - ChronoDuration::hours(24);
+            for conversation in conversations {
+                let Some(points) = conversation
+                    .get_mut("last24hRequests")
+                    .and_then(Value::as_array_mut)
+                else {
+                    continue;
+                };
+                let before = points.len();
+                points.retain(|point| {
+                    point
+                        .get("occurredAt")
+                        .and_then(Value::as_str)
+                        .and_then(parse_to_utc_datetime)
+                        .is_some_and(|occurred_at| occurred_at >= request_cutoff)
+                });
+                changed |= points.len() != before;
+                let mut cumulative = 0_i64;
+                for point in points {
+                    cumulative = cumulative.saturating_add(
+                        point
+                            .get("requestTokens")
+                            .and_then(Value::as_i64)
+                            .unwrap_or_default(),
+                    );
+                    if let Some(point) = point.as_object_mut() {
+                        point.insert("cumulativeTokens".to_string(), Value::from(cumulative));
+                    }
+                }
+            }
+            if !changed {
+                return Ok(());
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.to_string(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serde_json::to_vec(&cached.snapshot_payload)?,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: now,
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            Some(SubscriptionDispatchEvent { frame })
+        };
+        if let Some(dispatch) = dispatch {
+            let _ = self.broadcaster.send(dispatch);
+        }
+        Ok(())
+    }
+
+    async fn apply_prompt_cache_binding_projection(
+        &self,
+        state: &AppState,
+        prompt_cache_key: &str,
+    ) -> Result<(), ApiError> {
+        let binding = serde_json::to_value(
+            load_prompt_cache_conversation_binding_response_for_key(
+                state,
+                prompt_cache_key.to_string(),
+            )
+            .await?,
+        )?;
+        let mut dispatches = Vec::new();
+        let mut guard = self.state.lock().await;
+        let active_subscribers = guard.active_subscribers.clone();
+        for (topic_key, cached) in &mut guard.topics {
+            if !matches!(cached.topic, SubscriptionTopic::PromptCacheWindow { .. })
+                || active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+            {
+                continue;
+            }
+            cached.prompt_cache_bounded_key_hydration_count = cached
+                .prompt_cache_bounded_key_hydration_count
+                .saturating_add(1);
+            let Some(changed) = patch_prompt_cache_binding_payload(
+                &mut cached.snapshot_payload,
+                prompt_cache_key,
+                &binding,
+            ) else {
+                cached.prompt_cache_reconcile_required = true;
+                continue;
+            };
+            if !changed {
+                continue;
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serde_json::to_vec(&cached.snapshot_payload)?,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.prompt_cache_response_source = "memory";
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            dispatches.push(SubscriptionDispatchEvent { frame });
+        }
+        drop(guard);
+        for dispatch in dispatches {
+            let _ = self.broadcaster.send(dispatch);
+        }
+        Ok(())
+    }
+
+    async fn apply_prompt_cache_sticky_route_projection(
+        &self,
+        sticky_key: &str,
+        previous_upstream_account_id: i64,
+        upstream_account_id: i64,
+    ) -> Result<(), ApiError> {
+        let mut dispatches = Vec::new();
+        let mut guard = self.state.lock().await;
+        let active_subscribers = guard.active_subscribers.clone();
+        for (topic_key, cached) in &mut guard.topics {
+            let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = cached.topic else {
+                continue;
+            };
+            if active_subscribers
+                .get(topic_key)
+                .copied()
+                .unwrap_or_default()
+                == 0
+            {
+                continue;
+            }
+            let Some(conversations) = cached
+                .snapshot_payload
+                .get_mut("conversations")
+                .and_then(Value::as_array_mut)
+            else {
+                cached.prompt_cache_reconcile_required = true;
+                continue;
+            };
+            let before = conversations.len();
+            if account_id == previous_upstream_account_id && account_id != upstream_account_id {
+                conversations.retain(|conversation| {
+                    conversation.get("stickyKey").and_then(Value::as_str) != Some(sticky_key)
+                });
+            }
+            if account_id == upstream_account_id
+                && !conversations.iter().any(|conversation| {
+                    conversation.get("stickyKey").and_then(Value::as_str) == Some(sticky_key)
+                })
+            {
+                cached.prompt_cache_reconcile_required = true;
+            }
+            if conversations.len() == before {
+                continue;
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serde_json::to_vec(&cached.snapshot_payload)?,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.prompt_cache_response_source = "memory";
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            dispatches.push(SubscriptionDispatchEvent { frame });
+        }
+        drop(guard);
+        for dispatch in dispatches {
+            let _ = self.broadcaster.send(dispatch);
+        }
         Ok(())
     }
 
@@ -3469,10 +3908,118 @@ fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value:
     object.insert(key.to_string(), value);
 }
 
+async fn load_persisted_prompt_cache_identities(
+    conn: &mut sqlx::SqliteConnection,
+    identities: &HashSet<String>,
+    baseline_row_id: i64,
+) -> Result<HashSet<String>, ApiError> {
+    let selectors = identities
+        .iter()
+        .filter_map(|identity| identity.split_once('\0'))
+        .collect::<Vec<_>>();
+    let mut persisted = HashSet::new();
+    for chunk in selectors.chunks(300) {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT invoke_id, occurred_at FROM codex_invocations WHERE id <= ",
+        );
+        query.push_bind(baseline_row_id);
+        query.push(" AND (");
+        let mut separated = query.separated(" OR ");
+        for (invoke_id, occurred_at) in chunk {
+            separated
+                .push("(invoke_id = ")
+                .push_bind(*invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(*occurred_at)
+                .push(")");
+        }
+        separated.push_unseparated(")");
+        for (invoke_id, occurred_at) in query
+            .build_query_as::<(String, String)>()
+            .fetch_all(&mut *conn)
+            .await?
+        {
+            persisted.insert(format!("{invoke_id}\0{occurred_at}"));
+        }
+    }
+    Ok(persisted)
+}
+
+fn patch_prompt_cache_binding_payload(
+    payload: &mut Value,
+    prompt_cache_key: &str,
+    binding: &Value,
+) -> Option<bool> {
+    let conversation = payload
+        .get_mut("conversations")?
+        .as_array_mut()?
+        .iter_mut()
+        .find(|conversation| {
+            conversation.get("promptCacheKey").and_then(Value::as_str) == Some(prompt_cache_key)
+        })?
+        .as_object_mut()?;
+    let binding_kind = binding.get("bindingKind").and_then(Value::as_str);
+    let manual_binding = binding_kind
+        .filter(|kind| *kind != "none")
+        .map(|kind| {
+            serde_json::json!({
+                "bindingKind": kind,
+                "groupName": binding.get("groupName").cloned().unwrap_or(Value::Null),
+                "upstreamAccountId": binding.get("upstreamAccountId").cloned().unwrap_or(Value::Null),
+                "upstreamAccountName": binding.get("upstreamAccountName").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .unwrap_or(Value::Null);
+    let replacements = [
+        (
+            "hasEncryptedSessionOwner",
+            binding
+                .get("hasEncryptedSessionOwner")
+                .cloned()
+                .unwrap_or(Value::Bool(false)),
+        ),
+        (
+            "encryptedOwnerAccountId",
+            binding
+                .get("encryptedOwnerAccountId")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "encryptedOwnerAccountName",
+            binding
+                .get("encryptedOwnerAccountName")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "encryptedOwnerGroupName",
+            binding
+                .get("encryptedOwnerGroupName")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        ("manualBinding", manual_binding),
+    ];
+    let changed = replacements
+        .iter()
+        .any(|(field, value)| conversation.get(*field) != Some(value));
+    for (field, value) in replacements {
+        if value.is_null() {
+            conversation.remove(field);
+        } else {
+            conversation.insert(field.to_string(), value);
+        }
+    }
+    Some(changed)
+}
+
 fn apply_prompt_cache_records_to_payload(
     topic: &SubscriptionTopic,
     payload: &mut Value,
     records: &[PromptCacheTopicDelta],
+    applied_terminal_ids: &mut HashSet<String>,
+    baseline_row_id: i64,
 ) -> Result<bool, ApiError> {
     let Some(conversations) = payload
         .as_object_mut()
@@ -3483,7 +4030,14 @@ fn apply_prompt_cache_records_to_payload(
     };
     let mut changed = false;
     for record in records {
-        let key = record.prompt_cache_key.as_str();
+        let key = match topic {
+            SubscriptionTopic::PromptCacheWindow { .. } => record.prompt_cache_key.as_deref(),
+            SubscriptionTopic::PromptCacheStickyWindow { .. } => record.sticky_key.as_deref(),
+            _ => None,
+        };
+        let Some(key) = key else {
+            continue;
+        };
         if let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = topic
             && record.upstream_account_id != Some(*account_id)
         {
@@ -3536,14 +4090,8 @@ fn apply_prompt_cache_records_to_payload(
                 == preview.get("invokeId").and_then(Value::as_str)
                 && item.get("occurredAt") == Some(&occurred_at)
         });
-        let already_terminal = existing_index.is_some_and(|index| {
-            recent[index]
-                .get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| {
-                    prompt_invocation_status_counts_toward_terminal_totals(Some(status))
-                })
-        });
+        let already_terminal = applied_terminal_ids.contains(&record.identity)
+            || (record.row_id > 0 && record.row_id <= baseline_row_id);
         if let Some(index) = existing_index {
             recent[index] = preview.clone();
         } else {
@@ -3565,13 +4113,33 @@ fn apply_prompt_cache_records_to_payload(
         };
         recent.truncate(recent_limit);
 
-        conversation.insert("lastActivityAt".to_string(), occurred_at.clone());
+        if conversation
+            .get("lastActivityAt")
+            .and_then(Value::as_str)
+            .is_none_or(|current| occurred_at.as_str().is_some_and(|next| next > current))
+        {
+            conversation.insert("lastActivityAt".to_string(), occurred_at.clone());
+        }
+        if conversation
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .is_none_or(|current| occurred_at.as_str().is_some_and(|next| next < current))
+        {
+            conversation.insert("createdAt".to_string(), occurred_at.clone());
+        }
         if is_terminal && !already_terminal {
+            applied_terminal_ids.insert(record.identity.clone());
             increment_json_i64(conversation, "requestCount", 1);
             increment_json_i64(conversation, "totalTokens", request_tokens);
             increment_json_f64(conversation, "totalCost", record.cost);
             if matches!(topic, SubscriptionTopic::PromptCacheWindow { .. }) {
-                conversation.insert("lastTerminalAt".to_string(), occurred_at.clone());
+                if conversation
+                    .get("lastTerminalAt")
+                    .and_then(Value::as_str)
+                    .is_none_or(|current| occurred_at.as_str().is_some_and(|next| next > current))
+                {
+                    conversation.insert("lastTerminalAt".to_string(), occurred_at.clone());
+                }
                 apply_prompt_cache_account_delta(conversation, record, &occurred_at);
             }
             let points = conversation
@@ -3583,14 +4151,22 @@ fn apply_prompt_cache_records_to_payload(
                 point.get("occurredAt") == Some(&occurred_at)
                     && point.get("requestTokens").and_then(Value::as_i64) == Some(request_tokens)
             }) {
-                points.push(serde_json::json!({
+                let mut point = serde_json::json!({
                     "occurredAt": occurred_at,
                     "status": status,
                     "isSuccess": is_success,
-                    "outcome": if is_success { "success" } else { "failure" },
                     "requestTokens": request_tokens,
                     "cumulativeTokens": 0,
-                }));
+                });
+                if matches!(topic, SubscriptionTopic::PromptCacheWindow { .. })
+                    && let Some(point) = point.as_object_mut()
+                {
+                    point.insert(
+                        "outcome".to_string(),
+                        Value::String(if is_success { "success" } else { "failure" }.to_string()),
+                    );
+                }
+                points.push(point);
                 points.sort_by(|left, right| {
                     left.get("occurredAt")
                         .and_then(Value::as_str)
@@ -3639,6 +4215,13 @@ fn increment_json_i64(object: &mut serde_json::Map<String, Value>, field: &str, 
     );
 }
 
+fn prompt_cache_delta_needs_replay(
+    delta: &PromptCacheTopicDelta,
+    persisted_identities: &HashSet<String>,
+) -> bool {
+    !persisted_identities.contains(&delta.identity)
+}
+
 fn increment_json_f64(object: &mut serde_json::Map<String, Value>, field: &str, delta: f64) {
     let current = object
         .get(field)
@@ -3675,7 +4258,13 @@ fn apply_prompt_cache_account_delta(
         increment_json_i64(account, "requestCount", 1);
         increment_json_i64(account, "totalTokens", record.request_tokens);
         increment_json_f64(account, "totalCost", record.cost);
-        account.insert("lastActivityAt".to_string(), occurred_at.clone());
+        if account
+            .get("lastActivityAt")
+            .and_then(Value::as_str)
+            .is_none_or(|current| occurred_at.as_str().is_some_and(|next| next > current))
+        {
+            account.insert("lastActivityAt".to_string(), occurred_at.clone());
+        }
     }
 }
 
@@ -4268,6 +4857,55 @@ async fn run_server_push_topic_loop(
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
+    if prompt_cache_topic_projection_enabled()
+        && matches!(
+            topic,
+            SubscriptionTopic::PromptCacheWindow { .. }
+                | SubscriptionTopic::PromptCacheStickyWindow { .. }
+        )
+    {
+        let mut interval = tokio::time::interval(PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => {
+                    hub.clear_server_push_task(&topic_key).await;
+                    break;
+                }
+                _ = interval.tick() => {
+                    if hub.stop_server_push_task_if_idle(&topic_key).await {
+                        break;
+                    }
+                    if let Err(err) = hub.expire_prompt_cache_topic_window(&topic_key).await {
+                        warn!(?err, topic = %topic.name(), "failed to expire prompt cache topic window");
+                    }
+                    if !hub.prompt_cache_reconcile_required(&topic_key).await {
+                        continue;
+                    }
+                    match crate::db_pressure::global_db_pressure_gate()
+                        .try_begin_background("prompt_cache_topic_reconcile")
+                    {
+                        Ok(_permit) => {
+                            if let Err(err) = hub
+                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                                .await
+                            {
+                                warn!(?err, topic = %topic.name(), reconcile_outcome = "retained_last_good", "prompt cache topic reconcile failed");
+                            }
+                        }
+                        Err(reason) => tracing::debug!(
+                            topic = %topic.name(),
+                            reconcile_outcome = "pressure_deferred",
+                            defer_reason = %reason,
+                            "prompt cache topic reconcile deferred"
+                        ),
+                    }
+                }
+            }
+        }
+        return;
+    }
     if !topic.is_closed_summary_topic() {
         let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -4467,6 +5105,11 @@ pub(crate) async fn topic_sse_stream(
 impl SubscriptionTopic {
     fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
+            || (prompt_cache_topic_projection_enabled()
+                && matches!(
+                    self,
+                    Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
+                ))
             || (mode == RuntimeProjectionMode::Legacy
                 && matches!(self, Self::DashboardNetworkRecentCurrent))
     }
@@ -4959,7 +5602,7 @@ impl SubscriptionTopic {
                 | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
                     scope.binding_key() == prompt_cache_key
                 }
-                Self::PromptCacheWindow { .. } => true,
+                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
                 _ => false,
             },
             BroadcastPayload::PromptCacheConversationStickyRouteChanged {
@@ -4973,10 +5616,11 @@ impl SubscriptionTopic {
                     *previous_upstream_account_id,
                     *upstream_account_id,
                 ),
-                Self::PromptCacheWindow { .. } => true,
+                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
                 Self::PromptCacheStickyWindow { account_id, .. } => {
-                    *previous_upstream_account_id == *account_id
-                        || *upstream_account_id == *account_id
+                    !prompt_cache_topic_projection_enabled()
+                        && (*previous_upstream_account_id == *account_id
+                            || *upstream_account_id == *account_id)
                 }
                 _ => false,
             },
@@ -7782,9 +8426,14 @@ mod tests {
             summary_retry_backoff_ms: 0,
             prompt_cache_refresh_scheduled: false,
             prompt_cache_pending_records: BTreeMap::new(),
+            prompt_cache_applied_terminal_ids: HashSet::new(),
             prompt_cache_coalesced_event_count: 0,
             prompt_cache_full_hydration_count: 0,
+            prompt_cache_bounded_key_hydration_count: 0,
             prompt_cache_baseline_at: None,
+            prompt_cache_baseline_row_id: 0,
+            prompt_cache_response_source: "memory",
+            prompt_cache_reconcile_required: false,
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
@@ -8374,11 +9023,14 @@ mod tests {
         let delta = PromptCacheTopicDelta::from_record(&record)
             .expect("build compact delta")
             .expect("prompt cache delta");
+        let mut applied_terminal_ids = HashSet::new();
         assert!(
             apply_prompt_cache_records_to_payload(
                 &topic,
                 &mut payload,
                 std::slice::from_ref(&delta),
+                &mut applied_terminal_ids,
+                0,
             )
             .expect("apply terminal delta")
         );
@@ -8392,9 +9044,252 @@ mod tests {
         );
         assert_eq!(conversation["last24hRequests"].as_array().unwrap().len(), 1);
 
-        apply_prompt_cache_records_to_payload(&topic, &mut payload, &[delta])
-            .expect("deduplicate repeated terminal delta");
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[delta],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("deduplicate repeated terminal delta");
         assert_eq!(payload["conversations"][0]["requestCount"], 1);
+    }
+
+    #[test]
+    fn prompt_cache_sticky_projection_uses_sticky_key_without_prompt_outcome() {
+        let topic = SubscriptionTopic::PromptCacheStickyWindow {
+            account_id: 9,
+            selection: AccountStickyKeySelection::Count(20),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "sticky-terminal".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("prompt-key".to_string());
+        record.sticky_key = Some("sticky-key".to_string());
+        record.upstream_account_id = Some(9);
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build compact delta")
+            .expect("sticky delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        assert!(
+            apply_prompt_cache_records_to_payload(
+                &topic,
+                &mut payload,
+                &[delta],
+                &mut applied_terminal_ids,
+                0,
+            )
+            .expect("apply sticky delta")
+        );
+        let conversation = &payload["conversations"][0];
+        assert_eq!(conversation["stickyKey"], "sticky-key");
+        assert!(conversation["last24hRequests"][0].get("outcome").is_none());
+    }
+
+    #[test]
+    fn prompt_cache_terminal_dedup_survives_recent_truncation() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(1),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut first = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        first.invoke_id = "first-terminal".to_string();
+        first.status = Some("success".to_string());
+        first.live_phase = None;
+        first.prompt_cache_key = Some("cache-key".to_string());
+        let first = PromptCacheTopicDelta::from_record(&first)
+            .expect("build first delta")
+            .expect("first delta");
+        let mut second = dashboard_runtime_topology_live_record("2026-08-08 10:01:00");
+        second.invoke_id = "second-terminal".to_string();
+        second.status = Some("success".to_string());
+        second.live_phase = None;
+        second.prompt_cache_key = Some("cache-key".to_string());
+        let second = PromptCacheTopicDelta::from_record(&second)
+            .expect("build second delta")
+            .expect("second delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[first.clone(), second],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("apply terminal deltas");
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[first],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("replay truncated terminal");
+
+        assert_eq!(payload["conversations"][0]["requestCount"], 2);
+        assert_eq!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent invocations")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prompt_cache_baseline_cursor_skips_recovered_terminal_totals() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.id = 7;
+        record.invoke_id = "recovered-terminal".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("cache-key".to_string());
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build recovered delta")
+            .expect("recovered delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[delta],
+            &mut applied_terminal_ids,
+            7,
+        )
+        .expect("apply recovered delta");
+
+        assert_eq!(payload["conversations"][0]["requestCount"], 0);
+        assert!(applied_terminal_ids.is_empty());
+        assert_eq!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent invocations")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prompt_cache_baseline_does_not_replay_an_identity_already_in_payload() {
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.id = 0;
+        record.invoke_id = "persisted-during-baseline".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("cache-key".to_string());
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build concurrent delta")
+            .expect("prompt cache delta");
+
+        assert!(prompt_cache_delta_needs_replay(&delta, &HashSet::new()));
+        assert!(!prompt_cache_delta_needs_replay(
+            &delta,
+            &HashSet::from([delta.identity.clone()]),
+        ));
+    }
+
+    #[test]
+    fn prompt_cache_projection_keeps_latest_activity_for_out_of_order_records() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut newer = dashboard_runtime_topology_live_record("2026-08-08 10:01:00");
+        newer.invoke_id = "newer".to_string();
+        newer.prompt_cache_key = Some("cache-key".to_string());
+        newer.status = Some("success".to_string());
+        newer.live_phase = None;
+        newer.upstream_account_id = Some(9);
+        let newer = PromptCacheTopicDelta::from_record(&newer)
+            .expect("build newer delta")
+            .expect("newer delta");
+        let mut older = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        older.invoke_id = "older".to_string();
+        older.prompt_cache_key = Some("cache-key".to_string());
+        older.status = Some("success".to_string());
+        older.live_phase = None;
+        older.upstream_account_id = Some(9);
+        let older = PromptCacheTopicDelta::from_record(&older)
+            .expect("build older delta")
+            .expect("older delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[newer, older],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("apply out-of-order deltas");
+
+        assert_eq!(
+            payload["conversations"][0]["lastActivityAt"],
+            "2026-08-08T02:01:00Z"
+        );
+        assert_eq!(
+            payload["conversations"][0]["createdAt"],
+            "2026-08-08T02:00:00Z"
+        );
+        assert_eq!(
+            payload["conversations"][0]["lastTerminalAt"],
+            "2026-08-08T02:01:00Z"
+        );
+        assert_eq!(
+            payload["conversations"][0]["upstreamAccounts"][0]["lastActivityAt"],
+            "2026-08-08T02:01:00Z"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_binding_patch_updates_only_the_selected_conversation() {
+        let mut payload = serde_json::json!({
+            "conversations": [
+                { "promptCacheKey": "selected", "hasEncryptedSessionOwner": false },
+                { "promptCacheKey": "other", "hasEncryptedSessionOwner": false }
+            ]
+        });
+        let binding = serde_json::json!({
+            "bindingKind": "account",
+            "groupName": "primary",
+            "upstreamAccountId": 9,
+            "upstreamAccountName": "Account 9",
+            "hasEncryptedSessionOwner": true,
+            "encryptedOwnerAccountId": 8,
+            "encryptedOwnerAccountName": "Account 8",
+            "encryptedOwnerGroupName": "owners"
+        });
+
+        assert_eq!(
+            patch_prompt_cache_binding_payload(&mut payload, "selected", &binding),
+            Some(true)
+        );
+        assert_eq!(
+            payload["conversations"][0]["manualBinding"]["upstreamAccountId"],
+            9
+        );
+        assert_eq!(
+            payload["conversations"][0]["hasEncryptedSessionOwner"],
+            true
+        );
+        assert_eq!(
+            payload["conversations"][1]["hasEncryptedSessionOwner"],
+            false
+        );
     }
 
     #[test]

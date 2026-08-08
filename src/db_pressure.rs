@@ -230,6 +230,11 @@ impl DbPressureGate {
         self.eligibility.generation.load(Ordering::Acquire)
     }
 
+    pub(crate) fn notify_background_eligibility(&self) {
+        self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
+        self.eligibility.notify.notify_waiters();
+    }
+
     pub(crate) async fn wait_for_eligibility_change(&self, observed: u64) {
         loop {
             let notified = self.eligibility.notify.notified();
@@ -371,6 +376,28 @@ mod tests {
             .expect("eligibility waiter should wake")
             .expect("eligibility waiter should not panic");
         assert!(next_generation > observed);
+    }
+
+    #[tokio::test]
+    async fn eligibility_wait_observes_release_that_precedes_wait_registration() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(1));
+        let permit = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+        let observed = gate.eligibility_generation();
+        assert_eq!(
+            gate.try_begin_background("second").unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy
+        );
+
+        drop(permit);
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            gate.wait_for_eligibility_change(observed),
+        )
+        .await
+        .expect("release before waiter registration must still be observed");
     }
 
     #[tokio::test]

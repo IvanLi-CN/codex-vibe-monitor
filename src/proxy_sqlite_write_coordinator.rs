@@ -142,6 +142,34 @@ impl ProxySqliteWriteCoordinator {
         }
     }
 
+    pub(crate) fn try_acquire(
+        self: &Arc<Self>,
+        class: ProxySqliteWriteClass,
+    ) -> Option<ProxySqliteWritePermit> {
+        let requested_at = Instant::now();
+        if !self.coordinated {
+            let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+            state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
+            return Some(ProxySqliteWritePermit {
+                coordinator: self.clone(),
+                class,
+                coordinated: false,
+                lock_wait: requested_at.elapsed(),
+            });
+        }
+        let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+        if !state.can_admit(class) {
+            return None;
+        }
+        state.active = Some(class);
+        Some(ProxySqliteWritePermit {
+            coordinator: self.clone(),
+            class,
+            coordinated: true,
+            lock_wait: requested_at.elapsed(),
+        })
+    }
+
     pub(crate) async fn snapshot(&self) -> ProxySqliteWriteCoordinatorSnapshot {
         let state = self.state.lock().expect("proxy sqlite coordinator state");
         ProxySqliteWriteCoordinatorSnapshot {
@@ -214,6 +242,7 @@ impl Drop for ProxySqliteWritePermit {
             state.active = None;
         }
         self.coordinator.notify.notify_waiters();
+        crate::db_pressure::global_db_pressure_gate().notify_background_eligibility();
     }
 }
 
@@ -286,5 +315,36 @@ mod tests {
         .await
         .expect("cancelled P1 waiter must not block P2");
         drop(p2);
+    }
+
+    #[tokio::test]
+    async fn p2_try_acquire_defers_without_registering_a_waiter_or_blocking_p1() {
+        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        });
+        let active = coordinator
+            .acquire(ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+
+        assert!(
+            coordinator
+                .try_acquire(ProxySqliteWriteClass::P2Derived)
+                .is_none()
+        );
+        assert_eq!(coordinator.snapshot().await.p2_waiter_count, 0);
+
+        let p1 = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await }
+        });
+        tokio::task::yield_now().await;
+        drop(active);
+        let permit = tokio::time::timeout(Duration::from_secs(1), p1)
+            .await
+            .expect("P1 admitted after active writer releases")
+            .expect("P1 task");
+        drop(permit);
     }
 }
