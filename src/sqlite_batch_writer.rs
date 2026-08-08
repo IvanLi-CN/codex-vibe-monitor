@@ -25,6 +25,7 @@ use crate::terminal_journal::{
 };
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
+pub(crate) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 32;
 pub(crate) const SQLITE_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
@@ -42,6 +43,86 @@ const SQLITE_P1_RETRY_DELAYS: [Duration; 5] = [
 struct P1RetryState {
     generation: usize,
     due_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum P2WakeReason {
+    CoalescedDeadline,
+    PressureCooldownElapsed,
+    BackgroundEligible,
+    LockRetry,
+}
+
+impl P2WakeReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CoalescedDeadline => "coalesced_deadline",
+            Self::PressureCooldownElapsed => "pressure_cooldown_elapsed",
+            Self::BackgroundEligible => "background_eligible",
+            Self::LockRetry => "lock_retry",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct P2ScheduleState {
+    generation: usize,
+    due_at: Option<Instant>,
+    wake_reason: Option<P2WakeReason>,
+    deferred_since: Option<Instant>,
+}
+
+impl P2ScheduleState {
+    fn arm_if_idle(&mut self, now: Instant) {
+        if self.due_at.is_none() {
+            self.due_at = Some(now + SQLITE_P2_COALESCE_INTERVAL);
+            self.wake_reason = Some(P2WakeReason::CoalescedDeadline);
+            self.deferred_since.get_or_insert(now);
+        }
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.due_at.is_some_and(|due_at| now >= due_at)
+    }
+
+    fn defer_pressure(&mut self, delay: Duration, reason: P2WakeReason) {
+        self.due_at = Some(Instant::now() + delay.max(Duration::from_millis(1)));
+        self.wake_reason = Some(reason);
+        self.deferred_since.get_or_insert_with(Instant::now);
+    }
+
+    fn wake_background_eligible(&mut self) {
+        self.due_at = Some(Instant::now());
+        self.wake_reason = Some(P2WakeReason::BackgroundEligible);
+    }
+
+    fn failed(&mut self, transaction_seed: u64) -> Duration {
+        let base = SQLITE_P1_RETRY_DELAYS[self.generation.min(SQLITE_P1_RETRY_DELAYS.len() - 1)];
+        self.generation = self.generation.saturating_add(1);
+        let jitter_ceiling_ms = (base.as_millis() as u64 / 10).max(1);
+        let delay =
+            base.saturating_add(Duration::from_millis(transaction_seed % jitter_ceiling_ms));
+        self.due_at = Some(Instant::now() + delay);
+        self.wake_reason = Some(P2WakeReason::LockRetry);
+        self.deferred_since.get_or_insert_with(Instant::now);
+        delay
+    }
+
+    fn succeeded(&mut self) {
+        *self = Self::default();
+    }
+
+    fn next_attempt_in_ms(&self) -> u64 {
+        self.due_at
+            .map(|due_at| due_at.saturating_duration_since(Instant::now()).as_millis() as u64)
+            .unwrap_or_default()
+    }
+
+    fn deferred_age_ms(&self) -> u64 {
+        self.deferred_since
+            .map(|started| started.elapsed().as_millis() as u64)
+            .unwrap_or_default()
+    }
 }
 
 impl P1RetryState {
@@ -96,6 +177,13 @@ pub(crate) struct PendingQueueAccountingSnapshot {
     pub(crate) pending_bytes: usize,
     pub(crate) transfer_bytes: usize,
     pub(crate) retry_count: u64,
+    pub(crate) p2_flush_attempt_count: u64,
+    pub(crate) p2_pressure_defer_count: u64,
+    pub(crate) p2_lock_retry_count: u64,
+    pub(crate) p2_next_attempt_in_ms: u64,
+    pub(crate) p2_deferred_age_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) p2_wake_reason: Option<String>,
     pub(crate) invariant_violation_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) degraded_reason: Option<String>,
@@ -109,6 +197,12 @@ pub(crate) struct PendingQueueAccounting {
     pending_bytes: AtomicUsize,
     transfer_bytes: AtomicUsize,
     retry_count: AtomicU64,
+    p2_flush_attempt_count: AtomicU64,
+    p2_pressure_defer_count: AtomicU64,
+    p2_lock_retry_count: AtomicU64,
+    p2_next_attempt_in_ms: AtomicU64,
+    p2_deferred_age_ms: AtomicU64,
+    p2_wake_reason: std::sync::Mutex<Option<String>>,
     invariant_violation_count: AtomicU64,
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
 }
@@ -163,6 +257,30 @@ impl PendingQueueAccounting {
         self.retry_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn p2_attempted(&self) {
+        self.p2_flush_attempt_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn p2_pressure_deferred(&self) {
+        self.p2_pressure_defer_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn p2_lock_retried(&self) {
+        self.p2_lock_retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn update_p2_schedule(&self, schedule: &P2ScheduleState) {
+        self.p2_next_attempt_in_ms
+            .store(schedule.next_attempt_in_ms(), Ordering::Relaxed);
+        self.p2_deferred_age_ms
+            .store(schedule.deferred_age_ms(), Ordering::Relaxed);
+        if let Ok(mut wake_reason) = self.p2_wake_reason.lock() {
+            *wake_reason = schedule
+                .wake_reason
+                .map(|reason| reason.as_str().to_string());
+        }
+    }
+
     pub(crate) fn complete(
         &self,
         submitted_depth: usize,
@@ -205,6 +323,16 @@ impl PendingQueueAccounting {
             pending_bytes: self.pending_bytes.load(Ordering::Relaxed),
             transfer_bytes: self.transfer_bytes.load(Ordering::Relaxed),
             retry_count: self.retry_count.load(Ordering::Relaxed),
+            p2_flush_attempt_count: self.p2_flush_attempt_count.load(Ordering::Relaxed),
+            p2_pressure_defer_count: self.p2_pressure_defer_count.load(Ordering::Relaxed),
+            p2_lock_retry_count: self.p2_lock_retry_count.load(Ordering::Relaxed),
+            p2_next_attempt_in_ms: self.p2_next_attempt_in_ms.load(Ordering::Relaxed),
+            p2_deferred_age_ms: self.p2_deferred_age_ms.load(Ordering::Relaxed),
+            p2_wake_reason: self
+                .p2_wake_reason
+                .lock()
+                .ok()
+                .and_then(|value| value.clone()),
             invariant_violation_count,
             degraded_reason,
             last_invariant_violation,
@@ -510,6 +638,13 @@ impl PendingBatch {
             && self.system_task_finishes.is_empty()
     }
 
+    fn has_p2(&self) -> bool {
+        !self.attempt_progress.is_empty()
+            || !self.invocation_derived.is_empty()
+            || !self.account_selected_touches.is_empty()
+            || !self.system_task_finishes.is_empty()
+    }
+
     fn logical_rows(&self) -> usize {
         self.terminal_invocations.len()
             + self.attempt_progress.len()
@@ -715,13 +850,33 @@ impl PendingBatch {
 pub(crate) struct RetainedBatch {
     batch: PendingBatch,
     failed: bool,
+    p2_defer: Option<P2DeferReason>,
 }
 
 impl RetainedBatch {
     fn new(mut batch: PendingBatch, failed: bool) -> Self {
         batch.retained_for_retry = true;
-        Self { batch, failed }
+        Self {
+            batch,
+            failed,
+            p2_defer: None,
+        }
     }
+
+    fn p2_deferred(mut batch: PendingBatch, reason: P2DeferReason) -> Self {
+        batch.retained_for_retry = true;
+        Self {
+            batch,
+            failed: false,
+            p2_defer: Some(reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum P2DeferReason {
+    PressureCooldown(u64),
+    BackgroundBusy,
 }
 
 fn estimated_option_string_bytes(value: &Option<String>) -> usize {
@@ -1319,11 +1474,24 @@ pub(crate) async fn run_sqlite_batch_writer(
     let mut pending = PendingBatch::default();
     let mut control_closed = false;
     let mut p1_retry = P1RetryState::default();
+    let mut p2_schedule = P2ScheduleState::default();
+    let mut p2_eligibility_generation =
+        crate::db_pressure::global_db_pressure_gate().eligibility_generation();
     let mut transaction_sequence = 0_u64;
 
     loop {
         tokio::select! {
             biased;
+            _ = crate::db_pressure::global_db_pressure_gate()
+                .wait_for_eligibility_change(p2_eligibility_generation),
+                if pending.has_p2()
+                    && p2_schedule.wake_reason == Some(P2WakeReason::BackgroundEligible) =>
+            {
+                p2_eligibility_generation = crate::db_pressure::global_db_pressure_gate()
+                    .eligibility_generation();
+                p2_schedule.wake_background_eligible();
+                accounting.update_p2_schedule(&p2_schedule);
+            }
             maybe_control = control_receiver.recv(), if !control_closed => {
                 if let Some(control) = maybe_control {
                     match control {
@@ -1483,14 +1651,32 @@ pub(crate) async fn run_sqlite_batch_writer(
                     return;
                 };
                 pending.push_accounted(write, &accounting);
+                if pending.has_p2() {
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
+                }
                 if (pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
                     || pending.estimated_memory_bytes() >= SQLITE_BATCH_MAX_BYTES)
                     && (pending.terminal_invocations.is_empty() || p1_retry.ready(Instant::now()))
-                    && let Some(retained) =
+                    && (!pending.terminal_invocations.is_empty()
+                        || p2_schedule.ready(Instant::now()))
+                {
+                    let p2_ready = p2_schedule.ready(Instant::now());
+                    let flush_batch = if !pending.terminal_invocations.is_empty()
+                        && pending.has_p2()
+                        && !p2_ready
+                    {
+                        pending.take_p1_terminals()
+                    } else {
+                        pending.take()
+                    };
+                    let submitted_p1 = !flush_batch.terminal_invocations.is_empty();
+                    let submitted_p2 = flush_batch.has_p2();
+                    if let Some(retained) =
                         flush_pending_batch_accounted(
                             &accounting,
                             &pool,
-                            pending.take(),
+                            flush_batch,
                             FlushReason::RowLimit,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
@@ -1513,12 +1699,58 @@ pub(crate) async fn run_sqlite_batch_writer(
                         } else {
                             p1_retry.succeeded();
                         }
-                        pending = retained.batch;
+                        match retained.p2_defer {
+                            Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                p2_schedule.defer_pressure(
+                                    Duration::from_millis(remaining_ms),
+                                    P2WakeReason::PressureCooldownElapsed,
+                                );
+                            }
+                            Some(P2DeferReason::BackgroundBusy) => {
+                                p2_eligibility_generation = crate::db_pressure::global_db_pressure_gate()
+                                    .eligibility_generation();
+                                p2_schedule.defer_pressure(
+                                    SQLITE_P2_COALESCE_INTERVAL,
+                                    P2WakeReason::BackgroundEligible,
+                                );
+                            }
+                            None if retained.failed && retained.batch.has_p2()
+                                && retained.batch.terminal_invocations.is_empty() => {
+                                transaction_sequence = transaction_sequence.saturating_add(1);
+                                p2_schedule.failed(transaction_sequence);
+                                accounting.p2_lock_retried();
+                            }
+                            None if retained.batch.has_p2() => {
+                                p2_schedule.arm_if_idle(Instant::now());
+                            }
+                            None => p2_schedule.succeeded(),
+                        }
+                        accounting.update_p2_schedule(&p2_schedule);
+                        if retained.batch.terminal_invocations.is_empty() {
+                            pending.merge_p2(retained.batch);
+                        } else {
+                            let mut retained_batch = retained.batch;
+                            retained_batch.merge_p2(pending.take());
+                            pending = retained_batch;
+                        }
+                    } else {
+                        if submitted_p1 {
+                            p1_retry.succeeded();
+                        }
+                        if submitted_p2 {
+                            p2_schedule.succeeded();
+                            accounting.update_p2_schedule(&p2_schedule);
+                        }
                     }
+                }
             }
             _ = ticker.tick() => {
                 if !pending.is_empty() {
                     if !pending.terminal_invocations.is_empty() && !p1_retry.ready(Instant::now()) {
+                        continue;
+                    }
+                    let p2_ready = p2_schedule.ready(Instant::now());
+                    if pending.terminal_invocations.is_empty() && !p2_ready {
                         continue;
                     }
                     let flush_reason = if pending.age() >= SQLITE_BATCH_MAX_AGE {
@@ -1546,11 +1778,16 @@ pub(crate) async fn run_sqlite_batch_writer(
                         FlushReason::Interval
                     };
                     let submitted_p1 = !pending.terminal_invocations.is_empty();
+                    let flush_batch = if submitted_p1 && pending.has_p2() && !p2_ready {
+                        pending.take_p1_terminals()
+                    } else {
+                        pending.take()
+                    };
                     if let Some(retained) =
                         flush_pending_batch_accounted(
                             &accounting,
                             &pool,
-                            pending.take(),
+                            flush_batch,
                             flush_reason,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
@@ -1573,9 +1810,51 @@ pub(crate) async fn run_sqlite_batch_writer(
                         } else if submitted_p1 {
                             p1_retry.succeeded();
                         }
-                        pending = retained.batch;
+                        match retained.p2_defer {
+                            Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                p2_schedule.defer_pressure(
+                                    Duration::from_millis(remaining_ms),
+                                    P2WakeReason::PressureCooldownElapsed,
+                                );
+                            }
+                            Some(P2DeferReason::BackgroundBusy) => {
+                                p2_eligibility_generation = crate::db_pressure::global_db_pressure_gate()
+                                    .eligibility_generation();
+                                p2_schedule.defer_pressure(
+                                    SQLITE_P2_COALESCE_INTERVAL,
+                                    P2WakeReason::BackgroundEligible,
+                                );
+                            }
+                            None if retained.failed && retained.batch.has_p2()
+                                && retained.batch.terminal_invocations.is_empty() => {
+                                transaction_sequence = transaction_sequence.saturating_add(1);
+                                let delay = p2_schedule.failed(transaction_sequence);
+                                accounting.p2_lock_retried();
+                                warn!(
+                                    write_class = "p2_derived",
+                                    retry_generation = p2_schedule.generation as u64,
+                                    next_retry_delay_ms = delay.as_millis() as u64,
+                                    "scheduled retained P2 batch with exponential backoff"
+                                );
+                            }
+                            None if retained.batch.has_p2() => {
+                                p2_schedule.arm_if_idle(Instant::now());
+                            }
+                            None => p2_schedule.succeeded(),
+                        }
+                        if retained.batch.terminal_invocations.is_empty() {
+                            pending.merge_p2(retained.batch);
+                        } else {
+                            let mut retained_batch = retained.batch;
+                            retained_batch.merge_p2(pending.take());
+                            pending = retained_batch;
+                        }
+                        accounting.update_p2_schedule(&p2_schedule);
                     } else if submitted_p1 {
                         p1_retry.succeeded();
+                    } else {
+                        p2_schedule.succeeded();
+                        accounting.update_p2_schedule(&p2_schedule);
                     }
                 }
             }
@@ -1677,9 +1956,7 @@ async fn flush_pending_batch_accounted(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
-    if batch.retained_for_retry {
-        accounting.retry_deferred();
-    }
+    let was_retained_retry = batch.retained_for_retry;
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
     let result = flush_pending_batch(
@@ -1695,6 +1972,9 @@ async fn flush_pending_batch_accounted(
         terminal_journal,
     )
     .await;
+    if was_retained_retry && result.as_ref().is_some_and(|retained| retained.failed) {
+        accounting.retry_deferred();
+    }
     let retained_bytes = result
         .as_ref()
         .map(|retained| retained.batch.estimated_memory_bytes())
@@ -1875,6 +2155,10 @@ pub(crate) async fn flush_pending_batch(
     if batch.is_empty() {
         return None;
     }
+    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+
     let permit = if reason.bypass_pressure_gate() {
         None
     } else {
@@ -1883,20 +2167,27 @@ pub(crate) async fn flush_pending_batch(
         {
             Ok(permit) => Some(permit),
             Err(deny_reason) => {
+                drop(write_permit);
+                accounting.p2_pressure_deferred();
                 debug!(
                     deny_reason = %deny_reason,
                     flush_priority = "P2",
                     p2_deferred_count = batch.logical_rows(),
                     "sqlite batch writer deferred P2 flush because pressure gate is closed"
                 );
-                return Some(RetainedBatch::new(batch, false));
+                let reason = match deny_reason {
+                    crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => {
+                        P2DeferReason::PressureCooldown(remaining_ms)
+                    }
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                        P2DeferReason::BackgroundBusy
+                    }
+                };
+                return Some(RetainedBatch::p2_deferred(batch, reason));
             }
         }
     };
-
-    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
+    accounting.p2_attempted();
 
     let deferred_batch = match flush_pending_batch_inner(
         pool,
@@ -2314,6 +2605,41 @@ mod tests {
         retry.succeeded();
         assert!(retry.ready(Instant::now()));
         assert_eq!(retry.generation, 0);
+    }
+
+    #[test]
+    fn p2_schedule_coalesces_and_separates_pressure_from_lock_retries() {
+        let accounting = PendingQueueAccounting::default();
+        let mut schedule = P2ScheduleState::default();
+        let now = Instant::now();
+        schedule.arm_if_idle(now);
+        let initial_due = schedule.due_at;
+        schedule.arm_if_idle(now + Duration::from_millis(100));
+        assert_eq!(
+            schedule.due_at, initial_due,
+            "new work must not extend deadline"
+        );
+
+        accounting.p2_pressure_deferred();
+        schedule.defer_pressure(
+            Duration::from_secs(30),
+            P2WakeReason::PressureCooldownElapsed,
+        );
+        accounting.update_p2_schedule(&schedule);
+        let pressure = accounting.snapshot();
+        assert_eq!(pressure.retry_count, 0);
+        assert_eq!(pressure.p2_pressure_defer_count, 1);
+        assert!(pressure.p2_next_attempt_in_ms >= 29_000);
+
+        let delay = schedule.failed(0);
+        accounting.p2_lock_retried();
+        accounting.retry_deferred();
+        accounting.update_p2_schedule(&schedule);
+        let locked = accounting.snapshot();
+        assert_eq!(delay, Duration::from_millis(250));
+        assert_eq!(locked.retry_count, 1);
+        assert_eq!(locked.p2_lock_retry_count, 1);
+        assert_eq!(locked.p2_wake_reason.as_deref(), Some("lock_retry"));
     }
 
     #[test]

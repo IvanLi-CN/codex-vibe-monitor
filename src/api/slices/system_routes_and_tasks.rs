@@ -79,6 +79,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
     pub(crate) delivery: DashboardDeliveryTopologyCounterSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
+    pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -119,6 +120,10 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let request_pipeline = state
         .proxy_runtime_invocations
         .request_pipeline_health_snapshot();
+    let prompt_cache_projection = state
+        .subscription_hub
+        .prompt_cache_projection_health()
+        .await;
     let projection_cadence_missed = [
         dashboard_projection.slice_counters.current,
         dashboard_projection.slice_counters.network,
@@ -162,6 +167,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         dashboard_projection,
         delivery,
         request_pipeline,
+        prompt_cache_projection,
     }
 }
 

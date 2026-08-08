@@ -509,6 +509,28 @@ fn current_thread_cpu_time() -> Option<Duration> {
     None
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RequestSemanticCpuAttributionSnapshot {
+    pub(crate) count: u64,
+    pub(crate) cpu_ms: u64,
+    pub(crate) wall_ms: u64,
+    pub(crate) bytes: u64,
+}
+
+static REQUEST_SEMANTIC_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
+static REQUEST_SEMANTIC_CPU_MS: AtomicU64 = AtomicU64::new(0);
+static REQUEST_SEMANTIC_WALL_MS: AtomicU64 = AtomicU64::new(0);
+static REQUEST_SEMANTIC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn request_semantic_cpu_attribution_snapshot() -> RequestSemanticCpuAttributionSnapshot {
+    RequestSemanticCpuAttributionSnapshot {
+        count: REQUEST_SEMANTIC_CPU_COUNT.load(Ordering::Relaxed),
+        cpu_ms: REQUEST_SEMANTIC_CPU_MS.load(Ordering::Relaxed),
+        wall_ms: REQUEST_SEMANTIC_WALL_MS.load(Ordering::Relaxed),
+        bytes: REQUEST_SEMANTIC_BYTES.load(Ordering::Relaxed),
+    }
+}
+
 fn record_request_semantic_cpu_window(cpu_time: Option<Duration>, wall_time: Duration, bytes: u64) {
     use std::sync::{Mutex as StdMutex, OnceLock};
 
@@ -539,6 +561,10 @@ fn record_request_semantic_cpu_window(cpu_time: Option<Duration>, wall_time: Dur
         return;
     }
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    REQUEST_SEMANTIC_CPU_COUNT.store(window.count, Ordering::Relaxed);
+    REQUEST_SEMANTIC_CPU_MS.store((window.cpu_ns / 1_000_000) as u64, Ordering::Relaxed);
+    REQUEST_SEMANTIC_WALL_MS.store((window.wall_ns / 1_000_000) as u64, Ordering::Relaxed);
+    REQUEST_SEMANTIC_BYTES.store(window.bytes, Ordering::Relaxed);
     debug!(
         component = "request_semantic_projection",
         window_elapsed_ms = elapsed_ms,

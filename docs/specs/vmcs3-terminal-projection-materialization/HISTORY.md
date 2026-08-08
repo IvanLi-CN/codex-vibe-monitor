@@ -2,6 +2,8 @@
 
 ## 关键决策
 
+- P2 pressure defer 与 SQLite retry 分离：派生写使用 250ms 固定合并并按 gate eligibility 唤醒，只有实际执行失败才推进 retry/backoff。
+
 - P1 journal 是 raw terminal durability 边界，不把投影完成当作 journal 回收条件。
 - Dashboard 与长期统计共享 terminal admission/ACK 事实，但各自持有 cursor，避免一个消费者的慢恢复阻塞另一个。
 - 增量物化持久化每个 rollup key 的 interval segment，并在内存维护规范化区间并集；因此无需把既有 `wall_time_ms` 直接相加，也无需为正常 terminal 流量重建整天。

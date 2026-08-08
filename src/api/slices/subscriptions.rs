@@ -6,7 +6,7 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
-    Mutex as StdMutex,
+    Mutex as StdMutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -34,6 +34,17 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
+
+fn prompt_cache_topic_projection_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("PROMPT_CACHE_TOPIC_PROJECTION_MODE")
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("legacy"))
+    })
+}
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -354,6 +365,20 @@ pub(crate) struct SubscriptionDispatchEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheTopicProjectionHealthSnapshot {
+    pub(crate) mode: String,
+    pub(crate) active_topic_count: u64,
+    pub(crate) dirty_key_count: u64,
+    pub(crate) coalesced_event_count: u64,
+    pub(crate) full_hydration_count: u64,
+    pub(crate) bounded_key_hydration_count: u64,
+    pub(crate) live_path_db_read_count: u64,
+    pub(crate) baseline_age_ms: u64,
+    pub(crate) response_source: String,
+}
+
 #[cfg(test)]
 type DashboardTopologyFramesByTopic = BTreeMap<String, Vec<Arc<SerializedTopicFrame>>>;
 #[cfg(test)]
@@ -398,6 +423,11 @@ struct CachedSubscriptionTopic {
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
+    prompt_cache_refresh_scheduled: bool,
+    prompt_cache_pending_records: BTreeMap<String, PromptCacheTopicDelta>,
+    prompt_cache_coalesced_event_count: u64,
+    prompt_cache_full_hydration_count: u64,
+    prompt_cache_baseline_at: Option<Instant>,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
@@ -409,6 +439,63 @@ struct CachedSubscriptionTopic {
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
     replay_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PromptCacheTopicDelta {
+    identity: String,
+    prompt_cache_key: String,
+    occurred_at: Value,
+    status: String,
+    is_terminal: bool,
+    is_success: bool,
+    request_tokens: i64,
+    cost: f64,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    preview: Value,
+}
+
+impl PromptCacheTopicDelta {
+    fn from_record(record: &ApiInvocation) -> Result<Option<Self>, ApiError> {
+        let Some(prompt_cache_key) = record
+            .prompt_cache_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+        else {
+            return Ok(None);
+        };
+        let preview = serde_json::to_value(prompt_cache_invocation_preview_from_runtime_record(
+            record,
+            prompt_cache_key.clone(),
+        ))?;
+        let occurred_at = preview
+            .get("occurredAt")
+            .cloned()
+            .unwrap_or_else(|| Value::String(record.occurred_at.clone()));
+        let status = record
+            .status
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        Ok(Some(Self {
+            identity: format!("{}\0{}", record.invoke_id, record.occurred_at),
+            prompt_cache_key,
+            occurred_at,
+            is_terminal: prompt_invocation_status_counts_toward_terminal_totals(Some(&status)),
+            is_success: prompt_invocation_status_is_success_like(
+                Some(&status),
+                record.error_message.as_deref(),
+            ),
+            status,
+            request_tokens: record.total_tokens.unwrap_or_default().max(0),
+            cost: record.cost.unwrap_or_default(),
+            upstream_account_id: record.upstream_account_id,
+            upstream_account_name: record.upstream_account_name.clone(),
+            preview,
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1076,6 +1163,57 @@ impl ConversationSubscriptionScope {
 }
 
 impl SubscriptionHub {
+    pub(crate) async fn prompt_cache_projection_health(
+        &self,
+    ) -> PromptCacheTopicProjectionHealthSnapshot {
+        let guard = self.state.lock().await;
+        let prompt_topics = guard.topics.iter().filter(|(_, cached)| {
+            matches!(
+                cached.topic,
+                SubscriptionTopic::PromptCacheWindow { .. }
+                    | SubscriptionTopic::PromptCacheStickyWindow { .. }
+            )
+        });
+        let mut snapshot = PromptCacheTopicProjectionHealthSnapshot {
+            mode: if prompt_cache_topic_projection_enabled() {
+                "memory".to_string()
+            } else {
+                "legacy".to_string()
+            },
+            response_source: "memory".to_string(),
+            ..PromptCacheTopicProjectionHealthSnapshot::default()
+        };
+        for (topic_key, cached) in prompt_topics {
+            snapshot.active_topic_count = snapshot.active_topic_count.saturating_add(u64::from(
+                guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0,
+            ));
+            snapshot.dirty_key_count = snapshot
+                .dirty_key_count
+                .saturating_add(cached.prompt_cache_pending_records.len() as u64);
+            snapshot.coalesced_event_count = snapshot
+                .coalesced_event_count
+                .saturating_add(cached.prompt_cache_coalesced_event_count);
+            snapshot.full_hydration_count = snapshot
+                .full_hydration_count
+                .saturating_add(cached.prompt_cache_full_hydration_count);
+            snapshot.baseline_age_ms = snapshot.baseline_age_ms.max(
+                cached
+                    .prompt_cache_baseline_at
+                    .map(|started| started.elapsed().as_millis() as u64)
+                    .unwrap_or_default(),
+            );
+            if cached.dirty {
+                snapshot.response_source = "dirty_last_good".to_string();
+            }
+        }
+        snapshot
+    }
+
     pub(crate) fn new() -> Self {
         let (broadcaster, _) = broadcast::channel(1_024);
         Self {
@@ -1330,6 +1468,18 @@ impl SubscriptionHub {
                 Some(count) if *count > 1 => *count -= 1,
                 Some(_) => {
                     guard.active_subscribers.remove(&topic_key);
+                    if let Some(cached) = guard.topics.get_mut(&topic_key)
+                        && matches!(
+                            cached.topic,
+                            SubscriptionTopic::PromptCacheWindow { .. }
+                                | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                        )
+                    {
+                        cached.prompt_cache_pending_records.clear();
+                        cached.prompt_cache_refresh_scheduled = false;
+                        cached.prompt_cache_baseline_at = None;
+                        cached.dirty = true;
+                    }
                 }
                 None => {}
             }
@@ -1772,6 +1922,26 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.summary_retry_backoff_ms),
+                prompt_cache_refresh_scheduled: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.prompt_cache_refresh_scheduled),
+                prompt_cache_pending_records: guard
+                    .topics
+                    .get(&topic_key)
+                    .map(|entry| entry.prompt_cache_pending_records.clone())
+                    .unwrap_or_default(),
+                prompt_cache_coalesced_event_count: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(0, |entry| entry.prompt_cache_coalesced_event_count),
+                prompt_cache_full_hydration_count: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(1, |entry| {
+                        entry.prompt_cache_full_hydration_count.saturating_add(1)
+                    }),
+                prompt_cache_baseline_at: Some(Instant::now()),
                 latest_live_snapshot: guard
                     .topics
                     .get(&topic_key)
@@ -2035,6 +2205,12 @@ impl SubscriptionHub {
                 return;
             }
             _ => {}
+        }
+        if let BroadcastPayload::Records { records } = &payload
+            && prompt_cache_topic_projection_enabled()
+        {
+            self.schedule_prompt_cache_topic_projection(state.clone(), records)
+                .await;
         }
         let affected = {
             let mut guard = self.state.lock().await;
@@ -2488,6 +2664,200 @@ impl SubscriptionHub {
                 delay = CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE;
             }
         });
+        Ok(())
+    }
+
+    async fn schedule_prompt_cache_topic_projection(
+        &self,
+        state: Arc<AppState>,
+        records: &[ApiInvocation],
+    ) {
+        let records = records
+            .iter()
+            .map(PromptCacheTopicDelta::from_record)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|records| records.into_iter().flatten().collect::<Vec<_>>());
+        let Ok(records) = records else {
+            warn!("failed to build compact prompt cache topic delta");
+            return;
+        };
+        if records.is_empty() {
+            return;
+        }
+
+        let scheduled = {
+            let mut guard = self.state.lock().await;
+            let active_subscribers = guard.active_subscribers.clone();
+            let mut scheduled = Vec::new();
+            for (topic_key, cached) in &mut guard.topics {
+                if !matches!(
+                    cached.topic,
+                    SubscriptionTopic::PromptCacheWindow { .. }
+                        | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                ) || active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                {
+                    continue;
+                }
+                let before = cached.prompt_cache_pending_records.len();
+                for record in &records {
+                    cached
+                        .prompt_cache_pending_records
+                        .insert(record.identity.clone(), record.clone());
+                }
+                cached.prompt_cache_coalesced_event_count =
+                    cached.prompt_cache_coalesced_event_count.saturating_add(
+                        records.len().saturating_sub(
+                            cached
+                                .prompt_cache_pending_records
+                                .len()
+                                .saturating_sub(before),
+                        ) as u64,
+                    );
+                if !cached.prompt_cache_refresh_scheduled {
+                    cached.prompt_cache_refresh_scheduled = true;
+                    scheduled.push(cached.topic.clone());
+                }
+            }
+            scheduled
+        };
+
+        for topic in scheduled {
+            let hub = state.subscription_hub.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+                if let Err(err) = hub
+                    .materialize_prompt_cache_topic(state.clone(), &topic)
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = topic.name(),
+                        response_source = "last_good",
+                        "prompt cache in-memory topic materialization failed"
+                    );
+                    hub.mark_topic_dirty(&topic).await;
+                    return;
+                }
+                if hub.prompt_cache_topic_needs_reconcile(&topic).await {
+                    match crate::db_pressure::global_db_pressure_gate()
+                        .try_begin_background("prompt_cache_topic_reconcile")
+                    {
+                        Ok(_permit) => {
+                            match hub
+                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                                .await
+                            {
+                                Ok(_) => tracing::debug!(
+                                    topic = topic.name(),
+                                    reconcile_outcome = "accepted_baseline",
+                                    response_source = "database_reconcile",
+                                    "prompt cache topic projection reconciled"
+                                ),
+                                Err(err) => warn!(
+                                    ?err,
+                                    topic = topic.name(),
+                                    reconcile_outcome = "retained_last_good",
+                                    "prompt cache topic reconcile failed"
+                                ),
+                            }
+                        }
+                        Err(reason) => tracing::debug!(
+                            topic = topic.name(),
+                            reconcile_outcome = "pressure_deferred",
+                            defer_reason = %reason,
+                            "prompt cache topic reconcile deferred"
+                        ),
+                    }
+                }
+            });
+        }
+    }
+
+    async fn prompt_cache_topic_needs_reconcile(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        self.state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .and_then(|cached| cached.prompt_cache_baseline_at)
+            .is_none_or(|baseline| baseline.elapsed() >= PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL)
+    }
+
+    async fn materialize_prompt_cache_topic(
+        &self,
+        _state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            cached.prompt_cache_refresh_scheduled = false;
+            if active == 0 {
+                cached.prompt_cache_pending_records.clear();
+                return Ok(());
+            }
+            let records = std::mem::take(&mut cached.prompt_cache_pending_records)
+                .into_values()
+                .collect::<Vec<_>>();
+            if records.is_empty()
+                || !apply_prompt_cache_records_to_payload(
+                    topic,
+                    &mut cached.snapshot_payload,
+                    &records,
+                )?
+            {
+                return Ok(());
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            let serialized_payload = serde_json::to_vec(&cached.snapshot_payload)?;
+            let frame = Arc::new(self.serialize_frame(
+                cached.descriptor.clone(),
+                topic_key.clone(),
+                cached.schema_epoch.clone(),
+                next_cursor,
+                serialized_payload,
+            )?);
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            tracing::debug!(
+                topic = topic.name(),
+                response_source = "memory",
+                coalesced_event_count = records.len(),
+                live_path_db_read_count = 0_u64,
+                baseline_age_ms = cached
+                    .prompt_cache_baseline_at
+                    .map(|started| started.elapsed().as_millis() as u64)
+                    .unwrap_or_default(),
+                "prompt cache topic materialized from active projection"
+            );
+            SubscriptionDispatchEvent { frame }
+        };
+        let _ = self.broadcaster.send(dispatch);
         Ok(())
     }
 
@@ -3097,6 +3467,216 @@ fn apply_topic_live_overlay_to_payload(
 
 fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
     object.insert(key.to_string(), value);
+}
+
+fn apply_prompt_cache_records_to_payload(
+    topic: &SubscriptionTopic,
+    payload: &mut Value,
+    records: &[PromptCacheTopicDelta],
+) -> Result<bool, ApiError> {
+    let Some(conversations) = payload
+        .as_object_mut()
+        .and_then(|object| object.get_mut("conversations"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for record in records {
+        let key = record.prompt_cache_key.as_str();
+        if let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = topic
+            && record.upstream_account_id != Some(*account_id)
+        {
+            continue;
+        }
+        let key_field = match topic {
+            SubscriptionTopic::PromptCacheWindow { .. } => "promptCacheKey",
+            SubscriptionTopic::PromptCacheStickyWindow { .. } => "stickyKey",
+            _ => return Ok(false),
+        };
+        let preview = record.preview.clone();
+        let occurred_at = record.occurred_at.clone();
+        let status = record.status.as_str();
+        let is_terminal = record.is_terminal;
+        let is_success = record.is_success;
+        let request_tokens = record.request_tokens;
+        let conversation_index = conversations.iter().position(|conversation| {
+            conversation.get(key_field).and_then(Value::as_str) == Some(key)
+        });
+        let index = match conversation_index {
+            Some(index) => index,
+            None => {
+                let mut conversation = serde_json::Map::new();
+                conversation.insert(key_field.to_string(), Value::String(key.to_string()));
+                conversation.insert("requestCount".to_string(), Value::from(0));
+                conversation.insert("totalTokens".to_string(), Value::from(0));
+                conversation.insert("totalCost".to_string(), Value::from(0.0));
+                conversation.insert("createdAt".to_string(), occurred_at.clone());
+                conversation.insert("lastActivityAt".to_string(), occurred_at.clone());
+                conversation.insert("recentInvocations".to_string(), Value::Array(Vec::new()));
+                conversation.insert("last24hRequests".to_string(), Value::Array(Vec::new()));
+                if matches!(topic, SubscriptionTopic::PromptCacheWindow { .. }) {
+                    conversation.insert("hasEncryptedSessionOwner".to_string(), Value::Bool(false));
+                    conversation.insert("upstreamAccounts".to_string(), Value::Array(Vec::new()));
+                }
+                conversations.push(Value::Object(conversation));
+                conversations.len() - 1
+            }
+        };
+        let Some(conversation) = conversations[index].as_object_mut() else {
+            continue;
+        };
+        let recent = conversation
+            .entry("recentInvocations")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("prompt cache recentInvocations is an array");
+        let existing_index = recent.iter().position(|item| {
+            item.get("invokeId").and_then(Value::as_str)
+                == preview.get("invokeId").and_then(Value::as_str)
+                && item.get("occurredAt") == Some(&occurred_at)
+        });
+        let already_terminal = existing_index.is_some_and(|index| {
+            recent[index]
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| {
+                    prompt_invocation_status_counts_toward_terminal_totals(Some(status))
+                })
+        });
+        if let Some(index) = existing_index {
+            recent[index] = preview.clone();
+        } else {
+            recent.push(preview.clone());
+        }
+        recent.sort_by(|left, right| {
+            right
+                .get("occurredAt")
+                .and_then(Value::as_str)
+                .cmp(&left.get("occurredAt").and_then(Value::as_str))
+        });
+        let recent_limit = match topic {
+            SubscriptionTopic::PromptCacheWindow {
+                recent_invocation_limit,
+                ..
+            } => recent_invocation_limit.unwrap_or(16).max(0) as usize,
+            SubscriptionTopic::PromptCacheStickyWindow { .. } => 5,
+            _ => 0,
+        };
+        recent.truncate(recent_limit);
+
+        conversation.insert("lastActivityAt".to_string(), occurred_at.clone());
+        if is_terminal && !already_terminal {
+            increment_json_i64(conversation, "requestCount", 1);
+            increment_json_i64(conversation, "totalTokens", request_tokens);
+            increment_json_f64(conversation, "totalCost", record.cost);
+            if matches!(topic, SubscriptionTopic::PromptCacheWindow { .. }) {
+                conversation.insert("lastTerminalAt".to_string(), occurred_at.clone());
+                apply_prompt_cache_account_delta(conversation, record, &occurred_at);
+            }
+            let points = conversation
+                .entry("last24hRequests")
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .expect("prompt cache last24hRequests is an array");
+            if !points.iter().any(|point| {
+                point.get("occurredAt") == Some(&occurred_at)
+                    && point.get("requestTokens").and_then(Value::as_i64) == Some(request_tokens)
+            }) {
+                points.push(serde_json::json!({
+                    "occurredAt": occurred_at,
+                    "status": status,
+                    "isSuccess": is_success,
+                    "outcome": if is_success { "success" } else { "failure" },
+                    "requestTokens": request_tokens,
+                    "cumulativeTokens": 0,
+                }));
+                points.sort_by(|left, right| {
+                    left.get("occurredAt")
+                        .and_then(Value::as_str)
+                        .cmp(&right.get("occurredAt").and_then(Value::as_str))
+                });
+                let mut cumulative = 0_i64;
+                for point in points {
+                    cumulative = cumulative.saturating_add(
+                        point
+                            .get("requestTokens")
+                            .and_then(Value::as_i64)
+                            .unwrap_or_default(),
+                    );
+                    if let Some(point) = point.as_object_mut() {
+                        point.insert("cumulativeTokens".to_string(), Value::from(cumulative));
+                    }
+                }
+            }
+        }
+        changed = true;
+    }
+
+    conversations.sort_by(|left, right| {
+        right
+            .get("lastActivityAt")
+            .and_then(Value::as_str)
+            .cmp(&left.get("lastActivityAt").and_then(Value::as_str))
+    });
+    let display_limit = match topic {
+        SubscriptionTopic::PromptCacheWindow { selection, .. } => selection.display_limit(),
+        SubscriptionTopic::PromptCacheStickyWindow { selection, .. } => selection.display_limit(),
+        _ => 0,
+    };
+    conversations.truncate(display_limit.max(0) as usize);
+    Ok(changed)
+}
+
+fn increment_json_i64(object: &mut serde_json::Map<String, Value>, field: &str, delta: i64) {
+    let current = object
+        .get(field)
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    object.insert(
+        field.to_string(),
+        Value::from(current.saturating_add(delta)),
+    );
+}
+
+fn increment_json_f64(object: &mut serde_json::Map<String, Value>, field: &str, delta: f64) {
+    let current = object
+        .get(field)
+        .and_then(Value::as_f64)
+        .unwrap_or_default();
+    object.insert(field.to_string(), Value::from(current + delta));
+}
+
+fn apply_prompt_cache_account_delta(
+    conversation: &mut serde_json::Map<String, Value>,
+    record: &PromptCacheTopicDelta,
+    occurred_at: &Value,
+) {
+    let accounts = conversation
+        .entry("upstreamAccounts")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .expect("prompt cache upstreamAccounts is an array");
+    let index = accounts.iter().position(|account| {
+        account.get("upstreamAccountId").and_then(Value::as_i64) == record.upstream_account_id
+    });
+    let index = index.unwrap_or_else(|| {
+        accounts.push(serde_json::json!({
+            "upstreamAccountId": record.upstream_account_id,
+            "upstreamAccountName": record.upstream_account_name,
+            "requestCount": 0,
+            "totalTokens": 0,
+            "totalCost": 0.0,
+            "lastActivityAt": occurred_at,
+        }));
+        accounts.len() - 1
+    });
+    if let Some(account) = accounts[index].as_object_mut() {
+        increment_json_i64(account, "requestCount", 1);
+        increment_json_i64(account, "totalTokens", record.request_tokens);
+        increment_json_f64(account, "totalCost", record.cost);
+        account.insert("lastActivityAt".to_string(), occurred_at.clone());
+    }
 }
 
 fn set_json_optional_field(
@@ -4365,12 +4945,13 @@ impl SubscriptionTopic {
                 | Self::DashboardNetworkRecentCurrent
                 | Self::DashboardWorkingConversationsCurrent { .. }
                 | Self::InvocationWindow { .. }
-                | Self::PromptCacheWindow { .. }
-                | Self::PromptCacheStickyWindow { .. }
                 | Self::SummaryCurrent { .. }
                 | Self::TimeseriesOpenWindow { .. }
                 | Self::ParallelWorkCurrent { .. }
                 | Self::ForwardProxyLive => true,
+                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. } => {
+                    !prompt_cache_topic_projection_enabled()
+                }
                 _ => false,
             },
             BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => match self {
@@ -4378,6 +4959,7 @@ impl SubscriptionTopic {
                 | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
                     scope.binding_key() == prompt_cache_key
                 }
+                Self::PromptCacheWindow { .. } => true,
                 _ => false,
             },
             BroadcastPayload::PromptCacheConversationStickyRouteChanged {
@@ -4391,6 +4973,11 @@ impl SubscriptionTopic {
                     *previous_upstream_account_id,
                     *upstream_account_id,
                 ),
+                Self::PromptCacheWindow { .. } => true,
+                Self::PromptCacheStickyWindow { account_id, .. } => {
+                    *previous_upstream_account_id == *account_id
+                        || *upstream_account_id == *account_id
+                }
                 _ => false,
             },
             BroadcastPayload::DashboardActivityLive { .. } => {
@@ -7193,6 +7780,11 @@ mod tests {
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
+            prompt_cache_refresh_scheduled: false,
+            prompt_cache_pending_records: BTreeMap::new(),
+            prompt_cache_coalesced_event_count: 0,
+            prompt_cache_full_hydration_count: 0,
+            prompt_cache_baseline_at: None,
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
@@ -7755,6 +8347,54 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events.front().map(|event| event.frame.cursor), Some(2));
         assert_eq!(total_bytes, 32);
+    }
+
+    #[test]
+    fn prompt_cache_projection_applies_terminal_delta_without_full_hydration() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let mut payload = serde_json::json!({
+            "rangeStart": "2026-08-07T00:00:00Z",
+            "rangeEnd": "2026-08-08T00:00:00Z",
+            "conversations": []
+        });
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.id = 7;
+        record.invoke_id = "projection-terminal".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("cache-key".to_string());
+        record.total_tokens = Some(42);
+        record.cost = Some(0.25);
+        record.failure_class = Some("none".to_string());
+
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build compact delta")
+            .expect("prompt cache delta");
+        assert!(
+            apply_prompt_cache_records_to_payload(
+                &topic,
+                &mut payload,
+                std::slice::from_ref(&delta),
+            )
+            .expect("apply terminal delta")
+        );
+        let conversation = &payload["conversations"][0];
+        assert_eq!(conversation["promptCacheKey"], "cache-key");
+        assert_eq!(conversation["requestCount"], 1);
+        assert_eq!(conversation["totalTokens"], 42);
+        assert_eq!(
+            conversation["recentInvocations"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(conversation["last24hRequests"].as_array().unwrap().len(), 1);
+
+        apply_prompt_cache_records_to_payload(&topic, &mut payload, &[delta])
+            .expect("deduplicate repeated terminal delta");
+        assert_eq!(payload["conversations"][0]["requestCount"], 1);
     }
 
     #[test]

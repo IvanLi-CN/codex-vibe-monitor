@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Error;
 use once_cell::sync::Lazy;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::warn;
 
 const DEFAULT_BACKGROUND_DB_SLOTS: usize = 1;
@@ -31,8 +31,15 @@ pub(crate) struct DbPressureGate {
     pressure_until_epoch_ms: AtomicU64,
     pressure_events: AtomicU64,
     background_skips: AtomicU64,
+    eligibility: Arc<DbPressureEligibility>,
     #[cfg(test)]
     bypass_for_test_global: bool,
+}
+
+#[derive(Debug, Default)]
+struct DbPressureEligibility {
+    generation: AtomicU64,
+    notify: Notify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +63,17 @@ impl fmt::Display for DbPressureDenyReason {
 pub(crate) struct DbBackgroundPermit {
     _permit: Option<OwnedSemaphorePermit>,
     started_at: Instant,
+    eligibility: Option<Arc<DbPressureEligibility>>,
+}
+
+impl Drop for DbBackgroundPermit {
+    fn drop(&mut self) {
+        self._permit.take();
+        if let Some(eligibility) = &self.eligibility {
+            eligibility.generation.fetch_add(1, Ordering::AcqRel);
+            eligibility.notify.notify_waiters();
+        }
+    }
 }
 
 impl DbBackgroundPermit {
@@ -81,6 +99,7 @@ impl DbPressureGate {
             pressure_until_epoch_ms: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
+            eligibility: Arc::new(DbPressureEligibility::default()),
             #[cfg(test)]
             bypass_for_test_global: false,
         }
@@ -110,6 +129,7 @@ impl DbPressureGate {
             return Ok(DbBackgroundPermit {
                 _permit: None,
                 started_at: Instant::now(),
+                eligibility: None,
             });
         }
 
@@ -134,6 +154,7 @@ impl DbPressureGate {
         Ok(DbBackgroundPermit {
             _permit: Some(permit),
             started_at: Instant::now(),
+            eligibility: Some(self.eligibility.clone()),
         })
     }
 
@@ -147,6 +168,7 @@ impl DbPressureGate {
             return Ok(DbBackgroundPermit {
                 _permit: None,
                 started_at: Instant::now(),
+                eligibility: None,
             });
         }
 
@@ -165,6 +187,7 @@ impl DbPressureGate {
                 return Ok(DbBackgroundPermit {
                     _permit: Some(permit),
                     started_at: Instant::now(),
+                    eligibility: Some(self.eligibility.clone()),
                 });
             }
 
@@ -192,6 +215,8 @@ impl DbPressureGate {
         let until_ms = now_ms.saturating_add(cooldown_ms);
         update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
         let events = self.pressure_events.fetch_add(1, Ordering::Relaxed) + 1;
+        self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
+        self.eligibility.notify.notify_waiters();
         warn!(
             task,
             reason,
@@ -199,6 +224,20 @@ impl DbPressureGate {
             cooldown_ms,
             "database pressure detected; background database work will back off"
         );
+    }
+
+    pub(crate) fn eligibility_generation(&self) -> u64 {
+        self.eligibility.generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for_eligibility_change(&self, observed: u64) {
+        loop {
+            let notified = self.eligibility.notify.notified();
+            if self.eligibility_generation() != observed {
+                return;
+            }
+            notified.await;
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -309,6 +348,29 @@ mod tests {
             .expect("waiter task should not panic")
             .expect("second background permit");
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn gate_notifies_eligibility_generation_when_slot_is_released() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let permit = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+        let observed = gate.eligibility_generation();
+        let waiter_gate = gate.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_gate.wait_for_eligibility_change(observed).await;
+            waiter_gate.eligibility_generation()
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        drop(permit);
+        let next_generation = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("eligibility waiter should wake")
+            .expect("eligibility waiter should not panic");
+        assert!(next_generation > observed);
     }
 
     #[tokio::test]

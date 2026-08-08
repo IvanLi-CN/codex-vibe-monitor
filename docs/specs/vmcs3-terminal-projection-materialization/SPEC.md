@@ -42,6 +42,7 @@ Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 
 
 - 空闲期不再存在按 60 秒无条件扫描近两天 raw invocation 的长期统计生产任务。
 - terminal burst 下，每个长期 projection 最多一次固定 60 秒 P2 flush；P1 ACK 和 Dashboard terminal overlay 不依赖该 flush。
+- P2 admission 使用独立固定 250ms deadline。pressure gate 拒绝后按 eligibility/cooldown 事件唤醒，实际 SQLite busy/locked 才进入 250ms 到 5s 的失败退避；pressure defer 不属于 retry。
 - 重启、journal replay、重复 terminal、hard limit、跨自然日 interval、unassigned/model/reasoning 分组和 archive rewrite 与 exact builder 对账一致。
 - System Status 展示只读取内存 health，不增加 status route 的 SQLite 查询数；健康、deferred、dirty-last-good 均可读且详情可展开。
 

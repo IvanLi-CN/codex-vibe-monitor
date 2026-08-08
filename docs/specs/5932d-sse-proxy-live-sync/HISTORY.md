@@ -6,6 +6,8 @@
 
 ## Key Decisions
 
+- 2026-08-08：Prompt Cache window/sticky topic 从任意 Records 整窗 hydrate 收敛为 active-owner 内存投影；500ms 固定合并发布，初始订阅和最多每 60 秒一次的 pressure-gated reconcile 保持精确 baseline。
+
 - 2026-08-03：Prompt Cache conversation detail joined the shared topic bus with four tab-scoped read models. The realtime Calls head remains bounded to 50 rows; the entire captured HTTP snapshot, including page 1, deliberately remains frozen across fresh topic snapshots. The overview additionally pins its summary and samples to one SQLite snapshot plus captured runtime overlay with a fixed accepted page width; its HTTP fallback reuses the first page snapshot for summary, samples, and full-range bounds, while cached binding fallbacks remain descriptor-local and configuration broadcasts only target binding/event subscribers.
 - 2026-07-24：线上复查确认 Summary topic 的主要残留压力来自 terminal follow-up 对 `all/30m/1h/1d/1mo` 五个 legacy 窗口的无关重建，以及 `today` summary 的 `non_success_tokens` 仍走整窗账号活动聚合。本轮删除生产 Summary follow-up，open-range topic 改为 live overlay + 固定 `500ms` totals coalescer；`non_success_tokens` 复用 hourly v2 rollup 与 boundary scalar tail。Dashboard 保留既有 `5s` TTL，仅改用真实 owner subscriber lease 门控，并以 dirty reconnect 保证失活期间不回放旧连续性。
 - 2026-07-24：补充闭区间防护：`yesterday` / `previous7d` 即使有遗留兼容 topic，也不再被 Records 或 live 广播触发重建；当前应用继续通过 HTTP exact path 获取闭区间结果。
