@@ -20,7 +20,7 @@ const EFFORT_TEXT_CLASSNAMES: Record<ReasoningEffortTone, string> = {
 };
 
 const EFFORT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
-  none: "bg-base-content/34",
+  none: "bg-base-content/45",
   minimal: "bg-info/65",
   low: "bg-info/80",
   medium: "bg-primary/80",
@@ -87,7 +87,10 @@ export function ModelPerformanceModelIdentity({
               EFFORT_TEXT_CLASSNAMES[tone],
             )}
           >
-            <span className={cn("h-1 w-1 shrink-0 rounded-full", EFFORT_MARKER_CLASSNAMES[tone])} />
+            <span
+              data-testid={testId ? `${testId}-effort-marker` : undefined}
+              className={cn("h-1 w-1 shrink-0 rounded-full", EFFORT_MARKER_CLASSNAMES[tone])}
+            />
             <span className="max-w-20 truncate">{effort}</span>
           </span>
         </span>

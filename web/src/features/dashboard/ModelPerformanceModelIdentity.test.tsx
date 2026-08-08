@@ -18,10 +18,16 @@ describe("ModelPerformanceModelIdentity", () => {
 
   it("keeps an unspecified effort as the shared fallback", () => {
     const markup = renderToStaticMarkup(
-      <ModelPerformanceModelIdentity model="gpt-5.6-luna" effortValue={null} />,
+      <ModelPerformanceModelIdentity
+        model="gpt-5.6-luna"
+        effortValue={null}
+        testId="model-context"
+      />,
     );
 
     expect(markup).toContain("gpt-5.6-luna · —");
     expect(markup).toContain('data-reasoning-effort-tone="none"');
+    expect(markup).toContain('data-testid="model-context-effort-marker"');
+    expect(markup).toContain("bg-base-content/45");
   });
 });
