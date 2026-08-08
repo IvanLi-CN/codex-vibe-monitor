@@ -101,6 +101,7 @@ impl ProxySqliteWriteCoordinator {
         self: &Arc<Self>,
         class: ProxySqliteWriteClass,
     ) -> ProxySqliteWritePermit {
+        let requested_at = Instant::now();
         if !self.coordinated {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
@@ -108,7 +109,7 @@ impl ProxySqliteWriteCoordinator {
                 coordinator: self.clone(),
                 class,
                 coordinated: false,
-                admitted_at: Instant::now(),
+                lock_wait: requested_at.elapsed(),
             };
         }
 
@@ -116,18 +117,24 @@ impl ProxySqliteWriteCoordinator {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.increment(class);
         }
+        let mut waiter = ProxySqliteWriteWaiter {
+            coordinator: self.clone(),
+            class,
+            registered: true,
+        };
         loop {
             let notified = self.notify.notified();
             {
                 let mut state = self.state.lock().expect("proxy sqlite coordinator state");
                 if state.can_admit(class) {
                     state.decrement(class);
+                    waiter.registered = false;
                     state.active = Some(class);
                     return ProxySqliteWritePermit {
                         coordinator: self.clone(),
                         class,
                         coordinated: true,
-                        admitted_at: Instant::now(),
+                        lock_wait: requested_at.elapsed(),
                     };
                 }
             }
@@ -157,16 +164,39 @@ pub(crate) struct ProxySqliteWritePermit {
     coordinator: Arc<ProxySqliteWriteCoordinator>,
     class: ProxySqliteWriteClass,
     coordinated: bool,
-    admitted_at: Instant,
+    lock_wait: Duration,
 }
 
 impl ProxySqliteWritePermit {
     pub(crate) fn lock_wait(&self) -> Duration {
-        self.admitted_at.elapsed()
+        self.lock_wait
     }
 
     pub(crate) fn write_class(&self) -> &'static str {
         self.class.as_str()
+    }
+}
+
+struct ProxySqliteWriteWaiter {
+    coordinator: Arc<ProxySqliteWriteCoordinator>,
+    class: ProxySqliteWriteClass,
+    registered: bool,
+}
+
+impl Drop for ProxySqliteWriteWaiter {
+    fn drop(&mut self) {
+        if !self.registered {
+            return;
+        }
+        {
+            let mut state = self
+                .coordinator
+                .state
+                .lock()
+                .expect("proxy sqlite coordinator state");
+            state.decrement(self.class);
+        }
+        self.coordinator.notify.notify_waiters();
     }
 }
 
@@ -228,5 +258,33 @@ mod tests {
             .await
             .expect("P2 admitted")
             .expect("P2 task");
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_releases_priority_registration() {
+        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        });
+        let active = coordinator
+            .acquire(ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        let waiter = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await }
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await;
+        assert_eq!(coordinator.snapshot().await.p1_waiter_count, 0);
+        drop(active);
+        let p2 = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.acquire(ProxySqliteWriteClass::P2Derived),
+        )
+        .await
+        .expect("cancelled P1 waiter must not block P2");
+        drop(p2);
     }
 }

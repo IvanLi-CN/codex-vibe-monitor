@@ -3632,6 +3632,9 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
     persist_proxy_capture_runtime_record_core(pool, record, true).await
 }
 
