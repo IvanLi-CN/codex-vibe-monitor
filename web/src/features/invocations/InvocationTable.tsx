@@ -942,6 +942,7 @@ export function InvocationCardList({
             {renderInvocationModelBadge(row.modelValue, {
               t,
               hasMismatch: row.modelHasMismatch,
+              requestModel: row.modelHasMismatch ? row.requestModelValue : undefined,
               className: "max-w-full",
               textClassName: "font-mono text-[11px] text-base-content/68",
               iconClassName: "h-3.5 w-3.5",

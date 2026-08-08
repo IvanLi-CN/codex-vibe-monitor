@@ -329,6 +329,7 @@ export function renderInvocationModelBadge(
   options: {
     t: Translator;
     hasMismatch?: boolean;
+    requestModel?: string;
     className?: string;
     textClassName?: string;
     iconClassName?: string;
@@ -339,6 +340,7 @@ export function renderInvocationModelBadge(
   const {
     t,
     hasMismatch = false,
+    requestModel,
     className,
     textClassName,
     iconClassName,
@@ -355,6 +357,16 @@ export function renderInvocationModelBadge(
       data-testid={testId}
       data-model-routed={hasMismatch ? "true" : "false"}
     >
+      {hasMismatch && requestModel ? (
+        <ModelIdentity
+          model={requestModel}
+          className="min-w-0 max-w-full"
+          textClassName={cn("truncate", textClassName)}
+          iconClassName={iconClassName}
+          title={requestModel}
+          testId={testId ? `${testId}-request-identity` : undefined}
+        />
+      ) : null}
       {hasMismatch ? (
         <span
           className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"

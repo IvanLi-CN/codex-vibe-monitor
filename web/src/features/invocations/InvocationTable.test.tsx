@@ -1416,6 +1416,33 @@ describe("InvocationTable", () => {
     expect(endpointCell?.textContent).toMatch(/图片工具|Image tool/);
   });
 
+  it("keeps request and response model identities visible when routing changes the model", async () => {
+    await renderInteractiveTable([
+      {
+        id: 40,
+        invokeId: "invocation-model-routing-identity",
+        occurredAt: "2026-03-24T06:54:52Z",
+        createdAt: "2026-03-24T06:54:52Z",
+        source: "proxy",
+        proxyDisplayName: "routing-proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.6-sol",
+        requestModel: "gpt-5.6-terra",
+        responseModel: "gpt-5.6-sol",
+        status: "success",
+        totalTokens: 1024,
+        cost: 0.0102,
+      },
+    ]);
+
+    const identities = [
+      ...(host?.querySelectorAll('[data-testid="invocation-table-model"] [data-model-identity]') ??
+        []),
+    ].map((element) => element.getAttribute("data-model-identity"));
+
+    expect(identities).toEqual(["gpt-5.6-terra", "gpt-5.6-sol"]);
+  });
+
   it("keeps latency summary fields out of request details while preserving stage timings", async () => {
     const record: ApiInvocation = {
       id: 34,
