@@ -178,6 +178,9 @@ async fn record_pool_route_success_inner(
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<RuntimeStickyMutation> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let now_iso = format_utc_iso(Utc::now());
     let sticky_now_iso = format_utc_iso_precise(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
@@ -703,6 +706,9 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     sticky_affinity_generation: Option<i64>,
     prompt_cache_key: Option<&str>,
 ) -> Result<bool> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint
@@ -1136,6 +1142,9 @@ async fn record_pool_route_transport_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;

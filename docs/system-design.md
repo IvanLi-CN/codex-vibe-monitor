@@ -46,6 +46,9 @@ flowchart LR
 - `TerminalProjectionHub` 保存 terminal admission/P1 ACK 与消费者 cursor，供 Dashboard totals、长期统计和 timeseries 增量物化。
 - P1 只保障 raw terminal 与 journal ACK；派生 rollup 和 repair 通过 P2 并受 SQLite pressure gate 控制。
 - writer queue 的 depth/bytes 由单一 accounting owner 管理。P1 生成 P2 工作时必须转移 ownership，不得跨阶段裸减计数。
+- 代理热写由 `ProxySqliteWriteCoordinator` 单点仲裁，优先级为 P1 terminal、同步 attempt/route、P2 derived。同步写仍等待并返回原结果，但不得绕过协调器直接竞争 SQLite writer。
+- P1 使用 20ms admission、最多 32 条或 4 MiB 的短批次；busy/locked 批次完整保留并按 250ms、500ms、1s、2s、5s 退避。只有事务提交后才能推进 journal 与 projection ACK。
+- P2 仅在 P1 与同步等待者为空时运行；rollup cursor 每次只推进一个有界 chunk，剩余工作重新排队。
 
 ## 4. Dashboard 与 SSE
 
@@ -66,6 +69,7 @@ flowchart LR
 
 - `DASHBOARD_RUNTIME_PROJECTION_MODE=auto|legacy` 控制 Dashboard 投影路径；默认 `auto`。
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
+- `PROXY_SQLITE_WRITE_COORDINATOR_MODE=coordinated|legacy` 控制代理热写协调器；默认 `coordinated`，legacy 只保留一个发布周期用于显式回滚。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。
 - accounting violation、live-path DB read、whole-body materialization、cadence miss、subscription lag/skipped 或重复 serialization 必须改变健康状态并可被结构化 telemetry 判责。
 - 运行镜像默认 `MALLOC_ARENA_MAX=8`，部署可显式覆盖；该设置只限制 glibc arena 保留，不改变业务并发。

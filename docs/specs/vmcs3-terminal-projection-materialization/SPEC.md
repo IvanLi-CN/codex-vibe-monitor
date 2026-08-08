@@ -32,6 +32,8 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 
 ## Runtime Data Plane Boundary
 
+Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 锁冲突时保留完整未提交批次并指数退避；新 terminal 事件不得提前既有重试 deadline。P2 projection materialization 不参与 P1 ACK，也不得在单事务内无界追赶 cursor。
+
 - `TerminalProjectionHub` 继续拥有 terminal durable cursor；current-state 由 [`RuntimeProjectionHub`](../high-frequency-runtime-data-plane/SPEC.md) 承担，二者不得合并为一个共享可变缓存。
 - Dashboard live render 只消费 Runtime/Terminal Projection 的不可变 snapshot，不得从 Terminal Projection 的订阅回调反向调用 SQLite builder。
 - SQLite writer P1 -> P2 派生工作必须通过统一 accounting ownership transfer，不能以裸原子减法跨越队列阶段。

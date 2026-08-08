@@ -74,6 +74,8 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) process: SystemRuntimePressureProcess,
     pub(crate) allocator: SystemRuntimePressureAllocator,
     pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
+    pub(crate) proxy_sqlite_write_coordinator:
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
     pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
     pub(crate) delivery: DashboardDeliveryTopologyCounterSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
@@ -102,6 +104,10 @@ pub(crate) struct SystemStatusResponse {
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
     let memory = state.memory_diagnostics.runtime_pressure_snapshot();
     let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
+    let proxy_sqlite_write_coordinator =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
     let active_subscriber_count = state
         .subscription_hub
         .dashboard_activity_live_subscriber_count()
@@ -152,6 +158,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             malloc_arena_max: memory.malloc_arena_max,
         },
         writer_accounting,
+        proxy_sqlite_write_coordinator,
         dashboard_projection,
         delivery,
         request_pipeline,

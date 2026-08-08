@@ -580,6 +580,9 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
     same_account_retry_index: i64,
     started_at: &str,
 ) -> PendingPoolAttemptRecord {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let routing_source_value = routing_source.map(PoolRoutingSelectionSource::as_persisted_str);
     let routing_selection_audit_json =
         routing_selection_audit.and_then(|audit| serde_json::to_string(audit).ok());
@@ -738,6 +741,9 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let attempt_id = match pending.attempt_id {
         Some(attempt_id) => Some(attempt_id),
         None => sqlx::query_scalar::<_, Option<i64>>(
@@ -911,6 +917,9 @@ pub(crate) async fn update_pool_upstream_request_attempt_progress(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> Result<bool> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let Some(attempt_id) = pending.attempt_id else {
         return Ok(false);
     };
@@ -963,6 +972,9 @@ pub(crate) async fn persist_pool_upstream_request_attempt_first_byte_progress(
     connect_latency_ms: f64,
     first_byte_latency_ms: f64,
 ) -> Result<bool> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let Some(attempt_id) = pending.attempt_id else {
         return Ok(false);
     };
@@ -2097,6 +2109,9 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let terminal_phase = terminal_pool_upstream_request_attempt_phase(status);
     let compact_support_status =
         compact_support_status.or(pending.compact_support_status.as_deref());
@@ -3625,6 +3640,18 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     record: ProxyCaptureRecord,
     write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
+    let mut tx = pool.begin().await?;
+    let persisted =
+        persist_proxy_capture_runtime_record_tx(tx.as_mut(), record, write_derived_inline).await?;
+    tx.commit().await?;
+    Ok(persisted)
+}
+
+pub(crate) async fn persist_proxy_capture_runtime_record_tx(
+    tx: &mut SqliteConnection,
+    record: ProxyCaptureRecord,
+    write_derived_inline: bool,
+) -> Result<Option<ApiInvocation>> {
     let raw_response = if record.response_body_preview_enabled {
         record.raw_response.clone()
     } else {
@@ -3659,9 +3686,8 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     let core_write_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
     let mut core_write_path = "insert_missing";
-    let mut tx = pool.begin().await?;
     let existing_identity =
-        load_persisted_invocation_identity_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+        load_persisted_invocation_identity_tx(&mut *tx, &record.invoke_id, &record.occurred_at)
             .await?;
     if let Some(existing) = existing_identity.as_ref()
         && !persisted_invocation_allows_proxy_record_update(
@@ -3670,13 +3696,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
             &record.status,
         )
     {
-        tx.commit().await?;
         return Ok(None);
     }
 
     if let Some(existing) = existing_identity.as_ref() {
         let updated = update_existing_proxy_invocation_record_tx(
-            tx.as_mut(),
+            &mut *tx,
             existing.id,
             &record,
             &raw_response,
@@ -3696,7 +3721,6 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         )
         .await?;
         if !updated {
-            tx.commit().await?;
             return Ok(None);
         }
         core_write_path = "update_existing";
@@ -3800,17 +3824,16 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         .bind(None::<f64>)
         .bind(None::<f64>)
         .bind(created_at)
-        .execute(tx.as_mut())
+        .execute(&mut *tx)
         .await?;
         if insert_result.rows_affected() == 0 {
             let Some(existing) = load_persisted_invocation_identity_tx(
-                tx.as_mut(),
+                &mut *tx,
                 &record.invoke_id,
                 &record.occurred_at,
             )
             .await?
             else {
-                tx.commit().await?;
                 return Ok(None);
             };
             if !persisted_invocation_allows_proxy_record_update(
@@ -3818,11 +3841,10 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
                 existing.failure_kind.as_deref(),
                 &record.status,
             ) {
-                tx.commit().await?;
                 return Ok(None);
             }
             let updated = update_existing_proxy_invocation_record_tx(
-                tx.as_mut(),
+                &mut *tx,
                 existing.id,
                 &record,
                 &raw_response,
@@ -3842,7 +3864,6 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
             )
             .await?;
             if !updated {
-                tx.commit().await?;
                 return Ok(None);
             }
             core_write_path = "update_race";
@@ -3850,14 +3871,14 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     }
 
     let persisted_identity =
-        load_persisted_invocation_identity_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+        load_persisted_invocation_identity_tx(&mut *tx, &record.invoke_id, &record.occurred_at)
             .await?
             .ok_or_else(|| {
                 anyhow!("persisted proxy runtime invocation row disappeared after upsert")
             })?;
     if write_derived_inline {
         upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
+            &mut *tx,
             &[InvocationHourlySourceRecord {
                 id: persisted_identity.id,
                 occurred_at: record.occurred_at.clone(),
@@ -3897,13 +3918,13 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         )
         .await?;
         save_hourly_rollup_live_progress_tx(
-            tx.as_mut(),
+            &mut *tx,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
             persisted_identity.id,
         )
         .await?;
         touch_invocation_upstream_account_last_activity_tx(
-            tx.as_mut(),
+            &mut *tx,
             &record.occurred_at,
             record.payload.as_deref(),
         )
@@ -3911,9 +3932,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     }
 
     let persisted =
-        load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
-            .await?;
-    tx.commit().await?;
+        load_persisted_api_invocation_tx(&mut *tx, &record.invoke_id, &record.occurred_at).await?;
 
     let core_write_elapsed_ms = core_write_started.elapsed().as_millis() as u64;
     if core_write_elapsed_ms >= 1_000 {

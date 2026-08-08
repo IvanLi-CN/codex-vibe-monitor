@@ -1,5 +1,9 @@
 # High-Frequency Runtime Data Plane Implementation
 
+`ProxySqliteWriteCoordinator` 是代理热写的统一 admission 面。实现覆盖 terminal P1/P2 actor、attempt 生命周期和 route success/failure 汇聚路径，并通过 `runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、各优先级 waiter 与 legacy bypass 计数。
+
+P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
+
 ## Delivery Topology
 
 - Integration branch: `prd/dashboard-runtime-delivery-plane`

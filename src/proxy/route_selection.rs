@@ -490,6 +490,73 @@ fn parse_selective_request_semantics(
     Ok(parsed)
 }
 
+#[cfg(target_os = "linux")]
+fn current_thread_cpu_time() -> Option<Duration> {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes to the valid timespec pointer and has no ownership effects.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    (result == 0).then(|| {
+        Duration::from_secs(value.tv_sec as u64)
+            .saturating_add(Duration::from_nanos(value.tv_nsec as u64))
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_thread_cpu_time() -> Option<Duration> {
+    None
+}
+
+fn record_request_semantic_cpu_window(cpu_time: Option<Duration>, wall_time: Duration, bytes: u64) {
+    use std::sync::{Mutex as StdMutex, OnceLock};
+
+    #[derive(Default)]
+    struct Window {
+        started_at: Option<Instant>,
+        cpu_ns: u128,
+        wall_ns: u128,
+        bytes: u64,
+        count: u64,
+    }
+
+    static WINDOW: OnceLock<StdMutex<Window>> = OnceLock::new();
+    let Ok(mut window) = WINDOW
+        .get_or_init(|| StdMutex::new(Window::default()))
+        .lock()
+    else {
+        return;
+    };
+    let started_at = *window.started_at.get_or_insert_with(Instant::now);
+    window.cpu_ns = window
+        .cpu_ns
+        .saturating_add(cpu_time.map_or(0, |value| value.as_nanos()));
+    window.wall_ns = window.wall_ns.saturating_add(wall_time.as_nanos());
+    window.bytes = window.bytes.saturating_add(bytes);
+    window.count = window.count.saturating_add(1);
+    if started_at.elapsed() < Duration::from_secs(30) {
+        return;
+    }
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    debug!(
+        component = "request_semantic_projection",
+        window_elapsed_ms = elapsed_ms,
+        parse_count = window.count,
+        parse_cpu_ms = (window.cpu_ns / 1_000_000) as u64,
+        parse_wall_ms = (window.wall_ns / 1_000_000) as u64,
+        parse_bytes = window.bytes,
+        throughput_bytes_per_second = (u128::from(window.bytes) * 1_000_000_000)
+            .checked_div(window.wall_ns)
+            .unwrap_or_default() as u64,
+        "request semantic CPU attribution window"
+    );
+    *window = Window {
+        started_at: Some(Instant::now()),
+        ..Window::default()
+    };
+}
+
 #[derive(Clone, Copy)]
 enum SelectiveSemanticScope {
     Root,
@@ -1058,25 +1125,47 @@ pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
     let started = Instant::now();
     let snapshot_kind = pool_request_snapshot_kind(snapshot);
     let snapshot_bytes = pool_request_snapshot_body_bytes(snapshot);
-    let (value, parse_outcome, file_read_count, json_parse_count) = match snapshot {
-        PoolReplayBodySnapshot::Empty => (None, "empty", 0_u8, 0_u8),
+    let (value, parse_outcome, file_read_count, json_parse_count, parse_cpu_time) = match snapshot {
+        PoolReplayBodySnapshot::Empty => (None, "empty", 0_u8, 0_u8, None),
         PoolReplayBodySnapshot::Memory(bytes) => {
+            let cpu_started = current_thread_cpu_time();
             match parse_selective_request_semantics(std::io::Cursor::new(bytes.as_ref())) {
-                Ok(value) => (Some(value), "parsed", 0, 1),
-                Err(_) => (None, "invalid_json", 0, 1),
+                Ok(value) => (
+                    Some(value),
+                    "parsed",
+                    0,
+                    1,
+                    cpu_started
+                        .zip(current_thread_cpu_time())
+                        .map(|(start, end)| end.saturating_sub(start)),
+                ),
+                Err(_) => (
+                    None,
+                    "invalid_json",
+                    0,
+                    1,
+                    cpu_started
+                        .zip(current_thread_cpu_time())
+                        .map(|(start, end)| end.saturating_sub(start)),
+                ),
             }
         }
         PoolReplayBodySnapshot::File { temp_file, .. } => {
             let path = temp_file.path.clone();
             match tokio::task::spawn_blocking(move || {
+                let cpu_started = current_thread_cpu_time();
                 let file = std::fs::File::open(path).map_err(|_| "read_failed")?;
-                parse_selective_request_semantics(file).map(Some)
+                let parsed = parse_selective_request_semantics(file).map(Some);
+                let cpu_time = cpu_started
+                    .zip(current_thread_cpu_time())
+                    .map(|(start, end)| end.saturating_sub(start));
+                parsed.map(|value| (value, cpu_time))
             })
             .await
             {
-                Ok(Ok(value)) => (value, "parsed", 1, 1),
-                Ok(Err(outcome)) => (None, outcome, 1, 1),
-                Err(_) => (None, "worker_failed", 1, 0),
+                Ok(Ok((value, cpu_time))) => (value, "parsed", 1, 1, cpu_time),
+                Ok(Err(outcome)) => (None, outcome, 1, 1, None),
+                Err(_) => (None, "worker_failed", 1, 0, None),
             }
         }
     };
@@ -1085,6 +1174,11 @@ pub(crate) async fn analyze_replay_snapshot_for_pool_routing(
     analysis.json_parse_count = json_parse_count;
     analysis.parse_outcome = parse_outcome;
     let analysis_elapsed_ms = elapsed_ms(started);
+    record_request_semantic_cpu_window(
+        parse_cpu_time,
+        started.elapsed(),
+        snapshot_bytes.min(u64::MAX as usize) as u64,
+    );
 
     if snapshot_kind == "file" {
         if analysis_elapsed_ms >= REPLAY_SNAPSHOT_ROUTE_ANALYSIS_SLOW_MS {

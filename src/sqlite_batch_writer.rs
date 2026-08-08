@@ -24,11 +24,56 @@ use crate::terminal_journal::{
     TerminalJournalStats,
 };
 
-pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
-pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 100;
+pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
+pub(crate) const SQLITE_BATCH_MAX_ROWS: usize = 32;
+pub(crate) const SQLITE_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
 pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
 pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
+const SQLITE_P1_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+];
+
+#[derive(Debug, Default)]
+struct P1RetryState {
+    generation: usize,
+    due_at: Option<Instant>,
+}
+
+impl P1RetryState {
+    fn ready(&self, now: Instant) -> bool {
+        self.due_at.is_none_or(|due_at| now >= due_at)
+    }
+
+    fn failed(&mut self, transaction_seed: u64) -> Duration {
+        let base = SQLITE_P1_RETRY_DELAYS[self.generation.min(SQLITE_P1_RETRY_DELAYS.len() - 1)];
+        self.generation = self.generation.saturating_add(1);
+        let jitter_ceiling_ms = (base.as_millis() as u64 / 10).max(1);
+        let jitter_ms = transaction_seed % jitter_ceiling_ms;
+        let delay = base.saturating_add(Duration::from_millis(jitter_ms));
+        self.due_at = Some(Instant::now() + delay);
+        delay
+    }
+
+    fn succeeded(&mut self) {
+        self.generation = 0;
+        self.due_at = None;
+    }
+}
+
+fn is_sqlite_lock_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("database is locked")
+            || message.contains("database is busy")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1273,6 +1318,8 @@ pub(crate) async fn run_sqlite_batch_writer(
     deferred_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut pending = PendingBatch::default();
     let mut control_closed = false;
+    let mut p1_retry = P1RetryState::default();
+    let mut transaction_sequence = 0_u64;
 
     loop {
         tokio::select! {
@@ -1436,7 +1483,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                     return;
                 };
                 pending.push_accounted(write, &accounting);
-                if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
+                if (pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
+                    || pending.estimated_memory_bytes() >= SQLITE_BATCH_MAX_BYTES)
+                    && (pending.terminal_invocations.is_empty() || p1_retry.ready(Instant::now()))
                     && let Some(retained) =
                         flush_pending_batch_accounted(
                             &accounting,
@@ -1452,11 +1501,26 @@ pub(crate) async fn run_sqlite_batch_writer(
                         )
                         .await
                     {
+                        if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                            transaction_sequence = transaction_sequence.saturating_add(1);
+                            let delay = p1_retry.failed(transaction_sequence);
+                            warn!(
+                                write_class = "p1_terminal",
+                                retry_generation = p1_retry.generation as u64,
+                                next_retry_delay_ms = delay.as_millis() as u64,
+                                "scheduled retained P1 batch with exponential backoff"
+                            );
+                        } else {
+                            p1_retry.succeeded();
+                        }
                         pending = retained.batch;
                     }
             }
             _ = ticker.tick() => {
                 if !pending.is_empty() {
+                    if !pending.terminal_invocations.is_empty() && !p1_retry.ready(Instant::now()) {
+                        continue;
+                    }
                     let flush_reason = if pending.age() >= SQLITE_BATCH_MAX_AGE {
                         if pending.age() >= SQLITE_BATCH_STALE_WARN_AGE {
                             warn!(
@@ -1481,6 +1545,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                     } else {
                         FlushReason::Interval
                     };
+                    let submitted_p1 = !pending.terminal_invocations.is_empty();
                     if let Some(retained) =
                         flush_pending_batch_accounted(
                             &accounting,
@@ -1496,7 +1561,21 @@ pub(crate) async fn run_sqlite_batch_writer(
                         )
                         .await
                     {
+                        if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                            transaction_sequence = transaction_sequence.saturating_add(1);
+                            let delay = p1_retry.failed(transaction_sequence);
+                            warn!(
+                                write_class = "p1_terminal",
+                                retry_generation = p1_retry.generation as u64,
+                                next_retry_delay_ms = delay.as_millis() as u64,
+                                "scheduled retained P1 batch with exponential backoff"
+                            );
+                        } else if submitted_p1 {
+                            p1_retry.succeeded();
+                        }
                         pending = retained.batch;
+                    } else if submitted_p1 {
+                        p1_retry.succeeded();
                     }
                 }
             }
@@ -1668,7 +1747,13 @@ pub(crate) async fn flush_pending_batch(
     let flush_reason = reason.as_str();
     let p1_batch = batch.take_p1_terminals();
     if !p1_batch.is_empty() {
-        match flush_pending_batch_inner(
+        let transaction_id = format!("p1-{}", started.elapsed().as_nanos());
+        let permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+            .await;
+        let lock_wait_ms = permit.lock_wait().as_millis() as u64;
+        let execute_started = Instant::now();
+        let initial_result = flush_pending_batch_inner(
             pool,
             &p1_batch,
             prompt_cache_conversation_cache,
@@ -1677,9 +1762,77 @@ pub(crate) async fn flush_pending_batch(
             terminal_projection_hub,
             dashboard_reconcile_gate,
         )
-        .await
-        {
+        .await;
+        let mut poison_record_count = 0_usize;
+        let p1_result = match initial_result {
+            Err(err) if !is_sqlite_lock_error(&err) => {
+                let mut deferred = PendingBatch::default();
+                let mut isolation_error = None;
+                for terminal in p1_batch.terminal_invocations.values() {
+                    let mut singleton = PendingBatch::default();
+                    singleton.push(SqliteBatchWrite::TerminalInvocation(terminal.clone()));
+                    match flush_pending_batch_inner(
+                        pool,
+                        &singleton,
+                        prompt_cache_conversation_cache,
+                        terminal_runtime_store,
+                        dashboard_activity_snapshot_cache,
+                        terminal_projection_hub,
+                        dashboard_reconcile_gate,
+                    )
+                    .await
+                    {
+                        Ok(singleton_deferred) => deferred.merge_p2(singleton_deferred),
+                        Err(singleton_err) if !is_sqlite_lock_error(&singleton_err) => {
+                            let quarantine_result = terminal_journal
+                                .lock()
+                                .ok()
+                                .and_then(|mut journal| {
+                                    journal.as_mut().map(|journal| {
+                                        journal.quarantine(terminal, &format!("{singleton_err:#}"))
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    Err(anyhow!("terminal journal unavailable for quarantine"))
+                                });
+                            if let Err(quarantine_err) = quarantine_result {
+                                isolation_error = Some(quarantine_err);
+                                break;
+                            }
+                            poison_record_count = poison_record_count.saturating_add(1);
+                            warn!(
+                                invoke_id = %terminal.record.invoke_id,
+                                occurred_at = %terminal.record.occurred_at,
+                                error = %singleton_err,
+                                poison_record_count,
+                                "quarantined deterministic P1 terminal record"
+                            );
+                        }
+                        Err(singleton_err) => {
+                            isolation_error = Some(singleton_err);
+                            break;
+                        }
+                    }
+                }
+                match isolation_error {
+                    Some(error) => Err(error),
+                    None => Ok(deferred),
+                }
+            }
+            result => result,
+        };
+        match p1_result {
             Ok(deferred) => {
+                debug!(
+                    write_class = permit.write_class(),
+                    transaction_id,
+                    batch_rows = p1_batch.logical_rows(),
+                    batch_bytes = p1_batch.estimated_memory_bytes(),
+                    lock_wait_ms,
+                    execute_ms = execute_started.elapsed().as_millis() as u64,
+                    poison_record_count,
+                    "proxy sqlite coordinated P1 batch committed"
+                );
                 accounting.transfer_p1_to_p2(deferred.estimated_memory_bytes());
                 if let Ok(mut journal) = terminal_journal.lock()
                     && let Some(journal) = journal.as_mut()
@@ -1704,6 +1857,12 @@ pub(crate) async fn flush_pending_batch(
                     oldest_age_ms,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     flush_reason,
+                    write_class = permit.write_class(),
+                    transaction_id,
+                    batch_rows = p1_batch.logical_rows(),
+                    batch_bytes = p1_batch.estimated_memory_bytes(),
+                    lock_wait_ms,
+                    execute_ms = execute_started.elapsed().as_millis() as u64,
                     "sqlite batch writer P1 terminal flush failed"
                 );
                 batch.terminal_invocations = p1_batch.terminal_invocations;
@@ -1735,6 +1894,10 @@ pub(crate) async fn flush_pending_batch(
         }
     };
 
+    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+
     let deferred_batch = match flush_pending_batch_inner(
         pool,
         &batch,
@@ -1762,6 +1925,7 @@ pub(crate) async fn flush_pending_batch(
             return Some(RetainedBatch::new(batch, true));
         }
     };
+    drop(write_permit);
     drop(permit);
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -1840,46 +2004,60 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut deferred_batch = PendingBatch::default();
     let mut should_invalidate_prompt_cache_conversations = false;
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-    for terminal in batch.terminal_invocations.values() {
-        let persisted = if terminal.raw_capture {
-            let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
-            persist_proxy_capture_record_core(pool, capture_started, terminal.record.clone(), false)
+    let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
+    if !batch.terminal_invocations.is_empty() {
+        let mut terminal_tx = pool.begin().await?;
+        for terminal in batch.terminal_invocations.values() {
+            let persisted = if terminal.raw_capture {
+                let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
+                persist_proxy_capture_record_tx(
+                    terminal_tx.as_mut(),
+                    capture_started,
+                    terminal.record.clone(),
+                    false,
+                )
                 .await
                 .with_context(|| "flush terminal raw proxy invocation")?
-        } else {
-            persist_proxy_capture_runtime_record_core(pool, terminal.record.clone(), false)
+            } else {
+                persist_proxy_capture_runtime_record_tx(
+                    terminal_tx.as_mut(),
+                    terminal.record.clone(),
+                    false,
+                )
                 .await
                 .with_context(|| "flush terminal runtime proxy invocation")?
-        };
-        let derived_identity = if let Some(persisted) = persisted {
-            if persisted
-                .prompt_cache_key
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty())
-            {
-                should_invalidate_prompt_cache_conversations = true;
-            }
-            Some((persisted.id, persisted.occurred_at))
-        } else {
-            // Terminal writes are committed before lower-priority derived work. If a later
-            // mixed-batch transaction fails, retry must still regenerate that derived work.
-            let mut lookup_tx = pool.begin().await?;
-            let identity = load_persisted_invocation_identity_tx(
-                lookup_tx.as_mut(),
-                &terminal.record.invoke_id,
-                &terminal.record.occurred_at,
-            )
-            .await?;
-            lookup_tx.commit().await?;
-            identity.map(|row| (row.id, terminal.record.occurred_at.clone()))
-        };
-        let (invocation_id, occurred_at) = derived_identity.ok_or_else(|| {
+            };
+            let derived_identity = if let Some(persisted) = persisted {
+                if persisted
+                    .prompt_cache_key
+                    .as_deref()
+                    .is_some_and(|key| !key.trim().is_empty())
+                {
+                    should_invalidate_prompt_cache_conversations = true;
+                }
+                Some((persisted.id, persisted.occurred_at))
+            } else {
+                let identity = load_persisted_invocation_identity_tx(
+                    terminal_tx.as_mut(),
+                    &terminal.record.invoke_id,
+                    &terminal.record.occurred_at,
+                )
+                .await?;
+                identity.map(|row| (row.id, terminal.record.occurred_at.clone()))
+            };
+            let (invocation_id, occurred_at) = derived_identity.ok_or_else(|| {
             anyhow!(
                 "terminal write completed without a persisted identity: invoke_id={} occurred_at={}",
                 terminal.record.invoke_id,
                 terminal.record.occurred_at
             )
         })?;
+            persisted_terminals.push((terminal, invocation_id, occurred_at));
+        }
+        terminal_tx.commit().await?;
+    }
+
+    for (terminal, invocation_id, occurred_at) in persisted_terminals {
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
             .ok()
@@ -1993,10 +2171,7 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     let invocation_derived = batch.invocation_derived.clone();
-    let terminal_overlay_keys = invocation_derived
-        .values()
-        .filter_map(|derived| derived.terminal_overlay_key.clone())
-        .collect::<Vec<_>>();
+    let mut terminal_overlay_keys = Vec::new();
     if !invocation_derived.is_empty() {
         let target_invocation_id = invocation_derived
             .keys()
@@ -2007,6 +2182,9 @@ pub(crate) async fn flush_pending_batch_inner(
             load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
                 .await?;
         replay_live_invocation_hourly_rollups_until_tx(tx.as_mut(), target_invocation_id).await?;
+        let live_rollup_cursor_after =
+            load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
+                .await?;
         let skipped_terminal_ids = invocation_derived
             .keys()
             .filter(|invocation_id| **invocation_id <= live_rollup_cursor_before)
@@ -2017,6 +2195,13 @@ pub(crate) async fn flush_pending_batch_inner(
                 .await?;
         }
         for derived in invocation_derived.values() {
+            if derived.invocation_id > live_rollup_cursor_after {
+                deferred_batch.push(SqliteBatchWrite::InvocationDerived(derived.clone()));
+                continue;
+            }
+            if let Some(key) = derived.terminal_overlay_key.clone() {
+                terminal_overlay_keys.push(key);
+            }
             touch_invocation_upstream_account_last_activity_tx(
                 tx.as_mut(),
                 &derived.occurred_at,
@@ -2100,24 +2285,36 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
     tx: &mut SqliteConnection,
     target_invocation_id: i64,
 ) -> Result<u64> {
-    let mut total_updated = 0;
-    loop {
-        let cursor =
-            load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-        if cursor >= target_invocation_id {
-            return Ok(total_updated);
-        }
-        let updated = replay_live_invocation_hourly_rollups_tx(tx).await?;
-        total_updated += updated;
-        if updated == 0 {
-            return Ok(total_updated);
-        }
+    let cursor = load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    if cursor >= target_invocation_id {
+        return Ok(0);
     }
+    replay_live_invocation_hourly_rollups_tx(tx).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p1_retry_backoff_is_bounded_and_new_work_does_not_reset_deadline() {
+        let mut retry = P1RetryState::default();
+        let expected = [250_u128, 500, 1_000, 2_000, 5_000, 5_000];
+        for (generation, expected_ms) in expected.into_iter().enumerate() {
+            let delay = retry.failed(0);
+            assert_eq!(delay.as_millis(), expected_ms, "generation {generation}");
+            let due_at = retry.due_at.expect("failed attempt sets deadline");
+            assert!(!retry.ready(Instant::now()));
+            assert_eq!(
+                retry.due_at,
+                Some(due_at),
+                "enqueue does not mutate retry state"
+            );
+        }
+        retry.succeeded();
+        assert!(retry.ready(Instant::now()));
+        assert_eq!(retry.generation, 0);
+    }
 
     #[test]
     fn pending_queue_accounting_clamps_underflow_and_degrades_health() {
@@ -2290,6 +2487,62 @@ mod tests {
             batch.estimated_memory_bytes()
         );
         assert_eq!(accounting.snapshot().pending_depth, batch.logical_rows());
+    }
+
+    #[tokio::test]
+    async fn p1_terminal_batch_rolls_back_the_committed_prefix_on_poison_record() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            CREATE TRIGGER reject_poison_terminal
+            BEFORE INSERT ON codex_invocations
+            WHEN NEW.invoke_id = 'poison-terminal'
+            BEGIN
+                SELECT RAISE(ABORT, 'poison terminal');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("install poison trigger");
+
+        let mut batch = PendingBatch::default();
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            terminal_write_for_coalescing("valid-terminal", Some(1)),
+        ));
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            terminal_write_for_coalescing("poison-terminal", Some(2)),
+        ));
+        let runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_cache = Arc::new(std::sync::Mutex::new(None));
+        let projection_hub = Arc::new(std::sync::Mutex::new(None));
+        let reconcile_gate = Arc::new(Mutex::new(()));
+
+        let error = flush_pending_batch_inner(
+            &pool,
+            &batch,
+            None,
+            &runtime_store,
+            &dashboard_cache,
+            &projection_hub,
+            &reconcile_gate,
+        )
+        .await
+        .expect_err("poison record aborts the complete P1 transaction");
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("poison terminal")),
+            "unexpected error chain: {error:#}"
+        );
+
+        let persisted = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id IN ('valid-terminal', 'poison-terminal')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count terminal rows");
+        assert_eq!(persisted, 0, "P1 transaction must not commit a prefix");
     }
 
     #[tokio::test]
