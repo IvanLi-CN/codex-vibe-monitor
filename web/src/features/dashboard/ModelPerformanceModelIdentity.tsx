@@ -1,6 +1,8 @@
 import { cn } from "../../lib/utils";
 import {
+  formatReasoningEffort,
   getReasoningEffortTone,
+  REASONING_EFFORT_FALLBACK,
   type ReasoningEffortTone,
 } from "../invocations/invocation-table-reasoning";
 import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
@@ -11,36 +13,39 @@ const EFFORT_TEXT_CLASSNAMES: Record<ReasoningEffortTone, string> = {
   low: "tone-ink-info",
   medium: "tone-ink-primary",
   high: "tone-ink-warning",
-  xhigh: "tone-ink-error",
+  xhigh: "tone-ink-warning",
+  max: "tone-ink-error",
+  ultra: "font-bold tone-ink-error",
   unknown: "text-base-content/62",
 };
 
 const EFFORT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
-  none: "bg-base-content/34",
+  none: "bg-base-content/45",
   minimal: "bg-info/65",
   low: "bg-info/80",
   medium: "bg-primary/80",
   high: "bg-warning/85",
-  xhigh: "bg-error/85",
+  xhigh: "bg-warning",
+  max: "bg-error/85",
+  ultra: "bg-error",
   unknown: "bg-base-content/38",
 };
 
 export function ModelPerformanceModelIdentity({
   model,
-  effort,
   effortValue,
   className,
   modelClassName,
   testId,
 }: {
   model: string;
-  effort: string;
   effortValue: string | null | undefined;
   className?: string;
   modelClassName?: string;
   testId?: string;
 }) {
-  const tone = effortValue ? getReasoningEffortTone(effortValue) : "none";
+  const effort = formatReasoningEffort(effortValue);
+  const tone = effort === REASONING_EFFORT_FALLBACK ? "none" : getReasoningEffortTone(effort);
   const hasModelIcon = resolveModelIdentityIcon(model) !== null;
   const accessibleLabel = `${model} · ${effort}`;
 
@@ -82,7 +87,10 @@ export function ModelPerformanceModelIdentity({
               EFFORT_TEXT_CLASSNAMES[tone],
             )}
           >
-            <span className={cn("h-1 w-1 shrink-0 rounded-full", EFFORT_MARKER_CLASSNAMES[tone])} />
+            <span
+              data-testid={testId ? `${testId}-effort-marker` : undefined}
+              className={cn("h-1 w-1 shrink-0 rounded-full", EFFORT_MARKER_CLASSNAMES[tone])}
+            />
             <span className="max-w-20 truncate">{effort}</span>
           </span>
         </span>

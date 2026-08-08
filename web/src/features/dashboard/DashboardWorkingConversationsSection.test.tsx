@@ -1580,7 +1580,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("缓存写入");
       expect(tooltipText).toContain("缓存读取");
       expect(tooltipText).toContain("总计");
-      expect(tooltipText).toContain("gpt-5.6");
+      expect(document.body.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
       expect(tooltipText).toContain("$0.34");
     });
 
@@ -1604,7 +1604,7 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(tooltipText).toContain("缓存命中率");
       expect(tooltipText).toContain("输出");
       expect(tooltipText).toContain("总计");
-      expect(tooltipText).toContain("gpt-5.6");
+      expect(document.body.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
     });
 
     const requestTrigger = host?.querySelector(

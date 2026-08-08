@@ -14,13 +14,6 @@ const labels = {
   output: "Output",
   unknownModel: "Unidentified model",
   reasoningEffort: "Reasoning effort",
-  unspecifiedEffort: "Unspecified",
-  effortNone: "None",
-  effortMinimal: "Minimal",
-  effortLow: "Low",
-  effortMedium: "Medium",
-  effortHigh: "High",
-  effortXhigh: "XHigh",
 };
 
 function exactBreakdown(): UsageBreakdown {
@@ -141,6 +134,44 @@ describe("UsageBreakdownTooltip", () => {
       "T30$0.00",
       "T150$0.00",
     ]);
+
+    act(() => root.unmount());
+  });
+
+  it("uses normalized raw reasoning efforts and the shared model identity", () => {
+    const breakdown = exactBreakdown();
+    breakdown.models = [
+      {
+        model: "gpt-5.6",
+        reasoningEffort: " MAX ",
+        cacheWriteTokens: 50,
+        cacheReadTokens: 10,
+        outputTokens: 20,
+      },
+      {
+        model: "gpt-5.6-luna-2026-07-27",
+        reasoningEffort: "ULTRA",
+        cacheWriteTokens: 20,
+        cacheReadTokens: 5,
+        outputTokens: 5,
+      },
+      {
+        model: "custom-model",
+        reasoningEffort: null,
+        cacheWriteTokens: 30,
+        cacheReadTokens: 5,
+        outputTokens: 5,
+      },
+    ];
+    const { host, root } = renderTooltip(breakdown);
+
+    expect(host.textContent).toContain("Reasoning effort: max");
+    expect(host.textContent).toContain("Reasoning effort: ultra");
+    expect(host.textContent).toContain("Reasoning effort: —");
+    expect(host.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
+    expect(host.querySelector('[data-model-identity="gpt-5.6-luna-2026-07-27"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("MAX");
+    expect(host.textContent).not.toContain("ULTRA");
 
     act(() => root.unmount());
   });

@@ -5,6 +5,7 @@ import { ModelIdentity, resolveModelIdentityIcon } from "./ModelIdentity";
 describe("resolveModelIdentityIcon", () => {
   it.each([
     ["gpt-5.6-sol", "white-balance-sunny"],
+    ["gpt-5.6", "white-balance-sunny"],
     ["gpt-5.6-terra", "earth"],
     ["gpt-5.6-luna", "weather-night"],
     ["gpt-5.6-sol-2026-07-08", "white-balance-sunny"],
@@ -14,18 +15,23 @@ describe("resolveModelIdentityIcon", () => {
     expect(resolveModelIdentityIcon(model)).toBe(iconName);
   });
 
-  it.each([
-    "gpt-5.6",
-    "gpt-5.5",
-    "gpt-5.6-sol-preview",
-    "custom-model",
-    "",
-  ])("does not map %s", (model) => {
+  it.each(["gpt-5.5", "gpt-5.6-sol-preview", "custom-model", ""])("does not map %s", (model) => {
     expect(resolveModelIdentityIcon(model)).toBeNull();
   });
 });
 
 describe("ModelIdentity", () => {
+  it.each([
+    ["gpt-5.6-sol", "white-balance-sunny", "text-warning"],
+    ["gpt-5.6-terra", "earth", "text-success"],
+    ["gpt-5.6-luna", "weather-night", "text-info"],
+  ])("renders %s with its fixed identity color", (model, iconName, colorClassName) => {
+    const markup = renderToStaticMarkup(<ModelIdentity model={model} />);
+
+    expect(markup).toContain(`data-model-icon=\"${iconName}\"`);
+    expect(markup).toContain(colorClassName);
+  });
+
   it("renders a target model as an icon with the complete accessible model id", () => {
     const markup = renderToStaticMarkup(
       <ModelIdentity model="gpt-5.6-terra-2026-07-08" testId="model-identity" />,
@@ -34,6 +40,7 @@ describe("ModelIdentity", () => {
     expect(markup).toContain('data-model-icon="earth"');
     expect(markup).toContain('aria-label="gpt-5.6-terra-2026-07-08"');
     expect(markup).toContain('title="gpt-5.6-terra-2026-07-08"');
+    expect(markup).toContain("text-success");
     expect(markup).not.toContain(">gpt-5.6-terra-2026-07-08<");
   });
 
@@ -42,5 +49,12 @@ describe("ModelIdentity", () => {
 
     expect(markup).toContain(">gpt-5.5<");
     expect(markup).not.toContain("data-model-icon");
+  });
+
+  it("uses the Sol identity for the gpt-5.6 alias", () => {
+    const markup = renderToStaticMarkup(<ModelIdentity model="gpt-5.6" />);
+
+    expect(markup).toContain('data-model-icon="white-balance-sunny"');
+    expect(markup).toContain("text-warning");
   });
 });

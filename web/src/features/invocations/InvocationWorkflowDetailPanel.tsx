@@ -27,6 +27,7 @@ import { resolveInvocationEndpointDisplay } from "../../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
+import { formatReasoningEffort } from "../shared/reasoningEffort";
 import {
   renderInvocationCostAuditWarning,
   resolveInvocationCostAuditDisplay,
@@ -115,6 +116,10 @@ function formatTimestamp(value: string | null | undefined, locale: string) {
 function formatOptionalText(value: string | null | undefined) {
   const normalized = value?.trim();
   return normalized ? normalized : FALLBACK_CELL;
+}
+
+function formatReasoningEffortValue(value: unknown) {
+  return formatReasoningEffort(typeof value === "string" ? value : null);
 }
 
 function normalizeEndpointCompactionKind(
@@ -885,7 +890,7 @@ function buildAttemptMetricActions(
     formatHttpStatus(attempt.httpStatus, localeTag) ??
     formatOptionalText(readString(responseSummary?.responseContentEncoding));
   const requestTier = formatOptionalText(readString(requestSummary?.requestedServiceTier));
-  const requestReasoning = formatOptionalText(readString(requestSummary?.reasoningEffort));
+  const requestReasoning = formatReasoningEffort(readString(requestSummary?.reasoningEffort));
   const requestTransport = formatOptionalText(readString(requestSummary?.transport));
   const requestEndpoint = resolveEndpointMetricDisplay({
     endpoint: readString(requestSummary?.endpoint),
@@ -1011,7 +1016,7 @@ function buildGenericMetricActions(
   if (entry.kind === "routingDecision" && routeRequest) {
     const requestModel = formatOptionalText(readString(routeRequest.requestModel));
     const requestTier = formatOptionalText(readString(routeRequest.requestedServiceTier));
-    const requestReasoning = formatOptionalText(readString(routeRequest.reasoningEffort));
+    const requestReasoning = formatReasoningEffort(readString(routeRequest.reasoningEffort));
     const requestTransport = formatOptionalText(readString(routeRequest.transport));
     const requestEndpoint = resolveEndpointMetricDisplay({
       endpoint: readString(routeRequest.endpoint),
@@ -1749,7 +1754,12 @@ function AttemptDetail({
         label: isZh ? "请求服务层级" : "Requested Tier",
         monospace: false,
       },
-      { key: "reasoningEffort", label: isZh ? "推理强度" : "Reasoning Effort", monospace: false },
+      {
+        key: "reasoningEffort",
+        label: isZh ? "推理强度" : "Reasoning Effort",
+        monospace: false,
+        formatter: formatReasoningEffortValue,
+      },
       {
         key: "compactionRequestKind",
         label: isZh ? "请求压缩模式" : "Request Compaction",
@@ -1800,6 +1810,7 @@ function AttemptDetail({
         key: "reasoningEffort",
         label: isZh ? "请求体推理强度" : "Body Reasoning",
         monospace: false,
+        formatter: formatReasoningEffortValue,
       },
       {
         key: "maxOutputTokens",
@@ -2310,7 +2321,12 @@ function GenericDetail({
         label: isZh ? "请求服务层级" : "Requested Tier",
         monospace: false,
       },
-      { key: "reasoningEffort", label: isZh ? "推理强度" : "Reasoning Effort", monospace: false },
+      {
+        key: "reasoningEffort",
+        label: isZh ? "推理强度" : "Reasoning Effort",
+        monospace: false,
+        formatter: formatReasoningEffortValue,
+      },
       {
         key: "compactionRequestKind",
         label: isZh ? "请求压缩模式" : "Request Compaction",

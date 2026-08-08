@@ -16,7 +16,7 @@ describe("resolveLongTermSeriesVisuals", () => {
       series("sol-low", "gpt-5.6-sol", "low"),
       series("terra-high", "gpt-5.6-terra", "high"),
     ];
-    const visuals = resolveLongTermSeriesVisuals(items, "model", "light", "Unspecified");
+    const visuals = resolveLongTermSeriesVisuals(items, "model", "light");
 
     expect(visuals.get("sol-high")).toMatchObject({ label: "gpt-5.6-sol · high" });
     expect(visuals.get("sol-medium")?.label).toBe("gpt-5.6-sol · medium");
@@ -32,13 +32,8 @@ describe("resolveLongTermSeriesVisuals", () => {
     const items = Array.from({ length: 8 }, (_, index) =>
       series(`model-${index}`, `model-${String(index + 1).padStart(2, "0")}`, "high"),
     );
-    const visuals = resolveLongTermSeriesVisuals(items, "model", "dark", "Unspecified");
-    const reordered = resolveLongTermSeriesVisuals(
-      [...items].reverse(),
-      "model",
-      "dark",
-      "Unspecified",
-    );
+    const visuals = resolveLongTermSeriesVisuals(items, "model", "dark");
+    const reordered = resolveLongTermSeriesVisuals([...items].reverse(), "model", "dark");
 
     expect(new Set([...visuals.values()].map((visual) => visual.color))).toHaveLength(8);
     for (const item of items) {
@@ -54,7 +49,6 @@ describe("resolveLongTermSeriesVisuals", () => {
       ],
       "upstream",
       "light",
-      "Unspecified",
     );
 
     expect(visuals.get("account:primary")?.label).toBe("Primary account");

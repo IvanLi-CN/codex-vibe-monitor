@@ -11,13 +11,6 @@ const labels = {
   output: "Output",
   unknownModel: "Unidentified model",
   reasoningEffort: "Reasoning effort",
-  unspecifiedEffort: "Unspecified",
-  effortNone: "None",
-  effortMinimal: "Minimal",
-  effortLow: "Low",
-  effortMedium: "Medium",
-  effortHigh: "High",
-  effortXhigh: "XHigh",
 };
 
 const exactBreakdown: UsageBreakdown = {
@@ -35,7 +28,7 @@ const exactBreakdown: UsageBreakdown = {
   models: [
     {
       model: "gpt-5.6",
-      reasoningEffort: "high",
+      reasoningEffort: " MAX ",
       cacheWriteTokens: 290_000,
       cacheReadTokens: 128_000,
       outputTokens: 146_120,
@@ -49,7 +42,8 @@ const exactBreakdown: UsageBreakdown = {
       },
     },
     {
-      model: "gpt-5.4-mini",
+      model: "gpt-5.6-luna-2026-07-27",
+      reasoningEffort: "ULTRA",
       cacheWriteTokens: 142_000,
       cacheReadTokens: 68_000,
       outputTokens: 68_070,

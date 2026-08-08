@@ -29,7 +29,7 @@ import {
   buildInvocationDetailViewModel,
   InvocationExpandedDetails,
 } from "./invocation-details-shared";
-import { getReasoningEffortTone } from "./invocation-table-reasoning";
+import { formatReasoningEffort, getReasoningEffortTone } from "./invocation-table-reasoning";
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
@@ -714,12 +714,21 @@ describe("getReasoningEffortTone", () => {
     expect(getReasoningEffortTone("medium")).toBe("medium");
     expect(getReasoningEffortTone("high")).toBe("high");
     expect(getReasoningEffortTone("xhigh")).toBe("xhigh");
+    expect(getReasoningEffortTone("max")).toBe("max");
+    expect(getReasoningEffortTone("ultra")).toBe("ultra");
   });
 
   it("treats unknown raw strings as unknown tone", () => {
     expect(getReasoningEffortTone("custom-tier")).toBe("unknown");
     expect(getReasoningEffortTone("constructor")).toBe("unknown");
     expect(getReasoningEffortTone("__proto__")).toBe("unknown");
+  });
+
+  it("normalizes display values and preserves the shared missing fallback", () => {
+    expect(formatReasoningEffort(" MAX ")).toBe("max");
+    expect(formatReasoningEffort("ULTRA")).toBe("ultra");
+    expect(formatReasoningEffort("CUSTOM-TIER")).toBe("custom-tier");
+    expect(formatReasoningEffort(null)).toBe("—");
   });
 });
 
@@ -1407,6 +1416,33 @@ describe("InvocationTable", () => {
     expect(endpointCell?.textContent).toMatch(/图片工具|Image tool/);
   });
 
+  it("keeps request and response model identities visible when routing changes the model", async () => {
+    await renderInteractiveTable([
+      {
+        id: 40,
+        invokeId: "invocation-model-routing-identity",
+        occurredAt: "2026-03-24T06:54:52Z",
+        createdAt: "2026-03-24T06:54:52Z",
+        source: "proxy",
+        proxyDisplayName: "routing-proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.6-sol",
+        requestModel: "gpt-5.6-terra",
+        responseModel: "gpt-5.6-sol",
+        status: "success",
+        totalTokens: 1024,
+        cost: 0.0102,
+      },
+    ]);
+
+    const identities = [
+      ...(host?.querySelectorAll('[data-testid="invocation-table-model"] [data-model-identity]') ??
+        []),
+    ].map((element) => element.getAttribute("data-model-identity"));
+
+    expect(identities).toEqual(["gpt-5.6-terra", "gpt-5.6-sol"]);
+  });
+
   it("keeps latency summary fields out of request details while preserving stage timings", async () => {
     const record: ApiInvocation = {
       id: 34,
@@ -1815,6 +1851,33 @@ describe("InvocationTable", () => {
     expect(html).toContain("custom-tier");
     expect(html).toContain('data-reasoning-effort-tone="unknown"');
     expect(html).toContain("border-dashed");
+  });
+
+  it("renders max and ultra with their highest-intensity shared tones", () => {
+    const html = renderTable([
+      {
+        ...createInvocationRecord(0),
+        id: 4,
+        invokeId: "invocation-reasoning-max",
+        model: "gpt-5.6",
+        reasoningEffort: " MAX ",
+      },
+      {
+        ...createInvocationRecord(1),
+        id: 5,
+        invokeId: "invocation-reasoning-ultra",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "ULTRA",
+      },
+    ]);
+
+    expect(html).toContain('data-reasoning-effort-tone="max"');
+    expect(html).toContain('data-reasoning-effort-tone="ultra"');
+    expect(html).toContain("text-error");
+    expect(html).toContain('title="max"');
+    expect(html).toContain('title="ultra"');
+    expect(html).toContain('data-model-identity="gpt-5.6"');
+    expect(html).toContain('data-model-identity="gpt-5.6-luna"');
   });
 
   it("renders effective and requested-only fast indicators with distinct states", () => {

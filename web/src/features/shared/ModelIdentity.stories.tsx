@@ -9,7 +9,7 @@ const meta = {
   parameters: { layout: "centered" },
   decorators: [
     (Story) => (
-      <div className="w-[min(32rem,calc(100vw-2rem))] rounded-xl border border-base-300 bg-base-100 p-6 text-base-content shadow-sm">
+      <div className="w-full max-w-lg rounded-xl border border-base-300 bg-base-100 p-6 text-base-content shadow-sm">
         <div className="flex flex-wrap items-center gap-5 text-sm">
           <Story />
         </div>
@@ -35,18 +35,28 @@ export const SolTerraLuna: Story = {
     await expect(canvas.getByTestId("model-sol")).toHaveAttribute("aria-label", "gpt-5.6-sol");
     await expect(canvas.getByTestId("model-terra")).toHaveAttribute("data-model-icon", "earth");
     await expect(canvas.getByTestId("model-luna")).toHaveAttribute("title", "gpt-5.6-luna");
+    await expect(canvas.getByTestId("model-sol").querySelector("svg")).toHaveClass("text-warning");
+    await expect(canvas.getByTestId("model-terra").querySelector("svg")).toHaveClass(
+      "text-success",
+    );
+    await expect(canvas.getByTestId("model-luna").querySelector("svg")).toHaveClass("text-info");
   },
 };
 
 export const DatedVariantAndFallback: Story = {
   render: () => (
     <>
+      <ModelIdentity model="gpt-5.6" testId="model-alias" />
       <ModelIdentity model="gpt-5.6-sol-2026-07-08" testId="model-dated" />
       <ModelIdentity model="gpt-5.5" testId="model-fallback" />
     </>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("model-alias")).toHaveAttribute(
+      "data-model-icon",
+      "white-balance-sunny",
+    );
     await expect(canvas.getByTestId("model-dated")).toHaveAttribute(
       "data-model-icon",
       "white-balance-sunny",

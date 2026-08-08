@@ -35,6 +35,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
+  renderInvocationModelBadge,
   renderReasoningEffortBadge,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
@@ -938,7 +939,15 @@ export function InvocationCardList({
             title={modelLabel}
             data-testid="invocation-table-model"
           >
-            {modelLabel}
+            {renderInvocationModelBadge(row.modelValue, {
+              t,
+              hasMismatch: row.modelHasMismatch,
+              requestModel: row.modelHasMismatch ? row.requestModelValue : undefined,
+              className: "max-w-full",
+              textClassName: "font-mono text-[11px] text-base-content/68",
+              iconClassName: "h-3.5 w-3.5",
+              title: modelLabel,
+            })}
           </span>
           {secondaryBadges.length > 0 ? (
             <span className="flex min-w-0 flex-wrap items-center gap-1">{secondaryBadges}</span>
