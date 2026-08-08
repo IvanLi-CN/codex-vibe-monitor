@@ -1246,6 +1246,9 @@ pub(crate) struct DashboardActivityTerminalDelta {
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
     pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
+    /// Bounded Dashboard projection data for retaining the existing recent-invocation contract
+    /// without reloading SQLite or broadcasting a full invocation record.
+    pub(crate) recent_invocation: PromptCacheConversationInvocationPreviewResponse,
     pub(crate) persisted_row_id: Option<i64>,
     pub(crate) estimated_bytes: usize,
 }
@@ -2207,6 +2210,8 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) snapshot_id: i64,
+    #[serde(skip)]
+    pub(crate) terminal_sequence: u64,
     pub(crate) live_revision: u64,
     pub(crate) rate_window: DashboardActivityRateWindowResponse,
     pub(crate) summary: DashboardActivitySummaryResponse,

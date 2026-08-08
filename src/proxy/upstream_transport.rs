@@ -181,7 +181,7 @@ impl UpstreamTrafficReporter {
             recorded = true;
         }
         if recorded {
-            schedule_dashboard_activity_live_snapshot(self.state.as_ref());
+            schedule_dashboard_network_projection(self.state.as_ref());
         }
     }
 }

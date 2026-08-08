@@ -258,6 +258,11 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         response_json["runtimePressureHealth"]["requestPipeline"]["mode"],
         "projection"
     );
+    assert!(response_json["runtimePressureHealth"]["dashboardProjection"]["sliceCounters"]["current"]["buildCount"].is_u64());
+    assert!(
+        response_json["runtimePressureHealth"]["delivery"]["activity"]["serializationCount"]
+            .is_u64()
+    );
     assert!(
         response_json["runtimePressureHealth"]["requestPipeline"]["semanticParseCount"].is_u64()
     );
@@ -384,6 +389,10 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert_eq!(payload["dashboardProjection"]["livePathDbReadCount"], 0);
     assert!(payload["dashboardProjection"]["buildCount"].is_u64());
     assert!(payload["dashboardProjection"]["activeSubscriberCount"].is_u64());
+    assert!(
+        payload["dashboardProjection"]["sliceCounters"]["terminal"]["cadenceMissCount"].is_u64()
+    );
+    assert!(payload["delivery"]["summary"]["frameBytesCount"].is_u64());
     assert_eq!(payload["requestPipeline"]["lastSnapshotKind"], "file");
     assert_eq!(payload["requestPipeline"]["semanticParseCount"], 1);
     assert_eq!(
@@ -852,6 +861,21 @@ pub(crate) async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppStat
     .await
 }
 
+pub(crate) async fn test_state_with_openai_base_and_runtime_projection_mode(
+    openai_base: Url,
+    runtime_projection_mode: RuntimeProjectionMode,
+) -> Arc<AppState> {
+    let mut config = test_config();
+    config.openai_upstream_base_url = openai_base;
+    test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
+        config,
+        true,
+        PoolNoAvailableWaitSettings::default(),
+        runtime_projection_mode,
+    )
+    .await
+}
+
 pub(crate) async fn test_state_with_openai_base_and_body_limit(
     openai_base: Url,
     body_limit: usize,
@@ -953,6 +977,21 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     startup_ready: bool,
     pool_no_available_wait: PoolNoAvailableWaitSettings,
 ) -> Arc<AppState> {
+    test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
+        config,
+        startup_ready,
+        pool_no_available_wait,
+        RuntimeProjectionMode::Auto,
+    )
+    .await
+}
+
+async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
+    config: AppConfig,
+    startup_ready: bool,
+    pool_no_available_wait: PoolNoAvailableWaitSettings,
+    runtime_projection_mode: RuntimeProjectionMode,
+) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
@@ -979,7 +1018,8 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     let sqlite_batch_writer = SqliteBatchWriter::spawn_for_test_with_prompt_cache(
         prompt_cache_conversation_cache.clone(),
     );
-    let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
+    let proxy_runtime_invocations =
+        Arc::new(ProxyRuntimeInvocationStore::new(runtime_projection_mode));
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
 
     Arc::new(AppState {

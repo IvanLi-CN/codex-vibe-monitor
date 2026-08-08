@@ -13,11 +13,15 @@ flowchart LR
     Upstream --> Journal["P1 terminal journal"]
     Journal --> SQLite[(SQLite durable facts)]
     Journal --> Terminal["TerminalProjectionHub"]
-    Runtime --> Dashboard["Dashboard live projection"]
-    Terminal --> Dashboard
-    Dashboard --> Frame["Arc<SerializedTopicFrame>"]
+    Runtime --> Current["Current / phase projection (250ms)"]
+    Runtime --> Network["Network projection (1s)"]
+    Terminal --> Totals["Terminal totals projection (5s)"]
+    Current --> Materializer["Typed TopicMaterializer"]
+    Network --> Materializer
+    Totals --> Materializer
+    Materializer --> Frame["Arc<SerializedTopicFrame>"]
     Frame --> SSE["SSE cache / replay / subscribers"]
-    SQLite -. "startup / 60s reconcile / cold fallback" .-> Dashboard
+    SQLite -. "startup / 60s reconcile / cold fallback" .-> Totals
     SQLite --> Historical["Closed-range and historical APIs"]
 ```
 
@@ -45,10 +49,10 @@ flowchart LR
 
 ## 4. Dashboard 与 SSE
 
-- Dashboard current-state 以 `250ms` 固定 deadline 合并，terminal totals 以 `5s` 合并，SQLite baseline 每 `60s` 对账。
+- Dashboard current/phase、network/rate、terminal totals 分别以 `250ms`、`1s`、`5s` 固定 deadline 合并，SQLite baseline 每 `60s` 对账。各切片独立推进 revision，network 更新不得唤醒完整 activity/summary projection。
 - 健康 `today / 1d / 7d` live render 只读 Runtime/Terminal Projection；已有 last-good 时失败不会在订阅请求链同步查库。
 - `yesterday / previous7d / usage` 与其他 closed-range 查询继续使用 exact DB builder。
-- 每个 topic revision 生成一个 `Arc<SerializedTopicFrame>`。subscriber 数量只增加引用，不增加 builder 或 serialization 次数；fingerprint 未变化时不推进 cursor。
+- typed materializer 根据 topic dependency revision tuple 生成一个 `Arc<SerializedTopicFrame>`。delivery 不接收完整业务 snapshot 或通用 JSON overlay；subscriber 数量只增加引用，不增加 builder 或 serialization 次数。
 - 第一位 owner subscriber 激活 producer；无 owner subscriber 时停止周期构建并标记 dirty，重新订阅时恢复 fresh snapshot/replay 语义。
 
 ## 5. 持久化与历史数据
@@ -63,7 +67,7 @@ flowchart LR
 - `DASHBOARD_RUNTIME_PROJECTION_MODE=auto|legacy` 控制 Dashboard 投影路径；默认 `auto`。
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。
-- accounting violation、live-path DB read、whole-body materialization、持续 stale 或重复 serialization 必须可被结构化 telemetry 判责。
+- accounting violation、live-path DB read、whole-body materialization、cadence miss、subscription lag/skipped 或重复 serialization 必须改变健康状态并可被结构化 telemetry 判责。
 - 运行镜像默认 `MALLOC_ARENA_MAX=8`，部署可显式覆盖；该设置只限制 glibc arena 保留，不改变业务并发。
 
 ## 7. 对外接口

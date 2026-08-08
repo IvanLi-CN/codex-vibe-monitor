@@ -76,7 +76,7 @@ related_specs:
 - coverage repair 应优先 owner 正在使用的闭合小时，并受 bucket 数与 elapsed 双预算约束；历史全量 backlog 连续无进展时应指数退避，永久 payload-required blocked target 不得被计入 actionable backlog 或触发高频 hourly refresh。
 - `response_source=memory` 只能描述实际请求没有执行 DB build 的结果。若本次先构建 DB baseline 再返回 last-good，必须同时记录 `build_attempted=true`、`build_source` 与 reconcile outcome，不能用最终 payload 来源掩盖本次数据库成本。
 - topic 刷新必须使用连接级 owner subscriber 引用计数，而不是内部 broadcast receiver 数量；没有 owner subscriber 时只标记 dirty。重新订阅时应清除旧 replay 连续性并构建 fresh snapshot，避免把失活期间积累的旧 ring 当作权威连续状态回放。
-- Summary open-range 的 terminal refresh 应使用固定 `500ms` deadline；同一 deadline 内后续事件只累计 `coalesced_event_count`，不延长窗口。刷新失败保留 last-good totals，并记录 `refresh_outcome`、`last_good_age_ms` 与有界 retry backoff。
+- `legacy` Summary open-range 的 terminal refresh 使用固定 `500ms` deadline；`auto` 路径必须改由 5 秒 revisioned terminal slice 原地更新 typed base，不得在订阅任务 flush SQLite 或 reconcile。两条路径都不得延长 deadline，并在失败时保留 last-good totals 与有界 retry/backoff 证据。
 - proxy terminal follow-up 如果没有真实 quota owner subscriber，应直接跳过 quota refresh；不要用 broadcaster receiver 数量作为 owner-facing 订阅判断，也不要继续构建无生产消费者的 legacy Summary 窗口。
 - Dashboard / upstream-account 的 recent 预览不得再为了补当前态而对整个选中 range 扫 persisted `running/pending` 行；当前态应来自 runtime/live read model，旧持久化运行态最多只能作为 bounded recent 候选参与展示。
 - `stats.summary.current` 与 `/api/stats/summary` 的 open-range `usage_breakdown / non_success_tokens` 也不能再借道 raw preview rows 或 live invocation id overlap scan。若 summary 仍需要 `7d` / `today` / 长 duration 的模型分组或非成功 token，优先复用 live aggregate + archive aggregate merge；只有在 materialized archive 无法提供所需明细时，才允许显式 fallback/置空，而不是悄悄扫整窗 raw rows。
@@ -117,4 +117,7 @@ related_specs:
 
 - Dashboard live, terminal totals, and runtime overlays are separate projections with explicit cadences: current-state updates may coalesce at 250ms, terminal totals at 5s, and SQLite baseline reconcile at 60s. A terminal burst must never turn the 5s publish deadline into a database rebuild loop.
 - SSE producers serialize one immutable frame per revision and fan it out by shared byte chunks. Subscriber count must not multiply builder or JSON serialization work; an unchanged revision must not advance the topic cursor.
+- “每个 revision 只序列化一次”必须从 producer 到 subscriber 全链成立。若 producer 仍广播完整业务 snapshot，再由多个 topic 克隆 cached payload、修改 `serde_json::Value` 并分别序列化，那么共享 frame 只消除了同 topic 的 subscriber 放大，没有消除单页面的多 topic 放大。
+- 高频 projection 应按数据变化性质拆分 revision 和 cadence：current/phase 可使用 `250ms`，network/rate 使用 `1s`，terminal totals 使用 `5s`。网络可见性不能为了保持活跃而重新标记完整 Dashboard projection。
+- 性能验收必须驱动真实 active-subscriber producer、全部页面 topic 与 mutation fan-out。单独证明零 SQL、单 topic Arc 复用或合成 snapshot p95，不能替代 Dashboard tab on/off CPU A/B。
 - `response_source=memory` is valid only when the request did not execute a database build. Reconcile attempts must additionally record build source, outcome, baseline age, active subscriber count, and pressure deferral so memory delivery cannot hide database cost.

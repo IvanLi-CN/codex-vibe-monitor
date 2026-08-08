@@ -357,6 +357,24 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const state = health?.state ?? "unknown";
   const stateLabel = t(`system.status.runtimePressure.states.${state}`);
   const alertVariant = state === "healthy" ? "success" : state === "unknown" ? "info" : "warning";
+  const slices = health?.dashboardProjection.sliceCounters;
+  const deliveryTopics = health
+    ? [
+        health.delivery.activity,
+        health.delivery.summary,
+        health.delivery.networkTimeseries,
+        health.delivery.networkRecent,
+      ]
+    : [];
+  const delivery = deliveryTopics.reduce(
+    (total, topic) => ({
+      serializationCount: total.serializationCount + topic.serializationCount,
+      frameBytesCount: total.frameBytesCount + topic.frameBytesCount,
+      laggedCount: total.laggedCount + topic.laggedCount,
+      skippedCount: total.skippedCount + topic.skippedCount,
+    }),
+    { serializationCount: 0, frameBytesCount: 0, laggedCount: 0, skippedCount: 0 },
+  );
 
   return (
     <section
@@ -411,6 +429,29 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
               <BreakdownRow
                 label={t("system.status.runtimePressure.liveDbReads")}
                 value={health.dashboardProjection.livePathDbReadCount.toLocaleString()}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.cadenceMisses")}
+                value={
+                  slices
+                    ? [slices.current, slices.network, slices.terminal]
+                        .reduce((count, slice) => count + slice.cadenceMissCount, 0)
+                        .toLocaleString()
+                    : "-"
+                }
+                hint={
+                  slices
+                    ? `current ${slices.current.cadenceMissCount.toLocaleString()} / network ${slices.network.cadenceMissCount.toLocaleString()} / terminal ${slices.terminal.cadenceMissCount.toLocaleString()}`
+                    : undefined
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.deliveryFrames")}
+                value={`${delivery.serializationCount.toLocaleString()} / ${formatBytes(delivery.frameBytesCount)}`}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.deliveryLag")}
+                value={`${delivery.laggedCount.toLocaleString()} / ${delivery.skippedCount.toLocaleString()}`}
               />
               <BreakdownRow
                 label={t("system.status.runtimePressure.allocatorArenas")}
