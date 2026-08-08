@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.58.4",
+  "base_stable_version": "2.58.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-08T12:51:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.58.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5dda6fae8767b05cbbfb360bfa298ae82101332d",
+  "pr_number": 763,
+  "pr_title": "fix(proxy): coordinate SQLite hot writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.58.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.58.4",
+  "target_sha": "61bc71710b8c3b6ff4a8871a0d5bd326281f2cdd",
+  "type_label": "type:patch"
+}
