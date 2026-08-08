@@ -9,7 +9,7 @@ const meta = {
   parameters: { layout: "centered" },
   decorators: [
     (Story) => (
-      <div className="w-[min(32rem,calc(100vw-2rem))] rounded-xl border border-base-300 bg-base-100 p-6 text-base-content shadow-sm">
+      <div className="w-full max-w-lg rounded-xl border border-base-300 bg-base-100 p-6 text-base-content shadow-sm">
         <div className="flex flex-wrap items-center gap-5 text-sm">
           <Story />
         </div>
