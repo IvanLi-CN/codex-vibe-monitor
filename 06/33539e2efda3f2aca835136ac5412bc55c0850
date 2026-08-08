@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.58.2",
+  "base_stable_version": "2.58.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-08T07:12:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.58.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e391817e866cbc34d2d431ddc1a31b8b3fb5d87d",
+  "pr_number": 750,
+  "pr_title": "perf: refactor dashboard runtime delivery plane",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.58.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.58.2",
+  "target_sha": "0633539e2efda3f2aca835136ac5412bc55c0850",
+  "type_label": "type:patch"
+}
