@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.58.3",
+  "base_stable_version": "2.58.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-08T08:41:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.58.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e2b7e8dc681e6e8ed313e5034aca32d6b4effe6d",
+  "pr_number": 762,
+  "pr_title": "feat(web): unify model identity presentation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.58.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.58.3",
+  "target_sha": "863b7ef17c0a26c897efd6742525808fd96522c7",
+  "type_label": "type:patch"
+}
