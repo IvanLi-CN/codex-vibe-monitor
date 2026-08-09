@@ -1,5 +1,11 @@
 # High-Frequency Runtime Data Plane Implementation
 
+## Typed Runtime Event Bus Boundary
+
+The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.
+
+Backfill scheduling is event-driven. Progress state owns `next_due` and wake generation; source-unavailable work sleeps until an archive/payload/coverage event or its daily bounded probe. A no-op pass does not create a task-run audit row. Health aggregates event-bus lag, projection recovery, and writer pressure using in-memory counters without adding status-page SQL.
+
 `ProxySqliteWriteCoordinator` 是代理热写的统一 admission 面。实现覆盖 terminal P1/P2 actor、attempt 生命周期和 route success/failure 汇聚路径，并通过 `runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、各优先级 waiter 与 legacy bypass 计数。
 
 P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 使用独立 250ms 固定 deadline，pressure defer、background busy 和实际 lock retry 分开调度与计数；hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
