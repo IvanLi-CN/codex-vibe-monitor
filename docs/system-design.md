@@ -70,7 +70,7 @@ flowchart LR
 
 ## 6. 健康与回退
 
-- `DASHBOARD_RUNTIME_PROJECTION_MODE=auto|legacy` 控制 Dashboard 投影路径；默认 `auto`。
+- typed runtime mutation bus 是 Dashboard 与 Prompt Cache 的唯一生产热路径；`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 和 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 不再可用，不能重新启用完整记录广播或全窗 topic 重建。
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
 - `PROXY_SQLITE_WRITE_COORDINATOR_MODE=coordinated|legacy` 控制代理热写协调器；默认 `coordinated`，legacy 只保留一个发布周期用于显式回滚。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。

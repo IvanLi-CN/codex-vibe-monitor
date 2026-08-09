@@ -6,7 +6,7 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
-    Mutex as StdMutex, OnceLock,
+    Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -36,15 +36,6 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
-
-fn prompt_cache_topic_projection_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        !std::env::var("PROMPT_CACHE_TOPIC_PROJECTION_MODE")
-            .ok()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("legacy"))
-    })
-}
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -388,6 +379,7 @@ type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFrame
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
+    runtime_mutation_bus: Arc<RuntimeMutationBus>,
     serialization_count: AtomicU64,
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
     #[cfg(test)]
@@ -449,12 +441,21 @@ struct CachedSubscriptionTopic {
 }
 
 #[derive(Debug, Clone)]
+struct RuntimeTopicWork {
+    topic: SubscriptionTopic,
+    terminal_event_count: u64,
+    includes_invocation_mutation: bool,
+}
+
+#[derive(Debug, Clone)]
 struct PromptCacheTopicDelta {
     row_id: i64,
     identity: String,
+    invoke_id: String,
     prompt_cache_key: Option<String>,
     sticky_key: Option<String>,
     occurred_at: Value,
+    is_runtime_removed: bool,
     status: String,
     is_terminal: bool,
     is_success: bool,
@@ -506,9 +507,11 @@ impl PromptCacheTopicDelta {
         Ok(Some(Self {
             row_id: record.id,
             identity: format!("{}\0{}", record.invoke_id, record.occurred_at),
+            invoke_id: record.invoke_id.clone(),
             prompt_cache_key,
             sticky_key,
             occurred_at,
+            is_runtime_removed: false,
             is_terminal: prompt_invocation_status_counts_toward_terminal_totals(Some(&status)),
             is_success: prompt_invocation_status_is_success_like(
                 Some(&status),
@@ -519,6 +522,55 @@ impl PromptCacheTopicDelta {
             cost: record.cost.unwrap_or_default(),
             upstream_account_id: record.upstream_account_id,
             upstream_account_name: record.upstream_account_name.clone(),
+            preview,
+        }))
+    }
+
+    fn from_runtime_mutation(
+        mutation: &RuntimeInvocationMutation,
+    ) -> Result<Option<Self>, ApiError> {
+        let Some(preview) = mutation.preview.clone() else {
+            return Ok(None);
+        };
+        let preview = serde_json::to_value(preview)?;
+        let occurred_at = preview
+            .get("occurredAt")
+            .cloned()
+            .unwrap_or_else(|| Value::String(mutation.identity.occurred_at.clone()));
+        let status = preview
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let error_message = preview.get("errorMessage").and_then(Value::as_str);
+        Ok(Some(Self {
+            row_id: mutation.row_id.unwrap_or_default(),
+            identity: format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            ),
+            invoke_id: mutation.identity.invoke_id.clone(),
+            prompt_cache_key: mutation.prompt_cache_key.clone(),
+            sticky_key: mutation.sticky_key.clone(),
+            occurred_at,
+            is_runtime_removed: mutation.kind == RuntimeMutationKind::RuntimeRemoved,
+            is_terminal: mutation.is_terminal,
+            is_success: prompt_invocation_status_is_success_like(Some(&status), error_message),
+            status,
+            request_tokens: preview
+                .get("totalTokens")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                .max(0),
+            cost: preview
+                .get("cost")
+                .and_then(Value::as_f64)
+                .unwrap_or_default(),
+            upstream_account_id: mutation.upstream_account_id,
+            upstream_account_name: preview
+                .get("upstreamAccountName")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             preview,
         }))
     }
@@ -1126,6 +1178,26 @@ impl ConversationSubscriptionScope {
         }
     }
 
+    fn matches_runtime_mutation(&self, mutation: &RuntimeInvocationMutation) -> bool {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => mutation
+                .prompt_cache_key
+                .as_deref()
+                .is_some_and(|value| value == prompt_cache_key),
+            Self::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            } => {
+                mutation
+                    .sticky_key
+                    .as_deref()
+                    .or(mutation.prompt_cache_key.as_deref())
+                    .is_some_and(|value| value == sticky_key)
+                    && mutation.upstream_account_id == Some(*upstream_account_id)
+            }
+        }
+    }
+
     fn matches_sticky_route_change(
         &self,
         sticky_key: &str,
@@ -1201,11 +1273,7 @@ impl SubscriptionHub {
             )
         });
         let mut snapshot = PromptCacheTopicProjectionHealthSnapshot {
-            mode: if prompt_cache_topic_projection_enabled() {
-                "memory".to_string()
-            } else {
-                "legacy".to_string()
-            },
+            mode: "memory".to_string(),
             response_source: "memory".to_string(),
             ..PromptCacheTopicProjectionHealthSnapshot::default()
         };
@@ -1254,6 +1322,7 @@ impl SubscriptionHub {
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
+            runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             serialization_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
             #[cfg(test)]
@@ -1263,6 +1332,18 @@ impl SubscriptionHub {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
         self.broadcaster.subscribe()
+    }
+
+    pub(crate) fn publish_runtime_mutation(&self, mutation: RuntimeMutation) {
+        self.runtime_mutation_bus.publish(mutation);
+    }
+
+    pub(crate) fn runtime_mutation_bus_health(&self) -> RuntimeMutationBusHealth {
+        self.runtime_mutation_bus.health()
+    }
+
+    pub(crate) fn runtime_mutation_bus(&self) -> Arc<RuntimeMutationBus> {
+        self.runtime_mutation_bus.clone()
     }
 
     fn serialize_frame(
@@ -1509,18 +1590,23 @@ impl SubscriptionHub {
                     guard.active_subscribers.remove(&topic_key);
                     guard.active_topics.remove(&topic_key);
                     guard.prompt_cache_prebaseline_records.remove(&topic_key);
-                    if let Some(cached) = guard.topics.get_mut(&topic_key)
-                        && matches!(
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        // A disconnected owner cannot consume the mutation stream. Rebuild this
+                        // selection before it can resume instead of scanning retained caches for
+                        // every runtime event.
+                        cached.dirty = true;
+                        cached.refresh_scheduled = false;
+                        cached.latest_live_snapshot = None;
+                        if matches!(
                             cached.topic,
                             SubscriptionTopic::PromptCacheWindow { .. }
                                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
-                        )
-                    {
-                        cached.prompt_cache_pending_records.clear();
-                        cached.prompt_cache_applied_terminal_ids.clear();
-                        cached.prompt_cache_refresh_scheduled = false;
-                        cached.prompt_cache_baseline_at = None;
-                        cached.dirty = true;
+                        ) {
+                            cached.prompt_cache_pending_records.clear();
+                            cached.prompt_cache_applied_terminal_ids.clear();
+                            cached.prompt_cache_refresh_scheduled = false;
+                            cached.prompt_cache_baseline_at = None;
+                        }
                     }
                 }
                 None => {}
@@ -2347,6 +2433,203 @@ impl SubscriptionHub {
         Ok(())
     }
 
+    async fn handle_runtime_mutation_batch(
+        &self,
+        state: Arc<AppState>,
+        mutations: Vec<SequencedRuntimeMutation>,
+    ) {
+        let mutations = coalesce_runtime_mutations(mutations);
+        if mutations.is_empty() {
+            return;
+        }
+        let runtime_mutations = mutations
+            .iter()
+            .map(|mutation| mutation.mutation.clone())
+            .collect::<Vec<_>>();
+        self.schedule_prompt_cache_topic_projection(state.clone(), &runtime_mutations)
+            .await;
+
+        for mutation in &runtime_mutations {
+            match mutation {
+                RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_binding_projection(state.as_ref(), prompt_cache_key)
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            prompt_cache_key,
+                            "failed to apply bounded prompt cache binding projection"
+                        );
+                    }
+                }
+                RuntimeMutation::StickyRouteChanged {
+                    sticky_key,
+                    previous_upstream_account_id,
+                    upstream_account_id,
+                } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_sticky_route_projection(
+                            sticky_key,
+                            *previous_upstream_account_id,
+                            *upstream_account_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            sticky_key, "failed to apply prompt cache sticky route projection"
+                        );
+                    }
+                }
+                RuntimeMutation::Invocation(_) | RuntimeMutation::AttemptChanged { .. } => {}
+            }
+        }
+
+        // Only active selections become work. Disconnection marks retained caches dirty, so this
+        // router never scans inactive payloads or clones them into the runtime hot path.
+        let affected = {
+            let guard = self.state.lock().await;
+            guard
+                .active_topics
+                .iter()
+                .filter_map(|(topic_key, topic)| {
+                    let active = guard
+                        .active_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        > 0;
+                    if !active
+                        || !runtime_mutations
+                            .iter()
+                            .any(|mutation| topic.is_affected_by_runtime_mutation(mutation))
+                    {
+                        return None;
+                    }
+                    let terminal_event_count = runtime_mutations
+                        .iter()
+                        .filter(|mutation| mutation.is_terminal_invocation())
+                        .count() as u64;
+                    Some(RuntimeTopicWork {
+                        topic: topic.clone(),
+                        terminal_event_count,
+                        includes_invocation_mutation: runtime_mutations
+                            .iter()
+                            .any(RuntimeMutation::is_invocation),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for work in affected {
+            // Dashboard activity, summary, and network are materialized by their dedicated
+            // runtime projection slices. A generic mutation must never send them back through
+            // the DB-backed topic builder.
+            if work.topic.uses_summary_live_overlay()
+                || work.topic.uses_dashboard_activity_live_overlay()
+                || work.topic.uses_dashboard_network_live_snapshot()
+            {
+                continue;
+            }
+            if work.topic.uses_summary_topic_refresh() && work.terminal_event_count > 0 {
+                if let Err(err) = self
+                    .schedule_summary_topic_refresh(
+                        state.clone(),
+                        work.topic.clone(),
+                        work.terminal_event_count,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule summary topic refresh"
+                    );
+                }
+                continue;
+            }
+            if work.topic.uses_conversation_overview_refresh() && work.includes_invocation_mutation
+            {
+                if let Err(err) = self
+                    .schedule_conversation_overview_topic_refresh(state.clone(), work.topic.clone())
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule conversation overview topic refresh"
+                    );
+                }
+                continue;
+            }
+            if let Err(err) = self
+                .refresh_topic(state.clone(), work.topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %work.topic.name(),
+                    "failed to refresh subscription topic after typed runtime mutation"
+                );
+            }
+        }
+    }
+
+    async fn mark_runtime_mutation_gap_and_recover(
+        &self,
+        state: Arc<AppState>,
+        skipped: u64,
+        reason: &'static str,
+    ) {
+        let topics = {
+            let mut guard = self.state.lock().await;
+            let active_subscribers = guard.active_subscribers.clone();
+            let active_topics = guard
+                .active_topics
+                .iter()
+                .filter(|(topic_key, _)| {
+                    active_subscribers
+                        .get(*topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        > 0
+                })
+                .map(|(topic_key, topic)| (topic_key.clone(), topic.clone()))
+                .collect::<Vec<_>>();
+            active_topics
+                .into_iter()
+                .filter_map(|(topic_key, topic)| {
+                    let cached = guard.topics.get_mut(&topic_key)?;
+                    cached.dirty = true;
+                    cached.latest_live_snapshot = None;
+                    cached.continuity_reset_cursor = Some(cached.cursor);
+                    Some(topic)
+                })
+                .collect::<Vec<_>>()
+        };
+        warn!(
+            skipped,
+            reason,
+            recovery = "dirty_last_good",
+            active_topic_count = topics.len(),
+            "runtime mutation cursor continuity lost; scheduling bounded topic recovery"
+        );
+        for topic in topics {
+            if let Err(err) = self
+                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %topic.name(),
+                    reason,
+                    "runtime mutation recovery retained last-good topic frame"
+                );
+            }
+        }
+    }
+
     pub(crate) async fn handle_internal_broadcast(
         &self,
         state: Arc<AppState>,
@@ -2379,48 +2662,6 @@ impl SubscriptionHub {
                 return;
             }
             _ => {}
-        }
-        if let BroadcastPayload::Records { records } = &payload
-            && prompt_cache_topic_projection_enabled()
-        {
-            self.schedule_prompt_cache_topic_projection(state.clone(), records)
-                .await;
-        }
-        if prompt_cache_topic_projection_enabled() {
-            match &payload {
-                BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => {
-                    if let Err(err) = self
-                        .apply_prompt_cache_binding_projection(state.as_ref(), prompt_cache_key)
-                        .await
-                    {
-                        warn!(
-                            ?err,
-                            prompt_cache_key,
-                            "failed to apply bounded prompt cache binding projection"
-                        );
-                    }
-                }
-                BroadcastPayload::PromptCacheConversationStickyRouteChanged {
-                    sticky_key,
-                    previous_upstream_account_id,
-                    upstream_account_id,
-                } => {
-                    if let Err(err) = self
-                        .apply_prompt_cache_sticky_route_projection(
-                            sticky_key,
-                            *previous_upstream_account_id,
-                            *upstream_account_id,
-                        )
-                        .await
-                    {
-                        warn!(
-                            ?err,
-                            sticky_key, "failed to apply prompt cache sticky route projection"
-                        );
-                    }
-                }
-                _ => {}
-            }
         }
         let affected = {
             let mut guard = self.state.lock().await;
@@ -2458,19 +2699,6 @@ impl SubscriptionHub {
         };
 
         for cached in affected {
-            if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
-                && matches!(
-                    &payload,
-                    BroadcastPayload::Records { records }
-                        if records
-                            .iter()
-                            .any(crate::app_state::runtime_store_record_is_terminal)
-                )
-                && (cached.topic.uses_summary_live_overlay()
-                    || cached.topic.uses_dashboard_activity_live_overlay())
-            {
-                continue;
-            }
             if cached.topic.uses_summary_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
@@ -2482,52 +2710,6 @@ impl SubscriptionHub {
                         ?err,
                         topic = %cached.topic.name(),
                         "failed to apply summary live overlay"
-                    );
-                }
-                continue;
-            }
-
-            if cached.topic.uses_summary_topic_refresh()
-                && let BroadcastPayload::Records { records } = &payload
-            {
-                if records
-                    .iter()
-                    .any(crate::app_state::runtime_store_record_is_terminal)
-                    && let Err(err) = self
-                        .schedule_summary_topic_refresh(
-                            state.clone(),
-                            cached.topic.clone(),
-                            records.len() as u64,
-                        )
-                        .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule summary topic refresh"
-                    );
-                }
-                continue;
-            }
-
-            if cached.topic.uses_conversation_overview_refresh()
-                && matches!(
-                    payload,
-                    BroadcastPayload::Records { .. }
-                        | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. }
-                )
-            {
-                if let Err(err) = self
-                    .schedule_conversation_overview_topic_refresh(
-                        state.clone(),
-                        cached.topic.clone(),
-                    )
-                    .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule conversation overview topic refresh"
                     );
                 }
                 continue;
@@ -2548,32 +2730,6 @@ impl SubscriptionHub {
                         ?err,
                         topic = %cached.topic.name(),
                         "failed to apply dashboard activity live overlay"
-                    );
-                }
-                continue;
-            }
-
-            if matches!(&payload, BroadcastPayload::Records { .. })
-                && cached.topic.uses_dashboard_activity_live_overlay()
-            {
-                let needs_refresh = match &payload {
-                    BroadcastPayload::Records { records } => records
-                        .iter()
-                        .any(crate::app_state::runtime_store_record_is_terminal),
-                    _ => false,
-                };
-                if needs_refresh
-                    && let Err(err) = self
-                        .schedule_dashboard_activity_topic_refresh(
-                            state.clone(),
-                            cached.topic.clone(),
-                        )
-                        .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule dashboard activity topic refresh"
                     );
                 }
                 continue;
@@ -2880,11 +3036,18 @@ impl SubscriptionHub {
     async fn schedule_prompt_cache_topic_projection(
         &self,
         state: Arc<AppState>,
-        records: &[ApiInvocation],
+        mutations: &[RuntimeMutation],
     ) {
-        let records = records
+        let records = mutations
             .iter()
-            .map(PromptCacheTopicDelta::from_record)
+            .filter_map(|mutation| match mutation {
+                RuntimeMutation::Invocation(mutation) => {
+                    Some(PromptCacheTopicDelta::from_runtime_mutation(mutation))
+                }
+                RuntimeMutation::AttemptChanged { .. }
+                | RuntimeMutation::PromptCacheBindingChanged { .. }
+                | RuntimeMutation::StickyRouteChanged { .. } => None,
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(|records| records.into_iter().flatten().collect::<Vec<_>>());
         let Ok(records) = records else {
@@ -4057,6 +4220,27 @@ fn apply_prompt_cache_records_to_payload(
         let conversation_index = conversations.iter().position(|conversation| {
             conversation.get(key_field).and_then(Value::as_str) == Some(key)
         });
+        if record.is_runtime_removed {
+            let Some(index) = conversation_index else {
+                continue;
+            };
+            let Some(conversation) = conversations[index].as_object_mut() else {
+                continue;
+            };
+            let Some(recent) = conversation
+                .get_mut("recentInvocations")
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            let count_before = recent.len();
+            recent.retain(|item| {
+                item.get("invokeId").and_then(Value::as_str) != Some(record.invoke_id.as_str())
+                    || item.get("occurredAt") != Some(&record.occurred_at)
+            });
+            changed |= recent.len() != count_before;
+            continue;
+        }
         let index = match conversation_index {
             Some(index) => index,
             None => {
@@ -4857,13 +5041,11 @@ async fn run_server_push_topic_loop(
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
-    if prompt_cache_topic_projection_enabled()
-        && matches!(
-            topic,
-            SubscriptionTopic::PromptCacheWindow { .. }
-                | SubscriptionTopic::PromptCacheStickyWindow { .. }
-        )
-    {
+    if matches!(
+        topic,
+        SubscriptionTopic::PromptCacheWindow { .. }
+            | SubscriptionTopic::PromptCacheStickyWindow { .. }
+    ) {
         let mut interval = tokio::time::interval(PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -4952,13 +5134,14 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
     let hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let mut receiver = state.broadcaster.subscribe();
+    let listener_state = state.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 item = receiver.recv() => {
                     match item {
-                        Ok(payload) => hub.handle_internal_broadcast(state.clone(), payload).await,
+                        Ok(payload) => hub.handle_internal_broadcast(listener_state.clone(), payload).await,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             warn!(skipped, "subscription mutation listener lagged");
                         }
@@ -4968,6 +5151,86 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
             }
         }
     });
+    spawn_runtime_mutation_router(state);
+}
+
+fn spawn_runtime_mutation_router(state: Arc<AppState>) {
+    let hub = state.subscription_hub.clone();
+    let bus = hub.runtime_mutation_bus();
+    if !bus.claim_router() {
+        return;
+    }
+    let shutdown = state.shutdown.clone();
+    let mut receiver = bus.subscribe();
+    tokio::spawn(async move {
+        let mut last_sequence = 0_u64;
+        loop {
+            let first = tokio::select! {
+                _ = shutdown.cancelled() => return,
+                item = receiver.recv() => item,
+            };
+            let first = match first {
+                Ok(first) => first,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    bus.record_router_lag();
+                    bus.record_router_gap();
+                    last_sequence = 0;
+                    hub.mark_runtime_mutation_gap_and_recover(
+                        state.clone(),
+                        skipped,
+                        "receiver_lagged",
+                    )
+                    .await;
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            };
+            let mut batch = vec![first];
+            let mut lagged = 0_u64;
+            while batch.len() < RUNTIME_MUTATION_ROUTER_MAX_BATCH {
+                match receiver.try_recv() {
+                    Ok(mutation) => batch.push(mutation),
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                        lagged = lagged.saturating_add(skipped);
+                        break;
+                    }
+                    Err(broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+            if lagged > 0 {
+                bus.record_router_lag();
+                bus.record_router_gap();
+                last_sequence = 0;
+                hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "receiver_lagged")
+                    .await;
+                continue;
+            }
+            if runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &batch) {
+                bus.record_router_gap();
+                last_sequence = 0;
+                hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "cursor_gap")
+                    .await;
+                continue;
+            }
+            hub.handle_runtime_mutation_batch(state.clone(), batch)
+                .await;
+        }
+    });
+}
+
+fn runtime_mutation_batch_has_sequence_gap(
+    last_sequence: &mut u64,
+    batch: &[SequencedRuntimeMutation],
+) -> bool {
+    let mut gap = false;
+    for mutation in batch {
+        if mutation.sequence != last_sequence.saturating_add(1) {
+            gap = true;
+        }
+        *last_sequence = mutation.sequence;
+    }
+    gap
 }
 
 pub(crate) async fn topic_sse_stream(
@@ -5105,11 +5368,10 @@ pub(crate) async fn topic_sse_stream(
 impl SubscriptionTopic {
     fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
-            || (prompt_cache_topic_projection_enabled()
-                && matches!(
-                    self,
-                    Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
-                ))
+            || matches!(
+                self,
+                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
+            )
             || (mode == RuntimeProjectionMode::Legacy
                 && matches!(self, Self::DashboardNetworkRecentCurrent))
     }
@@ -5567,45 +5829,46 @@ impl SubscriptionTopic {
         )
     }
 
-    fn is_affected_by(&self, payload: &BroadcastPayload) -> bool {
-        if self.is_closed_summary_topic()
-            && matches!(
-                payload,
-                BroadcastPayload::Records { .. } | BroadcastPayload::DashboardActivityLive { .. }
-            )
-        {
-            return false;
-        }
-
-        match payload {
-            BroadcastPayload::Records { records } => match self {
-                Self::InvocationHistoryWindow { scope }
-                | Self::InvocationHistoryOverview { scope } => {
-                    records.iter().any(|record| scope.matches_record(record))
+    fn is_affected_by_runtime_mutation(&self, mutation: &RuntimeMutation) -> bool {
+        match mutation {
+            RuntimeMutation::Invocation(mutation) => {
+                if self.is_closed_summary_topic() {
+                    return false;
                 }
-                Self::DashboardActivityCurrent { .. }
-                | Self::DashboardNetworkTimeseriesWindow { .. }
-                | Self::DashboardNetworkRecentCurrent
-                | Self::DashboardWorkingConversationsCurrent { .. }
-                | Self::InvocationWindow { .. }
-                | Self::SummaryCurrent { .. }
-                | Self::TimeseriesOpenWindow { .. }
-                | Self::ParallelWorkCurrent { .. }
-                | Self::ForwardProxyLive => true,
-                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. } => {
-                    !prompt_cache_topic_projection_enabled()
+                match self {
+                    Self::InvocationHistoryWindow { scope }
+                    | Self::InvocationHistoryOverview { scope } => {
+                        scope.matches_runtime_mutation(mutation)
+                    }
+                    Self::DashboardActivityCurrent { .. }
+                    | Self::DashboardNetworkTimeseriesWindow { .. }
+                    | Self::DashboardNetworkRecentCurrent
+                    | Self::DashboardWorkingConversationsCurrent { .. }
+                    | Self::InvocationWindow { .. }
+                    | Self::SummaryCurrent { .. }
+                    | Self::TimeseriesOpenWindow { .. }
+                    | Self::ParallelWorkCurrent { .. }
+                    | Self::ForwardProxyLive => true,
+                    Self::AppVersion
+                    | Self::QuotaCurrent
+                    | Self::PromptCacheConversationBindingCurrent { .. }
+                    | Self::PromptCacheConversationOperationsWindow { .. }
+                    | Self::PromptCacheWindow { .. }
+                    | Self::PromptCacheStickyWindow { .. }
+                    | Self::InvocationPoolAttempts { .. } => false,
                 }
-                _ => false,
-            },
-            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => match self {
+            }
+            RuntimeMutation::AttemptChanged { invoke_id } => matches!(
+                self,
+                Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
+            ),
+            RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => matches!(
+                self,
                 Self::PromptCacheConversationBindingCurrent { scope }
-                | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
-                    scope.binding_key() == prompt_cache_key
-                }
-                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
-                _ => false,
-            },
-            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                    | Self::PromptCacheConversationOperationsWindow { scope, .. }
+                    if scope.binding_key() == prompt_cache_key
+            ),
+            RuntimeMutation::StickyRouteChanged {
                 sticky_key,
                 previous_upstream_account_id,
                 upstream_account_id,
@@ -5616,14 +5879,19 @@ impl SubscriptionTopic {
                     *previous_upstream_account_id,
                     *upstream_account_id,
                 ),
-                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
-                Self::PromptCacheStickyWindow { account_id, .. } => {
-                    !prompt_cache_topic_projection_enabled()
-                        && (*previous_upstream_account_id == *account_id
-                            || *upstream_account_id == *account_id)
-                }
                 _ => false,
             },
+        }
+    }
+
+    fn is_affected_by(&self, payload: &BroadcastPayload) -> bool {
+        if self.is_closed_summary_topic()
+            && matches!(payload, BroadcastPayload::DashboardActivityLive { .. })
+        {
+            return false;
+        }
+
+        match payload {
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
@@ -5637,12 +5905,13 @@ impl SubscriptionTopic {
             ),
             BroadcastPayload::DashboardCurrentSlice { .. }
             | BroadcastPayload::DashboardTerminalSlice { .. } => false,
-            BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
-                self,
-                Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
-            ),
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
+            #[cfg(test)]
+            BroadcastPayload::Records { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PromptCacheConversationChanged { .. }
+            | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => false,
         }
     }
 
@@ -6376,6 +6645,33 @@ fn prompt_cache_selection_params(
 mod tests {
     use super::*;
 
+    #[test]
+    fn runtime_mutation_sequence_gap_discards_partial_batch() {
+        let mut last_sequence = 0;
+        let first = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "first".to_string(),
+            },
+        }];
+        assert!(!runtime_mutation_batch_has_sequence_gap(
+            &mut last_sequence,
+            &first
+        ));
+
+        let gap = [SequencedRuntimeMutation {
+            sequence: 3,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "after-gap".to_string(),
+            },
+        }];
+        assert!(runtime_mutation_batch_has_sequence_gap(
+            &mut last_sequence,
+            &gap
+        ));
+        assert_eq!(last_sequence, 3);
+    }
+
     fn summary_topic() -> SubscriptionTopic {
         SubscriptionTopic::SummaryCurrent {
             window: "current".to_string(),
@@ -6982,6 +7278,50 @@ mod tests {
                 .expect("cached topic")
                 .replay_events
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn releasing_the_last_subscriber_marks_cached_topic_dirty() {
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::InvocationWindow {
+            limit: 20,
+            model: None,
+            status: None,
+        };
+        let topic_key = topic.cache_key().expect("invocation topic key");
+        hub.state.lock().await.topics.insert(
+            topic_key.clone(),
+            seeded_cached_topic(topic, &[], Utc::now()),
+        );
+        {
+            let mut guard = hub.state.lock().await;
+            guard.active_topics.insert(
+                topic_key.clone(),
+                SubscriptionTopic::InvocationWindow {
+                    limit: 20,
+                    model: None,
+                    status: None,
+                },
+            );
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        hub.release_topic_subscribers(
+            vec![topic_key.clone()],
+            vec!["invocations.window".to_string()],
+            false,
+        )
+        .await;
+
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.dirty),
+            "a reconnect must rebuild cached data changed while no owner was subscribed"
         );
     }
 
@@ -8513,9 +8853,20 @@ mod tests {
         assert_eq!(topic.descriptor(), descriptor);
         assert_eq!(topic.name(), "dashboard.network-recent.current");
         assert_eq!(topic.schema_epoch(), "dashboard.network-recent.current/v1");
-        assert!(topic.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new()
-        }));
+        assert!(
+            topic.is_affected_by_runtime_mutation(&RuntimeMutation::Invocation(
+                RuntimeInvocationMutation {
+                    identity: RuntimeInvocationIdentity::new("network", "2026-07-20 00:00:00"),
+                    kind: RuntimeMutationKind::RuntimeUpsert,
+                    row_id: None,
+                    is_terminal: false,
+                    prompt_cache_key: None,
+                    sticky_key: None,
+                    upstream_account_id: None,
+                    preview: None,
+                }
+            ))
+        );
         assert!(
             !topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
                 snapshot: Box::new(DashboardActivityLiveSnapshot {
@@ -8577,7 +8928,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_configuration_events_only_refresh_binding_and_operations_topics() {
+    fn typed_runtime_binding_events_only_refresh_binding_and_operations_topics() {
         let scope_params = BTreeMap::from([("promptCacheKey".to_string(), "pck-1".to_string())]);
         let calls = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
             topic: "invocation-history.window".to_string(),
@@ -8599,25 +8950,29 @@ mod tests {
             params: scope_params,
         })
         .expect("operations topic should parse");
-        let event = BroadcastPayload::PromptCacheConversationChanged {
+        let event = RuntimeMutation::PromptCacheBindingChanged {
             prompt_cache_key: "pck-1".to_string(),
         };
 
-        assert!(!calls.is_affected_by(&event));
-        assert!(!overview.is_affected_by(&event));
-        assert!(binding.is_affected_by(&event));
-        assert!(operations.is_affected_by(&event));
-        assert!(
-            !binding.is_affected_by(&BroadcastPayload::PromptCacheConversationChanged {
+        assert!(!calls.is_affected_by_runtime_mutation(&event));
+        assert!(!overview.is_affected_by_runtime_mutation(&event));
+        assert!(binding.is_affected_by_runtime_mutation(&event));
+        assert!(operations.is_affected_by_runtime_mutation(&event));
+        assert!(!binding.is_affected_by_runtime_mutation(
+            &RuntimeMutation::PromptCacheBindingChanged {
                 prompt_cache_key: "pck-2".to_string(),
+            }
+        ));
+        assert!(
+            !binding.is_affected_by_runtime_mutation(&RuntimeMutation::AttemptChanged {
+                invoke_id: "other".to_string(),
             })
         );
-        assert!(!binding.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new(),
-        }));
-        assert!(!operations.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new(),
-        }));
+        assert!(
+            !operations.is_affected_by_runtime_mutation(&RuntimeMutation::AttemptChanged {
+                invoke_id: "other".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -8631,16 +8986,16 @@ mod tests {
         let prompt_cache_topic = SubscriptionTopic::InvocationHistoryOverview {
             scope: ConversationSubscriptionScope::PromptCacheKey("sticky-1".to_string()),
         };
-        let event = BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+        let event = RuntimeMutation::StickyRouteChanged {
             sticky_key: "sticky-1".to_string(),
             previous_upstream_account_id: 41,
             upstream_account_id: 42,
         };
 
-        assert!(topic_for(41).is_affected_by(&event));
-        assert!(topic_for(42).is_affected_by(&event));
-        assert!(!topic_for(43).is_affected_by(&event));
-        assert!(prompt_cache_topic.is_affected_by(&event));
+        assert!(topic_for(41).is_affected_by_runtime_mutation(&event));
+        assert!(topic_for(42).is_affected_by_runtime_mutation(&event));
+        assert!(!topic_for(43).is_affected_by_runtime_mutation(&event));
+        assert!(prompt_cache_topic.is_affected_by_runtime_mutation(&event));
     }
 
     #[tokio::test]
@@ -9053,6 +9408,71 @@ mod tests {
         )
         .expect("deduplicate repeated terminal delta");
         assert_eq!(payload["conversations"][0]["requestCount"], 1);
+    }
+
+    #[test]
+    fn typed_runtime_removal_clears_the_matching_prompt_cache_preview() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "runtime-removal".to_string();
+        record.prompt_cache_key = Some("cache-key".to_string());
+        record.status = Some("running".to_string());
+
+        let RuntimeMutation::Invocation(upsert) =
+            RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeUpsert)
+        else {
+            unreachable!("runtime record must produce an invocation mutation");
+        };
+        let upsert = PromptCacheTopicDelta::from_runtime_mutation(&upsert)
+            .expect("build compact runtime delta")
+            .expect("prompt cache runtime delta");
+        let RuntimeMutation::Invocation(removal) =
+            RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeRemoved)
+        else {
+            unreachable!("runtime removal must produce an invocation mutation");
+        };
+        let removal = PromptCacheTopicDelta::from_runtime_mutation(&removal)
+            .expect("build compact removal delta")
+            .expect("prompt cache removal delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[upsert],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("apply runtime preview");
+        assert_eq!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent previews")
+                .len(),
+            1
+        );
+
+        assert!(
+            apply_prompt_cache_records_to_payload(
+                &topic,
+                &mut payload,
+                &[removal],
+                &mut applied_terminal_ids,
+                0,
+            )
+            .expect("remove runtime preview")
+        );
+        assert!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent previews")
+                .is_empty()
+        );
     }
 
     #[test]
