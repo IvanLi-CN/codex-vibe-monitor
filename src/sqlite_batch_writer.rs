@@ -138,6 +138,14 @@ async fn wait_for_p2_deadline(due_at: Option<Instant>) {
     }
 }
 
+fn p2_deadline_ready(
+    pending: &PendingBatch,
+    p2_schedule: &P2ScheduleState,
+    write_receiver: &mpsc::Receiver<SqliteBatchWrite>,
+) -> bool {
+    pending.has_p2() && write_receiver.is_empty() && p2_schedule.ready(Instant::now())
+}
+
 impl P1RetryState {
     fn ready(&self, now: Instant) -> bool {
         self.due_at.is_none_or(|due_at| now >= due_at)
@@ -1581,7 +1589,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 accounting.update_p2_schedule(&p2_schedule);
             }
             _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if pending.has_p2() && p2_schedule.ready(Instant::now()) =>
+                if p2_deadline_ready(&pending, &p2_schedule, &write_receiver) =>
             {
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
@@ -1703,6 +1711,35 @@ pub(crate) async fn run_sqlite_batch_writer(
                             Some(retained) => {
                                 let logical_rows = retained.batch.logical_rows();
                                 let failed = retained.failed;
+                                match retained.p2_defer {
+                                    Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                        p2_schedule.defer_pressure(
+                                            Duration::from_millis(remaining_ms),
+                                            P2WakeReason::PressureCooldownElapsed,
+                                        );
+                                    }
+                                    Some(P2DeferReason::BackgroundBusy {
+                                        observed_generation,
+                                    }) => {
+                                        p2_eligibility_generation = observed_generation;
+                                        p2_schedule.defer_until_background_eligible();
+                                    }
+                                    None if retained.failed
+                                        && retained.batch.has_p2()
+                                        && retained.batch.terminal_invocations.is_empty() =>
+                                    {
+                                        transaction_sequence = transaction_sequence.saturating_add(1);
+                                        p2_schedule.failed(transaction_sequence);
+                                        if retained.p2_lock_failure {
+                                            accounting.p2_lock_retried();
+                                        }
+                                    }
+                                    None if retained.batch.has_p2() => {
+                                        p2_schedule.arm_if_idle(Instant::now());
+                                    }
+                                    None => p2_schedule.succeeded(),
+                                }
+                                accounting.update_p2_schedule(&p2_schedule);
                                 pending = retained.batch;
                                 if failed {
                                     Err(format!(
@@ -2853,6 +2890,30 @@ mod tests {
         .expect("P2 pressure deadline should eventually wake");
     }
 
+    #[test]
+    fn queued_p1_write_blocks_ready_p2_deadline() {
+        let mut pending = PendingBatch::default();
+        pending.push(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_998,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        ));
+        let mut schedule = P2ScheduleState::default();
+        schedule.wake_background_eligible();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(SqliteBatchWrite::TerminalInvocation(
+                terminal_write_for_coalescing("queued-p1-priority", None),
+            ))
+            .expect("queue P1 terminal");
+
+        assert!(
+            !p2_deadline_ready(&pending, &schedule, &receiver),
+            "a queued P1 terminal must be received before a ready P2 deadline"
+        );
+    }
+
     #[tokio::test]
     async fn p2_eligibility_wake_resumes_a_deferred_flush() {
         let mut schedule = P2ScheduleState::default();
@@ -3981,6 +4042,109 @@ mod tests {
         assert_eq!(completed.pending_bytes, 0);
         assert_eq!(completed.state, "healthy");
 
+        writer.shutdown_and_drain().await;
+    }
+
+    #[tokio::test]
+    async fn flush_now_schedules_retained_p2_for_coordinator_eligibility() {
+        let pool = test_pool().await;
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        let initial = coordinator.snapshot().await;
+        assert!(initial.active_write_class.is_none());
+        assert_eq!(initial.p1_waiter_count, 0);
+        assert_eq!(initial.interactive_waiter_count, 0);
+        assert_eq!(initial.p2_waiter_count, 0);
+
+        let active_p2 = coordinator
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+            .await;
+        let interactive_coordinator = coordinator.clone();
+        let interactive_waiter = tokio::spawn(async move {
+            interactive_coordinator
+                .acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy,
+                )
+                .await
+        });
+        let waiter_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if coordinator.snapshot().await.interactive_waiter_count == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < waiter_deadline,
+                "interactive coordinator waiter did not register"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
+        );
+        assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                record: crate::tests::test_proxy_capture_record(
+                    "flush-now-coordinator-p2",
+                    "2026-08-10 12:00:00",
+                ),
+                capture_started: None,
+                raw_capture: false,
+                dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
+            },
+        )));
+
+        let flush_writer = writer.clone();
+        let flush_pool = pool.clone();
+        let flush_task = tokio::spawn(async move { flush_writer.flush_now(&flush_pool).await });
+        let p1_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if coordinator.snapshot().await.p1_waiter_count == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < p1_deadline,
+                "P1 coordinator waiter did not register"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        drop(active_p2);
+
+        tokio::time::timeout(Duration::from_secs(2), flush_task)
+            .await
+            .expect("flush_now should finish after the P1 coordinator permit is released")
+            .expect("flush_now task should complete")
+            .expect("deferred P2 should not fail the flush_now barrier");
+        let scheduled = writer.accounting_snapshot();
+        assert_eq!(
+            scheduled.p2_wake_reason.as_deref(),
+            Some("background_eligible"),
+            "retained P2 must wait on coordinator eligibility"
+        );
+        assert!(scheduled.pending_depth > 0);
+
+        let interactive_permit = tokio::time::timeout(Duration::from_secs(2), interactive_waiter)
+            .await
+            .expect("interactive waiter should be admitted after P1 commits")
+            .expect("interactive waiter task should complete");
+        drop(interactive_permit);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = writer.accounting_snapshot();
+                if snapshot.pending_depth == 0 && snapshot.p2_flush_attempt_count > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("eligibility notification should resume the retained P2 flush");
         writer.shutdown_and_drain().await;
     }
 
