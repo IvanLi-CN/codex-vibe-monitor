@@ -1119,6 +1119,112 @@ async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
 }
 
 #[tokio::test]
+async fn startup_backfill_idle_pass_does_not_create_a_system_task_run() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count startup backfill task runs before idle pass");
+
+    let cancel = CancellationToken::new();
+    let outcome = run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+
+    let after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count startup backfill task runs after idle pass");
+    assert!(!outcome.ran_actionable_task);
+    assert!(!outcome.had_failure);
+    assert_eq!(
+        after, before,
+        "idle maintenance must not create task-run audit rows"
+    );
+}
+
+#[tokio::test]
+async fn startup_backfill_event_wakes_only_the_matching_task() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let archive_task = StartupBackfillTask::UpstreamActivityArchives;
+    let historical_task = StartupBackfillTask::HistoricalRollups;
+    let suspended_until = format_utc_iso(Utc::now() + ChronoDuration::days(1));
+
+    for task in [archive_task, historical_task] {
+        save_startup_backfill_progress(
+            &state.pool,
+            task.name(),
+            StartupBackfillProgressUpdate {
+                cursor_id: 7,
+                scanned: 100,
+                updated: 0,
+                zero_update_streak: 4,
+                next_run_after: &suspended_until,
+                status: STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+                suspension_reason: Some("source_unavailable"),
+            },
+        )
+        .await
+        .expect("seed source-unavailable startup backfill progress");
+    }
+
+    wake_startup_backfill_tasks(&state.pool, &[archive_task], "test_archive_available")
+        .await
+        .expect("wake affected archive task");
+
+    let archive_progress = load_startup_backfill_progress(&state.pool, archive_task.name())
+        .await
+        .expect("load woken archive progress");
+    assert!(archive_progress.is_due(Utc::now()));
+    assert_eq!(archive_progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+    assert_eq!(archive_progress.suspension_reason, None);
+    assert_eq!(archive_progress.next_probe_at, None);
+    assert_eq!(archive_progress.wake_generation, 1);
+
+    let historical_progress = load_startup_backfill_progress(&state.pool, historical_task.name())
+        .await
+        .expect("load unaffected historical progress");
+    assert!(!historical_progress.is_due(Utc::now()));
+    assert_eq!(
+        historical_progress.last_status,
+        STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn startup_backfill_pressure_defer_persists_a_retry_deadline() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::ReasoningEffort;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
+    let _held = gate
+        .try_begin_background("test_pressure")
+        .expect("hold background slot");
+
+    let ran = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        .await
+        .expect("defer startup backfill when the gate is busy");
+    assert!(!ran);
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load pressure-deferred progress");
+    assert!(!progress.is_due(Utc::now()));
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+}
+
+#[tokio::test]
 async fn failure_classification_backfill_skips_success_rows_with_complete_defaults() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
