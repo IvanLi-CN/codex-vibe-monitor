@@ -191,6 +191,44 @@ impl StartupBackfillTask {
     }
 }
 
+pub(crate) fn startup_backfill_tasks_for_terminal(
+    record: &ApiInvocation,
+) -> Vec<StartupBackfillTask> {
+    let has_request_raw = record.request_raw_path.is_some();
+    let has_response_raw = record.response_raw_path.is_some();
+    let is_success = record.status.as_deref().is_some_and(|status| {
+        matches!(
+            status.trim().to_ascii_lowercase().as_str(),
+            "success" | "warning_success"
+        )
+    });
+    let mut tasks = Vec::new();
+
+    if is_success && record.total_tokens.is_none() && has_response_raw {
+        tasks.push(StartupBackfillTask::ProxyUsage);
+    }
+    if has_request_raw && record.prompt_cache_key.is_none() {
+        tasks.push(StartupBackfillTask::PromptCacheKey);
+    }
+    if has_request_raw && record.requested_service_tier.is_none() {
+        tasks.push(StartupBackfillTask::RequestedServiceTier);
+    }
+    if has_request_raw && record.reasoning_effort.is_none() {
+        tasks.push(StartupBackfillTask::ReasoningEffort);
+    }
+    if has_response_raw && record.service_tier.is_none() {
+        tasks.push(StartupBackfillTask::InvocationServiceTier);
+    }
+    if !is_success
+        && (record.failure_kind.is_none()
+            || record.failure_class.is_none()
+            || record.is_actionable.is_none())
+    {
+        tasks.push(StartupBackfillTask::FailureClassification);
+    }
+    tasks
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct StartupBackfillProgressRow {
     task_name: String,
@@ -394,6 +432,22 @@ pub(crate) fn startup_backfill_samples_text(samples: &[String]) -> String {
         "-".to_string()
     } else {
         samples.join(" | ")
+    }
+}
+
+fn startup_backfill_scan_limit(source_unavailable_probe: bool) -> u64 {
+    if source_unavailable_probe {
+        100
+    } else {
+        STARTUP_BACKFILL_SCAN_LIMIT
+    }
+}
+
+fn startup_backfill_run_budget(source_unavailable_probe: bool) -> Duration {
+    if source_unavailable_probe {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
     }
 }
 
@@ -617,6 +671,41 @@ fn selected_task_includes(
     tasks.contains(&task)
 }
 
+pub(crate) async fn defer_startup_backfill_task(
+    state: &AppState,
+    task: StartupBackfillTask,
+    delay: Duration,
+    wake_reason: &'static str,
+) -> Result<()> {
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let retry_after = Utc::now() + ChronoDuration::from_std(delay).unwrap_or_default();
+    let retry_after = format_utc_iso(retry_after);
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: &progress.last_status,
+            suspension_reason: progress.suspension_reason.as_deref(),
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        next_retry_after = %retry_after,
+        wake_reason,
+        "startup backfill task retry scheduled"
+    );
+    Ok(())
+}
+
 pub(crate) async fn run_startup_backfill_maintenance_pass(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -704,8 +793,28 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             "startup backfill historical-rollup coverage repair",
         )
         .await;
-        ran_actionable_task |=
-            repair_outcome.is_some_and(|outcome| outcome.repaired_bucket_count > 0);
+        match repair_outcome {
+            ActiveAccountActivityV2RepairResult::Repaired(outcome) => {
+                ran_actionable_task |= outcome.repaired_bucket_count > 0;
+            }
+            outcome @ (ActiveAccountActivityV2RepairResult::Deferred
+            | ActiveAccountActivityV2RepairResult::Failed) => {
+                had_failure |= matches!(outcome, ActiveAccountActivityV2RepairResult::Failed);
+                if let Err(err) = defer_startup_backfill_task(
+                    state.as_ref(),
+                    StartupBackfillTask::HistoricalRollups,
+                    Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS),
+                    "coverage_repair_retry",
+                )
+                .await
+                {
+                    had_failure = true;
+                    crate::db_pressure::global_db_pressure_gate()
+                        .record_error("startup_backfill_coverage_retry", &err);
+                    warn!(error = %err, "failed to schedule startup backfill coverage retry");
+                }
+            }
+        }
     }
 
     if ran_actionable_task || had_failure {
@@ -973,11 +1082,8 @@ pub(crate) async fn run_startup_backfill_task(
     zero_update_streak: u32,
     source_unavailable_probe: bool,
 ) -> Result<(StartupBackfillRunState, String)> {
-    let max_elapsed = Some(if source_unavailable_probe {
-        Duration::from_secs(2)
-    } else {
-        Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
-    });
+    let scan_limit = startup_backfill_scan_limit(source_unavailable_probe);
+    let max_elapsed = Some(startup_backfill_run_budget(source_unavailable_probe));
     let raw_path_fallback_root = state.config.database_path.parent();
     match task {
         StartupBackfillTask::ProxyUsage => {
@@ -987,7 +1093,7 @@ pub(crate) async fn run_startup_backfill_task(
                 cursor_id,
                 snapshot_max_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1032,7 +1138,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &attempt_version,
                 &requested_tier_price_version,
                 &response_tier_price_version,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1058,7 +1164,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &state.pool,
                 cursor_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1086,7 +1192,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &state.pool,
                 cursor_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1114,7 +1220,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &state.pool,
                 cursor_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1140,7 +1246,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &state.pool,
                 cursor_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1168,7 +1274,7 @@ pub(crate) async fn run_startup_backfill_task(
                 &state.pool,
                 cursor_id,
                 raw_path_fallback_root,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1189,7 +1295,7 @@ pub(crate) async fn run_startup_backfill_task(
             let outcome = backfill_pool_upstream_request_attempt_public_ids_from_cursor(
                 &state.pool,
                 cursor_id,
-                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1252,11 +1358,7 @@ pub(crate) async fn run_startup_backfill_task(
         StartupBackfillTask::UpstreamActivityArchives => {
             let summary = backfill_upstream_account_last_activity_from_archives(
                 &state.pool,
-                Some(if source_unavailable_probe {
-                    100
-                } else {
-                    STARTUP_BACKFILL_SCAN_LIMIT
-                }),
+                Some(scan_limit),
                 max_elapsed,
             )
             .await?;
@@ -1282,16 +1384,13 @@ pub(crate) async fn run_startup_backfill_task(
         }
         StartupBackfillTask::PoolUpstreamNodeHealthArchives => {
             let _guard = state.hourly_rollup_sync_lock.lock().await;
-            let cache_summary = backfill_pool_upstream_node_health_archives(
-                &state.pool,
-                Some(1),
-                Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
-            )
-            .await?;
+            let cache_summary =
+                backfill_pool_upstream_node_health_archives(&state.pool, Some(1), max_elapsed)
+                    .await?;
             let hourly_summary = backfill_pool_upstream_node_health_hourly_archives(
                 &state.pool,
                 Some(1),
-                Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+                max_elapsed,
             )
             .await?;
             Ok((
@@ -1315,11 +1414,7 @@ pub(crate) async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::HistoricalRollups => {
-            let historical_elapsed_budget = if source_unavailable_probe {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
-            };
+            let historical_elapsed_budget = startup_backfill_run_budget(source_unavailable_probe);
             let before =
                 load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
             if before.pending_usage_breakdown_batches > 0 {
@@ -1634,6 +1729,54 @@ mod startup_backfill_tests {
         assert!(!startup_backfill_run_is_actionable(
             &StartupBackfillRunState::default()
         ));
+    }
+
+    #[test]
+    fn terminal_payload_input_wakes_only_missing_field_repairs() {
+        let mut record = crate::tests::test_proxy_capture_record(
+            "startup-backfill-terminal-wake",
+            "2026-08-09 12:00:00",
+        );
+        record.usage.total_tokens = None;
+        record.cost = None;
+        record.payload = Some("{}".to_string());
+        record.req_raw.path = Some("/tmp/request.raw".to_string());
+        record.resp_raw.path = Some("/tmp/response.raw".to_string());
+
+        let tasks =
+            startup_backfill_tasks_for_terminal(&api_invocation_from_runtime_record(&record));
+
+        assert_eq!(
+            tasks,
+            vec![
+                StartupBackfillTask::ProxyUsage,
+                StartupBackfillTask::PromptCacheKey,
+                StartupBackfillTask::RequestedServiceTier,
+                StartupBackfillTask::ReasoningEffort,
+                StartupBackfillTask::InvocationServiceTier,
+            ]
+        );
+
+        let complete =
+            api_invocation_from_runtime_record(&crate::tests::test_proxy_capture_record(
+                "startup-backfill-terminal-complete",
+                "2026-08-09 12:01:00",
+            ));
+        assert!(startup_backfill_tasks_for_terminal(&complete).is_empty());
+    }
+
+    #[test]
+    fn source_unavailable_probe_uses_one_shared_budget() {
+        assert_eq!(startup_backfill_scan_limit(true), 100);
+        assert_eq!(startup_backfill_run_budget(true), Duration::from_secs(2));
+        assert_eq!(
+            startup_backfill_scan_limit(false),
+            STARTUP_BACKFILL_SCAN_LIMIT
+        );
+        assert_eq!(
+            startup_backfill_run_budget(false),
+            Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
+        );
     }
 
     #[test]

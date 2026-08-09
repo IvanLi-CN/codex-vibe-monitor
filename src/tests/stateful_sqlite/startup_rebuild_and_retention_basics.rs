@@ -1225,6 +1225,66 @@ async fn startup_backfill_pressure_defer_persists_a_retry_deadline() {
 }
 
 #[tokio::test]
+async fn coverage_repair_defer_persists_the_historical_retry_deadline() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::HistoricalRollups;
+
+    defer_startup_backfill_task(
+        state.as_ref(),
+        task,
+        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS),
+        "test_coverage_repair_retry",
+    )
+    .await
+    .expect("schedule the coverage repair retry");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load coverage retry progress");
+    let retry_at = progress
+        .next_run_after
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .expect("coverage retry deadline");
+    assert!(retry_at > Utc::now());
+    assert!(retry_at <= Utc::now() + ChronoDuration::seconds(30));
+    assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
+async fn live_activity_v2_coverage_progress_wakes_historical_rollups() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::HistoricalRollups;
+
+    wake_historical_rollups_for_live_activity_v2_coverage(&state.pool, 0)
+        .await
+        .expect("skip an unchanged live v2 coverage cursor");
+    assert_eq!(
+        load_startup_backfill_progress(&state.pool, task.name())
+            .await
+            .expect("load unchanged coverage progress")
+            .wake_generation,
+        0
+    );
+
+    wake_historical_rollups_for_live_activity_v2_coverage(&state.pool, 1)
+        .await
+        .expect("wake after live v2 coverage cursor progress");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load coverage-woken startup backfill progress");
+    assert!(progress.wake_generation > 0);
+    assert!(progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
 async fn failure_classification_backfill_skips_success_rows_with_complete_defaults() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

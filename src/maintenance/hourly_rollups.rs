@@ -80,10 +80,26 @@ async fn sync_hourly_rollups_from_live_tables_once(
             break;
         }
     }
-    repair_live_invocation_account_activity_v2_once(pool).await?;
+    let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
+    wake_historical_rollups_for_live_activity_v2_coverage(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn wake_historical_rollups_for_live_activity_v2_coverage(
+    pool: &Pool<Sqlite>,
+    repaired_activity_v2_rows: u64,
+) -> Result<()> {
+    if repaired_activity_v2_rows > 0 {
+        wake_startup_backfill_tasks(
+            pool,
+            &[StartupBackfillTask::HistoricalRollups],
+            "live_account_activity_v2_coverage_updated",
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2071,11 +2087,18 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ActiveAccountActivityV2RepairResult {
+    Repaired(ActiveAccountActivityV2RepairOutcome),
+    Deferred,
+    Failed,
+}
+
 pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
     pool: &Pool<Sqlite>,
     hourly_rollup_sync_lock: &Mutex<()>,
     reason: &'static str,
-) -> Option<ActiveAccountActivityV2RepairOutcome> {
+) -> ActiveAccountActivityV2RepairResult {
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _permit = match gate.try_begin_background("account_activity_v2_priority_repair") {
         Ok(permit) => permit,
@@ -2086,12 +2109,12 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
                 wake_reason = "active_window_coverage_check",
                 "active Dashboard coverage repair deferred by database pressure gate"
             );
-            return None;
+            return ActiveAccountActivityV2RepairResult::Deferred;
         }
     };
     let _guard = hourly_rollup_sync_lock.lock().await;
     match repair_active_account_activity_v2_coverage(pool).await {
-        Ok(outcome) => Some(outcome),
+        Ok(outcome) => ActiveAccountActivityV2RepairResult::Repaired(outcome),
         Err(err) => {
             gate.record_error("account_activity_v2_priority_repair", &err);
             warn!(
@@ -2100,7 +2123,7 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
                 wake_reason = "active_window_coverage_check",
                 "active Dashboard coverage repair failed"
             );
-            None
+            ActiveAccountActivityV2RepairResult::Failed
         }
     }
 }

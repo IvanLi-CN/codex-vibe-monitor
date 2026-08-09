@@ -3549,6 +3549,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     }
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
     let delta = &projection.dashboard;
+    let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -3566,6 +3567,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 raw_capture: false,
                 dashboard_terminal_sequence: delta.terminal_sequence,
                 terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                startup_backfill_tasks,
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
