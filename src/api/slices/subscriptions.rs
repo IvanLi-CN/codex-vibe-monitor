@@ -390,6 +390,7 @@ pub(crate) struct SubscriptionHub {
 struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
     active_topics: HashMap<String, SubscriptionTopic>,
+    active_topic_dependencies: HashMap<RuntimeTopicDependency, HashSet<String>>,
     active_subscribers: HashMap<String, usize>,
     active_topic_names: HashMap<String, usize>,
     dashboard_live_subscriber_count: usize,
@@ -445,6 +446,19 @@ struct RuntimeTopicWork {
     topic: SubscriptionTopic,
     terminal_event_count: u64,
     includes_invocation_mutation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RuntimeTopicDependency {
+    Invocation,
+    PromptCacheProjection,
+    PromptCacheWindow,
+    PromptCacheStickyWindow,
+    Attempt(String),
+    Binding(String),
+    HistoryPromptCacheKey(String),
+    HistoryStickyKey(String),
+    StickyRoute(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1486,6 +1500,91 @@ impl SubscriptionHub {
         guard.dashboard_live_subscriber_count > 0
     }
 
+    fn register_active_topic_dependencies(
+        guard: &mut SubscriptionHubState,
+        topic_key: &str,
+        topic: &SubscriptionTopic,
+    ) {
+        for dependency in topic.runtime_topic_dependencies() {
+            guard
+                .active_topic_dependencies
+                .entry(dependency)
+                .or_default()
+                .insert(topic_key.to_string());
+        }
+    }
+
+    fn release_active_topic_dependencies(
+        guard: &mut SubscriptionHubState,
+        topic_key: &str,
+        topic: &SubscriptionTopic,
+    ) {
+        for dependency in topic.runtime_topic_dependencies() {
+            let Some(topic_keys) = guard.active_topic_dependencies.get_mut(&dependency) else {
+                continue;
+            };
+            topic_keys.remove(topic_key);
+            if topic_keys.is_empty() {
+                guard.active_topic_dependencies.remove(&dependency);
+            }
+        }
+    }
+
+    fn active_topic_keys_for_dependency(
+        guard: &SubscriptionHubState,
+        dependency: &RuntimeTopicDependency,
+    ) -> Vec<String> {
+        guard
+            .active_topic_dependencies
+            .get(dependency)
+            .map(|topic_keys| topic_keys.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn collect_runtime_topic_work(
+        guard: &SubscriptionHubState,
+        mutations: &[SequencedRuntimeMutation],
+    ) -> Vec<RuntimeTopicWork> {
+        let candidate_topic_keys = mutations
+            .iter()
+            .flat_map(|mutation| mutation.mutation.topic_dependencies())
+            .flat_map(|dependency| Self::active_topic_keys_for_dependency(guard, &dependency))
+            .collect::<HashSet<_>>();
+
+        candidate_topic_keys
+            .into_iter()
+            .filter_map(|topic_key| {
+                let topic = guard.active_topics.get(&topic_key)?;
+                if guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                    || !mutations
+                        .iter()
+                        .any(|mutation| topic.is_affected_by_runtime_mutation(&mutation.mutation))
+                {
+                    return None;
+                }
+                Some(RuntimeTopicWork {
+                    topic: topic.clone(),
+                    terminal_event_count: mutations
+                        .iter()
+                        .filter(|mutation| {
+                            topic.is_affected_by_runtime_mutation(&mutation.mutation)
+                                && mutation.mutation.is_terminal_invocation()
+                        })
+                        .count() as u64,
+                    includes_invocation_mutation: mutations.iter().any(|mutation| {
+                        topic.is_affected_by_runtime_mutation(&mutation.mutation)
+                            && mutation.mutation.is_invocation()
+                    }),
+                })
+            })
+            .collect()
+    }
+
     async fn register_topic_subscribers(
         self: &Arc<Self>,
         topics: &[SubscriptionTopic],
@@ -1511,7 +1610,8 @@ impl SubscriptionHub {
         let mut guard = self.state.lock().await;
         for topic in topics {
             let topic_key = topic.cache_key()?;
-            guard.active_topics.insert(topic_key, topic.clone());
+            guard.active_topics.insert(topic_key.clone(), topic.clone());
+            Self::register_active_topic_dependencies(&mut guard, &topic_key, topic);
         }
         for topic_key in &topic_keys {
             *guard
@@ -1563,6 +1663,14 @@ impl SubscriptionHub {
             .map(|(topic_key, _)| topic_key.clone())
             .collect::<Vec<_>>();
         for topic_key in &topic_keys {
+            if let Some(topic) = guard
+                .topics
+                .get(topic_key)
+                .map(|cached| cached.topic.clone())
+            {
+                guard.active_topics.insert(topic_key.clone(), topic.clone());
+                Self::register_active_topic_dependencies(&mut guard, topic_key, &topic);
+            }
             *guard
                 .active_subscribers
                 .entry(topic_key.clone())
@@ -1588,7 +1696,9 @@ impl SubscriptionHub {
                 Some(count) if *count > 1 => *count -= 1,
                 Some(_) => {
                     guard.active_subscribers.remove(&topic_key);
-                    guard.active_topics.remove(&topic_key);
+                    if let Some(topic) = guard.active_topics.remove(&topic_key) {
+                        Self::release_active_topic_dependencies(&mut guard, &topic_key, &topic);
+                    }
                     guard.prompt_cache_prebaseline_records.remove(&topic_key);
                     if let Some(cached) = guard.topics.get_mut(&topic_key) {
                         // A disconnected owner cannot consume the mutation stream. Rebuild this
@@ -2442,15 +2552,11 @@ impl SubscriptionHub {
         if mutations.is_empty() {
             return;
         }
-        let runtime_mutations = mutations
-            .iter()
-            .map(|mutation| mutation.mutation.clone())
-            .collect::<Vec<_>>();
-        self.schedule_prompt_cache_topic_projection(state.clone(), &runtime_mutations)
+        self.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
             .await;
 
-        for mutation in &runtime_mutations {
-            match mutation {
+        for mutation in &mutations {
+            match &mutation.mutation {
                 RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => {
                     if let Err(err) = self
                         .apply_prompt_cache_binding_projection(state.as_ref(), prompt_cache_key)
@@ -2486,40 +2592,12 @@ impl SubscriptionHub {
             }
         }
 
-        // Only active selections become work. Disconnection marks retained caches dirty, so this
-        // router never scans inactive payloads or clones them into the runtime hot path.
+        // The dependency index contains only active selections. Disconnection removes a topic
+        // from the index and leaves its retained frame dirty, so the router never scans retained
+        // caches or clones a runtime event into the hot path.
         let affected = {
             let guard = self.state.lock().await;
-            guard
-                .active_topics
-                .iter()
-                .filter_map(|(topic_key, topic)| {
-                    let active = guard
-                        .active_subscribers
-                        .get(topic_key)
-                        .copied()
-                        .unwrap_or_default()
-                        > 0;
-                    if !active
-                        || !runtime_mutations
-                            .iter()
-                            .any(|mutation| topic.is_affected_by_runtime_mutation(mutation))
-                    {
-                        return None;
-                    }
-                    let terminal_event_count = runtime_mutations
-                        .iter()
-                        .filter(|mutation| mutation.is_terminal_invocation())
-                        .count() as u64;
-                    Some(RuntimeTopicWork {
-                        topic: topic.clone(),
-                        terminal_event_count,
-                        includes_invocation_mutation: runtime_mutations
-                            .iter()
-                            .any(RuntimeMutation::is_invocation),
-                    })
-                })
-                .collect::<Vec<_>>()
+            Self::collect_runtime_topic_work(&guard, &mutations)
         };
 
         for work in affected {
@@ -3036,11 +3114,11 @@ impl SubscriptionHub {
     async fn schedule_prompt_cache_topic_projection(
         &self,
         state: Arc<AppState>,
-        mutations: &[RuntimeMutation],
+        mutations: &[SequencedRuntimeMutation],
     ) {
         let records = mutations
             .iter()
-            .filter_map(|mutation| match mutation {
+            .filter_map(|mutation| match &mutation.mutation {
                 RuntimeMutation::Invocation(mutation) => {
                     Some(PromptCacheTopicDelta::from_runtime_mutation(mutation))
                 }
@@ -3060,16 +3138,15 @@ impl SubscriptionHub {
 
         let scheduled = {
             let mut guard = self.state.lock().await;
-            let active_topics = guard.active_topics.clone();
+            let active_topic_keys = Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::PromptCacheProjection,
+            );
             let mut scheduled = Vec::new();
-            for (topic_key, topic) in active_topics {
-                if !matches!(
-                    topic,
-                    SubscriptionTopic::PromptCacheWindow { .. }
-                        | SubscriptionTopic::PromptCacheStickyWindow { .. }
-                ) {
+            for topic_key in active_topic_keys {
+                let Some(topic) = guard.active_topics.get(&topic_key).cloned() else {
                     continue;
-                }
+                };
                 let Some(cached) = guard.topics.get_mut(&topic_key) else {
                     let pending = guard
                         .prompt_cache_prebaseline_records
@@ -3326,6 +3403,17 @@ impl SubscriptionHub {
         state: &AppState,
         prompt_cache_key: &str,
     ) -> Result<(), ApiError> {
+        let has_active_prompt_cache_window = {
+            let guard = self.state.lock().await;
+            !Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::PromptCacheWindow,
+            )
+            .is_empty()
+        };
+        if !has_active_prompt_cache_window {
+            return Ok(());
+        }
         let binding = serde_json::to_value(
             load_prompt_cache_conversation_binding_response_for_key(
                 state,
@@ -3335,17 +3423,23 @@ impl SubscriptionHub {
         )?;
         let mut dispatches = Vec::new();
         let mut guard = self.state.lock().await;
-        let active_subscribers = guard.active_subscribers.clone();
-        for (topic_key, cached) in &mut guard.topics {
-            if !matches!(cached.topic, SubscriptionTopic::PromptCacheWindow { .. })
-                || active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    == 0
+        let active_topic_keys = Self::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheWindow,
+        );
+        for topic_key in active_topic_keys {
+            if guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                == 0
             {
                 continue;
             }
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                continue;
+            };
             cached.prompt_cache_bounded_key_hydration_count = cached
                 .prompt_cache_bounded_key_hydration_count
                 .saturating_add(1);
@@ -3397,19 +3491,29 @@ impl SubscriptionHub {
     ) -> Result<(), ApiError> {
         let mut dispatches = Vec::new();
         let mut guard = self.state.lock().await;
-        let active_subscribers = guard.active_subscribers.clone();
-        for (topic_key, cached) in &mut guard.topics {
-            let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = cached.topic else {
-                continue;
-            };
-            if active_subscribers
-                .get(topic_key)
+        let active_topic_keys = Self::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheStickyWindow,
+        );
+        if active_topic_keys.is_empty() {
+            return Ok(());
+        }
+        for topic_key in active_topic_keys {
+            if guard
+                .active_subscribers
+                .get(&topic_key)
                 .copied()
                 .unwrap_or_default()
                 == 0
             {
                 continue;
             }
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                continue;
+            };
+            let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = cached.topic else {
+                continue;
+            };
             let Some(conversations) = cached
                 .snapshot_payload
                 .get_mut("conversations")
@@ -5406,6 +5510,54 @@ impl SubscriptionTopic {
         )
     }
 
+    fn runtime_topic_dependencies(&self) -> Vec<RuntimeTopicDependency> {
+        match self {
+            // These topics receive their revisions from the RuntimeProjectionHub directly, so
+            // they intentionally do not create generic router work.
+            Self::DashboardActivityCurrent { .. }
+            | Self::DashboardNetworkTimeseriesWindow { .. }
+            | Self::DashboardNetworkRecentCurrent
+            | Self::SummaryCurrent { .. }
+            | Self::AppVersion
+            | Self::QuotaCurrent => Vec::new(),
+            Self::PromptCacheWindow { .. } => vec![
+                RuntimeTopicDependency::PromptCacheProjection,
+                RuntimeTopicDependency::PromptCacheWindow,
+            ],
+            Self::PromptCacheStickyWindow { .. } => vec![
+                RuntimeTopicDependency::PromptCacheProjection,
+                RuntimeTopicDependency::PromptCacheStickyWindow,
+            ],
+            Self::PromptCacheConversationBindingCurrent { scope }
+            | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
+                vec![RuntimeTopicDependency::Binding(
+                    scope.binding_key().to_string(),
+                )]
+            }
+            Self::InvocationPoolAttempts { invoke_id } => {
+                vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
+            }
+            Self::InvocationHistoryWindow { scope } | Self::InvocationHistoryOverview { scope } => {
+                match scope {
+                    ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key) => vec![
+                        RuntimeTopicDependency::HistoryPromptCacheKey(prompt_cache_key.clone()),
+                        RuntimeTopicDependency::StickyRoute(prompt_cache_key.clone()),
+                    ],
+                    ConversationSubscriptionScope::StickyKey { sticky_key, .. } => vec![
+                        RuntimeTopicDependency::HistoryPromptCacheKey(sticky_key.clone()),
+                        RuntimeTopicDependency::HistoryStickyKey(sticky_key.clone()),
+                        RuntimeTopicDependency::StickyRoute(sticky_key.clone()),
+                    ],
+                }
+            }
+            Self::DashboardWorkingConversationsCurrent { .. }
+            | Self::InvocationWindow { .. }
+            | Self::TimeseriesOpenWindow { .. }
+            | Self::ParallelWorkCurrent { .. }
+            | Self::ForwardProxyLive => vec![RuntimeTopicDependency::Invocation],
+        }
+    }
+
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
         let topic = descriptor.topic.trim();
         let params = &descriptor.params;
@@ -6322,6 +6474,38 @@ impl SubscriptionTopic {
     }
 }
 
+impl RuntimeMutation {
+    fn topic_dependencies(&self) -> Vec<RuntimeTopicDependency> {
+        match self {
+            Self::Invocation(mutation) => {
+                let mut dependencies = vec![
+                    RuntimeTopicDependency::Invocation,
+                    RuntimeTopicDependency::PromptCacheProjection,
+                ];
+                if let Some(prompt_cache_key) = mutation.prompt_cache_key.as_ref() {
+                    dependencies.push(RuntimeTopicDependency::HistoryPromptCacheKey(
+                        prompt_cache_key.clone(),
+                    ));
+                }
+                if let Some(sticky_key) = mutation.sticky_key.as_ref() {
+                    dependencies.push(RuntimeTopicDependency::HistoryStickyKey(sticky_key.clone()));
+                }
+                dependencies
+            }
+            Self::AttemptChanged { invoke_id } => {
+                vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
+            }
+            Self::PromptCacheBindingChanged { prompt_cache_key } => {
+                vec![RuntimeTopicDependency::Binding(prompt_cache_key.clone())]
+            }
+            Self::StickyRouteChanged { sticky_key, .. } => vec![
+                RuntimeTopicDependency::StickyRoute(sticky_key.clone()),
+                RuntimeTopicDependency::PromptCacheStickyWindow,
+            ],
+        }
+    }
+}
+
 fn decode_topics_query(raw: Option<&str>) -> Result<Vec<SubscriptionTopicDescriptor>, ApiError> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Vec::new());
@@ -6670,6 +6854,163 @@ mod tests {
             &gap
         ));
         assert_eq!(last_sequence, 3);
+    }
+
+    #[tokio::test]
+    async fn runtime_dependency_index_selects_only_the_matching_active_history_topic() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let active_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let inactive_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("retained-key".to_string()),
+        };
+        let active_key = active_topic.cache_key().expect("active topic key");
+        let inactive_key = inactive_topic.cache_key().expect("inactive topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[], Utc::now()),
+            );
+            guard.topics.insert(
+                inactive_key.clone(),
+                seeded_cached_topic(inactive_topic, &[], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active history topic");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("invoke-1", "2026-08-09 12:00:00"),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("selected-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+                preview: None,
+            }),
+        }];
+
+        let guard = hub.state.lock().await;
+        let work = SubscriptionHub::collect_runtime_topic_work(&guard, &mutations);
+        let indexed = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::HistoryPromptCacheKey("selected-key".to_string()),
+        );
+        assert_eq!(indexed, vec![active_key.clone()]);
+        assert_eq!(work.len(), 1);
+        assert_eq!(
+            work[0].topic.cache_key().expect("work topic key"),
+            active_key
+        );
+        assert_ne!(
+            work[0].topic.cache_key().expect("work topic key"),
+            inactive_key,
+            "retained inactive topic must not become router work"
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn releasing_last_owner_removes_dependency_index_and_marks_last_good_dirty() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("disconnect-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[], Utc::now()),
+            );
+        }
+        let mut lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+        let topic_keys = std::mem::take(&mut lease.topic_keys);
+        let topic_names = std::mem::take(&mut lease.topic_names);
+        hub.release_topic_subscribers(topic_keys, topic_names, lease.owns_dashboard_live)
+            .await;
+        drop(lease);
+
+        let guard = hub.state.lock().await;
+        assert!(!guard.active_topics.contains_key(&topic_key));
+        assert!(
+            SubscriptionHub::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::HistoryPromptCacheKey("disconnect-key".to_string()),
+            )
+            .is_empty()
+        );
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.dirty),
+            "the retained frame must rebuild before a future owner reconnects"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_dependency_index_omits_retained_inactive_windows() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let active_topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let inactive_topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(10),
+            detail_level: PromptCacheConversationDetailLevel::Compact,
+            recent_invocation_limit: Some(5),
+        };
+        let active_key = active_topic
+            .cache_key()
+            .expect("active prompt cache topic key");
+        let inactive_key = inactive_topic
+            .cache_key()
+            .expect("inactive prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[], Utc::now()),
+            );
+            guard.topics.insert(
+                inactive_key.clone(),
+                seeded_cached_topic(inactive_topic, &[], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active prompt cache topic");
+
+        let guard = hub.state.lock().await;
+        let projection_keys = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheProjection,
+        );
+        let binding_keys = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheWindow,
+        );
+        assert_eq!(projection_keys, vec![active_key.clone()]);
+        assert_eq!(binding_keys, vec![active_key]);
+        assert!(
+            !projection_keys.contains(&inactive_key),
+            "retained inactive prompt cache windows must not receive runtime deltas"
+        );
+        drop(guard);
+        drop(lease);
     }
 
     fn summary_topic() -> SubscriptionTopic {
