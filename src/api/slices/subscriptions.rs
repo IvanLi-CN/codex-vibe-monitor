@@ -9,6 +9,7 @@ use std::sync::{
     Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
 };
+use tokio::sync::Notify;
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -384,6 +385,7 @@ pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
+    runtime_topic_recovery_notify: Arc<Notify>,
     serialization_count: AtomicU64,
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
     #[cfg(test)]
@@ -1341,6 +1343,7 @@ impl SubscriptionHub {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
+            runtime_topic_recovery_notify: Arc::new(Notify::new()),
             serialization_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
             #[cfg(test)]
@@ -2123,7 +2126,7 @@ impl SubscriptionHub {
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
         // state or replace the retained last-good frame.
-        let refresh_generation = if require_active_owner {
+        let (refresh_generation, refresh_had_cached_topic) = if require_active_owner {
             let guard = self.state.lock().await;
             if guard
                 .active_subscribers
@@ -2134,9 +2137,13 @@ impl SubscriptionHub {
             {
                 return Ok(None);
             }
-            Some(guard.runtime_topic_recovery_generation)
+            guard
+                .topics
+                .get(&topic_key)
+                .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
+                .unwrap_or((Some(guard.runtime_topic_recovery_generation), false))
         } else {
-            None
+            (None, false)
         };
         let (mut built_payload, prompt_cache_build) = if is_prompt_cache_topic {
             let (payload, build) = self
@@ -2158,11 +2165,16 @@ impl SubscriptionHub {
                     .copied()
                     .unwrap_or_default()
                     > 0;
-                let generation_matches = Some(guard.runtime_topic_recovery_generation)
-                    == refresh_generation
-                    && guard.topics.get(&topic_key).is_none_or(|cached| {
+                let generation_matches = if refresh_had_cached_topic {
+                    guard.topics.get(&topic_key).is_some_and(|cached| {
                         Some(cached.runtime_topic_recovery_generation) == refresh_generation
-                    });
+                    })
+                } else {
+                    Some(guard.runtime_topic_recovery_generation) == refresh_generation
+                        && guard.topics.get(&topic_key).is_none_or(|cached| {
+                            Some(cached.runtime_topic_recovery_generation) == refresh_generation
+                        })
+                };
                 if !active || !generation_matches {
                     // A newer gap or owner generation owns the cache now. Only the owner that
                     // observed this generation may dirty it; never invalidate a newer clean
@@ -2789,6 +2801,7 @@ impl SubscriptionHub {
                 hub.run_runtime_topic_recovery(state).await;
             });
         }
+        self.runtime_topic_recovery_notify.notify_one();
     }
 
     async fn schedule_dirty_topic_recovery(&self, state: Arc<AppState>, topic: SubscriptionTopic) {
@@ -2816,6 +2829,7 @@ impl SubscriptionHub {
                 hub.run_runtime_topic_recovery(state).await;
             });
         }
+        self.runtime_topic_recovery_notify.notify_one();
     }
 
     fn next_runtime_topic_recovery_retry_delay_locked(
@@ -2951,7 +2965,10 @@ impl SubscriptionHub {
             };
             if topics.is_empty() {
                 if let Some(delay) = retry_delay {
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = self.runtime_topic_recovery_notify.notified() => {}
+                    }
                     continue;
                 }
                 return;
@@ -7669,6 +7686,57 @@ mod tests {
             topic_key
         );
         drop(lease);
+    }
+
+    #[tokio::test]
+    async fn unrelated_topic_disconnect_does_not_block_active_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let active_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("active-key".to_string()),
+        };
+        let released_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("released-key".to_string()),
+        };
+        let active_key = active_topic.cache_key().expect("active topic key");
+        let released_key = released_topic.cache_key().expect("released topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[7], Utc::now()),
+            );
+            guard.topics.insert(
+                released_key.clone(),
+                seeded_cached_topic(released_topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let active_lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active topic");
+        let released_lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&released_topic))
+            .await
+            .expect("register released topic");
+        hub.release_topic_subscribers(
+            vec![released_key],
+            vec![released_topic.name().to_string()],
+            false,
+        )
+        .await;
+
+        assert!(
+            hub.refresh_topic_if_active(state, active_topic, true)
+                .await
+                .expect("active refresh")
+                .is_some()
+        );
+        drop(released_lease);
+        drop(active_lease);
     }
 
     #[tokio::test]
