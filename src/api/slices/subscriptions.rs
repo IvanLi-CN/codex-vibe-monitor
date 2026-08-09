@@ -3152,6 +3152,34 @@ impl SubscriptionHub {
         }
     }
 
+    async fn mark_prompt_cache_topic_dirty_and_schedule_reconcile(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        cached.dirty = true;
+        cached.refresh_scheduled = false;
+        cached.prompt_cache_refresh_scheduled = false;
+        cached.prompt_cache_reconcile_required = true;
+        if active && !cached.prompt_cache_reconcile_scheduled {
+            cached.prompt_cache_reconcile_scheduled = true;
+            return true;
+        }
+        false
+    }
+
     async fn begin_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
         let Ok(topic_key) = topic.cache_key() else {
             return false;
@@ -3397,7 +3425,12 @@ impl SubscriptionHub {
                         response_source = "last_good",
                         "prompt cache in-memory topic materialization failed"
                     );
-                    hub.mark_topic_dirty(&topic).await;
+                    if hub
+                        .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                        .await
+                    {
+                        SubscriptionHub::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
+                    }
                 }
             });
         }
@@ -3459,15 +3492,27 @@ impl SubscriptionHub {
             let records = std::mem::take(&mut cached.prompt_cache_pending_records)
                 .into_values()
                 .collect::<Vec<_>>();
-            if records.is_empty()
-                || !apply_prompt_cache_records_to_payload(
-                    topic,
-                    &mut cached.snapshot_payload,
-                    &records,
-                    &mut cached.prompt_cache_applied_terminal_ids,
-                    cached.prompt_cache_baseline_row_id,
-                )?
-            {
+            if records.is_empty() {
+                return Ok(());
+            }
+            let applied = match apply_prompt_cache_records_to_payload(
+                topic,
+                &mut cached.snapshot_payload,
+                &records,
+                &mut cached.prompt_cache_applied_terminal_ids,
+                cached.prompt_cache_baseline_row_id,
+            ) {
+                Ok(applied) => applied,
+                Err(err) => {
+                    for record in records {
+                        cached
+                            .prompt_cache_pending_records
+                            .insert(record.identity.clone(), record);
+                    }
+                    return Err(err);
+                }
+            };
+            if !applied {
                 return Ok(());
             }
             let next_cursor = cached.cursor.saturating_add(1);
@@ -5486,7 +5531,10 @@ async fn run_server_push_topic_loop(
                     if hub.stop_server_push_task_if_idle(&topic_key).await {
                         break;
                     }
-                    if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                    if let Err(err) = hub
+                        .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                        .await
+                    {
                         warn!(?err, topic = %topic.name(), "failed to push legacy network recent topic cadence");
                     }
                 }
@@ -5505,7 +5553,10 @@ async fn run_server_push_topic_loop(
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
-                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                if let Err(err) = hub
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await
+                {
                     warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
                 }
             }
@@ -6869,6 +6920,9 @@ fn reuse_unchanged_cached_topic(
     }
     existing.dirty = false;
     existing.refresh_scheduled = false;
+    // A successful Prompt Cache baseline can serialize identically to last-good. It still
+    // proves reconciliation completed, so do not keep scheduling the same cold hydration.
+    existing.prompt_cache_reconcile_required = false;
     existing.snapshot_built_at = Instant::now();
     Some(existing.clone())
 }
@@ -7581,6 +7635,48 @@ mod tests {
         assert!(cached.prompt_cache_reconcile_required);
         assert!(cached.prompt_cache_reconcile_scheduled);
         assert!(cached.prompt_cache_pending_records.is_empty());
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_materialization_failure_marks_and_schedules_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        assert!(
+            hub.mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                .await
+        );
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("active prompt cache topic");
+        assert!(cached.dirty);
+        assert!(cached.prompt_cache_reconcile_required);
+        assert!(cached.prompt_cache_reconcile_scheduled);
         drop(guard);
         drop(lease);
     }
@@ -10212,12 +10308,14 @@ mod tests {
         let topic = summary_topic();
         let mut cached = seeded_cached_topic(topic, &[], Utc::now());
         cached.refresh_scheduled = true;
+        cached.prompt_cache_reconcile_required = true;
         let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
 
         let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
 
         assert!(reused.is_some());
         assert!(!cached.refresh_scheduled);
+        assert!(!cached.prompt_cache_reconcile_required);
         cached.refresh_scheduled = true;
         assert!(
             cached.refresh_scheduled,
