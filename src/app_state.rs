@@ -66,6 +66,31 @@ pub(crate) struct RuntimeInvocationEntry {
     pub(crate) updated_at: Instant,
 }
 
+/// Typed data needed by the active Prompt Cache projection. This deliberately excludes the
+/// complete runtime record and its raw/detail fields.
+#[derive(Debug, Clone)]
+pub(crate) struct PromptCacheRuntimeProjection {
+    pub(crate) row_id: i64,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) preview: PromptCacheConversationInvocationPreviewResponse,
+}
+
+impl PromptCacheRuntimeProjection {
+    pub(crate) fn from_record(record: &ApiInvocation) -> Option<Self> {
+        let prompt_cache_key =
+            normalize_trimmed_optional_string_local(record.prompt_cache_key.clone());
+        let sticky_key = normalize_trimmed_optional_string_local(record.sticky_key.clone());
+        let preview_key = prompt_cache_key.clone().or_else(|| sticky_key.clone())?;
+        Some(Self {
+            row_id: record.id,
+            prompt_cache_key,
+            sticky_key,
+            preview: prompt_cache_invocation_preview_from_runtime_record(record, preview_key),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RuntimeInvocationStoreUpsertOutcome {
     pub(crate) running_count: usize,
@@ -519,6 +544,8 @@ pub(crate) struct RuntimeProjectionHub {
     request_whole_body_materialization_count: AtomicU64,
     request_rewrite_buffer_peak_bytes: AtomicU64,
     request_pipeline_last: std::sync::Mutex<RequestPipelineLastState>,
+    #[cfg(test)]
+    full_record_clone_count: AtomicU64,
 }
 
 pub(crate) type ProxyRuntimeInvocationStore = RuntimeProjectionHub;
@@ -545,6 +572,8 @@ impl RuntimeProjectionHub {
             request_whole_body_materialization_count: AtomicU64::new(0),
             request_rewrite_buffer_peak_bytes: AtomicU64::new(0),
             request_pipeline_last: std::sync::Mutex::new(RequestPipelineLastState::default()),
+            #[cfg(test)]
+            full_record_clone_count: AtomicU64::new(0),
         }
     }
 
@@ -1827,11 +1856,35 @@ impl RuntimeProjectionHub {
         invoke_id: &str,
         occurred_at: &str,
     ) -> Option<ApiInvocation> {
+        #[cfg(test)]
+        self.full_record_clone_count.fetch_add(1, Ordering::Relaxed);
         let guard = self.inner.lock().ok()?;
         guard
             .records
             .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
             .map(|entry| entry.record.clone())
+    }
+
+    pub(crate) fn prompt_cache_projection_by_identity(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> Option<PromptCacheRuntimeProjection> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .records
+            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+            .and_then(|entry| PromptCacheRuntimeProjection::from_record(&entry.record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_full_record_clone_count(&self) {
+        self.full_record_clone_count.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn full_record_clone_count(&self) -> u64 {
+        self.full_record_clone_count.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
