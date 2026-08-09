@@ -2136,23 +2136,27 @@ impl SubscriptionHub {
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
-            if require_active_owner
-                && (guard
+            if require_active_owner {
+                let active = guard
                     .active_subscribers
                     .get(&topic_key)
                     .copied()
                     .unwrap_or_default()
-                    == 0
-                    || guard.topics.get(&topic_key).is_none_or(|cached| {
-                        Some(cached.runtime_topic_recovery_generation) != refresh_generation
-                    }))
-            {
-                if let Some(cached) = guard.topics.get_mut(&topic_key) {
-                    cached.dirty = true;
-                    cached.refresh_scheduled = false;
-                    cached.latest_live_snapshot = None;
+                    > 0;
+                let generation_matches = guard.topics.get(&topic_key).is_some_and(|cached| {
+                    Some(cached.runtime_topic_recovery_generation) == refresh_generation
+                });
+                if !active || !generation_matches {
+                    // A newer gap or owner generation owns the cache now. Only the owner that
+                    // observed this generation may dirty it; never invalidate a newer clean
+                    // frame committed by a reconnecting subscriber.
+                    if !active && let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                        cached.refresh_scheduled = false;
+                        cached.latest_live_snapshot = None;
+                    }
+                    return Ok(None);
                 }
-                return Ok(None);
             }
             if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
                 && let Some(live) = guard
