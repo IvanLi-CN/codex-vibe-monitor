@@ -2694,7 +2694,7 @@ impl SubscriptionHub {
                 continue;
             }
             if let Err(err) = self
-                .refresh_topic(state.clone(), work.topic.clone(), true)
+                .refresh_topic_if_active(state.clone(), work.topic.clone(), true)
                 .await
             {
                 warn!(
@@ -3010,7 +3010,7 @@ impl SubscriptionHub {
             }
 
             if let Err(err) = self
-                .refresh_topic(state.clone(), cached.topic.clone(), true)
+                .refresh_topic_if_active(state.clone(), cached.topic.clone(), true)
                 .await
             {
                 warn!(
