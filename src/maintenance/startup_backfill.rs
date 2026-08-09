@@ -128,6 +128,14 @@ impl StartupBackfillScheduler {
 
         if deferred {
             self.pressure_defer_count.fetch_add(1, Ordering::Relaxed);
+            let has_active_failure = self
+                .failed_tasks
+                .lock()
+                .map(|tasks| tasks.contains(&task))
+                .unwrap_or(true);
+            if has_active_failure {
+                return;
+            }
             if let Ok(mut tasks) = self.deferred_tasks.lock() {
                 tasks.insert(task);
             }
@@ -1867,6 +1875,19 @@ mod startup_backfill_tests {
         let health = scheduler.health_snapshot();
         assert_eq!(health.state, "degraded");
         assert_eq!(health.failed_task_count, 1);
+    }
+
+    #[test]
+    fn deferred_coverage_repair_cannot_clear_an_active_historical_rollup_failure() {
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
+
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
+
+        let health = scheduler.health_snapshot();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.failed_task_count, 1);
+        assert_eq!(health.pressure_defer_count, 1);
     }
 
     #[test]
