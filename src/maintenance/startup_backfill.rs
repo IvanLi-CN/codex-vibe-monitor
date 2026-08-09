@@ -160,10 +160,14 @@ impl StartupBackfillScheduler {
     fn record_coverage_repair_success(
         &self,
         task: StartupBackfillTask,
+        task_completed_in_current_pass: bool,
         task_failed_in_current_pass: bool,
         task_deferred_in_current_pass: bool,
     ) {
-        if !task_failed_in_current_pass && !task_deferred_in_current_pass {
+        if task_completed_in_current_pass
+            && !task_failed_in_current_pass
+            && !task_deferred_in_current_pass
+        {
             self.record_task_result(task, false, false);
         }
     }
@@ -844,6 +848,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
+    let mut historical_rollup_task_completed = false;
     let mut historical_rollup_task_failed = false;
     let mut historical_rollup_task_deferred = false;
     let tasks = match selected_tasks {
@@ -880,6 +885,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
                 if *task == StartupBackfillTask::HistoricalRollups {
+                    historical_rollup_task_completed |= outcome.completed;
                     historical_rollup_task_failed |= outcome.failed;
                     historical_rollup_task_deferred |= outcome.deferred;
                 }
@@ -947,6 +953,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 ran_actionable_task |= outcome.repaired_bucket_count > 0;
                 STARTUP_BACKFILL_SCHEDULER.record_coverage_repair_success(
                     StartupBackfillTask::HistoricalRollups,
+                    historical_rollup_task_completed,
                     historical_rollup_task_failed,
                     historical_rollup_task_deferred,
                 );
@@ -1877,6 +1884,7 @@ mod startup_backfill_tests {
         scheduler.record_coverage_repair_success(
             StartupBackfillTask::HistoricalRollups,
             true,
+            true,
             false,
         );
 
@@ -1892,6 +1900,7 @@ mod startup_backfill_tests {
 
         scheduler.record_coverage_repair_success(
             StartupBackfillTask::HistoricalRollups,
+            true,
             false,
             true,
         );
@@ -1900,6 +1909,23 @@ mod startup_backfill_tests {
         assert_eq!(health.state, "deferred");
         assert_eq!(health.deferred_task_count, 1);
         assert_eq!(health.pressure_defer_count, 1);
+    }
+
+    #[test]
+    fn coverage_repair_cannot_clear_a_prior_historical_rollup_failure_when_not_due() {
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
+
+        scheduler.record_coverage_repair_success(
+            StartupBackfillTask::HistoricalRollups,
+            false,
+            false,
+            false,
+        );
+
+        let health = scheduler.health_snapshot();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.failed_task_count, 1);
     }
 
     #[test]
