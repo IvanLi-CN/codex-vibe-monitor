@@ -128,6 +128,30 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
         jsonOverlayCount: 0,
       },
     },
+    eventBus: {
+      state: "healthy",
+      publishedCount: 912,
+      processedEventCount: 856,
+      coalescedEventCount: 56,
+      businessPayloadCloneCount: 0,
+      topicWorkCount: 856,
+      routerLaggedCount: 0,
+      routerGapCount: 0,
+      cursorRecoveryCount: 0,
+    },
+    backfill: {
+      state: "healthy",
+      wakeGeneration: 14,
+      wakeCount: 14,
+      dueDispatchCount: 28,
+      noopSuppressedCount: 42,
+      pressureDeferCount: 0,
+      failureCount: 0,
+      wokenTaskCount: 0,
+      scheduledTaskCount: 5,
+      deferredTaskCount: 0,
+      failedTaskCount: 0,
+    },
   },
   refreshedAt: "2026-06-22T09:28:00Z",
 };
@@ -481,6 +505,19 @@ function runtimePressureStatus(
         degradedReason: state === "degraded" ? "projection_stale" : undefined,
         lastDeferReason: state === "deferred" ? "writer_pressure" : undefined,
       },
+      eventBus: {
+        ...base.eventBus!,
+        state: state === "degraded" ? "degraded" : "healthy",
+        routerLaggedCount: state === "degraded" ? 2 : 0,
+        routerGapCount: state === "degraded" ? 1 : 0,
+        cursorRecoveryCount: state === "degraded" ? 1 : 0,
+      },
+      backfill: {
+        ...base.backfill!,
+        state: state === "deferred" ? "deferred" : "healthy",
+        deferredTaskCount: state === "deferred" ? 1 : 0,
+        pressureDeferCount: state === "deferred" ? 3 : 0,
+      },
     },
   };
 }
@@ -489,34 +526,72 @@ const runtimePressurePlay =
   (label: string) =>
   async ({ canvasElement }: { canvasElement: HTMLElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("system-status-runtime-pressure-health")).toBeVisible();
-    await expect(canvas.getByText(`运行压力：${label}`)).toBeVisible();
-    await userEvent.click(canvas.getByText("运行压力详情"));
-    await expect(canvas.getByText("实时路径数据库读取")).toBeVisible();
+    await expect(await canvas.findByTestId("system-status-runtime-pressure-health")).toBeVisible();
+    await expect(await canvas.findByText(`运行压力：${label}`)).toBeVisible();
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    await expect(await canvas.findByText("实时路径数据库读取")).toBeVisible();
   };
 
 export const StatusRuntimePressureHealthy: Story = {
   render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
   parameters: { systemStatusOverride: runtimePressureStatus("healthy") },
   play: runtimePressurePlay("健康"),
 };
 
 export const StatusRuntimePressureDeferred: Story = {
   render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
   parameters: { systemStatusOverride: runtimePressureStatus("deferred") },
   play: runtimePressurePlay("已延后"),
 };
 
 export const StatusRuntimePressureDegraded: Story = {
   render: () => renderWorkspace("/system/status"),
-  parameters: { systemStatusOverride: runtimePressureStatus("degraded") },
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: runtimePressureStatus("degraded"),
+    viewport: { defaultViewport: "desktop1660x900" },
+  },
   play: runtimePressurePlay("已降级"),
 };
 
 export const StatusRuntimePressureAccountingError: Story = {
   render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
   parameters: { systemStatusOverride: runtimePressureStatus("accounting_error") },
   play: runtimePressurePlay("核算异常"),
+};
+
+export const StatusRuntimePressureUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      runtimePressureHealth: {
+        ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
+        eventBus: undefined,
+        backfill: undefined,
+      },
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    await expect(await canvas.findByText("Typed runtime 事件总线")).toBeVisible();
+    await expect(canvas.getAllByText("未知").length).toBeGreaterThanOrEqual(2);
+  },
+};
+
+export const StatusRuntimePressureDegradedMobile: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: runtimePressureStatus("degraded"),
+    viewport: { defaultViewport: "mobile393" },
+  },
+  play: runtimePressurePlay("已降级"),
 };
 
 export const StatusRequestHeavy: Story = {

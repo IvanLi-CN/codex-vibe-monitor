@@ -2548,10 +2548,19 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         mutations: Vec<SequencedRuntimeMutation>,
     ) {
+        let received_count = mutations.len();
         let mutations = coalesce_runtime_mutations(mutations);
         if mutations.is_empty() {
             return;
         }
+        self.runtime_mutation_bus
+            .record_router_batch(received_count, mutations.len());
+        let runtime_mutations = mutations
+            .iter()
+            .map(|mutation| mutation.mutation.clone())
+            .collect::<Vec<_>>();
+        self.runtime_mutation_bus
+            .record_topic_work(runtime_mutations.len());
         self.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
             .await;
 
@@ -5278,6 +5287,7 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     bus.record_router_lag();
                     bus.record_router_gap();
+                    bus.record_cursor_recovery();
                     last_sequence = 0;
                     hub.mark_runtime_mutation_gap_and_recover(
                         state.clone(),
@@ -5305,6 +5315,7 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
             if lagged > 0 {
                 bus.record_router_lag();
                 bus.record_router_gap();
+                bus.record_cursor_recovery();
                 last_sequence = 0;
                 hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "receiver_lagged")
                     .await;
@@ -5312,6 +5323,7 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
             }
             if runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &batch) {
                 bus.record_router_gap();
+                bus.record_cursor_recovery();
                 last_sequence = 0;
                 hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "cursor_gap")
                     .await;

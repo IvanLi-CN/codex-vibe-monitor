@@ -3,6 +3,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -222,11 +223,18 @@ pub(crate) fn coalesce_runtime_mutations(
     coalesced
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeMutationBusHealth {
+    pub(crate) state: String,
     pub(crate) published_count: u64,
+    pub(crate) processed_event_count: u64,
+    pub(crate) coalesced_event_count: u64,
+    pub(crate) business_payload_clone_count: u64,
+    pub(crate) topic_work_count: u64,
     pub(crate) router_lagged_count: u64,
     pub(crate) router_gap_count: u64,
+    pub(crate) cursor_recovery_count: u64,
 }
 
 #[derive(Debug)]
@@ -234,8 +242,13 @@ pub(crate) struct RuntimeMutationBus {
     sender: broadcast::Sender<SequencedRuntimeMutation>,
     next_sequence: AtomicU64,
     published_count: AtomicU64,
+    processed_event_count: AtomicU64,
+    coalesced_event_count: AtomicU64,
+    business_payload_clone_count: AtomicU64,
+    topic_work_count: AtomicU64,
     router_lagged_count: AtomicU64,
     router_gap_count: AtomicU64,
+    cursor_recovery_count: AtomicU64,
     router_started: AtomicBool,
 }
 
@@ -246,8 +259,13 @@ impl RuntimeMutationBus {
             sender,
             next_sequence: AtomicU64::new(0),
             published_count: AtomicU64::new(0),
+            processed_event_count: AtomicU64::new(0),
+            coalesced_event_count: AtomicU64::new(0),
+            business_payload_clone_count: AtomicU64::new(0),
+            topic_work_count: AtomicU64::new(0),
             router_lagged_count: AtomicU64::new(0),
             router_gap_count: AtomicU64::new(0),
+            cursor_recovery_count: AtomicU64::new(0),
             router_started: AtomicBool::new(false),
         }
     }
@@ -280,11 +298,44 @@ impl RuntimeMutationBus {
         self.router_gap_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_router_batch(&self, received_count: usize, coalesced_count: usize) {
+        self.processed_event_count
+            .fetch_add(coalesced_count as u64, Ordering::Relaxed);
+        self.coalesced_event_count.fetch_add(
+            received_count.saturating_sub(coalesced_count) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn record_topic_work(&self, count: usize) {
+        self.topic_work_count
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_cursor_recovery(&self) {
+        self.cursor_recovery_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn health(&self) -> RuntimeMutationBusHealth {
+        let router_lagged_count = self.router_lagged_count.load(Ordering::Relaxed);
+        let router_gap_count = self.router_gap_count.load(Ordering::Relaxed);
         RuntimeMutationBusHealth {
+            state: if router_lagged_count > 0 || router_gap_count > 0 {
+                "degraded"
+            } else {
+                "healthy"
+            }
+            .to_string(),
             published_count: self.published_count.load(Ordering::Relaxed),
-            router_lagged_count: self.router_lagged_count.load(Ordering::Relaxed),
-            router_gap_count: self.router_gap_count.load(Ordering::Relaxed),
+            processed_event_count: self.processed_event_count.load(Ordering::Relaxed),
+            coalesced_event_count: self.coalesced_event_count.load(Ordering::Relaxed),
+            // Typed mutations structurally exclude complete records and JSON payloads. Keep the
+            // counter explicit so the status contract can prove that this path did not clone one.
+            business_payload_clone_count: self.business_payload_clone_count.load(Ordering::Relaxed),
+            topic_work_count: self.topic_work_count.load(Ordering::Relaxed),
+            router_lagged_count,
+            router_gap_count,
+            cursor_recovery_count: self.cursor_recovery_count.load(Ordering::Relaxed),
         }
     }
 }
@@ -380,5 +431,22 @@ mod tests {
         ));
         bus.record_router_lag();
         assert_eq!(bus.health().router_lagged_count, 1);
+    }
+
+    #[test]
+    fn health_tracks_coalescing_topic_work_and_cursor_recovery() {
+        let bus = RuntimeMutationBus::new();
+        bus.record_router_batch(5, 2);
+        bus.record_topic_work(2);
+        bus.record_router_gap();
+        bus.record_cursor_recovery();
+
+        let health = bus.health();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.processed_event_count, 2);
+        assert_eq!(health.coalesced_event_count, 3);
+        assert_eq!(health.business_payload_clone_count, 0);
+        assert_eq!(health.topic_work_count, 2);
+        assert_eq!(health.cursor_recovery_count, 1);
     }
 }

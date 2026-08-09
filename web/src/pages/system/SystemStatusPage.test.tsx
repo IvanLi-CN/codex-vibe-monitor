@@ -187,4 +187,125 @@ describe("SystemStatusPage", () => {
 
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps missing event bus and backfill diagnostics visibly unknown", async () => {
+    apiMocks.fetchSystemStatus.mockResolvedValueOnce({
+      liveInvocationsCount: 6,
+      successCount: 3,
+      nonSuccessCount: 3,
+      completedArchiveBatchesCount: 2,
+      archivedBodies: { count: 9, bytes: 4_096 },
+      rawBodies: { count: 5, bytes: 6_144 },
+      requestRawBodies: { count: 2, bytes: 4_096 },
+      responseRawBodies: { count: 3, bytes: 2_048 },
+      databaseBytes: 2_048,
+      otherFilesBytes: 8_192,
+      rawMetricsHealth: { state: "ready", inventoryCursor: 6 },
+      projectionHealth: {
+        terminal: {
+          state: "healthy",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+        longTerm: {
+          state: "healthy",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+      },
+      runtimePressureHealth: {
+        state: "healthy",
+        process: {
+          rssBytes: 0,
+          rssAnonBytes: 0,
+          swapBytes: 0,
+          peakRssBytes: 0,
+          threads: 0,
+          managedBytes: 0,
+          unattributedAnonBytes: 0,
+          pressureLevel: "normal",
+        },
+        allocator: { mallocArenaMax: "8" },
+        writerAccounting: {
+          state: "healthy",
+          pendingDepth: 0,
+          pendingBytes: 0,
+          transferBytes: 0,
+          retryCount: 0,
+          invariantViolationCount: 0,
+        },
+        dashboardProjection: {
+          mode: "auto",
+          state: "healthy",
+          producerState: "idle",
+          activeSubscriberCount: 0,
+          livePathDbReadCount: 0,
+          buildCount: 0,
+          revision: 0,
+          snapshotOrigin: "none",
+          sliceCounters: {
+            current: { buildCount: 0, revisionCount: 0, cadenceMissCount: 0 },
+            network: { buildCount: 0, revisionCount: 0, cadenceMissCount: 0 },
+            terminal: { buildCount: 0, revisionCount: 0, cadenceMissCount: 0 },
+          },
+        },
+        delivery: {
+          activity: {
+            materializationCount: 0,
+            serializationCount: 0,
+            payloadCloneCount: 0,
+            frameBytesCount: 0,
+            laggedCount: 0,
+            skippedCount: 0,
+            businessPayloadCount: 0,
+            jsonOverlayCount: 0,
+          },
+          summary: {
+            materializationCount: 0,
+            serializationCount: 0,
+            payloadCloneCount: 0,
+            frameBytesCount: 0,
+            laggedCount: 0,
+            skippedCount: 0,
+            businessPayloadCount: 0,
+            jsonOverlayCount: 0,
+          },
+          networkTimeseries: {
+            materializationCount: 0,
+            serializationCount: 0,
+            payloadCloneCount: 0,
+            frameBytesCount: 0,
+            laggedCount: 0,
+            skippedCount: 0,
+            businessPayloadCount: 0,
+            jsonOverlayCount: 0,
+          },
+          networkRecent: {
+            materializationCount: 0,
+            serializationCount: 0,
+            payloadCloneCount: 0,
+            frameBytesCount: 0,
+            laggedCount: 0,
+            skippedCount: 0,
+            businessPayloadCount: 0,
+            jsonOverlayCount: 0,
+          },
+        },
+      },
+      refreshedAt: "2026-06-22T08:00:00Z",
+    });
+
+    renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const pageText = host?.textContent ?? "";
+    expect(pageText).toContain("Typed runtime 事件总线");
+    expect(pageText).toContain("启动回填");
+    expect(pageText).toContain("当前后端尚未发布这一 additive 诊断字段。");
+  });
 });

@@ -80,6 +80,8 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) delivery: DashboardDeliveryTopologyCounterSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
     pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
+    pub(crate) event_bus: RuntimeMutationBusHealth,
+    pub(crate) backfill: StartupBackfillHealthSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -100,6 +102,22 @@ pub(crate) struct SystemStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) runtime_pressure_health: Option<SystemRuntimePressureHealth>,
     pub(crate) refreshed_at: String,
+}
+
+fn runtime_pressure_state(
+    accounting_error: bool,
+    degraded_signal: bool,
+    deferred_signal: bool,
+) -> &'static str {
+    if accounting_error {
+        "accounting_error"
+    } else if degraded_signal {
+        "degraded"
+    } else if deferred_signal {
+        "deferred"
+    } else {
+        "healthy"
+    }
 }
 
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
@@ -124,6 +142,10 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         .subscription_hub
         .prompt_cache_projection_health()
         .await;
+    let event_bus = state.subscription_hub.runtime_mutation_bus_health();
+    let backfill = startup_backfill_health_snapshot();
+    let terminal_projection = state.terminal_projection_hub.health();
+    let long_term_projection = state.long_term_projection_runtime.lock().await.health();
     let projection_cadence_missed = [
         dashboard_projection.slice_counters.current,
         dashboard_projection.slice_counters.network,
@@ -134,19 +156,32 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let delivery_degraded = state
         .subscription_hub
         .dashboard_delivery_has_degraded_signal();
-    let state = if writer_accounting.state == "degraded" {
-        "accounting_error".to_string()
-    } else if memory.pressure_level != "normal"
-        || dashboard_projection.state == "degraded"
-        || projection_cadence_missed
-        || delivery_degraded
-    {
-        "degraded".to_string()
-    } else if dashboard_projection.last_defer_reason.is_some() {
-        "deferred".to_string()
-    } else {
-        "healthy".to_string()
-    };
+    let projection_deferred = dashboard_projection.last_defer_reason.is_some()
+        || terminal_projection.hard_limit_reason.is_some()
+        || long_term_projection.last_defer_reason.is_some();
+    let cursor_growth = terminal_projection.last_persisted_row_id
+        > long_term_projection.cursor_row_id
+        || (terminal_projection.timeseries_consumer_active
+            && terminal_projection.last_persisted_row_id
+                > terminal_projection.timeseries_cursor_row_id);
+    let writer_pressure_active = writer_accounting.p2_deferred_age_ms > 0
+        || proxy_sqlite_write_coordinator.p1_waiter_count > 0
+        || proxy_sqlite_write_coordinator.interactive_waiter_count > 0
+        || proxy_sqlite_write_coordinator.p2_waiter_count > 0;
+    let state = runtime_pressure_state(
+        writer_accounting.state == "degraded",
+        memory.pressure_level != "normal"
+            || dashboard_projection.state == "degraded"
+            || projection_cadence_missed
+            || delivery_degraded
+            || event_bus.state == "degraded"
+            || backfill.state == "degraded",
+        projection_deferred
+            || cursor_growth
+            || writer_pressure_active
+            || backfill.state == "deferred",
+    )
+    .to_string();
     SystemRuntimePressureHealth {
         state,
         process: SystemRuntimePressureProcess {
@@ -168,6 +203,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         delivery,
         request_pipeline,
         prompt_cache_projection,
+        event_bus,
+        backfill,
     }
 }
 
@@ -1215,4 +1252,16 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.orphan_raw_files_removed
     );
     (brief, detail)
+}
+
+#[cfg(test)]
+mod runtime_pressure_health_tests {
+    use super::runtime_pressure_state;
+
+    #[test]
+    fn active_event_lag_and_writer_pressure_never_report_healthy() {
+        assert_eq!(runtime_pressure_state(false, true, false), "degraded");
+        assert_eq!(runtime_pressure_state(false, false, true), "deferred");
+        assert_eq!(runtime_pressure_state(false, false, false), "healthy");
+    }
 }

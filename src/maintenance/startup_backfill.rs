@@ -32,6 +32,29 @@ struct StartupBackfillScheduler {
     notify: Notify,
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
+    deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
+    failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
+    wake_count: AtomicU64,
+    due_dispatch_count: AtomicU64,
+    noop_suppressed_count: AtomicU64,
+    pressure_defer_count: AtomicU64,
+    failure_count: AtomicU64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartupBackfillHealthSnapshot {
+    pub(crate) state: String,
+    pub(crate) wake_generation: u64,
+    pub(crate) wake_count: u64,
+    pub(crate) due_dispatch_count: u64,
+    pub(crate) noop_suppressed_count: u64,
+    pub(crate) pressure_defer_count: u64,
+    pub(crate) failure_count: u64,
+    pub(crate) woken_task_count: u64,
+    pub(crate) scheduled_task_count: u64,
+    pub(crate) deferred_task_count: u64,
+    pub(crate) failed_task_count: u64,
 }
 
 impl StartupBackfillScheduler {
@@ -42,6 +65,7 @@ impl StartupBackfillScheduler {
         if let Ok(mut next_due) = self.next_due.lock() {
             next_due.insert(task, Utc::now());
         }
+        self.wake_count.fetch_add(1, Ordering::Relaxed);
         self.wake_generation.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
     }
@@ -73,6 +97,8 @@ impl StartupBackfillScheduler {
         for task in &due_tasks {
             next_due.remove(task);
         }
+        self.due_dispatch_count
+            .fetch_add(due_tasks.len() as u64, Ordering::Relaxed);
         due_tasks
     }
 
@@ -85,6 +111,85 @@ impl StartupBackfillScheduler {
     fn clear_next_due(&self, task: StartupBackfillTask) {
         if let Ok(mut next_due) = self.next_due.lock() {
             next_due.remove(&task);
+        }
+    }
+
+    fn record_task_result(&self, task: StartupBackfillTask, failed: bool, deferred: bool) {
+        if failed {
+            self.failure_count.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut tasks) = self.failed_tasks.lock() {
+                tasks.insert(task);
+            }
+            if let Ok(mut tasks) = self.deferred_tasks.lock() {
+                tasks.remove(&task);
+            }
+            return;
+        }
+
+        if deferred {
+            self.pressure_defer_count.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut tasks) = self.deferred_tasks.lock() {
+                tasks.insert(task);
+            }
+            if let Ok(mut tasks) = self.failed_tasks.lock() {
+                tasks.remove(&task);
+            }
+            return;
+        }
+
+        if let Ok(mut tasks) = self.deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        if let Ok(mut tasks) = self.failed_tasks.lock() {
+            tasks.remove(&task);
+        }
+    }
+
+    fn record_noop_suppressed(&self) {
+        self.noop_suppressed_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn health_snapshot(&self) -> StartupBackfillHealthSnapshot {
+        let woken_task_count = self
+            .woken_tasks
+            .lock()
+            .map(|tasks| tasks.len() as u64)
+            .unwrap_or_default();
+        let scheduled_task_count = self
+            .next_due
+            .lock()
+            .map(|tasks| tasks.len() as u64)
+            .unwrap_or_default();
+        let deferred_task_count = self
+            .deferred_tasks
+            .lock()
+            .map(|tasks| tasks.len() as u64)
+            .unwrap_or_default();
+        let failed_task_count = self
+            .failed_tasks
+            .lock()
+            .map(|tasks| tasks.len() as u64)
+            .unwrap_or_default();
+        let state = if failed_task_count > 0 {
+            "degraded"
+        } else if deferred_task_count > 0 {
+            "deferred"
+        } else {
+            "healthy"
+        };
+
+        StartupBackfillHealthSnapshot {
+            state: state.to_string(),
+            wake_generation: self.generation(),
+            wake_count: self.wake_count.load(Ordering::Relaxed),
+            due_dispatch_count: self.due_dispatch_count.load(Ordering::Relaxed),
+            noop_suppressed_count: self.noop_suppressed_count.load(Ordering::Relaxed),
+            pressure_defer_count: self.pressure_defer_count.load(Ordering::Relaxed),
+            failure_count: self.failure_count.load(Ordering::Relaxed),
+            woken_task_count,
+            scheduled_task_count,
+            deferred_task_count,
+            failed_task_count,
         }
     }
 
@@ -109,6 +214,10 @@ impl StartupBackfillScheduler {
 static STARTUP_BACKFILL_SCHEDULER: Lazy<StartupBackfillScheduler> =
     Lazy::new(StartupBackfillScheduler::default);
 
+pub(crate) fn startup_backfill_health_snapshot() -> StartupBackfillHealthSnapshot {
+    STARTUP_BACKFILL_SCHEDULER.health_snapshot()
+}
+
 fn startup_backfill_wait_duration(next_due: Option<DateTime<Utc>>) -> Duration {
     match next_due {
         Some(deadline) => (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO),
@@ -128,6 +237,8 @@ fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime
 struct StartupBackfillTaskRunOutcome {
     actionable: bool,
     failed: bool,
+    deferred: bool,
+    completed: bool,
     next_due: DateTime<Utc>,
 }
 
@@ -713,6 +824,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
 ) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
+    let mut had_deferred_task = false;
     let tasks = match selected_tasks {
         Some(tasks) => tasks,
         None => StartupBackfillTask::ordered_tasks(),
@@ -745,9 +857,18 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
                 had_failure |= outcome.failed;
+                had_deferred_task |= outcome.deferred;
+                if outcome.completed {
+                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                        *task,
+                        outcome.failed,
+                        outcome.deferred,
+                    );
+                }
             }
             Err(err) => {
                 had_failure = true;
+                STARTUP_BACKFILL_SCHEDULER.record_task_result(*task, true, false);
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(
                     *task,
                     Utc::now()
@@ -796,10 +917,16 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
         match repair_outcome {
             ActiveAccountActivityV2RepairResult::Repaired(outcome) => {
                 ran_actionable_task |= outcome.repaired_bucket_count > 0;
+                STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                    StartupBackfillTask::HistoricalRollups,
+                    false,
+                    false,
+                );
             }
             outcome @ (ActiveAccountActivityV2RepairResult::Deferred
             | ActiveAccountActivityV2RepairResult::Failed) => {
-                had_failure |= matches!(outcome, ActiveAccountActivityV2RepairResult::Failed);
+                let failed = matches!(outcome, ActiveAccountActivityV2RepairResult::Failed);
+                had_failure |= failed;
                 if let Err(err) = defer_startup_backfill_task(
                     state.as_ref(),
                     StartupBackfillTask::HistoricalRollups,
@@ -809,9 +936,27 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 .await
                 {
                     had_failure = true;
+                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                        StartupBackfillTask::HistoricalRollups,
+                        true,
+                        false,
+                    );
                     crate::db_pressure::global_db_pressure_gate()
                         .record_error("startup_backfill_coverage_retry", &err);
                     warn!(error = %err, "failed to schedule startup backfill coverage retry");
+                } else if failed {
+                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                        StartupBackfillTask::HistoricalRollups,
+                        true,
+                        false,
+                    );
+                } else {
+                    had_deferred_task = true;
+                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                        StartupBackfillTask::HistoricalRollups,
+                        false,
+                        true,
+                    );
                 }
             }
         }
@@ -844,6 +989,10 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             )
             .await;
         }
+    } else if !had_deferred_task {
+        // Idle passes deliberately do not write system_task_runs, avoiding an audit workload
+        // that would itself wake persistence maintenance.
+        STARTUP_BACKFILL_SCHEDULER.record_noop_suppressed();
     }
 
     StartupBackfillMaintenancePass {
@@ -895,6 +1044,8 @@ async fn run_startup_backfill_task_if_due_outcome(
         return Ok(StartupBackfillTaskRunOutcome {
             actionable: false,
             failed: false,
+            deferred: false,
+            completed: true,
             next_due: Utc::now() + ChronoDuration::days(1),
         });
     }
@@ -917,6 +1068,8 @@ async fn run_startup_backfill_task_if_due_outcome(
         return Ok(StartupBackfillTaskRunOutcome {
             actionable: false,
             failed: false,
+            deferred: false,
+            completed: false,
             next_due: startup_backfill_progress_due(&progress),
         });
     }
@@ -958,6 +1111,8 @@ async fn run_startup_backfill_task_if_due_outcome(
             return Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
+                deferred: true,
+                completed: true,
                 next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
             });
         }
@@ -1030,6 +1185,8 @@ async fn run_startup_backfill_task_if_due_outcome(
             StartupBackfillTaskRunOutcome {
                 actionable: startup_backfill_run_is_actionable(&run),
                 failed: false,
+                deferred: false,
+                completed: true,
                 next_due: parse_to_utc_datetime(&next_run_after).unwrap_or_else(Utc::now),
             }
         }
@@ -1063,6 +1220,8 @@ async fn run_startup_backfill_task_if_due_outcome(
             StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
+                deferred: false,
+                completed: true,
                 next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
             }
         }
@@ -1649,6 +1808,38 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 #[cfg(test)]
 mod startup_backfill_tests {
     use super::*;
+
+    #[test]
+    fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.wake(StartupBackfillTask::HistoricalRollups);
+        scheduler.record_noop_suppressed();
+
+        let woken = scheduler.health_snapshot();
+        assert_eq!(woken.state, "healthy");
+        assert_eq!(woken.wake_count, 1);
+        assert_eq!(woken.woken_task_count, 1);
+
+        assert_eq!(
+            scheduler.drain_due_tasks(Utc::now()),
+            vec![StartupBackfillTask::HistoricalRollups]
+        );
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
+        let deferred = scheduler.health_snapshot();
+        assert_eq!(deferred.state, "deferred");
+        assert_eq!(deferred.due_dispatch_count, 1);
+        assert_eq!(deferred.pressure_defer_count, 1);
+        assert_eq!(deferred.noop_suppressed_count, 1);
+
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
+        assert_eq!(scheduler.health_snapshot().state, "degraded");
+
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, false);
+        let recovered = scheduler.health_snapshot();
+        assert_eq!(recovered.state, "healthy");
+        assert_eq!(recovered.failure_count, 1);
+        assert_eq!(recovered.failed_task_count, 0);
+    }
 
     #[test]
     fn actionable_no_progress_backoff_caps_at_fifteen_minutes() {

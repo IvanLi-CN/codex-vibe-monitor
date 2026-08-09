@@ -373,12 +373,18 @@ async fn runtime_pressure_health_serializes_without_sql() {
         REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES,
         Some("request_json_invalid"),
     );
+    let event_bus = state.subscription_hub.runtime_mutation_bus();
+    event_bus.record_router_batch(4, 2);
+    event_bus.record_topic_work(2);
+    event_bus.record_router_lag();
+    event_bus.record_router_gap();
+    event_bus.record_cursor_recovery();
     state.pool.close().await;
 
     let health = load_runtime_pressure_health(state.as_ref()).await;
     let payload = serde_json::to_value(health).expect("serialize runtime pressure health");
 
-    assert!(payload["state"].is_string());
+    assert_eq!(payload["state"], "degraded");
     assert!(payload["process"]["rssAnonBytes"].is_u64());
     assert!(payload["process"]["swapBytes"].is_u64());
     assert!(payload["process"]["managedBytes"].is_u64());
@@ -407,6 +413,12 @@ async fn runtime_pressure_health_serializes_without_sql() {
         payload["requestPipeline"]["lastFallbackReason"],
         "request_json_invalid"
     );
+    assert_eq!(payload["eventBus"]["state"], "degraded");
+    assert_eq!(payload["eventBus"]["processedEventCount"], 2);
+    assert_eq!(payload["eventBus"]["coalescedEventCount"], 2);
+    assert_eq!(payload["eventBus"]["businessPayloadCloneCount"], 0);
+    assert_eq!(payload["eventBus"]["cursorRecoveryCount"], 1);
+    assert!(payload["backfill"]["state"].is_string());
 }
 
 #[tokio::test]
