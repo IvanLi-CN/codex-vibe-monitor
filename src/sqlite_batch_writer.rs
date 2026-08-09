@@ -13,7 +13,7 @@ use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
     sync::{Mutex, RwLock, mpsc, oneshot},
     task::JoinHandle,
-    time::{MissedTickBehavior, interval},
+    time::{MissedTickBehavior, interval, sleep},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -128,6 +128,13 @@ impl P2ScheduleState {
         self.deferred_since
             .map(|started| started.elapsed().as_millis() as u64)
             .unwrap_or_default()
+    }
+}
+
+async fn wait_for_p2_deadline(due_at: Option<Instant>) {
+    match due_at {
+        Some(due_at) => sleep(due_at.saturating_duration_since(Instant::now())).await,
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -578,6 +585,7 @@ pub(crate) struct PendingBatch {
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
     account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
+    startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
     enqueued_rows: usize,
     coalesced_rows: usize,
     estimated_bytes: usize,
@@ -636,6 +644,11 @@ impl PendingBatch {
                     .values()
                     .map(estimated_system_task_finish_memory_bytes)
                     .sum::<usize>(),
+            )
+            .saturating_add(
+                self.startup_backfill_wake_tasks
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<StartupBackfillTask>()),
             );
         self.terminal_estimated_bytes = self
             .terminal_invocations
@@ -650,6 +663,7 @@ impl PendingBatch {
             && self.invocation_derived.is_empty()
             && self.account_selected_touches.is_empty()
             && self.system_task_finishes.is_empty()
+            && self.startup_backfill_wake_tasks.is_empty()
     }
 
     fn has_p2(&self) -> bool {
@@ -657,6 +671,7 @@ impl PendingBatch {
             || !self.invocation_derived.is_empty()
             || !self.account_selected_touches.is_empty()
             || !self.system_task_finishes.is_empty()
+            || !self.startup_backfill_wake_tasks.is_empty()
     }
 
     fn logical_rows(&self) -> usize {
@@ -665,6 +680,7 @@ impl PendingBatch {
             + self.invocation_derived.len()
             + self.account_selected_touches.len()
             + self.system_task_finishes.len()
+            + usize::from(!self.startup_backfill_wake_tasks.is_empty())
     }
 
     fn age(&self) -> Duration {
@@ -817,6 +833,30 @@ impl PendingBatch {
         }
     }
 
+    fn take_p2(&mut self) -> Self {
+        let mut p2 = std::mem::take(self);
+        let terminal_invocations = std::mem::take(&mut p2.terminal_invocations);
+        let terminal_estimated_bytes = p2.terminal_estimated_bytes;
+        p2.estimated_bytes = p2.estimated_bytes.saturating_sub(terminal_estimated_bytes);
+        p2.terminal_estimated_bytes = 0;
+
+        self.terminal_invocations = terminal_invocations;
+        self.estimated_bytes = terminal_estimated_bytes;
+        self.terminal_estimated_bytes = terminal_estimated_bytes;
+        self.enqueued_rows = self.terminal_invocations.len();
+        self.oldest_at = p2.oldest_at;
+        p2
+    }
+
+    fn add_startup_backfill_wake_tasks(&mut self, tasks: &[StartupBackfillTask]) {
+        for task in tasks {
+            if !self.startup_backfill_wake_tasks.contains(task) {
+                self.startup_backfill_wake_tasks.push(*task);
+            }
+        }
+        self.recalculate_estimates();
+    }
+
     fn merge_p2(&mut self, mut other: Self) {
         self.attempt_progress.extend(other.attempt_progress.drain());
         self.invocation_derived.extend(other.invocation_derived);
@@ -824,6 +864,7 @@ impl PendingBatch {
             .extend(other.account_selected_touches.drain());
         self.system_task_finishes
             .extend(other.system_task_finishes.drain());
+        self.add_startup_backfill_wake_tasks(&other.startup_backfill_wake_tasks);
         self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
         self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
         self.recalculate_estimates();
@@ -1539,6 +1580,92 @@ pub(crate) async fn run_sqlite_batch_writer(
                 p2_schedule.wake_background_eligible();
                 accounting.update_p2_schedule(&p2_schedule);
             }
+            _ = wait_for_p2_deadline(p2_schedule.due_at),
+                if pending.has_p2() && p2_schedule.ready(Instant::now()) =>
+            {
+                let now = Instant::now();
+                let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
+                let flush_batch = if submitted_p1 {
+                    pending.take()
+                } else {
+                    pending.take_p2()
+                };
+                if let Some(retained) =
+                    flush_pending_batch_accounted(
+                        &accounting,
+                        &pool,
+                        pricing_catalog.as_ref(),
+                        flush_batch,
+                        FlushReason::Interval,
+                        prompt_cache_conversation_cache.as_ref(),
+                        &terminal_runtime_store,
+                        &dashboard_activity_snapshot_cache,
+                        &terminal_projection_hub,
+                        &dashboard_reconcile_gate,
+                        &terminal_journal,
+                    )
+                    .await
+                {
+                    if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                        transaction_sequence = transaction_sequence.saturating_add(1);
+                        let delay = p1_retry.failed(transaction_sequence);
+                        warn!(
+                            write_class = "p1_terminal",
+                            retry_generation = p1_retry.generation as u64,
+                            next_retry_delay_ms = delay.as_millis() as u64,
+                            "scheduled retained P1 batch with exponential backoff"
+                        );
+                    } else if submitted_p1 {
+                        p1_retry.succeeded();
+                    }
+                    match retained.p2_defer {
+                        Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                            p2_schedule.defer_pressure(
+                                Duration::from_millis(remaining_ms),
+                                P2WakeReason::PressureCooldownElapsed,
+                            );
+                        }
+                        Some(P2DeferReason::BackgroundBusy {
+                            observed_generation,
+                        }) => {
+                            p2_eligibility_generation = observed_generation;
+                            p2_schedule.defer_until_background_eligible();
+                        }
+                        None if retained.failed && retained.batch.has_p2()
+                            && retained.batch.terminal_invocations.is_empty() => {
+                            transaction_sequence = transaction_sequence.saturating_add(1);
+                            let delay = p2_schedule.failed(transaction_sequence);
+                            if retained.p2_lock_failure {
+                                accounting.p2_lock_retried();
+                            }
+                            warn!(
+                                write_class = "p2_derived",
+                                retry_generation = p2_schedule.generation as u64,
+                                next_retry_delay_ms = delay.as_millis() as u64,
+                                "scheduled retained P2 batch with exponential backoff"
+                            );
+                        }
+                        None if retained.batch.has_p2() => {
+                            p2_schedule.arm_if_idle(Instant::now());
+                        }
+                        None => p2_schedule.succeeded(),
+                    }
+                    if retained.batch.terminal_invocations.is_empty() {
+                        pending.merge_p2(retained.batch);
+                    } else {
+                        let mut retained_batch = retained.batch;
+                        retained_batch.merge_p2(pending.take());
+                        pending = retained_batch;
+                    }
+                    accounting.update_p2_schedule(&p2_schedule);
+                } else {
+                    if submitted_p1 {
+                        p1_retry.succeeded();
+                    }
+                    p2_schedule.succeeded();
+                    accounting.update_p2_schedule(&p2_schedule);
+                }
+            }
             maybe_control = control_receiver.recv(), if !control_closed => {
                 if let Some(control) = maybe_control {
                     match control {
@@ -1796,118 +1923,81 @@ pub(crate) async fn run_sqlite_batch_writer(
                 }
             }
             _ = ticker.tick() => {
-                if !pending.is_empty() {
-                    if !pending.terminal_invocations.is_empty() && !p1_retry.ready(Instant::now()) {
-                        continue;
+                if pending.terminal_invocations.is_empty() || !p1_retry.ready(Instant::now()) {
+                    continue;
+                }
+                let flush_reason = if pending.age() >= SQLITE_BATCH_MAX_AGE {
+                    if pending.age() >= SQLITE_BATCH_STALE_WARN_AGE {
+                        warn!(
+                            logical_rows = pending.logical_rows(),
+                            enqueued_rows = pending.enqueued_rows,
+                            coalesced_rows = pending.coalesced_rows,
+                            oldest_age_ms = pending.age().as_millis() as u64,
+                            flush_reason = FlushReason::MaxAge.as_str(),
+                            "sqlite batch writer pending terminal writes are stale under database pressure"
+                        );
                     }
-                    let p2_ready = p2_schedule.ready(Instant::now());
-                    if pending.terminal_invocations.is_empty() && !p2_ready {
-                        continue;
-                    }
-                    let flush_reason = if pending.age() >= SQLITE_BATCH_MAX_AGE {
-                        if pending.age() >= SQLITE_BATCH_STALE_WARN_AGE {
-                            warn!(
-                                logical_rows = pending.logical_rows(),
-                                enqueued_rows = pending.enqueued_rows,
-                                coalesced_rows = pending.coalesced_rows,
-                                oldest_age_ms = pending.age().as_millis() as u64,
-                                flush_reason = FlushReason::MaxAge.as_str(),
-                                "sqlite batch writer pending derived writes are stale under database pressure"
-                            );
-                        } else {
-                            debug!(
-                                logical_rows = pending.logical_rows(),
-                                enqueued_rows = pending.enqueued_rows,
-                                coalesced_rows = pending.coalesced_rows,
-                                oldest_age_ms = pending.age().as_millis() as u64,
-                                flush_reason = FlushReason::MaxAge.as_str(),
-                                "sqlite batch writer pending derived writes reached max age"
-                            );
-                        }
-                        FlushReason::MaxAge
+                    FlushReason::MaxAge
+                } else {
+                    FlushReason::Interval
+                };
+                let flush_batch = pending.take_p1_terminals();
+                if let Some(retained) =
+                    flush_pending_batch_accounted(
+                        &accounting,
+                        &pool,
+                        pricing_catalog.as_ref(),
+                        flush_batch,
+                        flush_reason,
+                        prompt_cache_conversation_cache.as_ref(),
+                        &terminal_runtime_store,
+                        &dashboard_activity_snapshot_cache,
+                        &terminal_projection_hub,
+                        &dashboard_reconcile_gate,
+                        &terminal_journal,
+                    )
+                    .await
+                {
+                    if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                        transaction_sequence = transaction_sequence.saturating_add(1);
+                        let delay = p1_retry.failed(transaction_sequence);
+                        warn!(
+                            write_class = "p1_terminal",
+                            retry_generation = p1_retry.generation as u64,
+                            next_retry_delay_ms = delay.as_millis() as u64,
+                            "scheduled retained P1 batch with exponential backoff"
+                        );
                     } else {
-                        FlushReason::Interval
-                    };
-                    let submitted_p1 = !pending.terminal_invocations.is_empty();
-                    let flush_batch = if submitted_p1 && pending.has_p2() && !p2_ready {
-                        pending.take_p1_terminals()
-                    } else {
-                        pending.take()
-                    };
-                    if let Some(retained) =
-                        flush_pending_batch_accounted(
-                            &accounting,
-                            &pool,
-                            pricing_catalog.as_ref(),
-                            flush_batch,
-                            flush_reason,
-                            prompt_cache_conversation_cache.as_ref(),
-                            &terminal_runtime_store,
-                            &dashboard_activity_snapshot_cache,
-                            &terminal_projection_hub,
-                            &dashboard_reconcile_gate,
-                            &terminal_journal,
-                        )
-                        .await
-                    {
-                        if retained.failed && !retained.batch.terminal_invocations.is_empty() {
-                            transaction_sequence = transaction_sequence.saturating_add(1);
-                            let delay = p1_retry.failed(transaction_sequence);
-                            warn!(
-                                write_class = "p1_terminal",
-                                retry_generation = p1_retry.generation as u64,
-                                next_retry_delay_ms = delay.as_millis() as u64,
-                                "scheduled retained P1 batch with exponential backoff"
-                            );
-                        } else if submitted_p1 {
-                            p1_retry.succeeded();
-                        }
-                        match retained.p2_defer {
-                            Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
-                                p2_schedule.defer_pressure(
-                                    Duration::from_millis(remaining_ms),
-                                    P2WakeReason::PressureCooldownElapsed,
-                                );
-                            }
-                            Some(P2DeferReason::BackgroundBusy {
-                                observed_generation,
-                            }) => {
-                                p2_eligibility_generation = observed_generation;
-                                p2_schedule.defer_until_background_eligible();
-                            }
-                            None if retained.failed && retained.batch.has_p2()
-                                && retained.batch.terminal_invocations.is_empty() => {
-                                transaction_sequence = transaction_sequence.saturating_add(1);
-                                let delay = p2_schedule.failed(transaction_sequence);
-                                if retained.p2_lock_failure {
-                                    accounting.p2_lock_retried();
-                                }
-                                warn!(
-                                    write_class = "p2_derived",
-                                    retry_generation = p2_schedule.generation as u64,
-                                    next_retry_delay_ms = delay.as_millis() as u64,
-                                    "scheduled retained P2 batch with exponential backoff"
-                                );
-                            }
-                            None if retained.batch.has_p2() => {
-                                p2_schedule.arm_if_idle(Instant::now());
-                            }
-                            None => p2_schedule.succeeded(),
-                        }
-                        if retained.batch.terminal_invocations.is_empty() {
-                            pending.merge_p2(retained.batch);
-                        } else {
-                            let mut retained_batch = retained.batch;
-                            retained_batch.merge_p2(pending.take());
-                            pending = retained_batch;
-                        }
-                        accounting.update_p2_schedule(&p2_schedule);
-                    } else if submitted_p1 {
                         p1_retry.succeeded();
-                    } else {
-                        p2_schedule.succeeded();
-                        accounting.update_p2_schedule(&p2_schedule);
                     }
+                    match retained.p2_defer {
+                        Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                            p2_schedule.defer_pressure(
+                                Duration::from_millis(remaining_ms),
+                                P2WakeReason::PressureCooldownElapsed,
+                            );
+                        }
+                        Some(P2DeferReason::BackgroundBusy {
+                            observed_generation,
+                        }) => {
+                            p2_eligibility_generation = observed_generation;
+                            p2_schedule.defer_until_background_eligible();
+                        }
+                        None if retained.batch.has_p2() => {
+                            p2_schedule.arm_if_idle(Instant::now());
+                        }
+                        None => p2_schedule.succeeded(),
+                    }
+                    if retained.batch.terminal_invocations.is_empty() {
+                        pending.merge_p2(retained.batch);
+                    } else {
+                        let mut retained_batch = retained.batch;
+                        retained_batch.merge_p2(pending.take());
+                        pending = retained_batch;
+                    }
+                    accounting.update_p2_schedule(&p2_schedule);
+                } else {
+                    p1_retry.succeeded();
                 }
             }
         }
@@ -2080,6 +2170,7 @@ pub(crate) async fn flush_pending_batch(
     let oldest_age_ms = batch.age().as_millis() as u64;
 
     let flush_reason = reason.as_str();
+    let p2_pending_before_p1 = batch.has_p2();
     let p1_batch = batch.take_p1_terminals();
     if !p1_batch.is_empty() {
         let transaction_id = format!("p1-{}", started.elapsed().as_nanos());
@@ -2211,6 +2302,9 @@ pub(crate) async fn flush_pending_batch(
 
     if batch.is_empty() {
         return None;
+    }
+    if !p2_pending_before_p1 && !reason.bypass_pressure_gate() {
+        return Some(RetainedBatch::new(batch, false));
     }
     let observed_eligibility_generation =
         crate::db_pressure::global_db_pressure_gate().eligibility_generation();
@@ -2372,7 +2466,6 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut should_invalidate_prompt_cache_conversations = false;
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
-    let mut startup_backfill_wake_tasks = Vec::new();
     if !batch.terminal_invocations.is_empty() {
         let mut terminal_tx = pool.begin().await?;
         for terminal in batch.terminal_invocations.values() {
@@ -2426,11 +2519,7 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     for (terminal, invocation_id, occurred_at) in persisted_terminals {
-        for task in terminal.startup_backfill_tasks.iter().copied() {
-            if !startup_backfill_wake_tasks.contains(&task) {
-                startup_backfill_wake_tasks.push(task);
-            }
-        }
+        deferred_batch.add_startup_backfill_wake_tasks(&terminal.startup_backfill_tasks);
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
             .ok()
@@ -2487,30 +2576,19 @@ pub(crate) async fn flush_pending_batch_inner(
         ));
     }
 
-    if !startup_backfill_wake_tasks.is_empty() {
-        let pool = pool.clone();
+    if !batch.startup_backfill_wake_tasks.is_empty() {
         let pricing_catalog = if let Some(pricing_catalog) = pricing_catalog {
             Some(pricing_catalog.read().await.clone())
         } else {
             None
         };
-        tokio::spawn(async move {
-            if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
-                &pool,
-                &startup_backfill_wake_tasks,
-                pricing_catalog.as_ref(),
-                "terminal_payload_repair_input",
-            )
-            .await
-            {
-                warn!(
-                    error = %err,
-                    task_count = startup_backfill_wake_tasks.len(),
-                    wake_reason = "terminal_payload_repair_input",
-                    "failed to wake startup backfill after terminal persistence"
-                );
-            }
-        });
+        wake_startup_backfill_tasks_with_pricing_catalog(
+            pool,
+            &batch.startup_backfill_wake_tasks,
+            pricing_catalog.as_ref(),
+            "terminal_payload_repair_input",
+        )
+        .await?;
     }
 
     if batch.attempt_progress.is_empty()
@@ -2750,8 +2828,33 @@ mod tests {
         assert_eq!(locked.p2_wake_reason.as_deref(), Some("lock_retry"));
     }
 
-    #[test]
-    fn p2_background_busy_waits_for_eligibility_event_without_polling() {
+    #[tokio::test]
+    async fn p2_pressure_defer_waits_for_its_deadline_without_a_20ms_retry() {
+        let mut schedule = P2ScheduleState::default();
+        schedule.defer_pressure(
+            Duration::from_millis(80),
+            P2WakeReason::PressureCooldownElapsed,
+        );
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(40),
+                wait_for_p2_deadline(schedule.due_at),
+            )
+            .await
+            .is_err(),
+            "P2 pressure defer must not wake on the 20ms P1 ticker"
+        );
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_p2_deadline(schedule.due_at),
+        )
+        .await
+        .expect("P2 pressure deadline should eventually wake");
+    }
+
+    #[tokio::test]
+    async fn p2_eligibility_wake_resumes_a_deferred_flush() {
         let mut schedule = P2ScheduleState::default();
         schedule.arm_if_idle(Instant::now());
         schedule.defer_until_background_eligible();
@@ -2763,8 +2866,25 @@ mod tests {
         schedule.arm_if_idle(Instant::now());
         assert!(schedule.due_at.is_none(), "new P2 work must only coalesce");
 
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let permit = gate
+            .try_begin_background("test_p2_eligibility_wake")
+            .expect("acquire background permit");
+        let observed_generation = gate.eligibility_generation();
+        let wait_for_eligibility = gate.wait_for_eligibility_change(observed_generation);
+        drop(permit);
+        tokio::time::timeout(Duration::from_millis(100), wait_for_eligibility)
+            .await
+            .expect("releasing background capacity should notify P2 eligibility waiters");
+
         schedule.wake_background_eligible();
         assert!(schedule.ready(Instant::now()));
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            wait_for_p2_deadline(schedule.due_at),
+        )
+        .await
+        .expect("eligibility wake should make P2 dispatch immediately");
     }
 
     #[test]
@@ -2845,6 +2965,54 @@ mod tests {
             .expect("connect sqlite memory pool");
         ensure_schema(&pool).await.expect("ensure schema");
         pool
+    }
+
+    #[tokio::test]
+    async fn normal_p2_flush_runs_after_its_scheduled_deadline() {
+        let pool = test_pool().await;
+        let mut schedule = P2ScheduleState::default();
+        schedule.arm_if_idle(Instant::now());
+        tokio::time::timeout(
+            SQLITE_P2_COALESCE_INTERVAL + Duration::from_millis(100),
+            wait_for_p2_deadline(schedule.due_at),
+        )
+        .await
+        .expect("normal P2 coalescing deadline should elapse");
+
+        let accounting = PendingQueueAccounting::default();
+        let mut batch = PendingBatch::default();
+        batch.push(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_999,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        ));
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+        let terminal_journal = Arc::new(std::sync::Mutex::new(None));
+
+        let retained = flush_pending_batch(
+            &accounting,
+            &pool,
+            None,
+            batch,
+            FlushReason::Interval,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &terminal_projection_hub,
+            &dashboard_reconcile_gate,
+            &terminal_journal,
+        )
+        .await;
+
+        assert!(
+            retained.is_none(),
+            "normal P2 batch should flush without retention"
+        );
+        assert_eq!(accounting.snapshot().p2_flush_attempt_count, 1);
     }
 
     async fn pending_attempt(pool: &SqlitePool, invoke_id: &str) -> PendingPoolAttemptRecord {
@@ -2955,45 +3123,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persisted_terminal_wakes_only_its_backfill_tasks_after_p1_commit() {
+    async fn p1_terminal_defers_backfill_wake_to_the_coordinated_p2_batch() {
         let pool = test_pool().await;
         let task = StartupBackfillTask::ReasoningEffort;
         let record = crate::tests::test_proxy_capture_record(
             "batch-terminal-backfill-wake",
             "2026-08-09 12:00:00",
         );
+        let mut batch = PendingBatch::default();
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture: false,
+                dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: vec![task],
+                record,
+            },
+        ));
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
 
-        SqliteBatchWriter::flush_for_test(
+        let deferred = flush_pending_batch_inner(
             &pool,
-            vec![SqliteBatchWrite::TerminalInvocation(
-                BatchedTerminalInvocationWrite {
-                    capture_started: None,
-                    raw_capture: false,
-                    dashboard_terminal_sequence: None,
-                    terminal_projection_event_ids: Vec::new(),
-                    startup_backfill_tasks: vec![task],
-                    record,
-                },
-            )],
+            &batch,
+            None,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &terminal_projection_hub,
+            &dashboard_reconcile_gate,
         )
-        .await;
+        .await
+        .expect("flush terminal P1 batch");
 
-        let wake_deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let progress = load_startup_backfill_progress(&pool, task.name())
-                .await
-                .expect("load terminal-woken backfill progress");
-            if progress.wake_generation > 0 {
-                assert!(progress.is_due(Utc::now()));
-                assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
-                break;
-            }
-            assert!(
-                Instant::now() < wake_deadline,
-                "terminal P1 commit did not wake the matching startup backfill task"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let direct_wake_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM startup_backfill_progress WHERE task_name = ?1",
+        )
+        .bind(task.name())
+        .fetch_one(&pool)
+        .await
+        .expect("count direct P1 backfill wakes");
+        assert_eq!(
+            direct_wake_count, 0,
+            "P1 persistence must not directly write startup backfill progress"
+        );
+        assert_eq!(deferred.startup_backfill_wake_tasks, vec![task]);
+
+        flush_pending_batch_inner(
+            &pool,
+            &deferred,
+            None,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &terminal_projection_hub,
+            &dashboard_reconcile_gate,
+        )
+        .await
+        .expect("flush coordinated P2 backfill wake");
+
+        let progress = load_startup_backfill_progress(&pool, task.name())
+            .await
+            .expect("load terminal-woken backfill progress");
+        assert_eq!(progress.wake_generation, 1);
+        assert!(progress.is_due(Utc::now()));
+        assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
     }
 
     #[tokio::test]
