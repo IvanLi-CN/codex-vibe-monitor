@@ -85,7 +85,6 @@ pub(crate) struct RuntimeInvocationStoreRemoveOutcome {
     pub(crate) already_terminal: bool,
 }
 
-pub(crate) const DASHBOARD_RUNTIME_PROJECTION_MODE_ENV: &str = "DASHBOARD_RUNTIME_PROJECTION_MODE";
 pub(crate) const DASHBOARD_RUNTIME_PROJECTION_COALESCE: Duration = Duration::from_millis(250);
 pub(crate) const DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE: Duration = Duration::from_secs(1);
 pub(crate) const DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE: Duration = Duration::from_secs(5);
@@ -99,19 +98,30 @@ pub(crate) enum RuntimeProjectionMode {
 }
 
 impl RuntimeProjectionMode {
+    pub(crate) fn reject_removed_legacy_env() -> Result<()> {
+        for env_name in [
+            "DASHBOARD_RUNTIME_PROJECTION_MODE",
+            "PROMPT_CACHE_TOPIC_PROJECTION_MODE",
+        ] {
+            if std::env::var(env_name)
+                .ok()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("legacy"))
+            {
+                bail!(
+                    "{env_name}=legacy is unsupported; the typed runtime mutation bus is mandatory"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
         match value.map(str::trim).filter(|value| !value.is_empty()) {
             None | Some("auto") => Ok(Self::Auto),
-            Some("legacy") => Ok(Self::Legacy),
             Some(value) => bail!(
-                "invalid {DASHBOARD_RUNTIME_PROJECTION_MODE_ENV} value `{value}`; expected `auto` or `legacy`"
+                "runtime projection mode `{value}` is unsupported; the typed runtime mutation bus is mandatory"
             ),
         }
-    }
-
-    pub(crate) fn from_env() -> Result<Self> {
-        let value = std::env::var(DASHBOARD_RUNTIME_PROJECTION_MODE_ENV).ok();
-        Self::parse(value.as_deref())
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -1727,9 +1737,9 @@ impl RuntimeProjectionHub {
         removed
     }
 
-    pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> usize {
+    pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> Vec<ApiInvocation> {
         let Ok(mut guard) = self.inner.lock() else {
-            return 0;
+            return Vec::new();
         };
         let keys = guard
             .records
@@ -1739,31 +1749,36 @@ impl RuntimeProjectionHub {
             })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
-        let removed_count = keys
+        let removed = keys
             .iter()
-            .filter(|key| guard.records.remove(key).is_some())
-            .count();
-        if removed_count > 0 {
+            .filter_map(|key| {
+                guard
+                    .records
+                    .remove(key)
+                    .map(|entry| (key.clone(), entry.record))
+            })
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
             let now = Instant::now();
-            for key in &keys {
+            for (key, _) in &removed {
                 guard.projection_tombstones.insert(key.clone(), now);
             }
         }
-        let pruned_count = if removed_count > 0 {
+        let pruned_count = if !removed.is_empty() {
             prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
         } else {
             0
         };
         drop(guard);
-        if removed_count > 0 {
-            for key in keys {
-                self.update_dashboard_runtime_record(key, None, "runtime_remove");
+        if !removed.is_empty() {
+            for (key, _) in &removed {
+                self.update_dashboard_runtime_record(key.clone(), None, "runtime_remove");
             }
         }
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         }
-        removed_count
+        removed.into_iter().map(|(_, record)| record).collect()
     }
 
     pub(crate) fn remove_persisted_terminal_overlay(

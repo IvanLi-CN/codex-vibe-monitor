@@ -1152,19 +1152,18 @@ pub(crate) fn broadcast_prompt_cache_conversation_changed(
     state: &AppState,
     prompt_cache_key: &str,
 ) {
-    if state.broadcaster.receiver_count() == 0 {
-        return;
-    }
-    if let Err(err) = state
-        .broadcaster
-        .send(BroadcastPayload::PromptCacheConversationChanged {
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::PromptCacheBindingChanged {
             prompt_cache_key: prompt_cache_key.to_string(),
-        })
+        });
+    #[cfg(test)]
     {
-        warn!(
-            ?err,
-            prompt_cache_key, "failed to broadcast prompt cache conversation change"
-        );
+        let _ = state
+            .broadcaster
+            .send(BroadcastPayload::PromptCacheConversationChanged {
+                prompt_cache_key: prompt_cache_key.to_string(),
+            });
     }
 }
 
@@ -1174,22 +1173,21 @@ pub(crate) fn broadcast_prompt_cache_conversation_sticky_route_changed(
     previous_upstream_account_id: i64,
     upstream_account_id: i64,
 ) {
-    if state.broadcaster.receiver_count() == 0 {
-        return;
-    }
-    if let Err(err) = state.broadcaster.send(
-        BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::StickyRouteChanged {
             sticky_key: sticky_key.to_string(),
             previous_upstream_account_id,
             upstream_account_id,
-        },
-    ) {
-        warn!(
-            ?err,
-            sticky_key,
-            previous_upstream_account_id,
-            upstream_account_id,
-            "failed to broadcast prompt cache conversation sticky route change"
+        });
+    #[cfg(test)]
+    {
+        let _ = state.broadcaster.send(
+            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                sticky_key: sticky_key.to_string(),
+                previous_upstream_account_id,
+                upstream_account_id,
+            },
         );
     }
 }

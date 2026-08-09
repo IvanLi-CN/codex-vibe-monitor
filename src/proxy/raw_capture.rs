@@ -1072,17 +1072,19 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
-    if terminal_enqueued
-        && state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![inserted_record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast new proxy capture record"
-        );
+    if terminal_enqueued {
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::invocation(
+                &inserted_record,
+                RuntimeMutationKind::TerminalCommitted,
+            ));
+        #[cfg(test)]
+        if state.broadcaster.receiver_count() > 0 {
+            let _ = state.broadcaster.send(BroadcastPayload::Records {
+                records: vec![inserted_record.clone()],
+            });
+        }
     }
     if terminal_enqueued {
         schedule_dashboard_activity_live_snapshot(state);

@@ -1351,16 +1351,24 @@ impl PoolViaRuntimeSnapshotCleanupGuard {
 
 impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
     fn drop(&mut self) {
-        let removed_count = self
+        let removed_records = self
             .state
             .proxy_runtime_invocations
             .remove_non_terminal_by_invoke_id(&self.invoke_id);
-        if removed_count > 0 {
+        if !removed_records.is_empty() {
+            for record in &removed_records {
+                self.state
+                    .subscription_hub
+                    .publish_runtime_mutation(RuntimeMutation::invocation(
+                        record,
+                        RuntimeMutationKind::RuntimeRemoved,
+                    ));
+            }
             schedule_dashboard_activity_live_snapshot(self.state.as_ref());
         }
         debug!(
             invoke_id = %self.invoke_id,
-            removed_count,
+            removed_count = removed_records.len(),
             "request-scoped via-pool runtime snapshots cleaned up"
         );
     }

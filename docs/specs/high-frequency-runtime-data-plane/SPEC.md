@@ -59,7 +59,7 @@
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
-- `DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=legacy` 是运维 kill switch；默认 `auto`，不得暴露为 owner-facing UI 开关。Dashboard legacy delivery 只保留一个发布版本，并在新链连续 12 小时通过线上门槛后由独立清理变更删除。
+- typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
 
