@@ -398,7 +398,12 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(
         payload["dashboardProjection"]["sliceCounters"]["terminal"]["cadenceMissCount"].is_u64()
     );
+    assert!(payload["delivery"]["summary"]["activeSubscriberCount"].is_u64());
+    assert!(payload["delivery"]["summary"]["builderCount"].is_u64());
     assert!(payload["delivery"]["summary"]["frameBytesCount"].is_u64());
+    assert!(payload["delivery"]["summary"]["frameReused"].is_u64());
+    assert!(payload["delivery"]["summary"]["cursorAdvanced"].is_u64());
+    assert!(payload["promptCacheProjection"]["failedOrStaleTopicCount"].is_u64());
     assert_eq!(payload["requestPipeline"]["lastSnapshotKind"], "file");
     assert_eq!(payload["requestPipeline"]["semanticParseCount"], 1);
     assert_eq!(
