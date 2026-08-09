@@ -1720,6 +1720,7 @@ impl SubscriptionHub {
                         // every runtime event.
                         cached.dirty = true;
                         cached.runtime_topic_recovery_generation = recovery_generation;
+                        cached.runtime_topic_recovery_retry_at = None;
                         cached.refresh_scheduled = false;
                         cached.latest_live_snapshot = None;
                         if matches!(
@@ -2006,12 +2007,38 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
         let topic_key = topic.cache_key()?;
-        if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned()
-            && (existing.dirty
-                || (!topic.is_closed_summary_topic()
-                    || existing.calendar_anchor == subscription_calendar_anchor(&topic)))
+        let (existing, has_active_owner) = {
+            let guard = self.state.lock().await;
+            (
+                guard.topics.get(&topic_key).cloned(),
+                guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0,
+            )
+        };
+        if let Some(existing) = existing
+            && ((has_active_owner
+                && existing.dirty
+                && !existing
+                    .dashboard_materializer
+                    .as_ref()
+                    .is_some_and(DashboardTopicMaterializer::requires_terminal_window_rebase))
+                || (!existing.dirty
+                    && (!topic.is_closed_summary_topic()
+                        || existing.calendar_anchor == subscription_calendar_anchor(&topic))))
         {
             return Ok(existing);
+        }
+        if !has_active_owner {
+            #[cfg(test)]
+            return self.refresh_topic(state, topic, false).await;
+            #[cfg(not(test))]
+            return Err(ApiError::from(anyhow!(
+                "subscription topic setup requires an active owner"
+            )));
         }
         for _ in 0..SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS {
             if let Some(cached) = self
@@ -2772,6 +2799,7 @@ impl SubscriptionHub {
                 cached.latest_live_snapshot = None;
                 cached.continuity_reset_cursor = Some(cached.cursor);
                 cached.runtime_topic_recovery_generation = recovery_generation;
+                cached.runtime_topic_recovery_retry_at = None;
                 if matches!(
                     cached.topic,
                     SubscriptionTopic::PromptCacheWindow { .. }
@@ -3317,6 +3345,56 @@ impl SubscriptionHub {
         false
     }
 
+    async fn prompt_cache_topic_reconcile_delay(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> Option<Duration> {
+        let topic_key = topic.cache_key().ok()?;
+        let guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let cached = guard.topics.get(&topic_key)?;
+        if !active || (!cached.dirty && !cached.prompt_cache_reconcile_required) {
+            return None;
+        }
+        Some(
+            cached
+                .prompt_cache_baseline_at
+                .map(|baseline_at| {
+                    PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL.saturating_sub(baseline_at.elapsed())
+                })
+                .unwrap_or_default(),
+        )
+    }
+
+    async fn begin_prompt_cache_topic_reconcile(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if !active
+            || cached.prompt_cache_reconcile_scheduled
+            || (!cached.dirty && !cached.prompt_cache_reconcile_required)
+        {
+            return false;
+        }
+        cached.prompt_cache_reconcile_scheduled = true;
+        true
+    }
+
     async fn begin_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
         let Ok(topic_key) = topic.cache_key() else {
             return false;
@@ -3579,10 +3657,36 @@ impl SubscriptionHub {
     fn spawn_prompt_cache_topic_reconcile(state: Arc<AppState>, topic: SubscriptionTopic) {
         let hub = state.subscription_hub.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
-            let result = hub
-                .refresh_topic_if_active(state.clone(), topic.clone(), true)
-                .await;
+            let Some(delay) = hub.prompt_cache_topic_reconcile_delay(&topic).await else {
+                hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                return;
+            };
+            tokio::time::sleep(delay).await;
+            let Ok(topic_key) = topic.cache_key() else {
+                hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                return;
+            };
+            if !hub.has_active_topic_key(&topic_key).await {
+                hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                return;
+            }
+            let result = match crate::db_pressure::global_db_pressure_gate()
+                .try_begin_background("prompt_cache_topic_reconcile")
+            {
+                Ok(_permit) => {
+                    hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
+                        .await
+                }
+                Err(reason) => {
+                    tracing::debug!(
+                        topic = %topic.name(),
+                        reconcile_outcome = "pressure_deferred",
+                        defer_reason = %reason,
+                        "prompt cache topic reconcile deferred"
+                    );
+                    Ok(None)
+                }
+            };
             hub.finish_prompt_cache_topic_reconcile(&topic).await;
             if let Err(err) = result {
                 warn!(
@@ -5630,23 +5734,29 @@ async fn run_server_push_topic_loop(
                     if !hub.prompt_cache_reconcile_required(&topic_key).await {
                         continue;
                     }
-                    match crate::db_pressure::global_db_pressure_gate()
+                    if !hub.begin_prompt_cache_topic_reconcile(&topic).await {
+                        continue;
+                    }
+                    let result = match crate::db_pressure::global_db_pressure_gate()
                         .try_begin_background("prompt_cache_topic_reconcile")
                     {
                         Ok(_permit) => {
-                            if let Err(err) = hub
-                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                            hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
-                            {
-                                warn!(?err, topic = %topic.name(), reconcile_outcome = "retained_last_good", "prompt cache topic reconcile failed");
-                            }
                         }
-                        Err(reason) => tracing::debug!(
-                            topic = %topic.name(),
-                            reconcile_outcome = "pressure_deferred",
-                            defer_reason = %reason,
-                            "prompt cache topic reconcile deferred"
-                        ),
+                        Err(reason) => {
+                            tracing::debug!(
+                                topic = %topic.name(),
+                                reconcile_outcome = "pressure_deferred",
+                                defer_reason = %reason,
+                                "prompt cache topic reconcile deferred"
+                            );
+                            Ok(None)
+                        }
+                    };
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    if let Err(err) = result {
+                        warn!(?err, topic = %topic.name(), reconcile_outcome = "retained_last_good", "prompt cache topic reconcile failed");
                     }
                 }
             }
@@ -7834,6 +7944,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn newer_runtime_gap_clears_topic_recovery_cooldown() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        hub.mark_runtime_mutation_gap_and_recover(state, 1, "cursor_gap")
+            .await;
+
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .expect("dirty history topic")
+                .runtime_topic_recovery_retry_at
+                .is_none()
+        );
+        assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
     async fn dirty_topics_do_not_bypass_bounded_gap_recovery() {
         let hub = Arc::new(SubscriptionHub::new());
         let topic = SubscriptionTopic::InvocationHistoryWindow {
@@ -7918,6 +8070,36 @@ mod tests {
         assert_eq!(cached.cursor, 7);
         assert!(Arc::ptr_eq(&cached.snapshot_frame, &last_good_frame));
         drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn dirty_prompt_cache_reconcile_respects_baseline_cadence() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            cached.prompt_cache_reconcile_required = true;
+            cached.prompt_cache_baseline_at = Some(Instant::now());
+            guard.topics.insert(topic_key, cached);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        assert!(
+            hub.prompt_cache_topic_reconcile_delay(&topic)
+                .await
+                .is_some_and(|delay| delay > Duration::from_secs(59))
+        );
         drop(lease);
     }
 
