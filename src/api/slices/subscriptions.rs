@@ -2116,10 +2116,7 @@ impl SubscriptionHub {
             {
                 return Ok(None);
             }
-            guard
-                .topics
-                .get(&topic_key)
-                .map(|cached| cached.runtime_topic_recovery_generation)
+            Some(guard.runtime_topic_recovery_generation)
         } else {
             None
         };
@@ -2143,9 +2140,11 @@ impl SubscriptionHub {
                     .copied()
                     .unwrap_or_default()
                     > 0;
-                let generation_matches = guard.topics.get(&topic_key).is_some_and(|cached| {
-                    Some(cached.runtime_topic_recovery_generation) == refresh_generation
-                });
+                let generation_matches = Some(guard.runtime_topic_recovery_generation)
+                    == refresh_generation
+                    && guard.topics.get(&topic_key).is_none_or(|cached| {
+                        Some(cached.runtime_topic_recovery_generation) == refresh_generation
+                    });
                 if !active || !generation_matches {
                     // A newer gap or owner generation owns the cache now. Only the owner that
                     // observed this generation may dirty it; never invalidate a newer clean
@@ -7557,6 +7556,35 @@ mod tests {
                 .expect("inactive guard must return before acquiring the closed database pool")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn active_owner_without_cached_topic_commits_guarded_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        let cached = hub
+            .refresh_topic_if_active(state, topic, true)
+            .await
+            .expect("active owner can cold build")
+            .expect("guarded refresh commits when no generation changed");
+
+        assert_eq!(
+            cached.topic.cache_key().expect("cached topic key"),
+            topic_key
+        );
+        drop(lease);
     }
 
     #[tokio::test]
