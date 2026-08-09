@@ -70,8 +70,9 @@ Runtime projection maintains independent current/phase, network/rate and termina
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
 
-Runtime pressure diagnostics are implemented for issue #738:
+Runtime pressure diagnostics are implemented for issues #738 and #768:
 
 - `GET /api/system/status` exposes additive `runtimePressureHealth` assembled from existing in-memory projection, request-pipeline, process-memory and writer-accounting counters without adding status-page SQL.
+- `runtimePressureHealth.eventBus` reports typed-router publication, coalescing, active topic work, lag/gap recovery and payload-clone counters. `runtimePressureHealth.backfill` reports recovered startup-backfill wakes, due dispatches, suppressed no-op passes, pressure deferrals and active deferred or failed tasks. Event lag, projection deferral, cursor growth and writer pressure keep the aggregate state out of `healthy`.
 - The System Status workspace treats a missing field as unknown and presents healthy, deferred, degraded and accounting-error summaries with expandable, non-sensitive details.
 - Storybook and the mock-only Web Demo provide deterministic states for contract, responsive and visual regression coverage.

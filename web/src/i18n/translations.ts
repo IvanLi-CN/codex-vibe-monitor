@@ -1642,6 +1642,21 @@ const baseTranslations = {
     "system.status.runtimePressure.cadenceMisses": "Projection cadence misses",
     "system.status.runtimePressure.deliveryFrames": "Delivery serializations / frame bytes",
     "system.status.runtimePressure.deliveryLag": "Delivery lagged / skipped",
+    "system.status.runtimePressure.eventBus": "Typed runtime event bus",
+    "system.status.runtimePressure.eventBusHint":
+      "{{published}} published, {{processed}} routed, {{coalesced}} coalesced, {{topicWork}} active-topic work.",
+    "system.status.runtimePressure.eventBusLag": "Event-bus lag / cursor recovery",
+    "system.status.runtimePressure.eventBusLagHint":
+      "{{gaps}} cursor gap(s), {{clones}} full-payload clone(s).",
+    "system.status.runtimePressure.backfill": "Startup backfill",
+    "system.status.runtimePressure.backfillHint":
+      "{{wakes}} wake(s), {{due}} due dispatch(es), {{deferred}} task(s) currently deferred.",
+    "system.status.runtimePressure.backfillSuppression": "Backfill no-op / pressure defer",
+    "system.status.runtimePressure.backfillSuppressionHint":
+      "Idle audit writes are suppressed; {{failed}} task(s) are currently failed.",
+    "system.status.runtimePressure.writerGate": "P1 / interactive / P2 writer waiters",
+    "system.status.runtimePressure.additiveUnknown":
+      "The connected backend has not published this additive diagnostic.",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "Background tasks",
     "system.tasks.description":
@@ -4511,6 +4526,20 @@ const baseTranslations = {
     "system.status.runtimePressure.cadenceMisses": "投影节奏错过次数",
     "system.status.runtimePressure.deliveryFrames": "投递序列化次数 / 帧字节数",
     "system.status.runtimePressure.deliveryLag": "投递滞后 / 跳过次数",
+    "system.status.runtimePressure.eventBus": "Typed runtime 事件总线",
+    "system.status.runtimePressure.eventBusHint":
+      "已发布 {{published}}，已路由 {{processed}}，已合并 {{coalesced}}，活跃 topic 工作 {{topicWork}}。",
+    "system.status.runtimePressure.eventBusLag": "事件总线滞后 / cursor 恢复",
+    "system.status.runtimePressure.eventBusLagHint":
+      "cursor gap {{gaps}} 次，完整 payload clone {{clones}} 次。",
+    "system.status.runtimePressure.backfill": "启动回填",
+    "system.status.runtimePressure.backfillHint":
+      "唤醒 {{wakes}} 次，due 分发 {{due}} 次，当前延后 {{deferred}} 个任务。",
+    "system.status.runtimePressure.backfillSuppression": "回填空操作 / 压力延后",
+    "system.status.runtimePressure.backfillSuppressionHint":
+      "空闲审计写入已抑制；当前失败 {{failed}} 个任务。",
+    "system.status.runtimePressure.writerGate": "P1 / 交互 / P2 写入等待者",
+    "system.status.runtimePressure.additiveUnknown": "当前后端尚未发布这一 additive 诊断字段。",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "后台任务",
     "system.tasks.description":

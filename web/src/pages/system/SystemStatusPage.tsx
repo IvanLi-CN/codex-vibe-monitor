@@ -357,6 +357,10 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const state = health?.state ?? "unknown";
   const stateLabel = t(`system.status.runtimePressure.states.${state}`);
   const alertVariant = state === "healthy" ? "success" : state === "unknown" ? "info" : "warning";
+  const eventBus = health?.eventBus;
+  const backfill = health?.backfill;
+  const eventBusState = eventBus?.state ?? "unknown";
+  const backfillState = backfill?.state ?? "unknown";
   const slices = health?.dashboardProjection.sliceCounters;
   const deliveryTopics = health
     ? [
@@ -452,6 +456,73 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
               <BreakdownRow
                 label={t("system.status.runtimePressure.deliveryLag")}
                 value={`${delivery.laggedCount.toLocaleString()} / ${delivery.skippedCount.toLocaleString()}`}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.eventBus")}
+                value={t(`system.status.runtimePressure.states.${eventBusState}`)}
+                hint={
+                  eventBus
+                    ? t("system.status.runtimePressure.eventBusHint", {
+                        published: eventBus.publishedCount.toLocaleString(),
+                        processed: eventBus.processedEventCount.toLocaleString(),
+                        coalesced: eventBus.coalescedEventCount.toLocaleString(),
+                        topicWork: eventBus.topicWorkCount.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.eventBusLag")}
+                value={
+                  eventBus
+                    ? `${eventBus.routerLaggedCount.toLocaleString()} / ${eventBus.cursorRecoveryCount.toLocaleString()}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  eventBus
+                    ? t("system.status.runtimePressure.eventBusLagHint", {
+                        gaps: eventBus.routerGapCount.toLocaleString(),
+                        clones: eventBus.businessPayloadCloneCount.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.backfill")}
+                value={t(`system.status.runtimePressure.states.${backfillState}`)}
+                hint={
+                  backfill
+                    ? t("system.status.runtimePressure.backfillHint", {
+                        wakes: backfill.wakeCount.toLocaleString(),
+                        due: backfill.dueDispatchCount.toLocaleString(),
+                        deferred: backfill.deferredTaskCount.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.backfillSuppression")}
+                value={
+                  backfill
+                    ? `${backfill.noopSuppressedCount.toLocaleString()} / ${backfill.pressureDeferCount.toLocaleString()}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  backfill
+                    ? t("system.status.runtimePressure.backfillSuppressionHint", {
+                        failed: backfill.failedTaskCount.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.writerGate")}
+                value={
+                  health.proxySqliteWriteCoordinator
+                    ? `${health.proxySqliteWriteCoordinator.p1WaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.interactiveWaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.p2WaiterCount.toLocaleString()}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={health.writerAccounting.p2WakeReason}
               />
               <BreakdownRow
                 label={t("system.status.runtimePressure.allocatorArenas")}

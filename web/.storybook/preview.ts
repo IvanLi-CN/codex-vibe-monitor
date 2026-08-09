@@ -9,6 +9,11 @@ const COMMON_VIEWPORTS = {
     styles: { width: "390px", height: "844px" },
     type: "mobile",
   },
+  mobile393: {
+    name: "Mobile 393 x 852",
+    styles: { width: "393px", height: "852px" },
+    type: "mobile",
+  },
   mobile430: {
     name: "Mobile 430",
     styles: { width: "430px", height: "932px" },
@@ -37,6 +42,11 @@ const COMMON_VIEWPORTS = {
   desktop1660: {
     name: "Desktop 1660",
     styles: { width: "1660px", height: "960px" },
+    type: "desktop",
+  },
+  desktop1660x900: {
+    name: "Desktop 1660 x 900",
+    styles: { width: "1660px", height: "900px" },
     type: "desktop",
   },
   desktop1920: {
