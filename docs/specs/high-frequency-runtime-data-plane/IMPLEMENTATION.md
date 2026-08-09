@@ -2,7 +2,9 @@
 
 `ProxySqliteWriteCoordinator` 是代理热写的统一 admission 面。实现覆盖 terminal P1/P2 actor、attempt 生命周期和 route success/failure 汇聚路径，并通过 `runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、各优先级 waiter 与 legacy bypass 计数。
 
-P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
+P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 使用独立 250ms 固定 deadline，pressure defer、background busy 和实际 lock retry 分开调度与计数；hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
+
+Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后续 Records 按调用 identity 去重并在 500ms 后直接更新 cached payload；完整 hydrate 仅用于初始 baseline、60 秒 reconcile 或 dirty recovery。最后一个 owner 释放时丢弃 pending delta 并要求重订阅 fresh baseline。
 
 ## Delivery Topology
 

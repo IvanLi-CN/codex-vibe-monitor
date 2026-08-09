@@ -482,6 +482,10 @@ pub(crate) struct RequestPipelineHealthSnapshot {
     pub(crate) whole_body_materialization_count: u64,
     pub(crate) rewrite_buffer_peak_bytes: u64,
     pub(crate) last_fallback_reason: Option<String>,
+    pub(crate) parse_window_count: u64,
+    pub(crate) parse_window_cpu_ms: u64,
+    pub(crate) parse_window_wall_ms: u64,
+    pub(crate) parse_window_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1303,6 +1307,7 @@ impl RuntimeProjectionHub {
 
     pub(crate) fn request_pipeline_health_snapshot(&self) -> RequestPipelineHealthSnapshot {
         let last = self.request_pipeline_last.lock().ok();
+        let parse_window = crate::proxy::request_semantic_cpu_attribution_snapshot();
         RequestPipelineHealthSnapshot {
             mode: request_semantic_pipeline_mode().as_str().to_string(),
             last_snapshot_kind: last
@@ -1319,6 +1324,10 @@ impl RuntimeProjectionHub {
                 .request_rewrite_buffer_peak_bytes
                 .load(Ordering::Relaxed),
             last_fallback_reason: last.and_then(|last| last.fallback_reason.clone()),
+            parse_window_count: parse_window.count,
+            parse_window_cpu_ms: parse_window.cpu_ms,
+            parse_window_wall_ms: parse_window.wall_ms,
+            parse_window_bytes: parse_window.bytes,
         }
     }
 

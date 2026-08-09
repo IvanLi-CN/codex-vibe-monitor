@@ -2164,8 +2164,26 @@ export interface RuntimePressureWriterAccountingHealth {
   pendingBytes: number;
   transferBytes: number;
   retryCount: number;
+  p2FlushAttemptCount?: number;
+  p2PressureDeferCount?: number;
+  p2LockRetryCount?: number;
+  p2NextAttemptInMs?: number;
+  p2DeferredAgeMs?: number;
+  p2WakeReason?: string;
   invariantViolationCount: number;
   degradedReason?: string;
+}
+
+export interface RuntimePressurePromptCacheProjectionHealth {
+  mode: string;
+  activeTopicCount: number;
+  dirtyKeyCount: number;
+  coalescedEventCount: number;
+  fullHydrationCount: number;
+  boundedKeyHydrationCount: number;
+  livePathDbReadCount: number;
+  baselineAgeMs: number;
+  responseSource: string;
 }
 
 export interface RuntimePressureProxySqliteWriteCoordinatorHealth {
@@ -2229,6 +2247,10 @@ export interface RuntimePressureRequestPipelineHealth {
   wholeBodyMaterializationCount: number;
   rewriteBufferPeakBytes: number;
   lastFallbackReason?: string;
+  parseWindowCount?: number;
+  parseWindowCpuMs?: number;
+  parseWindowWallMs?: number;
+  parseWindowBytes?: number;
 }
 
 export interface RuntimePressureHealth {
@@ -2236,6 +2258,7 @@ export interface RuntimePressureHealth {
   process: RuntimePressureProcessHealth;
   allocator: { mallocArenaMax: string };
   writerAccounting: RuntimePressureWriterAccountingHealth;
+  promptCacheProjection?: RuntimePressurePromptCacheProjectionHealth;
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
@@ -4106,6 +4129,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const process = (payload.process ?? {}) as Record<string, unknown>;
   const allocator = (payload.allocator ?? {}) as Record<string, unknown>;
   const writer = (payload.writerAccounting ?? {}) as Record<string, unknown>;
+  const promptCacheProjection = (payload.promptCacheProjection ?? {}) as Record<string, unknown>;
   const writeCoordinator = payload.proxySqliteWriteCoordinator as
     | Record<string, unknown>
     | undefined;
@@ -4155,8 +4179,25 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       pendingBytes: number(writer.pendingBytes),
       transferBytes: number(writer.transferBytes),
       retryCount: number(writer.retryCount),
+      p2FlushAttemptCount: number(writer.p2FlushAttemptCount),
+      p2PressureDeferCount: number(writer.p2PressureDeferCount),
+      p2LockRetryCount: number(writer.p2LockRetryCount),
+      p2NextAttemptInMs: number(writer.p2NextAttemptInMs),
+      p2DeferredAgeMs: number(writer.p2DeferredAgeMs),
+      p2WakeReason: optionalString(writer.p2WakeReason),
       invariantViolationCount: number(writer.invariantViolationCount),
       degradedReason: optionalString(writer.degradedReason),
+    },
+    promptCacheProjection: {
+      mode: optionalString(promptCacheProjection.mode) ?? "unknown",
+      activeTopicCount: number(promptCacheProjection.activeTopicCount),
+      dirtyKeyCount: number(promptCacheProjection.dirtyKeyCount),
+      coalescedEventCount: number(promptCacheProjection.coalescedEventCount),
+      fullHydrationCount: number(promptCacheProjection.fullHydrationCount),
+      boundedKeyHydrationCount: number(promptCacheProjection.boundedKeyHydrationCount),
+      livePathDbReadCount: number(promptCacheProjection.livePathDbReadCount),
+      baselineAgeMs: number(promptCacheProjection.baselineAgeMs),
+      responseSource: optionalString(promptCacheProjection.responseSource) ?? "unknown",
     },
     proxySqliteWriteCoordinator: writeCoordinator
       ? {
@@ -4200,6 +4241,10 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           wholeBodyMaterializationCount: number(requestPipeline.wholeBodyMaterializationCount),
           rewriteBufferPeakBytes: number(requestPipeline.rewriteBufferPeakBytes),
           lastFallbackReason: optionalString(requestPipeline.lastFallbackReason),
+          parseWindowCount: number(requestPipeline.parseWindowCount),
+          parseWindowCpuMs: number(requestPipeline.parseWindowCpuMs),
+          parseWindowWallMs: number(requestPipeline.parseWindowWallMs),
+          parseWindowBytes: number(requestPipeline.parseWindowBytes),
         }
       : undefined,
   };

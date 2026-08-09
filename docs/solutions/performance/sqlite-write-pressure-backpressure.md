@@ -104,6 +104,8 @@
 ## Terminal Projection
 
 - P1 journal ACK 后可向多个 read-side consumer 发布紧凑 terminal event 与 durable row cursor；consumer cursor 必须独立，不能让 P2 rollup 成功阻塞 raw terminal durability。
+- P1 的高频 admission ticker 不能同时作为 P2 pressure retry ticker。P2 应由首事件固定 deadline、pressure cooldown 截止时间和 background-slot eligibility 事件唤醒，并把 gate defer 与真实 lock failure 分开统计；否则“没有执行 SQL”的 defer 也会形成 CPU 空转和误导 retry 指标。
+- SSE topic 的通用 mutation 广播不能自动等价为 full-window cache invalidation。对 Prompt Cache 这类可按 key 增量维护的读模型，应以 active-topic baseline + compact delta + bounded reconcile 代替每条 terminal 后的整窗 hydrate。
 - 用 cursor 与持久 interval segment 替代定时范围重算：正常窗口只 hydrate 新增 rowId 并 additive upsert 受影响 rollup key，明确 repair 才精确重建目标桶。压力期保持 last-good 并 defer，不得为了补账重新抢 P1 锁。
 - 对已持久化 terminal 的字段修正要在同一事务中写入 target bucket repair marker；只更新全局 materialization 状态会让 cursor 之后没有新 row 的投影永远看不到修正。
 - 目标桶 repair 的 archive source 不只包含 terminal archive，也包含补齐账号归属所需的 attempt archive。archive rewrite 要同时排入旧、新 coverage；单个文件不可读时只延后对应桶并保留 last-good，不能让最老的失败 marker 饿死整个 repair 队列。repair 查询必须按目标自然日绑定范围，避免每个桶都读出整份 archive 后再过滤。

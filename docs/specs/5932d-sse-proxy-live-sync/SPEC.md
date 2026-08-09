@@ -181,6 +181,7 @@
   - 调试与手动读取
 - Detail drawer history is intentionally hybrid: `invocation-history.window` owns only the latest 50-record head while the entire captured HTTP snapshot, including page 1, stays bound to its first `snapshotId` and is never replayed through the topic stream.
 - Detail drawers subscribe only to the visible tab. `Records` invalidates scope-matching calls/overview topics; committed conversation configuration changes invalidate only scope-matching binding/operations topics.
+- Prompt Cache window topics do not treat generic `Records` as a database invalidation. Active topics coalesce compact runtime/terminal deltas for 500ms and publish one shared frame; initial subscription and bounded 60-second reconcile establish exact baselines, while an inactive topic reconnects with a fresh snapshot.
 - owner-facing summary 的边界固定为：`today / 1d / 7d` 等 open-range 继续走 topic，`yesterday / previous7d` 通过 `fetchSummary(...)` 走 exact HTTP。
 - closed-range Summary topic 即使保留兼容请求，也不因 Records 或 live 广播触发重建；后端保留 `summary_delivery_mode` 与 closed-window misuse telemetry 以识别遗留消费者。
 - 但主应用订阅类 UI 在健康态与恢复态都不能再依赖这些 HTTP 端点完成“当前态校准”。
