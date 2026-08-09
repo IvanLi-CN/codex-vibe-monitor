@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, RwLock, mpsc, oneshot},
     task::JoinHandle,
     time::{MissedTickBehavior, interval},
 };
@@ -1000,6 +1000,7 @@ impl SqliteBatchWriter {
         pool: Pool<Sqlite>,
         shutdown: CancellationToken,
         prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+        pricing_catalog: Arc<RwLock<PricingCatalog>>,
         database_path: &Path,
     ) -> Arc<Self> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
@@ -1037,6 +1038,7 @@ impl SqliteBatchWriter {
             control_receiver,
             accounting.clone(),
             Some(cache_for_task),
+            Some(pricing_catalog),
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
             terminal_projection_hub.clone(),
@@ -1394,6 +1396,15 @@ impl SqliteBatchWriter {
 
     #[cfg(test)]
     pub(crate) async fn flush_for_test(pool: &Pool<Sqlite>, writes: Vec<SqliteBatchWrite>) {
+        Self::flush_for_test_with_pricing_catalog(pool, None, writes).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn flush_for_test_with_pricing_catalog(
+        pool: &Pool<Sqlite>,
+        pricing_catalog: Option<Arc<RwLock<PricingCatalog>>>,
+        writes: Vec<SqliteBatchWrite>,
+    ) {
         let mut batch = PendingBatch::default();
         for write in writes {
             batch.push(write);
@@ -1405,6 +1416,7 @@ impl SqliteBatchWriter {
         let deferred = flush_pending_batch_inner(
             pool,
             &batch,
+            pricing_catalog.as_ref(),
             None,
             &terminal_runtime_store,
             &dashboard_activity_snapshot_cache,
@@ -1417,6 +1429,7 @@ impl SqliteBatchWriter {
             flush_pending_batch_inner(
                 pool,
                 &deferred,
+                pricing_catalog.as_ref(),
                 None,
                 &terminal_runtime_store,
                 &dashboard_activity_snapshot_cache,
@@ -1454,6 +1467,7 @@ impl SqliteBatchWriter {
             let deferred = flush_pending_batch_inner(
                 pool,
                 &batch,
+                None,
                 self.prompt_cache_conversation_cache.as_ref(),
                 &self.terminal_runtime_store,
                 &self.dashboard_activity_snapshot_cache,
@@ -1491,6 +1505,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     accounting: Arc<PendingQueueAccounting>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    pricing_catalog: Option<Arc<RwLock<PricingCatalog>>>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache: Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
@@ -1546,6 +1561,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let result = match flush_pending_batch_accounted(
                             &accounting,
                             &pool,
+                            pricing_catalog.as_ref(),
                             pending.take(),
                             FlushReason::Barrier,
                             prompt_cache_conversation_cache.as_ref(),
@@ -1593,6 +1609,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             match flush_pending_batch_accounted(
                                 &accounting,
                                 &pool,
+                                pricing_catalog.as_ref(),
                                 pending.take(),
                                 FlushReason::Shutdown,
                                 prompt_cache_conversation_cache.as_ref(),
@@ -1656,6 +1673,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         && let Some(retained) = flush_pending_batch_accounted(
                             &accounting,
                             &pool,
+                            pricing_catalog.as_ref(),
                             pending.take(),
                             FlushReason::Shutdown,
                             prompt_cache_conversation_cache.as_ref(),
@@ -1708,6 +1726,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         flush_pending_batch_accounted(
                             &accounting,
                             &pool,
+                            pricing_catalog.as_ref(),
                             flush_batch,
                             FlushReason::RowLimit,
                             prompt_cache_conversation_cache.as_ref(),
@@ -1819,6 +1838,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         flush_pending_batch_accounted(
                             &accounting,
                             &pool,
+                            pricing_catalog.as_ref(),
                             flush_batch,
                             flush_reason,
                             prompt_cache_conversation_cache.as_ref(),
@@ -1977,6 +1997,7 @@ pub(crate) fn drain_queued_batch_writes(
 async fn flush_pending_batch_accounted(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     batch: PendingBatch,
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
@@ -1994,6 +2015,7 @@ async fn flush_pending_batch_accounted(
     let result = flush_pending_batch(
         accounting,
         pool,
+        pricing_catalog,
         batch,
         reason,
         prompt_cache_conversation_cache,
@@ -2031,6 +2053,7 @@ async fn flush_pending_batch_accounted(
 pub(crate) async fn flush_pending_batch(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     mut batch: PendingBatch,
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
@@ -2068,6 +2091,7 @@ pub(crate) async fn flush_pending_batch(
         let initial_result = flush_pending_batch_inner(
             pool,
             &p1_batch,
+            pricing_catalog,
             prompt_cache_conversation_cache,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
@@ -2086,6 +2110,7 @@ pub(crate) async fn flush_pending_batch(
                     match flush_pending_batch_inner(
                         pool,
                         &singleton,
+                        pricing_catalog,
                         prompt_cache_conversation_cache,
                         terminal_runtime_store,
                         dashboard_activity_snapshot_cache,
@@ -2237,6 +2262,7 @@ pub(crate) async fn flush_pending_batch(
     let deferred_batch = match flush_pending_batch_inner(
         pool,
         &batch,
+        pricing_catalog,
         prompt_cache_conversation_cache,
         terminal_runtime_store,
         dashboard_activity_snapshot_cache,
@@ -2326,9 +2352,14 @@ pub(crate) fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String 
     values.join(",")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Flush dependencies mirror the single-writer ownership boundaries."
+)]
 pub(crate) async fn flush_pending_batch_inner(
     pool: &Pool<Sqlite>,
     batch: &PendingBatch,
+    pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache: &Arc<
@@ -2458,10 +2489,16 @@ pub(crate) async fn flush_pending_batch_inner(
 
     if !startup_backfill_wake_tasks.is_empty() {
         let pool = pool.clone();
+        let pricing_catalog = if let Some(pricing_catalog) = pricing_catalog {
+            Some(pricing_catalog.read().await.clone())
+        } else {
+            None
+        };
         tokio::spawn(async move {
-            if let Err(err) = wake_startup_backfill_tasks(
+            if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
                 &pool,
                 &startup_backfill_wake_tasks,
+                pricing_catalog.as_ref(),
                 "terminal_payload_repair_input",
             )
             .await
@@ -2960,6 +2997,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_terminal_wakes_versioned_proxy_cost_backfill_after_p1_commit() {
+        let pool = test_pool().await;
+        let task = StartupBackfillTask::ProxyCost;
+        let persisted_catalog = crate::pricing::load_pricing_catalog(&pool)
+            .await
+            .expect("load persisted pricing catalog for terminal wake");
+        let persisted_task_name =
+            startup_backfill_task_progress_key_for_catalog(task, &persisted_catalog);
+        let mut runtime_catalog = persisted_catalog;
+        runtime_catalog.version = "runtime-terminal-wake".to_string();
+        let task_name = startup_backfill_task_progress_key_for_catalog(task, &runtime_catalog);
+        assert_ne!(task_name, persisted_task_name);
+        let pricing_catalog = Arc::new(RwLock::new(runtime_catalog));
+        let record = crate::tests::test_proxy_capture_record(
+            "batch-terminal-proxy-cost-backfill-wake",
+            "2026-08-09 12:00:00",
+        );
+
+        SqliteBatchWriter::flush_for_test_with_pricing_catalog(
+            &pool,
+            Some(pricing_catalog),
+            vec![SqliteBatchWrite::TerminalInvocation(
+                BatchedTerminalInvocationWrite {
+                    capture_started: None,
+                    raw_capture: false,
+                    dashboard_terminal_sequence: None,
+                    terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks: vec![task],
+                    record,
+                },
+            )],
+        )
+        .await;
+
+        let wake_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let progress = load_startup_backfill_progress(&pool, &task_name)
+                .await
+                .expect("load terminal-woken ProxyCost backfill progress");
+            if progress.wake_generation > 0 {
+                assert!(progress.is_due(Utc::now()));
+                assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+                break;
+            }
+            assert!(
+                Instant::now() < wake_deadline,
+                "terminal P1 commit did not wake the versioned ProxyCost startup backfill task"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let bare_task_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM startup_backfill_progress WHERE task_name = ?1",
+        )
+        .bind(task.name())
+        .fetch_one(&pool)
+        .await
+        .expect("count bare ProxyCost startup backfill progress records");
+        assert_eq!(bare_task_count, 0);
+
+        let persisted_task_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM startup_backfill_progress WHERE task_name = ?1",
+        )
+        .bind(&persisted_task_name)
+        .fetch_one(&pool)
+        .await
+        .expect("count persisted-catalog ProxyCost progress records");
+        assert_eq!(persisted_task_count, 0);
+    }
+
+    #[tokio::test]
+    async fn missing_proxy_cost_catalog_does_not_block_other_backfill_wakes() {
+        let pool = test_pool().await;
+        let unaffected_task = StartupBackfillTask::ReasoningEffort;
+
+        let error = wake_startup_backfill_tasks(
+            &pool,
+            &[StartupBackfillTask::ProxyCost, unaffected_task],
+            "test_missing_proxy_cost_catalog",
+        )
+        .await
+        .expect_err("ProxyCost wake without a catalog should be reported");
+        assert!(
+            error
+                .to_string()
+                .contains("requires the runtime pricing catalog"),
+            "unexpected missing catalog error: {error:#}"
+        );
+
+        let progress = load_startup_backfill_progress(&pool, unaffected_task.name())
+            .await
+            .expect("load unaffected task progress after missing ProxyCost catalog");
+        assert_eq!(progress.wake_generation, 1);
+        assert!(progress.is_due(Utc::now()));
+    }
+
+    #[tokio::test]
     async fn p1_terminal_batch_rolls_back_the_committed_prefix_on_poison_record() {
         let pool = test_pool().await;
         sqlx::query(
@@ -2991,6 +3125,7 @@ mod tests {
         let error = flush_pending_batch_inner(
             &pool,
             &batch,
+            None,
             None,
             &runtime_store,
             &dashboard_cache,
@@ -3033,6 +3168,7 @@ mod tests {
         let retained = flush_pending_batch_accounted(
             &accounting,
             &pool,
+            None,
             batch,
             FlushReason::Barrier,
             None,
@@ -3056,6 +3192,7 @@ mod tests {
         let retried = flush_pending_batch_accounted(
             &accounting,
             &pool,
+            None,
             retained.batch,
             FlushReason::Interval,
             None,
@@ -3228,6 +3365,7 @@ mod tests {
             pool.clone(),
             shutdown.clone(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
 
@@ -3281,6 +3419,7 @@ mod tests {
             pool.clone(),
             shutdown.clone(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
 
@@ -3728,6 +3867,7 @@ mod tests {
             pool.clone(),
             CancellationToken::new(),
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
         );
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(

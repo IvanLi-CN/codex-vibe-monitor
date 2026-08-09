@@ -592,12 +592,22 @@ pub(crate) async fn startup_backfill_task_progress_key(
     match task {
         StartupBackfillTask::ProxyCost => {
             let catalog = state.pricing_catalog.read().await;
-            format!(
-                "{}:{}",
-                task.name(),
-                pricing_backfill_attempt_version(&catalog)
-            )
+            startup_backfill_task_progress_key_for_catalog(task, &catalog)
         }
+        _ => task.name().to_string(),
+    }
+}
+
+pub(crate) fn startup_backfill_task_progress_key_for_catalog(
+    task: StartupBackfillTask,
+    catalog: &PricingCatalog,
+) -> String {
+    match task {
+        StartupBackfillTask::ProxyCost => format!(
+            "{}:{}",
+            task.name(),
+            pricing_backfill_attempt_version(catalog)
+        ),
         _ => task.name().to_string(),
     }
 }
@@ -742,9 +752,28 @@ pub(crate) async fn wake_startup_backfill_tasks(
     tasks: &[StartupBackfillTask],
     wake_reason: &'static str,
 ) -> Result<u64> {
+    wake_startup_backfill_tasks_with_pricing_catalog(pool, tasks, None, wake_reason).await
+}
+
+pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    pricing_catalog: Option<&PricingCatalog>,
+    wake_reason: &'static str,
+) -> Result<u64> {
     let mut woken = 0;
+    let mut proxy_cost_catalog_missing = false;
     for task in tasks {
-        let task_name = task.name();
+        let task_name = match task {
+            StartupBackfillTask::ProxyCost => {
+                let Some(catalog) = pricing_catalog else {
+                    proxy_cost_catalog_missing = true;
+                    continue;
+                };
+                startup_backfill_task_progress_key_for_catalog(*task, catalog)
+            }
+            _ => task.name().to_string(),
+        };
         let outcome = sqlx::query(
             r#"
             INSERT INTO startup_backfill_progress (
@@ -770,10 +799,17 @@ pub(crate) async fn wake_startup_backfill_tasks(
                 last_status = ?2
             "#,
         )
-        .bind(task_name)
+        .bind(&task_name)
         .bind(STARTUP_BACKFILL_STATUS_IDLE)
         .execute(pool)
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "wake startup backfill task={} progress_key={} wake_reason={wake_reason}",
+                task.name(),
+                task_name
+            )
+        })?;
         woken += outcome.rows_affected();
         STARTUP_BACKFILL_SCHEDULER.wake(*task);
     }
@@ -784,6 +820,12 @@ pub(crate) async fn wake_startup_backfill_tasks(
             task_count = tasks.len(),
             "woke affected startup backfill tasks"
         );
+    }
+    if proxy_cost_catalog_missing {
+        return Err(anyhow!(
+            "wake startup backfill task={} requires the runtime pricing catalog",
+            StartupBackfillTask::ProxyCost.name()
+        ));
     }
     Ok(woken)
 }
