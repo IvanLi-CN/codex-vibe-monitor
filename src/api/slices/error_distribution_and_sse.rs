@@ -3316,8 +3316,20 @@ pub(crate) async fn put_pricing_settings(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let mut guard = state.pricing_catalog.write().await;
-    *guard = next.clone();
+    {
+        let mut guard = state.pricing_catalog.write().await;
+        *guard = next.clone();
+    }
+    if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
+        &state.pool,
+        &[StartupBackfillTask::ProxyCost],
+        Some(&next),
+        "pricing_catalog_updated",
+    )
+    .await
+    {
+        warn!(error = %err, "failed to wake ProxyCost backfill after pricing catalog update");
+    }
     Ok(Json(PricingSettingsResponse::from_catalog(&next)))
 }
 
