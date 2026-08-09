@@ -1,4 +1,5 @@
 use super::*;
+use crate::db_pressure::{DbPressureDenyReason, DbPressureGate};
 use axum::http::header;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -3657,45 +3658,65 @@ impl SubscriptionHub {
     fn spawn_prompt_cache_topic_reconcile(state: Arc<AppState>, topic: SubscriptionTopic) {
         let hub = state.subscription_hub.clone();
         tokio::spawn(async move {
-            let Some(delay) = hub.prompt_cache_topic_reconcile_delay(&topic).await else {
-                hub.finish_prompt_cache_topic_reconcile(&topic).await;
-                return;
-            };
-            tokio::time::sleep(delay).await;
-            let Ok(topic_key) = topic.cache_key() else {
-                hub.finish_prompt_cache_topic_reconcile(&topic).await;
-                return;
-            };
-            if !hub.has_active_topic_key(&topic_key).await {
-                hub.finish_prompt_cache_topic_reconcile(&topic).await;
-                return;
-            }
-            let result = match crate::db_pressure::global_db_pressure_gate()
-                .try_begin_background("prompt_cache_topic_reconcile")
-            {
-                Ok(_permit) => {
-                    hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
-                        .await
+            loop {
+                let Some(delay) = hub.prompt_cache_topic_reconcile_delay(&topic).await else {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = state.shutdown.cancelled() => {
+                        hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                        return;
+                    }
                 }
-                Err(reason) => {
-                    tracing::debug!(
-                        topic = %topic.name(),
-                        reconcile_outcome = "pressure_deferred",
-                        defer_reason = %reason,
-                        "prompt cache topic reconcile deferred"
-                    );
-                    Ok(None)
+                let Ok(topic_key) = topic.cache_key() else {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
+                };
+                if !hub.has_active_topic_key(&topic_key).await {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
                 }
-            };
-            hub.finish_prompt_cache_topic_reconcile(&topic).await;
-            if let Err(err) = result {
-                warn!(
-                    ?err,
-                    topic = topic.name(),
-                    response_source = "last_good",
-                    "bounded prompt cache topic reconcile failed"
-                );
-                hub.mark_topic_dirty(&topic).await;
+                let gate = crate::db_pressure::global_db_pressure_gate();
+                let observed_eligibility = gate.eligibility_generation();
+                match gate.try_begin_background("prompt_cache_topic_reconcile") {
+                    Ok(_permit) => {
+                        let result = hub
+                            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                            .await;
+                        hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                        if let Err(err) = result {
+                            warn!(
+                                ?err,
+                                topic = topic.name(),
+                                response_source = "last_good",
+                                "bounded prompt cache topic reconcile failed"
+                            );
+                            hub.mark_topic_dirty(&topic).await;
+                        }
+                        return;
+                    }
+                    Err(reason) => {
+                        tracing::debug!(
+                            topic = %topic.name(),
+                            reconcile_outcome = "pressure_deferred",
+                            defer_reason = %reason,
+                            "prompt cache topic reconcile deferred"
+                        );
+                        tokio::select! {
+                            _ = wait_for_prompt_cache_reconcile_eligibility(
+                                gate,
+                                observed_eligibility,
+                                reason,
+                            ) => {}
+                            _ = state.shutdown.cancelled() => {
+                                hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                                return;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
@@ -5704,6 +5725,24 @@ fn dashboard_network_timeseries_live_point<'a>(
         .map(|point_index| (point_index, bucket))
 }
 
+async fn wait_for_prompt_cache_reconcile_eligibility(
+    gate: &DbPressureGate,
+    observed_eligibility: u64,
+    reason: DbPressureDenyReason,
+) {
+    match reason {
+        DbPressureDenyReason::PressureCooldown { remaining_ms } => {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(remaining_ms.max(1))) => {}
+                _ = gate.wait_for_eligibility_change(observed_eligibility) => {}
+            }
+        }
+        DbPressureDenyReason::BackgroundBusy => {
+            gate.wait_for_eligibility_change(observed_eligibility).await;
+        }
+    }
+}
+
 async fn run_server_push_topic_loop(
     hub: Arc<SubscriptionHub>,
     state: Arc<AppState>,
@@ -5737,27 +5776,7 @@ async fn run_server_push_topic_loop(
                     if !hub.begin_prompt_cache_topic_reconcile(&topic).await {
                         continue;
                     }
-                    let result = match crate::db_pressure::global_db_pressure_gate()
-                        .try_begin_background("prompt_cache_topic_reconcile")
-                    {
-                        Ok(_permit) => {
-                            hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
-                                .await
-                        }
-                        Err(reason) => {
-                            tracing::debug!(
-                                topic = %topic.name(),
-                                reconcile_outcome = "pressure_deferred",
-                                defer_reason = %reason,
-                                "prompt cache topic reconcile deferred"
-                            );
-                            Ok(None)
-                        }
-                    };
-                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
-                    if let Err(err) = result {
-                        warn!(?err, topic = %topic.name(), reconcile_outcome = "retained_last_good", "prompt cache topic reconcile failed");
-                    }
+                    SubscriptionHub::spawn_prompt_cache_topic_reconcile(state.clone(), topic.clone());
                 }
             }
         }
@@ -8101,6 +8120,27 @@ mod tests {
                 .is_some_and(|delay| delay > Duration::from_secs(59))
         );
         drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_pressure_defer_wakes_on_eligibility_change() {
+        let gate = DbPressureGate::new(1, Duration::from_millis(10));
+        let permit = gate
+            .try_begin_background("prompt_cache_topic_reconcile")
+            .expect("occupy only background slot");
+        let observed_eligibility = gate.eligibility_generation();
+        let reason = gate
+            .try_begin_background("prompt_cache_topic_reconcile")
+            .expect_err("second background task is deferred");
+
+        drop(permit);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_prompt_cache_reconcile_eligibility(&gate, observed_eligibility, reason),
+        )
+        .await
+        .expect("eligible background slot wakes deferred prompt cache recovery");
     }
 
     #[tokio::test]
