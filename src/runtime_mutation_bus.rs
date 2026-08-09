@@ -6,10 +6,7 @@ use std::{
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::{
-    ApiInvocation, PromptCacheConversationInvocationPreviewResponse,
-    prompt_cache_invocation_preview_from_runtime_record,
-};
+use crate::ApiInvocation;
 
 pub(crate) const RUNTIME_MUTATION_BUS_CAPACITY: usize = 4_096;
 pub(crate) const RUNTIME_MUTATION_ROUTER_MAX_BATCH: usize = 256;
@@ -61,21 +58,12 @@ pub(crate) struct RuntimeInvocationMutation {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
-    pub(crate) preview: Option<Box<PromptCacheConversationInvocationPreviewResponse>>,
 }
 
 impl RuntimeInvocationMutation {
     pub(crate) fn from_record(record: &ApiInvocation, kind: RuntimeMutationKind) -> Self {
         let prompt_cache_key = normalize_key(record.prompt_cache_key.as_deref());
         let sticky_key = normalize_key(record.sticky_key.as_deref());
-        let preview = prompt_cache_key
-            .clone()
-            .or_else(|| sticky_key.clone())
-            .map(|key| {
-                Box::new(prompt_cache_invocation_preview_from_runtime_record(
-                    record, key,
-                ))
-            });
         Self {
             identity: RuntimeInvocationIdentity::new(
                 record.invoke_id.clone(),
@@ -87,7 +75,6 @@ impl RuntimeInvocationMutation {
             prompt_cache_key,
             sticky_key,
             upstream_account_id: record.upstream_account_id,
-            preview,
         }
     }
 
@@ -104,7 +91,6 @@ impl RuntimeInvocationMutation {
             prompt_cache_key: None,
             sticky_key: None,
             upstream_account_id: None,
-            preview: None,
         }
     }
 
@@ -117,7 +103,6 @@ impl RuntimeInvocationMutation {
         self.prompt_cache_key = next.prompt_cache_key.or(self.prompt_cache_key.take());
         self.sticky_key = next.sticky_key.or(self.sticky_key.take());
         self.upstream_account_id = next.upstream_account_id.or(self.upstream_account_id);
-        self.preview = next.preview.or(self.preview.take());
     }
 }
 
@@ -371,7 +356,6 @@ mod tests {
                     prompt_cache_key: None,
                     sticky_key: None,
                     upstream_account_id: None,
-                    preview: None,
                 }),
             },
             SequencedRuntimeMutation {
@@ -405,7 +389,6 @@ mod tests {
                 prompt_cache_key: None,
                 sticky_key: None,
                 upstream_account_id: None,
-                preview: None,
             }),
         });
 
