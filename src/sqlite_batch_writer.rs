@@ -495,6 +495,9 @@ pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) raw_capture: bool,
     pub(crate) dashboard_terminal_sequence: Option<u64>,
     pub(crate) terminal_projection_event_ids: Vec<u64>,
+    // Computed from the already-materialized terminal record before P1 admission. This keeps
+    // event-driven repair discovery out of the SQLite transaction and avoids another payload parse.
+    pub(crate) startup_backfill_tasks: Vec<StartupBackfillTask>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -521,6 +524,11 @@ impl BatchedTerminalInvocationWrite {
                 self.terminal_projection_event_ids
                     .capacity()
                     .saturating_mul(std::mem::size_of::<u64>()),
+            )
+            .saturating_add(
+                self.startup_backfill_tasks
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<StartupBackfillTask>()),
             )
     }
 }
@@ -690,6 +698,11 @@ impl PendingBatch {
                             .extend(entry.get().terminal_projection_event_ids.iter().copied());
                         terminal.terminal_projection_event_ids.sort_unstable();
                         terminal.terminal_projection_event_ids.dedup();
+                        for task in entry.get().startup_backfill_tasks.iter().copied() {
+                            if !terminal.startup_backfill_tasks.contains(&task) {
+                                terminal.startup_backfill_tasks.push(task);
+                            }
+                        }
                         let new_bytes = terminal.estimated_memory_bytes();
                         entry.insert(terminal);
                         self.coalesced_rows += 1;
@@ -2328,6 +2341,7 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut should_invalidate_prompt_cache_conversations = false;
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
+    let mut startup_backfill_wake_tasks = Vec::new();
     if !batch.terminal_invocations.is_empty() {
         let mut terminal_tx = pool.begin().await?;
         for terminal in batch.terminal_invocations.values() {
@@ -2381,6 +2395,11 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     for (terminal, invocation_id, occurred_at) in persisted_terminals {
+        for task in terminal.startup_backfill_tasks.iter().copied() {
+            if !startup_backfill_wake_tasks.contains(&task) {
+                startup_backfill_wake_tasks.push(task);
+            }
+        }
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
             .ok()
@@ -2435,6 +2454,26 @@ pub(crate) async fn flush_pending_batch_inner(
                 )),
             },
         ));
+    }
+
+    if !startup_backfill_wake_tasks.is_empty() {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            if let Err(err) = wake_startup_backfill_tasks(
+                &pool,
+                &startup_backfill_wake_tasks,
+                "terminal_payload_repair_input",
+            )
+            .await
+            {
+                warn!(
+                    error = %err,
+                    task_count = startup_backfill_wake_tasks.len(),
+                    wake_reason = "terminal_payload_repair_input",
+                    "failed to wake startup backfill after terminal persistence"
+                );
+            }
+        });
     }
 
     if batch.attempt_progress.is_empty()
@@ -2824,6 +2863,7 @@ mod tests {
             raw_capture: false,
             dashboard_terminal_sequence,
             terminal_projection_event_ids: Vec::new(),
+            startup_backfill_tasks: Vec::new(),
         }
     }
 
@@ -2833,11 +2873,17 @@ mod tests {
         let accounting = PendingQueueAccounting::default();
         let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
         first.terminal_projection_event_ids.extend(0..64);
+        first
+            .startup_backfill_tasks
+            .push(StartupBackfillTask::ProxyUsage);
         let first = SqliteBatchWrite::TerminalInvocation(first);
         accounting.enqueue(first.estimated_memory_bytes());
         batch.push_accounted(first, &accounting);
         let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
         second.terminal_projection_event_ids.extend(64..128);
+        second
+            .startup_backfill_tasks
+            .push(StartupBackfillTask::ReasoningEffort);
         let second = SqliteBatchWrite::TerminalInvocation(second);
         accounting.enqueue(second.estimated_memory_bytes());
         batch.push_accounted(second, &accounting);
@@ -2852,6 +2898,13 @@ mod tests {
             terminal.terminal_projection_event_ids,
             (0..128).collect::<Vec<_>>()
         );
+        assert_eq!(
+            terminal.startup_backfill_tasks,
+            vec![
+                StartupBackfillTask::ReasoningEffort,
+                StartupBackfillTask::ProxyUsage,
+            ]
+        );
         assert_eq!(batch.coalesced_rows, 1);
         assert_eq!(
             batch.estimated_memory_bytes(),
@@ -2862,6 +2915,48 @@ mod tests {
             batch.estimated_memory_bytes()
         );
         assert_eq!(accounting.snapshot().pending_depth, batch.logical_rows());
+    }
+
+    #[tokio::test]
+    async fn persisted_terminal_wakes_only_its_backfill_tasks_after_p1_commit() {
+        let pool = test_pool().await;
+        let task = StartupBackfillTask::ReasoningEffort;
+        let record = crate::tests::test_proxy_capture_record(
+            "batch-terminal-backfill-wake",
+            "2026-08-09 12:00:00",
+        );
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::TerminalInvocation(
+                BatchedTerminalInvocationWrite {
+                    capture_started: None,
+                    raw_capture: false,
+                    dashboard_terminal_sequence: None,
+                    terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks: vec![task],
+                    record,
+                },
+            )],
+        )
+        .await;
+
+        let wake_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let progress = load_startup_backfill_progress(&pool, task.name())
+                .await
+                .expect("load terminal-woken backfill progress");
+            if progress.wake_generation > 0 {
+                assert!(progress.is_due(Utc::now()));
+                assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+                break;
+            }
+            assert!(
+                Instant::now() < wake_deadline,
+                "terminal P1 commit did not wake the matching startup backfill task"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
@@ -3389,6 +3484,7 @@ mod tests {
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
                     terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks: Vec::new(),
                     record,
                 },
             )],
@@ -3492,6 +3588,7 @@ mod tests {
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
                 terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
                 record,
             },
         )));
@@ -3568,6 +3665,7 @@ mod tests {
             raw_capture: true,
             dashboard_terminal_sequence: None,
             terminal_projection_event_ids: Vec::new(),
+            startup_backfill_tasks: Vec::new(),
         }));
         let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
         let mut pending = PendingBatch::default();
@@ -3638,6 +3736,7 @@ mod tests {
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
                 terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
                 record,
             },
         )));

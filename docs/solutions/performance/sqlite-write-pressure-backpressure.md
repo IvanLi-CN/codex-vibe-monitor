@@ -95,6 +95,7 @@
 - 对业务优先的 terminal admission，可在数据库同目录维护带校验的 append-only journal：先 journal append，再异步入 SQLite；按固定短窗口 group commit，SQLite ACK 后删除完整确认的 segment。必须把 journal pending records/bytes、ACK age、replay count 与 overflow durability mode 作为结构化 telemetry。journal overflow 选择内存可用性时，不得宣称 crash-safe。
 - Dashboard read model 遇到 writer pressure 时不得为了 60 秒 reconcile 再竞争一次 SQLite barrier。已有 last-good baseline 的 selection 应以 expiry delta 继续服务，并将 reconcile deferred 明确记录；必须设置最长 defer 上限，超过上限再做一次补偿尝试。
 - 不可恢复的历史 payload backlog 必须标为 source-unavailable，并退出 actionable backlog。仅在 archive/payload 恢复事件唤醒，外加每日受行数和耗时限制的 probe；否则退避 ticker 会把永久缺失输入伪装成持续工作。
+- event-driven backfill 不能只在表中保存 `next_run_after`，supervisor 也必须把 recovered deadline 镜像为内存等待条件。否则即使任务本身已退避，固定 supervisor ticker 仍会周期性查询每个 progress row、运行无关 maintenance 并写审计记录。repair wake 必须携带受影响 task 集合，pressure defer 只更新该 task 的 retry deadline，空闲 pass 不创建 `system_task_runs`。
 
 ## 何时升级方案
 

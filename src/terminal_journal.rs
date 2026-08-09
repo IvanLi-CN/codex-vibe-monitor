@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use crate::{BatchedTerminalInvocationWrite, ProxyCaptureRecord};
+use crate::{
+    BatchedTerminalInvocationWrite, ProxyCaptureRecord, api_invocation_from_runtime_record,
+    startup_backfill_tasks_for_terminal,
+};
 
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -408,14 +411,21 @@ impl TerminalJournal {
         let replay = std::mem::take(&mut self.replay);
         replay
             .into_iter()
-            .map(|entry| BatchedTerminalInvocationWrite {
-                record: entry.record,
-                capture_started: entry.capture_elapsed_ms.and_then(|elapsed_ms| {
-                    Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
-                }),
-                raw_capture: entry.raw_capture,
-                dashboard_terminal_sequence: None,
-                terminal_projection_event_ids: Vec::new(),
+            .map(|entry| {
+                let record = entry.record;
+                let startup_backfill_tasks = startup_backfill_tasks_for_terminal(
+                    &api_invocation_from_runtime_record(&record),
+                );
+                BatchedTerminalInvocationWrite {
+                    record,
+                    capture_started: entry.capture_elapsed_ms.and_then(|elapsed_ms| {
+                        Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
+                    }),
+                    raw_capture: entry.raw_capture,
+                    dashboard_terminal_sequence: None,
+                    terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks,
+                }
             })
             .collect()
     }
