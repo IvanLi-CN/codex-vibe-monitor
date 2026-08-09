@@ -1822,6 +1822,18 @@ impl RuntimeProjectionHub {
         snapshot
     }
 
+    pub(crate) fn record_by_identity(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> Option<ApiInvocation> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .records
+            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+            .map(|entry| entry.record.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn backdate_for_test(&self, invoke_id: &str, occurred_at: &str, age: Duration) {
         let Some(updated_at) = Instant::now().checked_sub(age) else {
