@@ -38,6 +38,7 @@ const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500)
 const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
 const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
+const RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -421,6 +422,7 @@ struct CachedSubscriptionTopic {
     conversation_overview_refresh_pending: bool,
     dirty: bool,
     runtime_topic_recovery_generation: u64,
+    runtime_topic_recovery_retry_at: Option<Instant>,
     summary_refresh_scheduled: bool,
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
@@ -2104,9 +2106,17 @@ impl SubscriptionHub {
         // the cache generation before building so an old result can never clear newer dirty
         // state or replace the retained last-good frame.
         let refresh_generation = if require_active_owner {
-            self.state
-                .lock()
-                .await
+            let guard = self.state.lock().await;
+            if guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                == 0
+            {
+                return Ok(None);
+            }
+            guard
                 .topics
                 .get(&topic_key)
                 .map(|cached| cached.runtime_topic_recovery_generation)
@@ -2203,6 +2213,7 @@ impl SubscriptionHub {
                 {
                     existing.dirty = false;
                     existing.refresh_scheduled = false;
+                    existing.runtime_topic_recovery_retry_at = None;
                     existing.snapshot_built_at = Instant::now();
                     existing.dashboard_materializer = refreshed_dashboard_materializer.clone();
                     existing.dashboard_base_revision = existing.cursor;
@@ -2285,6 +2296,7 @@ impl SubscriptionHub {
                     .map_or(guard.runtime_topic_recovery_generation, |entry| {
                         entry.runtime_topic_recovery_generation
                     }),
+                runtime_topic_recovery_retry_at: None,
                 summary_refresh_scheduled: guard
                     .topics
                     .get(&topic_key)
@@ -2782,7 +2794,11 @@ impl SubscriptionHub {
             let Some(cached) = guard.topics.get(&topic_key) else {
                 continue;
             };
-            if !cached.dirty {
+            if !cached.dirty
+                || cached
+                    .runtime_topic_recovery_retry_at
+                    .is_some_and(|retry_at| retry_at > Instant::now())
+            {
                 continue;
             }
             if matches!(
@@ -2848,11 +2864,13 @@ impl SubscriptionHub {
             if topics.is_empty() {
                 return;
             }
+            let mut retry_delay = None;
             for topic in topics {
                 if let Err(err) = self
                     .refresh_topic_if_active(state.clone(), topic.clone(), true)
                     .await
                 {
+                    retry_delay = Some(self.defer_runtime_topic_recovery_retry(&topic).await);
                     warn!(
                         ?err,
                         topic = %topic.name(),
@@ -2861,8 +2879,23 @@ impl SubscriptionHub {
                     );
                 }
             }
-            tokio::task::yield_now().await;
+            if let Some(delay) = retry_delay {
+                tokio::time::sleep(delay).await;
+            } else {
+                tokio::task::yield_now().await;
+            }
         }
+    }
+
+    async fn defer_runtime_topic_recovery_retry(&self, topic: &SubscriptionTopic) -> Duration {
+        let Ok(topic_key) = topic.cache_key() else {
+            return RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF;
+        };
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+        }
+        RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
     }
 
     pub(crate) async fn handle_internal_broadcast(
@@ -6920,6 +6953,7 @@ fn reuse_unchanged_cached_topic(
     }
     existing.dirty = false;
     existing.refresh_scheduled = false;
+    existing.runtime_topic_recovery_retry_at = None;
     // A successful Prompt Cache baseline can serialize identically to last-good. It still
     // proves reconciliation completed, so do not keep scheduling the same cold hydration.
     existing.prompt_cache_reconcile_required = false;
@@ -7494,6 +7528,68 @@ mod tests {
             2
         );
         guard.runtime_topic_recovery_running = false;
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn inactive_owner_skips_cold_prompt_cache_hydration() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+
+        state.pool.close().await;
+
+        assert!(
+            hub.refresh_topic_if_active(state, topic, true)
+                .await
+                .expect("inactive guard must return before acquiring the closed database pool")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_recovery_retry_cooldown_defers_dirty_topic_requeue() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            guard.topics.insert(topic_key.clone(), cached);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        assert_eq!(
+            hub.defer_runtime_topic_recovery_retry(&topic).await,
+            RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
+        );
+
+        let mut guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .and_then(|cached| cached.runtime_topic_recovery_retry_at)
+                .is_some_and(|retry_at| retry_at > Instant::now())
+        );
+        assert!(!SubscriptionHub::enqueue_runtime_topic_recovery_locked(
+            &mut guard
+        ));
+        assert!(guard.runtime_topic_recovery_queue.is_empty());
         drop(guard);
         drop(lease);
     }
@@ -9770,6 +9866,7 @@ mod tests {
             conversation_overview_refresh_pending: false,
             dirty: false,
             runtime_topic_recovery_generation: 0,
+            runtime_topic_recovery_retry_at: None,
             summary_refresh_scheduled: false,
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
