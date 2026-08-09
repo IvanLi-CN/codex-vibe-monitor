@@ -2555,12 +2555,6 @@ impl SubscriptionHub {
         }
         self.runtime_mutation_bus
             .record_router_batch(received_count, mutations.len());
-        let runtime_mutations = mutations
-            .iter()
-            .map(|mutation| mutation.mutation.clone())
-            .collect::<Vec<_>>();
-        self.runtime_mutation_bus
-            .record_topic_work(runtime_mutations.len());
         self.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
             .await;
 
@@ -2608,6 +2602,7 @@ impl SubscriptionHub {
             let guard = self.state.lock().await;
             Self::collect_runtime_topic_work(&guard, &mutations)
         };
+        self.runtime_mutation_bus.record_topic_work(affected.len());
 
         for work in affected {
             // Dashboard activity, summary, and network are materialized by their dedicated
@@ -5288,7 +5283,6 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
                     bus.record_router_lag();
                     bus.record_router_gap();
                     bus.record_cursor_recovery();
-                    last_sequence = 0;
                     hub.mark_runtime_mutation_gap_and_recover(
                         state.clone(),
                         skipped,
@@ -5316,7 +5310,6 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
                 bus.record_router_lag();
                 bus.record_router_gap();
                 bus.record_cursor_recovery();
-                last_sequence = 0;
                 hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "receiver_lagged")
                     .await;
                 continue;
@@ -5324,7 +5317,6 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
             if runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &batch) {
                 bus.record_router_gap();
                 bus.record_cursor_recovery();
-                last_sequence = 0;
                 hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "cursor_gap")
                     .await;
                 continue;
@@ -6866,6 +6858,17 @@ mod tests {
             &gap
         ));
         assert_eq!(last_sequence, 3);
+
+        let recovered = [SequencedRuntimeMutation {
+            sequence: 4,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "after-recovery".to_string(),
+            },
+        }];
+        assert!(
+            !runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &recovered),
+            "the first batch after recovery must advance from the discarded gap batch"
+        );
     }
 
     #[tokio::test]

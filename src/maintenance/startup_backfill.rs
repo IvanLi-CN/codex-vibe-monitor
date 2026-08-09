@@ -149,6 +149,16 @@ impl StartupBackfillScheduler {
         self.noop_suppressed_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn record_coverage_repair_success(
+        &self,
+        task: StartupBackfillTask,
+        task_failed_in_current_pass: bool,
+    ) {
+        if !task_failed_in_current_pass {
+            self.record_task_result(task, false, false);
+        }
+    }
+
     fn health_snapshot(&self) -> StartupBackfillHealthSnapshot {
         let woken_task_count = self
             .woken_tasks
@@ -825,6 +835,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
+    let mut historical_rollup_task_failed = false;
     let tasks = match selected_tasks {
         Some(tasks) => tasks,
         None => StartupBackfillTask::ordered_tasks(),
@@ -858,6 +869,9 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 ran_actionable_task |= outcome.actionable;
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
+                if *task == StartupBackfillTask::HistoricalRollups {
+                    historical_rollup_task_failed |= outcome.failed;
+                }
                 if outcome.completed {
                     STARTUP_BACKFILL_SCHEDULER.record_task_result(
                         *task,
@@ -868,6 +882,9 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             }
             Err(err) => {
                 had_failure = true;
+                if *task == StartupBackfillTask::HistoricalRollups {
+                    historical_rollup_task_failed = true;
+                }
                 STARTUP_BACKFILL_SCHEDULER.record_task_result(*task, true, false);
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(
                     *task,
@@ -917,10 +934,9 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
         match repair_outcome {
             ActiveAccountActivityV2RepairResult::Repaired(outcome) => {
                 ran_actionable_task |= outcome.repaired_bucket_count > 0;
-                STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                STARTUP_BACKFILL_SCHEDULER.record_coverage_repair_success(
                     StartupBackfillTask::HistoricalRollups,
-                    false,
-                    false,
+                    historical_rollup_task_failed,
                 );
             }
             outcome @ (ActiveAccountActivityV2RepairResult::Deferred
@@ -1839,6 +1855,18 @@ mod startup_backfill_tests {
         assert_eq!(recovered.state, "healthy");
         assert_eq!(recovered.failure_count, 1);
         assert_eq!(recovered.failed_task_count, 0);
+    }
+
+    #[test]
+    fn coverage_repair_cannot_clear_a_same_pass_historical_rollup_failure() {
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
+
+        scheduler.record_coverage_repair_success(StartupBackfillTask::HistoricalRollups, true);
+
+        let health = scheduler.health_snapshot();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.failed_task_count, 1);
     }
 
     #[test]
