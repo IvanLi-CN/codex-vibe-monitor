@@ -2705,7 +2705,63 @@ pub(crate) async fn flush_pending_batch(
     };
     accounting.p2_attempted();
 
-    let deferred_batch = match flush_pending_batch_inner(
+    // A deterministic failure in a derived write must not retain unrelated
+    // system-task completions forever. Flush those completions separately so
+    // their final state is durable even when another P2 write is discarded.
+    let system_task_batch = if !batch.system_task_finishes.is_empty()
+        && batch.logical_rows() > batch.system_task_finishes.len()
+    {
+        let mut system_task_batch = PendingBatch {
+            oldest_at: batch.oldest_at,
+            ..PendingBatch::default()
+        };
+        system_task_batch.system_task_finishes = std::mem::take(&mut batch.system_task_finishes);
+        system_task_batch.recalculate_estimates();
+        system_task_batch.enqueued_rows = system_task_batch.logical_rows();
+        batch.recalculate_estimates();
+        Some(system_task_batch)
+    } else {
+        None
+    };
+
+    let mut deferred_batch = PendingBatch::default();
+    if let Some(system_task_batch) = system_task_batch {
+        match flush_pending_batch_inner(
+            pool,
+            &system_task_batch,
+            pricing_catalog,
+            prompt_cache_conversation_cache,
+            terminal_runtime_store,
+            dashboard_activity_snapshot_cache,
+            terminal_projection_hub,
+            dashboard_reconcile_gate,
+        )
+        .await
+        {
+            Ok(system_task_deferred) => deferred_batch.merge_p2(system_task_deferred),
+            Err(err) => {
+                crate::db_pressure::global_db_pressure_gate()
+                    .record_error("sqlite_batch_writer_p2", &err);
+                warn!(
+                    error = %err,
+                    flush_priority = "P2",
+                    p2_deferred_count = system_task_batch.logical_rows(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    flush_reason,
+                    system_task_scope = %summarize_system_task_batch_scope(&system_task_batch),
+                    "sqlite batch writer P2 system-task flush failed"
+                );
+                drop(permit);
+                return Some(RetainedBatch::p2_failed(
+                    system_task_batch,
+                    true,
+                    is_sqlite_lock_error(&err),
+                ));
+            }
+        }
+    }
+
+    match flush_pending_batch_inner(
         pool,
         &batch,
         pricing_catalog,
@@ -2717,7 +2773,7 @@ pub(crate) async fn flush_pending_batch(
     )
     .await
     {
-        Ok(deferred_batch) => deferred_batch,
+        Ok(main_deferred) => deferred_batch.merge_p2(main_deferred),
         Err(err) => {
             crate::db_pressure::global_db_pressure_gate()
                 .record_error("sqlite_batch_writer_p2", &err);
@@ -2730,15 +2786,13 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            let retryable_failure = crate::db_pressure::is_db_pressure_error(&err)
-                || !batch.system_task_finishes.is_empty();
             return Some(RetainedBatch::p2_failed(
                 batch,
-                retryable_failure,
+                crate::db_pressure::is_db_pressure_error(&err),
                 is_sqlite_lock_error(&err),
             ));
         }
-    };
+    }
     drop(write_permit);
     drop(permit);
 
