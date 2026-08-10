@@ -625,6 +625,8 @@ pub(crate) enum SqliteBatchWrite {
     InvocationDerived(BatchedInvocationDerivedWrites),
     AccountSelectedTouch(BatchedAccountSelectedTouch),
     SystemTaskFinish(BatchedSystemTaskFinish),
+    #[cfg(test)]
+    StartupBackfillWake(StartupBackfillTask),
 }
 
 pub(crate) enum SqliteBatchWriterControl {
@@ -852,6 +854,17 @@ impl PendingBatch {
                     0
                 }
             }
+            #[cfg(test)]
+            SqliteBatchWrite::StartupBackfillWake(task) => {
+                if self.startup_backfill_wake_tasks.contains(&task) {
+                    self.coalesced_rows += 1;
+                    write_bytes
+                } else {
+                    self.startup_backfill_wake_tasks.push(task);
+                    self.add_estimate(write_bytes, false);
+                    0
+                }
+            }
         }
     }
 
@@ -1042,6 +1055,11 @@ impl PendingBatch {
                 .into_values()
                 .map(SqliteBatchWrite::SystemTaskFinish),
         );
+        writes.extend(
+            self.startup_backfill_wake_tasks
+                .into_iter()
+                .map(SqliteBatchWrite::StartupBackfillWake),
+        );
         writes
     }
 }
@@ -1050,6 +1068,7 @@ impl PendingBatch {
 pub(crate) struct RetainedBatch {
     batch: PendingBatch,
     failed: bool,
+    p2_retryable_failure: bool,
     p2_lock_failure: bool,
     p2_defer: Option<P2DeferReason>,
 }
@@ -1060,6 +1079,7 @@ impl RetainedBatch {
         Self {
             batch,
             failed,
+            p2_retryable_failure: false,
             p2_lock_failure: false,
             p2_defer: None,
         }
@@ -1070,16 +1090,18 @@ impl RetainedBatch {
         Self {
             batch,
             failed: false,
+            p2_retryable_failure: false,
             p2_lock_failure: false,
             p2_defer: Some(reason),
         }
     }
 
-    fn p2_failed(mut batch: PendingBatch, lock_failure: bool) -> Self {
+    fn p2_failed(mut batch: PendingBatch, retryable_failure: bool, lock_failure: bool) -> Self {
         batch.retained_for_retry = true;
         Self {
             batch,
             failed: true,
+            p2_retryable_failure: retryable_failure,
             p2_lock_failure: lock_failure,
             p2_defer: None,
         }
@@ -1106,6 +1128,8 @@ impl SqliteBatchWrite {
                 estimated_account_selected_touch_memory_bytes(touch)
             }
             Self::SystemTaskFinish(finish) => estimated_system_task_finish_memory_bytes(finish),
+            #[cfg(test)]
+            Self::StartupBackfillWake(_) => std::mem::size_of::<StartupBackfillTask>(),
         }
     }
 }
@@ -1817,6 +1841,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                         p2_schedule.defer_until_background_eligible();
                                     }
                                     None if retained.failed
+                                        && retained.p2_retryable_failure
                                         && retained.batch.has_p2()
                                         && retained.batch.terminal_invocations.is_empty() =>
                                     {
@@ -1989,7 +2014,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                             p2_eligibility_generation = observed_generation;
                             p2_schedule.defer_until_background_eligible();
                         }
-                        None if retained.failed && retained.batch.has_p2()
+                        None if retained.failed
+                            && retained.p2_retryable_failure
+                            && retained.batch.has_p2()
                             && retained.batch.terminal_invocations.is_empty() => {
                             transaction_sequence = transaction_sequence.saturating_add(1);
                             let delay = p2_schedule.failed(transaction_sequence);
@@ -2149,7 +2176,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 p2_eligibility_generation = observed_generation;
                                 p2_schedule.defer_until_background_eligible();
                             }
-                            None if retained.failed && retained.batch.has_p2()
+                            None if retained.failed
+                                && retained.p2_retryable_failure
+                                && retained.batch.has_p2()
                                 && retained.batch.terminal_invocations.is_empty() => {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
                                 p2_schedule.failed(transaction_sequence);
@@ -2383,7 +2412,7 @@ async fn flush_pending_batch_accounted(
     .await;
     let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
         retained.failed
-            && !retained.p2_lock_failure
+            && !retained.p2_retryable_failure
             && retained.batch.terminal_invocations.is_empty()
     });
     if discard_non_retryable_p2 {
@@ -2592,7 +2621,7 @@ pub(crate) async fn flush_pending_batch(
     }
     let observed_eligibility_generation =
         crate::db_pressure::global_db_pressure_gate().eligibility_generation();
-    let Some(write_permit) =
+    let Some(mut write_permit) =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
     else {
@@ -2613,6 +2642,12 @@ pub(crate) async fn flush_pending_batch(
         {
             Ok(permit) => Some(permit),
             Err(deny_reason) => {
+                if matches!(
+                    deny_reason,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+                ) {
+                    write_permit.suppress_background_eligibility_wakeup();
+                }
                 drop(write_permit);
                 accounting.p2_pressure_deferred();
                 debug!(
@@ -2662,7 +2697,11 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            return Some(RetainedBatch::p2_failed(batch, is_sqlite_lock_error(&err)));
+            return Some(RetainedBatch::p2_failed(
+                batch,
+                crate::db_pressure::is_db_pressure_error(&err),
+                is_sqlite_lock_error(&err),
+            ));
         }
     };
     drop(write_permit);
