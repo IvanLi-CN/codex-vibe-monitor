@@ -908,6 +908,86 @@ impl PendingBatch {
         p2
     }
 
+    fn take_p2_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
+        if !self.has_p2() || max_rows == 0 || max_bytes == 0 {
+            return Self::default();
+        }
+
+        let oldest_at = self.oldest_at;
+        let mut chunk = Self {
+            oldest_at,
+            retained_for_retry: self.retained_for_retry,
+            ..Self::default()
+        };
+        let mut selected_rows = 0_usize;
+        let mut selected_bytes = 0_usize;
+        let mut should_take = |bytes: usize| {
+            if selected_rows >= max_rows {
+                return false;
+            }
+            if selected_rows > 0 && selected_bytes.saturating_add(bytes) > max_bytes {
+                return false;
+            }
+            selected_rows += 1;
+            selected_bytes = selected_bytes.saturating_add(bytes);
+            true
+        };
+
+        let attempt_progress = std::mem::take(&mut self.attempt_progress);
+        for (key, progress) in attempt_progress {
+            let bytes = estimated_attempt_progress_memory_bytes(&progress);
+            if should_take(bytes) {
+                chunk.attempt_progress.insert(key, progress);
+            } else {
+                self.attempt_progress.insert(key, progress);
+            }
+        }
+        let invocation_derived = std::mem::take(&mut self.invocation_derived);
+        for (key, derived) in invocation_derived {
+            let bytes = estimated_invocation_derived_memory_bytes(&derived);
+            if should_take(bytes) {
+                chunk.invocation_derived.insert(key, derived);
+            } else {
+                self.invocation_derived.insert(key, derived);
+            }
+        }
+        let account_selected_touches = std::mem::take(&mut self.account_selected_touches);
+        for (key, touch) in account_selected_touches {
+            let bytes = estimated_account_selected_touch_memory_bytes(&touch);
+            if should_take(bytes) {
+                chunk.account_selected_touches.insert(key, touch);
+            } else {
+                self.account_selected_touches.insert(key, touch);
+            }
+        }
+        let system_task_finishes = std::mem::take(&mut self.system_task_finishes);
+        for (key, finish) in system_task_finishes {
+            let bytes = estimated_system_task_finish_memory_bytes(&finish);
+            if should_take(bytes) {
+                chunk.system_task_finishes.insert(key, finish);
+            } else {
+                self.system_task_finishes.insert(key, finish);
+            }
+        }
+        if !self.startup_backfill_wake_tasks.is_empty()
+            && should_take(
+                self.startup_backfill_wake_tasks
+                    .len()
+                    .saturating_mul(std::mem::size_of::<StartupBackfillTask>()),
+            )
+        {
+            chunk.startup_backfill_wake_tasks =
+                std::mem::take(&mut self.startup_backfill_wake_tasks);
+        }
+
+        self.recalculate_estimates();
+        chunk.recalculate_estimates();
+        chunk.enqueued_rows = chunk.logical_rows();
+        self.enqueued_rows = self.logical_rows();
+        chunk.coalesced_rows = 0;
+        chunk
+    }
+
     fn add_startup_backfill_wake_tasks(&mut self, tasks: &[StartupBackfillTask]) {
         for task in tasks {
             if !self.startup_backfill_wake_tasks.contains(task) {
@@ -1077,6 +1157,7 @@ impl PendingBatch {
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
     queued_p1_count: Arc<AtomicUsize>,
+    p1_priority_gate: Arc<std::sync::Mutex<()>>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
     accounting: Arc<PendingQueueAccounting>,
     dropped_writes: Arc<AtomicU64>,
@@ -1107,6 +1188,7 @@ impl SqliteBatchWriter {
     ) -> Arc<Self> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let queued_p1_count = Arc::new(AtomicUsize::new(0));
+        let p1_priority_gate = Arc::new(std::sync::Mutex::new(()));
         let (control_sender, control_receiver) = mpsc::channel(128);
         let accounting = Arc::new(PendingQueueAccounting::default());
         let dropped_writes = Arc::new(AtomicU64::new(0));
@@ -1124,7 +1206,12 @@ impl SqliteBatchWriter {
             .as_ref()
             .map(|journal| journal.stats().replay_count)
             .unwrap_or_default();
+        let mut terminal_journal = terminal_journal;
+        if let Some(journal) = terminal_journal.as_mut() {
+            journal.queue_replay_for_dispatch();
+        }
         let terminal_journal = Arc::new(std::sync::Mutex::new(terminal_journal));
+        queued_p1_count.store(replay_writes, Ordering::SeqCst);
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let journal_sync_shutdown = shutdown.child_token();
         #[cfg(not(test))]
@@ -1148,10 +1235,12 @@ impl SqliteBatchWriter {
             dashboard_reconcile_gate.clone(),
             terminal_journal.clone(),
             queued_p1_count.clone(),
+            p1_priority_gate.clone(),
         ));
         let writer = Arc::new(Self {
             write_sender,
             queued_p1_count,
+            p1_priority_gate,
             control_sender,
             accounting,
             dropped_writes,
@@ -1169,11 +1258,6 @@ impl SqliteBatchWriter {
             buffered_writes: None,
             #[cfg(test)]
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
-        });
-        writer.terminal_journal.lock().ok().and_then(|mut journal| {
-            journal
-                .as_mut()
-                .map(TerminalJournal::queue_replay_for_dispatch)
         });
         if replay_writes > 0 {
             warn!(
@@ -1200,6 +1284,7 @@ impl SqliteBatchWriter {
         Arc::new(Self {
             write_sender,
             queued_p1_count: Arc::new(AtomicUsize::new(0)),
+            p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
             control_sender,
             accounting: Arc::new(PendingQueueAccounting::default()),
             dropped_writes: Arc::new(AtomicU64::new(0)),
@@ -1259,6 +1344,11 @@ impl SqliteBatchWriter {
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
+        let _p1_priority_guard = is_p1.then(|| {
+            self.p1_priority_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
         #[cfg(test)]
         if let Some(buffered_writes) = &self.buffered_writes {
             match buffered_writes.lock() {
@@ -1356,17 +1446,19 @@ impl SqliteBatchWriter {
         durability_mode: TerminalJournalDurabilityMode,
     ) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
-        self.accounting.enqueue(estimated_bytes);
         let is_p1 = is_p1_terminal_write(&write);
+        let _p1_priority_guard = is_p1.then(|| {
+            self.p1_priority_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        self.accounting.enqueue(estimated_bytes);
         if is_p1 {
             self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
         }
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(write)) => {
-                if is_p1 {
-                    decrement_queued_p1_count(&self.queued_p1_count);
-                }
                 self.accounting.rollback_enqueue(estimated_bytes);
                 let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
                     && self
@@ -1382,6 +1474,9 @@ impl SqliteBatchWriter {
                             })
                         })
                         .unwrap_or(false);
+                if is_p1 && !deferred {
+                    decrement_queued_p1_count(&self.queued_p1_count);
+                }
                 if !deferred {
                     self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                     warn!(
@@ -1634,6 +1729,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     queued_p1_count: Arc<AtomicUsize>,
+    p1_priority_gate: Arc<std::sync::Mutex<()>>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1687,6 +1783,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut pending,
                             &accounting,
                             usize::MAX,
+                            &queued_p1_count,
                         );
                         let result = match flush_pending_batch_accounted(
                             &accounting,
@@ -1766,6 +1863,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             &mut pending,
                             &accounting,
                             usize::MAX,
+                            &queued_p1_count,
                         );
                         let result = if pending.is_empty() {
                             Ok(())
@@ -1819,6 +1917,16 @@ pub(crate) async fn run_sqlite_batch_writer(
             _ = wait_for_p2_deadline(p2_schedule.due_at),
                 if p2_deadline_ready(&pending, &p2_schedule, &queued_p1_count) =>
             {
+                let priority_guard = p1_priority_gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                drain_terminal_journal_deferred_writes(
+                    &terminal_journal,
+                    &mut pending,
+                    &accounting,
+                    SQLITE_BATCH_MAX_ROWS,
+                    &queued_p1_count,
+                );
                 drain_queued_writes_before_p2_dispatch(
                     &mut write_receiver,
                     &mut pending,
@@ -1826,13 +1934,20 @@ pub(crate) async fn run_sqlite_batch_writer(
                     &mut p2_schedule,
                     &queued_p1_count,
                 );
+                if queued_p1_count.load(Ordering::SeqCst) != 0 {
+                    drop(priority_guard);
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
+                    continue;
+                }
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
                 let flush_batch = if submitted_p1 {
                     pending.take()
                 } else {
-                    pending.take_p2()
+                    pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                 };
+                drop(priority_guard);
                 if let Some(retained) =
                     flush_pending_batch_accounted(
                         &accounting,
@@ -1916,6 +2031,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                     &mut pending,
                     &accounting,
                     deferred_capacity,
+                    &queued_p1_count,
                 );
             }
             maybe_write = write_receiver.recv() => {
@@ -1925,6 +2041,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         &mut pending,
                         &accounting,
                         usize::MAX,
+                        &queued_p1_count,
                     );
                     if !pending.is_empty()
                         && let Some(retained) = flush_pending_batch_accounted(
@@ -1971,15 +2088,24 @@ pub(crate) async fn run_sqlite_batch_writer(
                     && (!pending.terminal_invocations.is_empty()
                         || p2_schedule.ready(Instant::now()))
                 {
-                    let p2_ready = p2_schedule.ready(Instant::now());
-                    let flush_batch = if !pending.terminal_invocations.is_empty()
-                        && pending.has_p2()
-                        && !p2_ready
-                    {
-                        pending.take_p1_terminals()
+                    let priority_guard = p1_priority_gate
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let p2_ready = p2_schedule.ready(Instant::now())
+                        && queued_p1_count.load(Ordering::SeqCst) == 0;
+                    let flush_batch = if !pending.terminal_invocations.is_empty() {
+                        if pending.has_p2() {
+                            pending.take_p1_terminals()
+                        } else {
+                            pending.take()
+                        }
+                    } else if p2_ready {
+                        pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                     } else {
-                        pending.take()
+                        drop(priority_guard);
+                        continue;
                     };
+                    drop(priority_guard);
                     let submitted_p1 = !flush_batch.terminal_invocations.is_empty();
                     let submitted_p2 = flush_batch.has_p2();
                     if let Some(retained) =
@@ -2179,6 +2305,7 @@ fn drain_terminal_journal_deferred_writes(
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,
     max_writes: usize,
+    queued_p1_count: &AtomicUsize,
 ) {
     if max_writes == 0 {
         return;
@@ -2187,6 +2314,7 @@ fn drain_terminal_journal_deferred_writes(
         && let Some(journal) = guard.as_mut()
     {
         for terminal in journal.take_deferred_writes(max_writes) {
+            decrement_queued_p1_count(queued_p1_count);
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             accounting.enqueue(write.estimated_memory_bytes());
             accounting.retry_deferred();
@@ -2253,15 +2381,30 @@ async fn flush_pending_batch_accounted(
         terminal_journal,
     )
     .await;
+    let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
+        retained.failed
+            && !retained.p2_lock_failure
+            && retained.batch.terminal_invocations.is_empty()
+    });
+    if discard_non_retryable_p2 {
+        warn!(
+            flush_priority = "P2",
+            submitted_depth,
+            submitted_bytes,
+            "discarded non-retryable P2 batch after deterministic failure; durable source remains authoritative"
+        );
+    }
     if was_retained_retry && result.as_ref().is_some_and(|retained| retained.failed) {
         accounting.retry_deferred();
     }
     let retained_bytes = result
         .as_ref()
+        .filter(|_| !discard_non_retryable_p2)
         .map(|retained| retained.batch.estimated_memory_bytes())
         .unwrap_or_default();
     let retained_depth = result
         .as_ref()
+        .filter(|_| !discard_non_retryable_p2)
         .map(|retained| retained.batch.logical_rows())
         .unwrap_or_default();
     accounting.complete(
@@ -2270,7 +2413,11 @@ async fn flush_pending_batch_accounted(
         submitted_bytes,
         retained_bytes,
     );
-    result
+    if discard_non_retryable_p2 {
+        None
+    } else {
+        result
+    }
 }
 
 #[expect(
@@ -2719,9 +2866,25 @@ pub(crate) async fn flush_pending_batch_inner(
         } else {
             None
         };
+        let wake_tasks = batch
+            .startup_backfill_wake_tasks
+            .iter()
+            .copied()
+            .filter(|task| {
+                let available = pricing_catalog.is_some()
+                    || !matches!(task, StartupBackfillTask::ProxyCost);
+                if !available {
+                    warn!(
+                        task = task.name(),
+                        "skipping startup backfill wake because its runtime pricing catalog is unavailable"
+                    );
+                }
+                available
+            })
+            .collect::<Vec<_>>();
         wake_startup_backfill_tasks_with_pricing_catalog(
             pool,
-            &batch.startup_backfill_wake_tasks,
+            &wake_tasks,
             pricing_catalog.as_ref(),
             "terminal_payload_repair_input",
         )
@@ -3241,6 +3404,21 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed P2 account");
+        for offset in 1..=SQLITE_BATCH_MAX_ROWS {
+            let account_id = ACCOUNT_ID + offset as i64;
+            sqlx::query(
+                r#"
+                INSERT INTO pool_upstream_accounts (
+                    id, kind, provider, display_name, status, enabled, last_selected_at, created_at, updated_at
+                )
+                VALUES (?1, 'api_key', 'codex', 'Priority Test', 'active', 1, NULL, '2026-08-10T12:00:00Z', '2026-08-10T12:00:00Z')
+                "#,
+            )
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .expect("seed deep P2 account");
+        }
         sqlx::query("CREATE TABLE batch_writer_dispatch_order (write_class TEXT NOT NULL)")
             .execute(&pool)
             .await
@@ -3262,7 +3440,7 @@ mod tests {
             r#"
             CREATE TRIGGER batch_writer_p2_dispatch_order
             AFTER UPDATE OF last_selected_at ON pool_upstream_accounts
-            WHEN NEW.id = 999998
+            WHEN NEW.id BETWEEN 999998 AND 1000030
             BEGIN
                 INSERT INTO batch_writer_dispatch_order (write_class) VALUES ('p2');
             END
@@ -3302,7 +3480,7 @@ mod tests {
         for offset in 0..=SQLITE_BATCH_MAX_ROWS {
             assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
                 BatchedAccountSelectedTouch {
-                    account_id: ACCOUNT_ID,
+                    account_id: ACCOUNT_ID + offset as i64,
                     selected_at: format!("2026-08-10T12:01:{offset:02}Z"),
                 },
             )));
@@ -3332,9 +3510,13 @@ mod tests {
 
         let order = order.expect("writer should dispatch both P1 and P2 work");
         assert_eq!(
-            order,
-            vec!["p1".to_string(), "p2".to_string()],
+            order.first().map(String::as_str),
+            Some("p1"),
             "the writer must classify the full queued snapshot before dispatching overdue P2 work"
+        );
+        assert!(
+            order.iter().skip(1).all(|class| class == "p2"),
+            "all remaining writes should be bounded P2 chunks"
         );
     }
 
@@ -4561,7 +4743,14 @@ mod tests {
         let mut pending = PendingBatch::default();
 
         let accounting = PendingQueueAccounting::default();
-        drain_terminal_journal_deferred_writes(&journal, &mut pending, &accounting, usize::MAX);
+        let queued_p1_count = AtomicUsize::new(0);
+        drain_terminal_journal_deferred_writes(
+            &journal,
+            &mut pending,
+            &accounting,
+            usize::MAX,
+            &queued_p1_count,
+        );
 
         assert_eq!(pending.terminal_invocations.len(), 1);
         let snapshot = accounting.snapshot();
