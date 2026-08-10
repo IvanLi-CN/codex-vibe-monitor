@@ -17,6 +17,9 @@ const lowOpacityFilledContentPatterns = [
   ),
 ];
 
+const tintedEndpointBadgeRule =
+  /\[data-theme="vibe-dark"\]\s+\.invocation-endpoint-badge\[data-endpoint-kind="(?<kind>[^"]+)"\]\s*\{(?<declarations>[\s\S]*?)^\s*\}/gm;
+
 function walkSourceFiles(root: string): string[] {
   return readdirSync(root).flatMap((entry) => {
     const nextPath = join(root, entry);
@@ -46,6 +49,23 @@ describe("semantic tone source contract", () => {
           })),
         ),
       );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("uses tone ink instead of filled-content ink on tinted endpoint badges", () => {
+    const css = readFileSync(join(sourceRoot, "index.css"), "utf8");
+    const offenders = Array.from(css.matchAll(tintedEndpointBadgeRule)).flatMap((match) => {
+      const declarations = match.groups?.declarations ?? "";
+      const kind = match.groups?.kind ?? "unknown";
+      const hasTintedSurface = /background-color:\s*color-mix\(/.test(declarations);
+      const usesFilledContentInk =
+        /color:\s*[^;]*--color-(?:primary|accent|info|success|warning|error)-content/.test(
+          declarations,
+        );
+
+      return hasTintedSurface && usesFilledContentInk ? [kind] : [];
+    });
 
     expect(offenders).toEqual([]);
   });

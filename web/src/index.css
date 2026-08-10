@@ -1428,11 +1428,7 @@ body {
       oklch(var(--color-base-300)) 52%,
       oklch(var(--color-accent)) 48%
     );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 40%,
-      oklch(var(--color-accent-content)) 60%
-    );
+    color: var(--tone-ink-accent);
   }
 
   [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image"] {

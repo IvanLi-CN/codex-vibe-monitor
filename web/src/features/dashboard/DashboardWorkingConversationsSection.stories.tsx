@@ -127,6 +127,48 @@ function readPerceptualChannel(color: string) {
   return match ? Number.parseFloat(match[0]) : Number.NaN;
 }
 
+function parseComputedColorChannels(color: string) {
+  return Array.from(color.matchAll(/-?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?/gi), (match) =>
+    Number.parseFloat(match[0]),
+  );
+}
+
+function relativeLuminance(color: string) {
+  const channels = parseComputedColorChannels(color);
+
+  if (color.startsWith("oklab(") && channels.length >= 3) {
+    const [lightness, a, b] = channels;
+    const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+    const red = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    const green = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    const blue = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  }
+
+  if (color.startsWith("rgb(") && channels.length >= 3) {
+    const linear = channels.slice(0, 3).map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+
+    return 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!;
+  }
+
+  throw new Error(`Unsupported computed color: ${color}`);
+}
+
+function contrastRatio(foreground: string, background: string) {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 async function openBulkClearBindingDialog(canvasElement: HTMLElement) {
   await selectConversationForBulkActions(canvasElement);
 
@@ -951,6 +993,26 @@ function createUpstreamAccountActivityStoryResponse(
       },
     ],
   };
+}
+
+function createImageEditEndpointUpstreamAccountActivityStoryResponse() {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const account = response.accounts[0];
+  const firstRecentInvocation = account?.recentInvocations[0];
+  if (!account || !firstRecentInvocation) return response;
+
+  account.recentInvocations = [
+    {
+      ...firstRecentInvocation,
+      endpoint: "/v1/images/edits",
+      imageIntent: "direct_image",
+      model: "gpt-image-1",
+      requestModel: "gpt-image-1",
+      responseModel: "gpt-image-1",
+    },
+  ];
+
+  return response;
 }
 
 function createUpstreamAccountAdaptiveMetricsStoryResponse() {
@@ -4657,6 +4719,76 @@ export const UpstreamAccountRecentLayoutMobile: Story = {
           "Narrow account layout falls back to metadata followed by the compact summary, without horizontal overflow or hiding the error summary.",
       },
     },
+  },
+};
+
+async function assertImageEditEndpointRecentRow(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const recentRow = await canvas.findByTestId("dashboard-upstream-account-recent-row");
+  await expect(recentRow).toBeVisible();
+  expect(recentRow.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(recentRow.getBoundingClientRect().height).toBeGreaterThan(0);
+  const imageEditBadge = recentRow.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_edit"]',
+  );
+  if (!(imageEditBadge instanceof HTMLElement)) {
+    throw new Error("missing image edit endpoint badge");
+  }
+
+  await expect(imageEditBadge).toHaveTextContent("image/edit");
+  await expect(
+    within(recentRow).queryByTestId("dashboard-image-tool-icon-badge"),
+  ).not.toBeInTheDocument();
+
+  const styles = getComputedStyle(imageEditBadge);
+  const ratio = contrastRatio(styles.color, styles.backgroundColor);
+  expect(
+    ratio,
+    `expected ${styles.color} on ${styles.backgroundColor} to meet the 4.5:1 contrast threshold`,
+  ).toBeGreaterThanOrEqual(4.5);
+  expect(styles.borderColor).not.toBe(styles.backgroundColor);
+}
+
+export const UpstreamAccountImageEditEndpoint: Story = {
+  tags: ["test"],
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createImageEditEndpointUpstreamAccountActivityStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  globals: {
+    themeMode: "light",
+  },
+  parameters: {
+    a11y: {
+      options: {
+        rules: {
+          "color-contrast": { enabled: false },
+          "nested-interactive": { enabled: false },
+        },
+      },
+      config: {
+        rules: [
+          { id: "color-contrast", enabled: false },
+          { id: "nested-interactive", enabled: false },
+        ],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await assertImageEditEndpointRecentRow(canvasElement);
+  },
+};
+
+export const UpstreamAccountImageEditEndpointDark: Story = {
+  ...UpstreamAccountImageEditEndpoint,
+  tags: ["test"],
+  globals: {
+    themeMode: "dark",
   },
 };
 

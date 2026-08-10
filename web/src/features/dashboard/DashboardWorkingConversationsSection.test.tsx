@@ -3283,6 +3283,53 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(currentSlot.textContent).not.toContain("/v1/images/generations");
   });
 
+  it("renders image edit endpoint chips without duplicate image icons in upstream account recent rows", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0].recentInvocations = [
+      createPreview({
+        id: 9010,
+        invokeId: "acct-image-edit",
+        promptCacheKey: "pck-acct-image-edit",
+        occurredAt: "2026-04-04T10:05:50Z",
+        status: "success",
+        endpoint: "/v1/images/edits",
+        imageIntent: "direct_image",
+        model: "gpt-image-1",
+        upstreamAccountName: "Pool Alpha",
+      }),
+    ];
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const recentRow = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    if (!(recentRow instanceof HTMLElement)) {
+      throw new Error("missing upstream account recent row");
+    }
+
+    const imageEditBadge = recentRow.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_edit"]',
+    );
+    if (!(imageEditBadge instanceof HTMLElement)) {
+      throw new Error("missing image edit endpoint badge");
+    }
+
+    expect(imageEditBadge.textContent).toBe("image/edit");
+    expect(recentRow.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
+    expect(recentRow.textContent).not.toContain("/v1/images/edits");
+  });
+
   it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
     renderSection(
       createResponse([
