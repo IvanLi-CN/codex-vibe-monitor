@@ -1332,6 +1332,7 @@ impl SqliteBatchWriter {
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
+            database_path.to_path_buf(),
             write_receiver,
             control_receiver,
             accounting.clone(),
@@ -1879,6 +1880,7 @@ impl SqliteBatchWriter {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
+    database_path: std::path::PathBuf,
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
     mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     accounting: Arc<PendingQueueAccounting>,
@@ -2082,6 +2084,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 let _ = release_shutdown_pending_batch(
                                     &accounting,
                                     &terminal_journal,
+                                    &database_path,
                                     &abandoned,
                                     "shutdown drain deadline exceeded",
                                 )
@@ -2144,6 +2147,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     if let Some(quarantine) = shutdown_quarantine.as_ref()
                                         && let Err(err) = quarantine_shutdown_batch(
                                             &terminal_journal,
+                                            &database_path,
                                             quarantine,
                                             "shutdown flush deadline exceeded",
                                         )
@@ -2234,6 +2238,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             if let Err(err) = release_shutdown_pending_batch(
                                 &accounting,
                                 &terminal_journal,
+                                &database_path,
                                 &abandoned,
                                 "shutdown drain stopped after flush timeout",
                             ) {
@@ -2392,6 +2397,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let _ = release_shutdown_pending_batch(
                                 &accounting,
                                 &terminal_journal,
+                                &database_path,
                                 &abandoned,
                                 "receiver shutdown drain deadline exceeded",
                             )
@@ -2438,6 +2444,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 if let Some(quarantine) = shutdown_quarantine.as_ref()
                                     && let Err(err) = quarantine_shutdown_batch(
                                         &terminal_journal,
+                                        &database_path,
                                         quarantine,
                                         "receiver shutdown flush deadline exceeded",
                                     )
@@ -2526,6 +2533,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         if let Err(err) = release_shutdown_pending_batch(
                             &accounting,
                             &terminal_journal,
+                            &database_path,
                             &abandoned,
                             "receiver shutdown drain stopped after flush timeout",
                         ) {
@@ -2964,42 +2972,64 @@ fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBatch> {
 
 fn quarantine_shutdown_batch(
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    database_path: &std::path::Path,
     batch: &PendingBatch,
     error: &str,
 ) -> Result<()> {
     if batch.terminal_invocations.is_empty() && batch.system_task_finishes.is_empty() {
         return Ok(());
     }
-    let mut journal = terminal_journal
-        .lock()
-        .map_err(|_| anyhow::anyhow!("terminal journal lock poisoned"))?;
-    let journal = journal
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("terminal journal unavailable for shutdown quarantine"))?;
     let error = error.to_string();
-    let mut errors = Vec::new();
     let terminals = batch.terminal_invocations.values().collect::<Vec<_>>();
-    if let Err(err) = journal.quarantine_terminals(&terminals, &error) {
-        errors.push(format!("terminal quarantine failed: {err:#}"));
-    }
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
-    if let Err(err) = journal.quarantine_system_task_finishes(&finishes, &error) {
-        errors.push(format!("system-task quarantine failed: {err:#}"));
+    let mut errors = Vec::new();
+    match terminal_journal.lock() {
+        Ok(mut guard) => match guard.as_mut() {
+            Some(journal) => {
+                if let Err(err) = journal.quarantine_terminals(&terminals, &error) {
+                    errors.push(format!("terminal quarantine failed: {err:#}"));
+                }
+                if let Err(err) = journal.quarantine_system_task_finishes(&finishes, &error) {
+                    errors.push(format!("system-task quarantine failed: {err:#}"));
+                }
+            }
+            None => errors.push("terminal journal unavailable for shutdown quarantine".to_string()),
+        },
+        Err(_) => errors.push("terminal journal lock poisoned".to_string()),
     }
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!(errors.join("; ")))
+        match TerminalJournal::quarantine_shutdown_batch_at_database_path(
+            database_path,
+            &terminals,
+            &finishes,
+            &error,
+        ) {
+            Ok(()) => {
+                warn!(
+                    errors = ?errors,
+                    "shutdown quarantine used the independent recovery sink"
+                );
+                Ok(())
+            }
+            Err(fallback_error) => Err(anyhow!(
+                "{}; independent recovery sink failed: {fallback_error:#}",
+                errors.join("; ")
+            )),
+        }
     }
 }
 
 fn release_shutdown_pending_batch(
     accounting: &PendingQueueAccounting,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    database_path: &std::path::Path,
     batch: &PendingBatch,
     reason: &str,
 ) -> Result<()> {
-    let quarantine_error = quarantine_shutdown_batch(terminal_journal, batch, reason).err();
+    let quarantine_error =
+        quarantine_shutdown_batch(terminal_journal, database_path, batch, reason).err();
     accounting.release(batch.logical_rows(), batch.estimated_memory_bytes());
     quarantine_error.map_or(Ok(()), Err)
 }

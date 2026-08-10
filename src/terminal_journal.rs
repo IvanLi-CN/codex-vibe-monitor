@@ -125,6 +125,7 @@ pub(crate) struct TerminalJournal {
     replay_segments: VecDeque<JournalReplayCursor>,
     replay_count: usize,
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
+    replay_blocked: bool,
     system_task_quarantine_ids: HashSet<i64>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
@@ -214,10 +215,12 @@ impl TerminalJournal {
             .open(&path)
             .with_context(|| format!("failed to open system-task quarantine {}", path.display()))?;
         let mut appended = false;
+        let mut newly_indexed_ids = Vec::new();
         for finish in finishes {
             if !self.system_task_quarantine_ids.insert(finish.run_id) {
                 continue;
             }
+            newly_indexed_ids.push(finish.run_id);
             let entry = QuarantineEntry {
                 run_id: finish.run_id,
                 task_kind: finish.task_kind.as_str(),
@@ -230,20 +233,122 @@ impl TerminalJournal {
                 error,
             };
             if let Err(err) = serde_json::to_writer(&mut file, &entry) {
-                self.system_task_quarantine_ids.remove(&finish.run_id);
+                for run_id in newly_indexed_ids {
+                    self.system_task_quarantine_ids.remove(&run_id);
+                }
                 return Err(err).context("failed to append system-task quarantine");
             }
             if let Err(err) = file.write_all(b"\n") {
-                self.system_task_quarantine_ids.remove(&finish.run_id);
+                for run_id in newly_indexed_ids {
+                    self.system_task_quarantine_ids.remove(&run_id);
+                }
                 return Err(err).context("failed to append system-task quarantine delimiter");
             }
             appended = true;
         }
         if appended && let Err(err) = file.sync_data() {
-            for finish in finishes {
-                self.system_task_quarantine_ids.remove(&finish.run_id);
+            for run_id in newly_indexed_ids {
+                self.system_task_quarantine_ids.remove(&run_id);
             }
             return Err(err).context("failed to sync system-task quarantine");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn quarantine_shutdown_batch_at_database_path(
+        database_path: &Path,
+        terminals: &[&BatchedTerminalInvocationWrite],
+        finishes: &[&BatchedSystemTaskFinish],
+        error: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct TerminalEntry<'a> {
+            invoke_id: &'a str,
+            occurred_at: &'a str,
+            raw_capture: bool,
+            error: &'a str,
+            record: &'a ProxyCaptureRecord,
+        }
+        #[derive(Serialize)]
+        struct SystemTaskEntry<'a> {
+            run_id: i64,
+            task_kind: &'static str,
+            trigger_kind: &'a str,
+            status: &'static str,
+            summary: &'a Option<String>,
+            detail: &'a Option<String>,
+            finished_at: &'a str,
+            duration_ms: i64,
+            error: &'a str,
+        }
+
+        let directory = terminal_journal_directory(database_path);
+        fs::create_dir_all(&directory).with_context(|| {
+            format!(
+                "failed to create independent terminal recovery directory {}",
+                directory.display()
+            )
+        })?;
+        if !terminals.is_empty() {
+            let path = directory.join("shutdown-terminal-quarantine.jsonl");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| {
+                    format!("failed to open terminal recovery sink {}", path.display())
+                })?;
+            for terminal in terminals {
+                serde_json::to_writer(
+                    &mut file,
+                    &TerminalEntry {
+                        invoke_id: &terminal.record.invoke_id,
+                        occurred_at: &terminal.record.occurred_at,
+                        raw_capture: terminal.raw_capture,
+                        error,
+                        record: &terminal.record,
+                    },
+                )
+                .context("failed to encode terminal recovery entry")?;
+                file.write_all(b"\n")
+                    .context("failed to append terminal recovery delimiter")?;
+            }
+            file.sync_data()
+                .context("failed to sync terminal recovery sink")?;
+        }
+        if !finishes.is_empty() {
+            let path = directory.join("shutdown-system-task-quarantine.jsonl");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .with_context(|| {
+                    format!(
+                        "failed to open system-task recovery sink {}",
+                        path.display()
+                    )
+                })?;
+            for finish in finishes {
+                serde_json::to_writer(
+                    &mut file,
+                    &SystemTaskEntry {
+                        run_id: finish.run_id,
+                        task_kind: finish.task_kind.as_str(),
+                        trigger_kind: &finish.trigger_kind,
+                        status: finish.status.as_str(),
+                        summary: &finish.summary,
+                        detail: &finish.detail,
+                        finished_at: &finish.finished_at,
+                        duration_ms: finish.duration_ms,
+                        error,
+                    },
+                )
+                .context("failed to encode system-task recovery entry")?;
+                file.write_all(b"\n")
+                    .context("failed to append system-task recovery delimiter")?;
+            }
+            file.sync_data()
+                .context("failed to sync system-task recovery sink")?;
         }
         Ok(())
     }
@@ -358,6 +463,7 @@ impl TerminalJournal {
             replay_segments,
             replay_count,
             deferred_writes: VecDeque::new(),
+            replay_blocked: false,
             system_task_quarantine_ids,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
@@ -550,6 +656,9 @@ impl TerminalJournal {
         max_writes: usize,
         max_bytes: usize,
     ) -> Vec<BatchedTerminalInvocationWrite> {
+        if self.replay_blocked {
+            return Vec::new();
+        }
         let mut writes = Vec::new();
         let mut estimated_bytes = 0_usize;
         let mut scanned_bytes = 0_usize;
@@ -622,19 +731,13 @@ impl TerminalJournal {
                 );
                 scanned_lines = scanned_lines.saturating_add(1);
                 let Ok(parsed) = parsed else {
-                    let skipped_end = skip_replay_line(&mut reader).unwrap_or(stream_end);
-                    scanned_bytes = scanned_bytes.saturating_add(
-                        skipped_end
-                            .saturating_sub(stream_end)
-                            .min(usize::MAX as u64) as usize,
+                    cursor.byte_offset = stream_start;
+                    self.replay_blocked = true;
+                    warn!(
+                        replay_offset = stream_start,
+                        "terminal journal replay stopped at an unparseable entry; preserving the cursor for recovery"
                     );
-                    cursor.byte_offset = skipped_end;
-                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
-                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
-                    {
-                        break;
-                    }
-                    continue;
+                    break;
                 };
                 cursor.byte_offset = stream_end;
                 let Some(entry) = parsed.entry else {
@@ -823,21 +926,6 @@ impl Read for ReplayBudgetReader<'_> {
         let read = self.reader.read(&mut buffer[..limit])?;
         self.remaining = self.remaining.saturating_sub(read);
         Ok(read)
-    }
-}
-
-fn skip_replay_line(reader: &mut BufReader<File>) -> io::Result<u64> {
-    loop {
-        let buffer = reader.fill_buf()?;
-        if buffer.is_empty() {
-            return reader.stream_position();
-        }
-        if let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
-            reader.consume(newline.saturating_add(1));
-            return reader.stream_position();
-        }
-        let consumed = buffer.len();
-        reader.consume(consumed);
     }
 }
 
