@@ -166,6 +166,19 @@ impl TerminalJournal {
         }
 
         let path = self.directory.join("system-task-quarantine.jsonl");
+        #[derive(Deserialize)]
+        struct ExistingQuarantineEntry {
+            run_id: i64,
+        }
+        if let Ok(existing) = fs::read_to_string(&path)
+            && existing.lines().any(|line| {
+                serde_json::from_str::<ExistingQuarantineEntry>(line)
+                    .ok()
+                    .is_some_and(|entry| entry.run_id == finish.run_id)
+            })
+        {
+            return Ok(());
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)

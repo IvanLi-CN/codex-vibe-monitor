@@ -31,6 +31,7 @@ pub(crate) const SQLITE_BATCH_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
 pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
 pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
+const SQLITE_SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(5);
 const SQLITE_P1_RETRY_DELAYS: [Duration; 5] = [
     Duration::from_millis(250),
     Duration::from_millis(500),
@@ -2001,7 +2002,29 @@ pub(crate) async fn run_sqlite_batch_writer(
                     SqliteBatchWriterControl::Shutdown { responder, .. } => {
                         write_receiver.close();
                         let mut result = Ok(());
+                        let shutdown_deadline = Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
                         loop {
+                            if Instant::now() >= shutdown_deadline {
+                                let _ = drain_queued_batch_writes(
+                                    &mut write_receiver,
+                                    &mut pending,
+                                    &accounting,
+                                    usize::MAX,
+                                    &queued_p1_count,
+                                );
+                                let _ = release_shutdown_pending_batch(
+                                    &accounting,
+                                    &terminal_journal,
+                                    &pending,
+                                    "shutdown drain deadline exceeded",
+                                )
+                                .map_err(|err| {
+                                    result = Err(format!(
+                                        "sqlite batch writer shutdown quarantine failed: {err:#}"
+                                    ));
+                                });
+                                break;
+                            }
                             let drained = drain_queued_batch_writes(
                                 &mut write_receiver,
                                 &mut pending,
@@ -2048,16 +2071,39 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let pending_bytes_before_merge = pending.estimated_memory_bytes();
                             let p2_defer_reason = retained.p2_defer;
                             let p2_deferred = p2_defer_reason.is_some();
+                            let p2_retryable_failure = retained.p2_retryable_failure;
                             let mut retained_batch = retained.batch;
                             retained_batch.merge_all(pending.take());
+                            let merged_rows = retained_batch.logical_rows();
+                            let merged_bytes = retained_batch.estimated_memory_bytes();
+                            accounting.replace_batch(
+                                retained_rows_before_merge + pending_rows_before_merge,
+                                merged_rows,
+                                retained_bytes_before_merge + pending_bytes_before_merge,
+                                merged_bytes,
+                            );
                             if failed {
+                                let retry_delay = if !retained_batch.terminal_invocations.is_empty() {
+                                    transaction_sequence = transaction_sequence.saturating_add(1);
+                                    Some(p1_retry.failed(transaction_sequence))
+                                } else if p2_retryable_failure {
+                                    transaction_sequence = transaction_sequence.saturating_add(1);
+                                    Some(p2_schedule.failed(transaction_sequence))
+                                } else {
+                                    None
+                                };
+                                if retry_delay.is_some() && Instant::now() < shutdown_deadline {
+                                    pending = retained_batch;
+                                    let delay = retry_delay
+                                        .unwrap_or(Duration::from_millis(1))
+                                        .min(shutdown_deadline.saturating_duration_since(Instant::now()));
+                                    sleep(delay).await;
+                                    continue;
+                                }
                                 result = Err(format!(
                                     "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
                                 ));
-                                accounting.release(
-                                    retained_rows_before_merge + pending_rows_before_merge,
-                                    retained_bytes_before_merge + pending_bytes_before_merge,
-                                );
+                                accounting.release(merged_rows, merged_bytes);
                                 break;
                             }
                             if !retained_batch.terminal_invocations.is_empty() {
@@ -2074,7 +2120,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                                         Duration::from_millis(250)
                                     }
                                 };
-                                sleep(delay).await;
+                                sleep(delay.min(
+                                    shutdown_deadline.saturating_duration_since(Instant::now()),
+                                ))
+                                .await;
                                 continue;
                             }
                             if !retained_batch.is_empty() {
@@ -2229,7 +2278,20 @@ pub(crate) async fn run_sqlite_batch_writer(
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
+                    let shutdown_deadline = Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
                     loop {
+                        if Instant::now() >= shutdown_deadline {
+                            let _ = release_shutdown_pending_batch(
+                                &accounting,
+                                &terminal_journal,
+                                &pending,
+                                "receiver shutdown drain deadline exceeded",
+                            )
+                            .map_err(|err| {
+                                warn!(error = %err, "receiver shutdown quarantine failed");
+                            });
+                            break;
+                        }
                         drain_terminal_journal_deferred_writes(
                             &terminal_journal,
                             &mut pending,
@@ -2264,13 +2326,36 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let pending_bytes_before_merge = pending.estimated_memory_bytes();
                         let p2_defer_reason = retained.p2_defer;
                         let p2_deferred = p2_defer_reason.is_some();
+                        let p2_retryable_failure = retained.p2_retryable_failure;
                         let mut retained_batch = retained.batch;
                         retained_batch.merge_all(pending.take());
+                        let merged_rows = retained_batch.logical_rows();
+                        let merged_bytes = retained_batch.estimated_memory_bytes();
+                        accounting.replace_batch(
+                            retained_rows_before_merge + pending_rows_before_merge,
+                            merged_rows,
+                            retained_bytes_before_merge + pending_bytes_before_merge,
+                            merged_bytes,
+                        );
                         if retained.failed {
-                            accounting.release(
-                                retained_rows_before_merge + pending_rows_before_merge,
-                                retained_bytes_before_merge + pending_bytes_before_merge,
-                            );
+                            let retry_delay = if !retained_batch.terminal_invocations.is_empty() {
+                                transaction_sequence = transaction_sequence.saturating_add(1);
+                                Some(p1_retry.failed(transaction_sequence))
+                            } else if p2_retryable_failure {
+                                transaction_sequence = transaction_sequence.saturating_add(1);
+                                Some(p2_schedule.failed(transaction_sequence))
+                            } else {
+                                None
+                            };
+                            if retry_delay.is_some() && Instant::now() < shutdown_deadline {
+                                pending = retained_batch;
+                                let delay = retry_delay
+                                    .unwrap_or(Duration::from_millis(1))
+                                    .min(shutdown_deadline.saturating_duration_since(Instant::now()));
+                                sleep(delay).await;
+                                continue;
+                            }
+                            accounting.release(merged_rows, merged_bytes);
                             warn!(
                                 retained_rows = retained_batch.logical_rows(),
                                 retained_bytes = retained_batch.estimated_memory_bytes(),
@@ -2292,7 +2377,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     Duration::from_millis(250)
                                 }
                             };
-                            sleep(delay).await;
+                            sleep(delay.min(
+                                shutdown_deadline.saturating_duration_since(Instant::now()),
+                            ))
+                            .await;
                             continue;
                         }
                         if !retained_batch.is_empty() {
@@ -2714,6 +2802,20 @@ fn quarantine_system_task_batch(
         journal.quarantine_system_task_finish(finish, &error)?;
     }
     Ok(batch.system_task_finishes.len())
+}
+
+fn release_shutdown_pending_batch(
+    accounting: &PendingQueueAccounting,
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    batch: &PendingBatch,
+    reason: &str,
+) -> Result<()> {
+    if !batch.system_task_finishes.is_empty() {
+        let error = anyhow::anyhow!(reason.to_string());
+        quarantine_system_task_batch(terminal_journal, batch, &error)?;
+    }
+    accounting.release(batch.logical_rows(), batch.estimated_memory_bytes());
+    Ok(())
 }
 
 #[expect(
@@ -3311,7 +3413,9 @@ pub(crate) async fn flush_pending_batch_inner(
                 }
             }
         }
-        if prompt_cache_key_from_payload(terminal.record.payload.as_deref())
+        let payload_metadata = crate::terminal_payload_metadata(terminal.record.payload.as_deref());
+        if payload_metadata
+            .prompt_cache_key
             .as_deref()
             .is_some_and(|key| !key.trim().is_empty())
         {
@@ -3321,9 +3425,7 @@ pub(crate) async fn flush_pending_batch_inner(
             BatchedInvocationDerivedWrites {
                 invocation_id,
                 occurred_at,
-                upstream_account_id: crate::upstream_account_id_from_payload(
-                    terminal.record.payload.as_deref(),
-                ),
+                upstream_account_id: payload_metadata.upstream_account_id,
                 terminal_overlay_key: Some((
                     terminal.record.invoke_id.clone(),
                     terminal.record.occurred_at.clone(),
