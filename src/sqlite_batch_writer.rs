@@ -189,7 +189,7 @@ fn drain_queued_writes_before_p2_dispatch(
     queued_p1_count: &AtomicUsize,
 ) {
     // A snapshot keeps the priority scan bounded even while P2 producers continue writing.
-    let queued_messages = write_receiver.len();
+    let queued_messages = write_receiver.len().min(SQLITE_BATCH_MAX_ROWS);
     drain_queued_writes_before_dispatch(
         write_receiver,
         pending,
@@ -534,7 +534,7 @@ impl FlushReason {
     }
 
     fn bypass_pressure_gate(self) -> bool {
-        matches!(self, Self::Barrier | Self::Shutdown)
+        matches!(self, Self::Shutdown)
     }
 }
 
@@ -911,6 +911,53 @@ impl PendingBatch {
         }
     }
 
+    fn take_p1_terminal_chunk(&mut self, max_rows: usize, max_bytes: usize) -> Self {
+        if self.terminal_invocations.is_empty() || max_rows == 0 || max_bytes == 0 {
+            return Self::default();
+        }
+        let mut selected_keys = Vec::new();
+        let mut selected_bytes = 0_usize;
+        for (key, terminal) in &self.terminal_invocations {
+            let bytes = terminal.estimated_memory_bytes();
+            if selected_keys.len() >= max_rows {
+                break;
+            }
+            if !selected_keys.is_empty() && selected_bytes.saturating_add(bytes) > max_bytes {
+                break;
+            }
+            selected_keys.push(key.clone());
+            selected_bytes = selected_bytes.saturating_add(bytes);
+            if bytes > max_bytes {
+                break;
+            }
+        }
+        let terminal_invocations = selected_keys
+            .into_iter()
+            .filter_map(|key| {
+                self.terminal_invocations
+                    .remove(&key)
+                    .map(|write| (key, write))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if terminal_invocations.is_empty() {
+            return Self::default();
+        }
+        self.recalculate_estimates();
+        let mut chunk = Self {
+            terminal_invocations,
+            oldest_at: self.oldest_at,
+            retained_for_retry: self.retained_for_retry,
+            ..Self::default()
+        };
+        chunk.recalculate_estimates();
+        chunk.enqueued_rows = chunk.logical_rows();
+        self.enqueued_rows = self.logical_rows();
+        if self.is_empty() {
+            self.oldest_at = None;
+        }
+        chunk
+    }
+
     fn take_p2(&mut self) -> Self {
         let mut p2 = std::mem::take(self);
         let terminal_invocations = std::mem::take(&mut p2.terminal_invocations);
@@ -1041,6 +1088,16 @@ impl PendingBatch {
             (Some(current), Some(other)) => Some(current.min(other)),
             (current, other) => current.or(other),
         };
+    }
+
+    fn merge_all(&mut self, mut other: Self) {
+        let terminal_invocations = std::mem::take(&mut other.terminal_invocations);
+        let terminal_count = terminal_invocations.len();
+        for terminal in terminal_invocations.into_values() {
+            self.push(SqliteBatchWrite::TerminalInvocation(terminal));
+        }
+        other.enqueued_rows = other.enqueued_rows.saturating_sub(terminal_count);
+        self.merge_p2(other);
     }
 
     #[cfg(test)]
@@ -1813,109 +1870,160 @@ pub(crate) async fn run_sqlite_batch_writer(
                         queued_depth_snapshot,
                         responder,
                     } => {
-                        drain_queued_batch_writes(
-                            &mut write_receiver,
-                            &mut pending,
-                            &accounting,
-                            queued_depth_snapshot,
-                            &queued_p1_count,
-                        );
-                        drain_terminal_journal_deferred_writes(
-                            &terminal_journal,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                            &queued_p1_count,
-                        );
-                        let result = match flush_pending_batch_accounted(
-                            &accounting,
-                            &pool,
-                            pricing_catalog.as_ref(),
-                            pending.take(),
-                            FlushReason::Barrier,
-                            prompt_cache_conversation_cache.as_ref(),
-                            &terminal_runtime_store,
-                            &dashboard_activity_snapshot_cache,
-                            &terminal_projection_hub,
-                            &dashboard_reconcile_gate,
-                            &terminal_journal,
-                        )
-                        .await
-                        {
-                            Some(retained) => {
-                                let logical_rows = retained.batch.logical_rows();
-                                let failed = retained.failed;
-                                match retained.p2_defer {
-                                    Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
-                                        p2_schedule.defer_pressure(
-                                            Duration::from_millis(remaining_ms),
-                                            P2WakeReason::PressureCooldownElapsed,
-                                        );
-                                    }
-                                    Some(P2DeferReason::BackgroundBusy {
-                                        observed_generation,
-                                    }) => {
-                                        p2_eligibility_generation = observed_generation;
-                                        p2_schedule.defer_until_background_eligible();
-                                    }
-                                    None if retained.failed
-                                        && retained.p2_retryable_failure
-                                        && retained.batch.has_p2()
-                                        && retained.batch.terminal_invocations.is_empty() =>
-                                    {
-                                        transaction_sequence = transaction_sequence.saturating_add(1);
-                                        p2_schedule.failed(transaction_sequence);
-                                        if retained.p2_lock_failure {
-                                            accounting.p2_lock_retried();
-                                        }
-                                    }
-                                    None if retained.batch.has_p2() => {
-                                        p2_schedule.arm_if_idle(Instant::now());
-                                    }
-                                    None => p2_schedule.succeeded(),
+                        let mut remaining_queued = queued_depth_snapshot;
+                        let mut result = Ok(());
+                        loop {
+                            let drained = drain_queued_batch_writes(
+                                &mut write_receiver,
+                                &mut pending,
+                                &accounting,
+                                remaining_queued.min(SQLITE_BATCH_MAX_ROWS),
+                                &queued_p1_count,
+                            );
+                            remaining_queued = remaining_queued.saturating_sub(drained);
+                            drain_terminal_journal_deferred_writes(
+                                &terminal_journal,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_MAX_ROWS,
+                                &queued_p1_count,
+                            );
+                            if pending.is_empty() {
+                                if remaining_queued == 0 || drained == 0 {
+                                    break;
                                 }
-                                accounting.update_p2_schedule(&p2_schedule);
-                                pending = retained.batch;
-                                if failed {
-                                    Err(format!(
-                                        "sqlite batch writer retained {logical_rows} logical rows after forced flush"
-                                    ))
-                                } else {
-                                    Ok(())
-                                }
+                                continue;
                             }
-                            None => {
+                            let flush_batch = take_next_bounded_batch(&mut pending);
+                            if flush_batch.is_empty() {
+                                break;
+                            }
+                            if flush_batch.terminal_invocations.is_empty()
+                                && flush_batch.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
+                            {
+                                warn!(
+                                    flush_priority = "P2",
+                                    batch_rows = flush_batch.logical_rows(),
+                                    batch_bytes = flush_batch.estimated_memory_bytes(),
+                                    max_batch_bytes = SQLITE_BATCH_MAX_BYTES,
+                                    "isolating oversized single P2 write"
+                                );
+                            }
+                            let Some(retained) = flush_pending_batch_accounted(
+                                &accounting,
+                                &pool,
+                                pricing_catalog.as_ref(),
+                                flush_batch,
+                                FlushReason::Barrier,
+                                prompt_cache_conversation_cache.as_ref(),
+                                &terminal_runtime_store,
+                                &dashboard_activity_snapshot_cache,
+                                &terminal_projection_hub,
+                                &dashboard_reconcile_gate,
+                                &terminal_journal,
+                            )
+                            .await
+                            else {
                                 p2_schedule.succeeded();
                                 accounting.update_p2_schedule(&p2_schedule);
-                                Ok(())
-                            },
-                        };
+                                if pending.is_empty() && remaining_queued == 0 {
+                                    break;
+                                }
+                                continue;
+                            };
+                            let logical_rows = retained.batch.logical_rows();
+                            let failed = retained.failed;
+                            if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                                transaction_sequence = transaction_sequence.saturating_add(1);
+                                let delay = p1_retry.failed(transaction_sequence);
+                                warn!(
+                                    write_class = "p1_terminal",
+                                    retry_generation = p1_retry.generation as u64,
+                                    next_retry_delay_ms = delay.as_millis() as u64,
+                                    "scheduled retained P1 batch after forced flush failure"
+                                );
+                            } else {
+                                p1_retry.succeeded();
+                            }
+                            match retained.p2_defer {
+                                Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                    p2_schedule.defer_pressure(
+                                        Duration::from_millis(remaining_ms),
+                                        P2WakeReason::PressureCooldownElapsed,
+                                    );
+                                }
+                                Some(P2DeferReason::BackgroundBusy {
+                                    observed_generation,
+                                }) => {
+                                    p2_eligibility_generation = observed_generation;
+                                    p2_schedule.defer_until_background_eligible();
+                                }
+                                None if retained.failed
+                                    && retained.p2_retryable_failure
+                                    && retained.batch.has_p2()
+                                    && retained.batch.terminal_invocations.is_empty() =>
+                                {
+                                    transaction_sequence = transaction_sequence.saturating_add(1);
+                                    p2_schedule.failed(transaction_sequence);
+                                    if retained.p2_lock_failure {
+                                        accounting.p2_lock_retried();
+                                    }
+                                }
+                                None if retained.batch.has_p2() => {
+                                    p2_schedule.arm_if_idle(Instant::now());
+                                }
+                                None => p2_schedule.succeeded(),
+                            }
+                            accounting.update_p2_schedule(&p2_schedule);
+                            let p2_deferred = retained.p2_defer.is_some();
+                            let mut retained_batch = retained.batch;
+                            retained_batch.merge_all(pending.take());
+                            pending = retained_batch;
+                            if failed {
+                                result = Err(format!(
+                                    "sqlite batch writer retained {logical_rows} logical rows after forced flush"
+                                ));
+                                break;
+                            }
+                            if p2_deferred {
+                                break;
+                            }
+                            if pending.is_empty() && remaining_queued == 0 {
+                                break;
+                            }
+                        }
                         let _ = responder.send(result);
                     }
                     SqliteBatchWriterControl::Shutdown { responder, .. } => {
                         write_receiver.close();
-                        drain_queued_batch_writes(
-                            &mut write_receiver,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                            &queued_p1_count,
-                        );
-                        drain_terminal_journal_deferred_writes(
-                            &terminal_journal,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                            &queued_p1_count,
-                        );
-                        let result = if pending.is_empty() {
-                            Ok(())
-                        } else {
-                            match flush_pending_batch_accounted(
+                        let mut result = Ok(());
+                        loop {
+                            let drained = drain_queued_batch_writes(
+                                &mut write_receiver,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_MAX_ROWS,
+                                &queued_p1_count,
+                            );
+                            drain_terminal_journal_deferred_writes(
+                                &terminal_journal,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_MAX_ROWS,
+                                &queued_p1_count,
+                            );
+                            if pending.is_empty() {
+                                if drained == 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                            let flush_batch = take_next_bounded_batch(&mut pending);
+                            let Some(retained) = flush_pending_batch_accounted(
                                 &accounting,
                                 &pool,
                                 pricing_catalog.as_ref(),
-                                pending.take(),
+                                flush_batch,
                                 FlushReason::Shutdown,
                                 prompt_cache_conversation_cache.as_ref(),
                                 &terminal_runtime_store,
@@ -1925,30 +2033,34 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 &terminal_journal,
                             )
                             .await
-                            {
-                                Some(retained) => {
-                                    let logical_rows = retained.batch.logical_rows();
-                                    accounting.complete(
-                                        retained.batch.logical_rows(),
-                                        0,
-                                        retained.batch.estimated_memory_bytes(),
-                                        0,
-                                    );
-                                    if retained.failed {
-                                        Err(format!(
-                                            "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
-                                        ))
-                                    } else {
-                                        warn!(
-                                            logical_rows,
-                                            "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
-                                        );
-                                        Ok(())
-                                    }
-                                }
-                                None => Ok(()),
+                            else {
+                                continue;
+                            };
+                            let logical_rows = retained.batch.logical_rows();
+                            let failed = retained.failed;
+                            let mut retained_batch = retained.batch;
+                            retained_batch.merge_all(pending.take());
+                            let retained_depth = retained_batch.logical_rows();
+                            let retained_bytes = retained_batch.estimated_memory_bytes();
+                            accounting.complete(
+                                retained_depth,
+                                0,
+                                retained_bytes,
+                                0,
+                            );
+                            if failed {
+                                result = Err(format!(
+                                    "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
+                                ));
+                                break;
                             }
-                        };
+                            warn!(
+                                logical_rows,
+                                retained_bytes,
+                                "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
+                            );
+                            break;
+                        }
                         let _ = responder.send(result);
                         return;
                     }
@@ -1986,7 +2098,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
                 let flush_batch = if submitted_p1 {
-                    pending.take_p1_terminals()
+                    pending.take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                 } else {
                     pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                 };
@@ -2068,7 +2180,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pending.merge_p2(retained.batch);
                     } else {
                         let mut retained_batch = retained.batch;
-                        retained_batch.merge_p2(pending.take());
+                        retained_batch.merge_all(pending.take());
                         pending = retained_batch;
                     }
                     accounting.update_p2_schedule(&p2_schedule);
@@ -2151,7 +2263,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                         && queued_p1_count.load(Ordering::SeqCst) == 0;
                     let flush_batch = if !pending.terminal_invocations.is_empty() {
                         if pending.has_p2() {
-                            pending.take_p1_terminals()
+                            pending.take_p1_terminal_chunk(
+                                SQLITE_BATCH_MAX_ROWS,
+                                SQLITE_BATCH_MAX_BYTES,
+                            )
                         } else {
                             pending.take()
                         }
@@ -2236,7 +2351,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             pending.merge_p2(retained.batch);
                         } else {
                             let mut retained_batch = retained.batch;
-                            retained_batch.merge_p2(pending.take());
+                            retained_batch.merge_all(pending.take());
                             pending = retained_batch;
                         }
                     } else {
@@ -2269,7 +2384,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                 } else {
                     FlushReason::Interval
                 };
-                let flush_batch = pending.take_p1_terminals();
+                let flush_batch = pending
+                    .take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES);
                 if let Some(retained) =
                     flush_pending_batch_accounted(
                         &accounting,
@@ -2320,7 +2436,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pending.merge_p2(retained.batch);
                     } else {
                         let mut retained_batch = retained.batch;
-                        retained_batch.merge_p2(pending.take());
+                        retained_batch.merge_all(pending.take());
                         pending = retained_batch;
                     }
                     accounting.update_p2_schedule(&p2_schedule);
@@ -2398,7 +2514,8 @@ pub(crate) fn drain_queued_batch_writes(
     accounting: &PendingQueueAccounting,
     max_messages: usize,
     queued_p1_count: &AtomicUsize,
-) {
+) -> usize {
+    let mut drained = 0_usize;
     for _ in 0..max_messages {
         match write_receiver.try_recv() {
             Ok(write) => {
@@ -2406,11 +2523,21 @@ pub(crate) fn drain_queued_batch_writes(
                     decrement_queued_p1_count(queued_p1_count);
                 }
                 pending.push_accounted(write, accounting);
+                drained = drained.saturating_add(1);
             }
             Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
                 break;
             }
         }
+    }
+    drained
+}
+
+fn take_next_bounded_batch(pending: &mut PendingBatch) -> PendingBatch {
+    if !pending.terminal_invocations.is_empty() {
+        pending.take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
+    } else {
+        pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
     }
 }
 
