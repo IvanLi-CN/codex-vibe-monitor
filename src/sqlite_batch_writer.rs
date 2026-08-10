@@ -998,6 +998,9 @@ impl PendingBatch {
         chunk.enqueued_rows = chunk.logical_rows();
         self.enqueued_rows = self.logical_rows();
         chunk.coalesced_rows = 0;
+        if self.is_empty() {
+            self.oldest_at = None;
+        }
         chunk
     }
 
@@ -2416,10 +2419,17 @@ async fn flush_pending_batch_accounted(
             && retained.batch.terminal_invocations.is_empty()
     });
     if discard_non_retryable_p2 {
+        let discarded_overlay_count = result
+            .as_ref()
+            .map(|retained| {
+                cleanup_discarded_p2_runtime_overlays(&retained.batch, terminal_runtime_store)
+            })
+            .unwrap_or_default();
         warn!(
             flush_priority = "P2",
             submitted_depth,
             submitted_bytes,
+            discarded_overlay_count,
             "discarded non-retryable P2 batch after deterministic failure; durable source remains authoritative"
         );
     }
@@ -2447,6 +2457,27 @@ async fn flush_pending_batch_accounted(
     } else {
         result
     }
+}
+
+fn cleanup_discarded_p2_runtime_overlays(
+    batch: &PendingBatch,
+    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+) -> usize {
+    let Some(runtime_store) = terminal_runtime_store
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+    else {
+        return 0;
+    };
+    batch
+        .invocation_derived
+        .values()
+        .filter_map(|derived| derived.terminal_overlay_key.as_ref())
+        .filter(|(invoke_id, occurred_at)| {
+            runtime_store.remove_persisted_terminal_overlay(invoke_id, occurred_at)
+        })
+        .count()
 }
 
 #[expect(
