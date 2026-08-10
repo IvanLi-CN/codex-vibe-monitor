@@ -1,5 +1,9 @@
 # High-Frequency Runtime Data Plane Implementation
 
+## Dashboard Hot Topic Coverage
+
+Activity、summary 与 network topic 已有 typed projection/materializer。working-conversations、parallel-work open range 与 open-window timeseries 仍可能进入通用 subscription builder；其迁移、健康判责与完整 Dashboard bundle 性能门禁由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/IMPLEMENTATION.md) 跟踪。在该规范验收前，高频 Dashboard delivery 不视为全部完成。
+
 ## Typed Runtime Event Bus Boundary
 
 The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.

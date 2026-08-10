@@ -45,6 +45,7 @@
 | f2w7m | 请求记录筛选范围控件与诊断维度增强                                        | active    | `f2w7m-records-filter-range-diagnostics/SPEC.md`           | `f2w7m-records-filter-range-diagnostics/IMPLEMENTATION.md`           | topic anchor: records / filters / diagnostics               |
 | zr9jd | API Key 上游按模型路由健康管理                                            | active    | `zr9jd-api-key-model-routing-health/SPEC.md`               | `zr9jd-api-key-model-routing-health/IMPLEMENTATION.md`               | topic anchor: API Key / model routing / health              |
 | 6qe6u | 全项目 TTFT 口径                                                          | active    | `6qe6u-time-to-first-token/SPEC.md`                        | `6qe6u-time-to-first-token/IMPLEMENTATION.md`                        | topic anchor: TTFT / proxy / stats / UI                     |
+| -     | Dashboard Hot Topic 内存投影与 SSE 稳定性                                 | active    | `dashboard-hot-topic-projection/SPEC.md`                   | `dashboard-hot-topic-projection/IMPLEMENTATION.md`                   | topic anchor: dashboard / hot projection / SSE              |
 
 ## Archived Sources
 

@@ -59,6 +59,7 @@ flowchart LR
 - startup backfill 由 terminal/archive/payload/coverage 事件唤醒并持有动态 `next_due`；无 actionable work 不查询数据库、不写 `system_task_runs`，source-unavailable 任务仅每日做有界复检。
 - `yesterday / previous7d / usage` 与其他 closed-range 查询继续使用 exact DB builder。
 - typed materializer 根据 topic dependency revision tuple 生成一个 `Arc<SerializedTopicFrame>`。delivery 不接收完整业务 snapshot 或通用 JSON overlay；subscriber 数量只增加引用，不增加 builder 或 serialization 次数。
+- Activity、summary 与 network topic 已使用 typed materializer；working-conversations、parallel-work open range 与 open-window timeseries 仍是待迁移的 Dashboard HotProjection。在迁移完成前，它们不得被视为健康高频数据面的已完成部分，具体合同见 [`dashboard-hot-topic-projection`](./specs/dashboard-hot-topic-projection/SPEC.md)。
 - 第一位 owner subscriber 激活 producer；无 owner subscriber 时停止周期构建并标记 dirty，重新订阅时恢复 fresh snapshot/replay 语义。
 
 ## 5. 持久化与历史数据
