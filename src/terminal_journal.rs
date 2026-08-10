@@ -165,7 +165,13 @@ impl TerminalJournal {
             })?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "jsonl")
+                    && path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| stem.starts_with("terminal-"))
+            })
             .collect::<Vec<_>>();
         paths.sort();
 

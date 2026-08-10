@@ -896,6 +896,9 @@ impl PendingBatch {
         self.terminal_estimated_bytes = self
             .terminal_estimated_bytes
             .saturating_sub(estimated_bytes);
+        if !self.has_p2() {
+            self.oldest_at = None;
+        }
         Self {
             enqueued_rows: terminal_invocations.len(),
             estimated_bytes,
@@ -985,7 +988,7 @@ impl PendingBatch {
         if !self.startup_backfill_wake_tasks.is_empty()
             && should_take(
                 self.startup_backfill_wake_tasks
-                    .len()
+                    .capacity()
                     .saturating_mul(std::mem::size_of::<StartupBackfillTask>()),
             )
         {
