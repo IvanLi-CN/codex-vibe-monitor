@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufReader, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -22,6 +22,8 @@ pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_milli
 const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES: usize = 1024;
+const SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES: usize = 4 * 1024 * 1024;
+const SYSTEM_TASK_QUARANTINE_INDEX_MAX_LINES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
@@ -237,9 +239,11 @@ impl TerminalJournal {
             }
             appended = true;
         }
-        if appended {
-            file.sync_data()
-                .context("failed to sync system-task quarantine")?;
+        if appended && let Err(err) = file.sync_data() {
+            for finish in finishes {
+                self.system_task_quarantine_ids.remove(&finish.run_id);
+            }
+            return Err(err).context("failed to sync system-task quarantine");
         }
         Ok(())
     }
@@ -343,13 +347,7 @@ impl TerminalJournal {
             .path
             .clone();
         let system_task_quarantine_ids =
-            fs::read_to_string(directory.join("system-task-quarantine.jsonl"))
-                .ok()
-                .into_iter()
-                .flat_map(|contents| contents.lines().map(str::to_owned).collect::<Vec<_>>())
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-                .filter_map(|value| value.get("run_id").and_then(serde_json::Value::as_i64))
-                .collect();
+            load_system_task_quarantine_ids(&directory.join("system-task-quarantine.jsonl"));
         Ok(Self {
             directory,
             current_file: open_append_file(&current_path)?,
@@ -575,10 +573,15 @@ impl TerminalJournal {
             let mut produced = None;
             loop {
                 let stream_start = cursor.byte_offset;
-                let mut stream =
-                    serde_json::Deserializer::from_reader(&mut reader).into_iter::<JournalLine>();
-                let parsed = stream.next();
-                drop(stream);
+                let parsed = {
+                    let mut budget_reader = ReplayBudgetReader {
+                        reader: &mut reader,
+                        remaining: TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
+                    };
+                    let mut stream = serde_json::Deserializer::from_reader(&mut budget_reader)
+                        .into_iter::<JournalLine>();
+                    stream.next()
+                };
                 let Ok(stream_end) = reader.stream_position() else {
                     break;
                 };
@@ -592,8 +595,19 @@ impl TerminalJournal {
                         .min(usize::MAX as u64) as usize,
                 );
                 scanned_lines = scanned_lines.saturating_add(1);
-                cursor.byte_offset = stream_end;
-                let Some(Ok(parsed)) = parsed else {
+                let Some(parsed) = parsed else {
+                    cursor.byte_offset = stream_end;
+                    reached_end = true;
+                    break;
+                };
+                let Ok(parsed) = parsed else {
+                    let skipped_end = skip_replay_line(&mut reader).unwrap_or(stream_end);
+                    scanned_bytes = scanned_bytes.saturating_add(
+                        skipped_end
+                            .saturating_sub(stream_end)
+                            .min(usize::MAX as u64) as usize,
+                    );
+                    cursor.byte_offset = skipped_end;
                     if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
                         || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
                     {
@@ -601,6 +615,7 @@ impl TerminalJournal {
                     }
                     continue;
                 };
+                cursor.byte_offset = stream_end;
                 let Some(entry) = parsed.entry else {
                     if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
                         || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
@@ -760,6 +775,75 @@ impl TerminalJournal {
             }
         }
     }
+}
+
+struct ReplayBudgetReader<'a> {
+    reader: &'a mut BufReader<File>,
+    remaining: usize,
+}
+
+impl Read for ReplayBudgetReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "terminal journal replay record exceeds the bounded input budget",
+            ));
+        }
+        let limit = buffer.len().min(self.remaining);
+        let read = self.reader.read(&mut buffer[..limit])?;
+        self.remaining = self.remaining.saturating_sub(read);
+        Ok(read)
+    }
+}
+
+fn skip_replay_line(reader: &mut BufReader<File>) -> io::Result<u64> {
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return reader.stream_position();
+        }
+        if let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+            reader.consume(newline.saturating_add(1));
+            return reader.stream_position();
+        }
+        let consumed = buffer.len();
+        reader.consume(consumed);
+    }
+}
+
+fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
+    let Ok(file) = File::open(path) else {
+        return HashSet::new();
+    };
+    let mut reader = BufReader::new(file);
+    let mut ids = HashSet::new();
+    let mut line = String::new();
+    let mut bytes_read = 0_usize;
+    for _ in 0..SYSTEM_TASK_QUARANTINE_INDEX_MAX_LINES {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        bytes_read = bytes_read.saturating_add(read);
+        if bytes_read > SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES {
+            warn!(
+                path = %path.display(),
+                max_bytes = SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES,
+                "bounded system-task quarantine index reached its startup budget"
+            );
+            break;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+            && let Some(run_id) = value.get("run_id").and_then(serde_json::Value::as_i64)
+        {
+            ids.insert(run_id);
+        }
+    }
+    ids
 }
 
 fn segment_path(directory: &Path, first_sequence: u64) -> PathBuf {

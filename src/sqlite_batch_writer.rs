@@ -2067,14 +2067,14 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     &mut write_receiver,
                                     &mut pending,
                                     &accounting,
-                                    SQLITE_BATCH_MAX_ROWS,
+                                    SQLITE_BATCH_CHANNEL_CAPACITY,
                                     &queued_p1_count,
                                 );
                                 drain_terminal_journal_deferred_writes(
                                     &terminal_journal,
                                     &mut pending,
                                     &accounting,
-                                    SQLITE_BATCH_MAX_ROWS,
+                                    SQLITE_BATCH_CHANNEL_CAPACITY,
                                     &queued_p1_count,
                                 );
                                 let abandoned = std::mem::take(&mut pending);
@@ -2118,7 +2118,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let flush_batch = take_next_bounded_batch(&mut pending);
                             let flush_rows = flush_batch.logical_rows();
                             let flush_bytes = flush_batch.estimated_memory_bytes();
-                            let shutdown_quarantine = shutdown_system_task_batch(&flush_batch);
+                            let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                             let retained = match timeout_at(
                                 shutdown_deadline.into(),
                                 flush_pending_batch_accounted(
@@ -2412,7 +2412,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let flush_batch = take_next_bounded_batch(&mut pending);
                         let flush_rows = flush_batch.logical_rows();
                         let flush_bytes = flush_batch.estimated_memory_bytes();
-                        let shutdown_quarantine = shutdown_system_task_batch(&flush_batch);
+                        let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                         let retained = match timeout_at(
                             shutdown_deadline.into(),
                             flush_pending_batch_accounted(
@@ -2947,11 +2947,12 @@ fn quarantine_system_task_batch(
     Ok(batch.system_task_finishes.len())
 }
 
-fn shutdown_system_task_batch(batch: &PendingBatch) -> Option<PendingBatch> {
-    if batch.system_task_finishes.is_empty() {
+fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBatch> {
+    if batch.terminal_invocations.is_empty() && batch.system_task_finishes.is_empty() {
         return None;
     }
     let mut quarantine = PendingBatch {
+        terminal_invocations: batch.terminal_invocations.clone(),
         system_task_finishes: batch.system_task_finishes.clone(),
         ..PendingBatch::default()
     };
@@ -2974,12 +2975,21 @@ fn quarantine_shutdown_batch(
     let journal = journal
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("terminal journal unavailable for shutdown quarantine"))?;
-    let error = anyhow!(error.to_string());
+    let error = error.to_string();
+    let mut errors = Vec::new();
     let terminals = batch.terminal_invocations.values().collect::<Vec<_>>();
-    journal.quarantine_terminals(&terminals, &format!("{error:#}"))?;
+    if let Err(err) = journal.quarantine_terminals(&terminals, &error) {
+        errors.push(format!("terminal quarantine failed: {err:#}"));
+    }
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
-    journal.quarantine_system_task_finishes(&finishes, &format!("{error:#}"))?;
-    Ok(())
+    if let Err(err) = journal.quarantine_system_task_finishes(&finishes, &error) {
+        errors.push(format!("system-task quarantine failed: {err:#}"));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(errors.join("; ")))
+    }
 }
 
 fn release_shutdown_pending_batch(
