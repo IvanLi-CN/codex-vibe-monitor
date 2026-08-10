@@ -142,10 +142,12 @@ fn p2_deadline_ready(
     pending: &PendingBatch,
     p2_schedule: &P2ScheduleState,
     queued_p1_count: &AtomicUsize,
+    p1_retry: &P1RetryState,
 ) -> bool {
     pending.has_p2()
         && p2_schedule.ready(Instant::now())
         && queued_p1_count.load(Ordering::SeqCst) == 0
+        && p1_retry.ready(Instant::now())
 }
 
 fn is_p1_terminal_write(write: &SqliteBatchWrite) -> bool {
@@ -940,6 +942,14 @@ impl PendingBatch {
         let mut should_take = |bytes: usize| {
             if selected_rows >= max_rows {
                 return false;
+            }
+            // A single logical write can exceed the batch budget. Keep it
+            // isolated rather than combining it with any other P2 write;
+            // the caller emits an explicit oversized-batch diagnostic.
+            if selected_rows == 0 && bytes > max_bytes {
+                selected_rows = 1;
+                selected_bytes = bytes;
+                return true;
             }
             if selected_rows > 0 && selected_bytes.saturating_add(bytes) > max_bytes {
                 return false;
@@ -1948,7 +1958,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 }
             }
             _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if p2_deadline_ready(&pending, &p2_schedule, &queued_p1_count) =>
+                if p2_deadline_ready(&pending, &p2_schedule, &queued_p1_count, &p1_retry) =>
             {
                 let priority_guard = p1_priority_gate
                     .lock()
@@ -2833,12 +2843,23 @@ pub(crate) async fn flush_pending_batch(
                 ));
             }
             if let Some(system_task_batch) = system_task_batch {
-                let mut retry_batch = system_task_batch;
-                retry_batch.merge_p2(batch);
+                if system_task_failure.is_some() {
+                    let mut retry_batch = system_task_batch;
+                    retry_batch.merge_p2(batch);
+                    return Some(RetainedBatch::p2_failed(
+                        retry_batch,
+                        true,
+                        system_task_lock_failure || is_sqlite_lock_error(&err),
+                    ));
+                }
+                if !crate::db_pressure::is_db_pressure_error(&err) {
+                    cleanup_discarded_p2_runtime_overlays(&batch, terminal_runtime_store);
+                    return None;
+                }
                 return Some(RetainedBatch::p2_failed(
-                    retry_batch,
+                    batch,
                     true,
-                    system_task_lock_failure || is_sqlite_lock_error(&err),
+                    is_sqlite_lock_error(&err),
                 ));
             }
             let retryable_failure = crate::db_pressure::is_db_pressure_error(&err)
@@ -3371,7 +3392,12 @@ mod tests {
             "queued P1 must be classified before checking the P2 deadline"
         );
         assert_eq!(pending.terminal_invocations.len(), 1);
-        assert!(p2_deadline_ready(&pending, &schedule, &queued_p1_count));
+        assert!(p2_deadline_ready(
+            &pending,
+            &schedule,
+            &queued_p1_count,
+            &P1RetryState::default()
+        ));
     }
 
     #[test]
@@ -3407,7 +3433,35 @@ mod tests {
         );
 
         assert!(receiver.is_empty());
-        assert!(p2_deadline_ready(&pending, &schedule, &queued_p1_count));
+        assert!(p2_deadline_ready(
+            &pending,
+            &schedule,
+            &queued_p1_count,
+            &P1RetryState::default()
+        ));
+    }
+
+    #[test]
+    fn p1_retry_backoff_blocks_p2_deadline() {
+        let mut pending = PendingBatch::default();
+        pending.push(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_995,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        ));
+        let mut schedule = P2ScheduleState::default();
+        schedule.wake_background_eligible();
+        let queued_p1_count = AtomicUsize::new(0);
+        let mut p1_retry = P1RetryState::default();
+        p1_retry.failed(0);
+
+        assert!(!p2_deadline_ready(
+            &pending,
+            &schedule,
+            &queued_p1_count,
+            &p1_retry
+        ));
     }
 
     #[tokio::test]
