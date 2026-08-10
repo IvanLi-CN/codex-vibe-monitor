@@ -1438,6 +1438,10 @@ impl SqliteBatchWriter {
             };
         }
 
+        let _p1_priority_guard = self
+            .p1_priority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let journal = self
             .terminal_journal
             .lock()
@@ -1477,11 +1481,6 @@ impl SqliteBatchWriter {
     ) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
-        let _p1_priority_guard = is_p1.then(|| {
-            self.p1_priority_gate
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-        });
         self.accounting.enqueue(estimated_bytes);
         if is_p1 {
             self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
@@ -1974,7 +1973,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
                 let flush_batch = if submitted_p1 {
-                    pending.take()
+                    pending.take_p1_terminals()
                 } else {
                     pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                 };
@@ -2731,9 +2730,11 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
+            let retryable_failure = crate::db_pressure::is_db_pressure_error(&err)
+                || !batch.system_task_finishes.is_empty();
             return Some(RetainedBatch::p2_failed(
                 batch,
-                crate::db_pressure::is_db_pressure_error(&err),
+                retryable_failure,
                 is_sqlite_lock_error(&err),
             ));
         }
