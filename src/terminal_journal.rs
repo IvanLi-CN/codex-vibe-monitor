@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -20,6 +20,8 @@ pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_millis(20);
 const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
+const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
+const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
@@ -121,6 +123,7 @@ pub(crate) struct TerminalJournal {
     replay_segments: VecDeque<JournalReplayCursor>,
     replay_count: usize,
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
+    system_task_quarantine_ids: HashSet<i64>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
     overflowed: bool,
@@ -131,6 +134,14 @@ impl TerminalJournal {
     pub(crate) fn quarantine(
         &mut self,
         terminal: &BatchedTerminalInvocationWrite,
+        error: &str,
+    ) -> Result<()> {
+        self.quarantine_terminals(std::slice::from_ref(&terminal), error)
+    }
+
+    pub(crate) fn quarantine_terminals(
+        &mut self,
+        terminals: &[&BatchedTerminalInvocationWrite],
         error: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
@@ -148,24 +159,37 @@ impl TerminalJournal {
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open terminal quarantine {}", path.display()))?;
-        let entry = QuarantineEntry {
-            invoke_id: &terminal.record.invoke_id,
-            occurred_at: &terminal.record.occurred_at,
-            raw_capture: terminal.raw_capture,
-            error,
-            record: &terminal.record,
-        };
-        serde_json::to_writer(&mut file, &entry).context("failed to encode terminal quarantine")?;
-        file.write_all(b"\n")
-            .context("failed to append terminal quarantine delimiter")?;
-        file.sync_data()
-            .context("failed to sync terminal quarantine")?;
+        for terminal in terminals {
+            let entry = QuarantineEntry {
+                invoke_id: &terminal.record.invoke_id,
+                occurred_at: &terminal.record.occurred_at,
+                raw_capture: terminal.raw_capture,
+                error,
+                record: &terminal.record,
+            };
+            serde_json::to_writer(&mut file, &entry)
+                .context("failed to encode terminal quarantine")?;
+            file.write_all(b"\n")
+                .context("failed to append terminal quarantine delimiter")?;
+        }
+        if !terminals.is_empty() {
+            file.sync_data()
+                .context("failed to sync terminal quarantine")?;
+        }
         Ok(())
     }
 
     pub(crate) fn quarantine_system_task_finish(
         &mut self,
         finish: &BatchedSystemTaskFinish,
+        error: &str,
+    ) -> Result<()> {
+        self.quarantine_system_task_finishes(std::slice::from_ref(&finish), error)
+    }
+
+    pub(crate) fn quarantine_system_task_finishes(
+        &mut self,
+        finishes: &[&BatchedSystemTaskFinish],
         error: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
@@ -182,41 +206,41 @@ impl TerminalJournal {
         }
 
         let path = self.directory.join("system-task-quarantine.jsonl");
-        #[derive(Deserialize)]
-        struct ExistingQuarantineEntry {
-            run_id: i64,
-        }
-        if let Ok(existing) = fs::read_to_string(&path)
-            && existing.lines().any(|line| {
-                serde_json::from_str::<ExistingQuarantineEntry>(line)
-                    .ok()
-                    .is_some_and(|entry| entry.run_id == finish.run_id)
-            })
-        {
-            return Ok(());
-        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open system-task quarantine {}", path.display()))?;
-        let entry = QuarantineEntry {
-            run_id: finish.run_id,
-            task_kind: finish.task_kind.as_str(),
-            trigger_kind: &finish.trigger_kind,
-            status: finish.status.as_str(),
-            summary: &finish.summary,
-            detail: &finish.detail,
-            finished_at: &finish.finished_at,
-            duration_ms: finish.duration_ms,
-            error,
-        };
-        serde_json::to_writer(&mut file, &entry)
-            .context("failed to encode system-task quarantine")?;
-        file.write_all(b"\n")
-            .context("failed to append system-task quarantine delimiter")?;
-        file.sync_data()
-            .context("failed to sync system-task quarantine")?;
+        let mut appended = false;
+        for finish in finishes {
+            if !self.system_task_quarantine_ids.insert(finish.run_id) {
+                continue;
+            }
+            let entry = QuarantineEntry {
+                run_id: finish.run_id,
+                task_kind: finish.task_kind.as_str(),
+                trigger_kind: &finish.trigger_kind,
+                status: finish.status.as_str(),
+                summary: &finish.summary,
+                detail: &finish.detail,
+                finished_at: &finish.finished_at,
+                duration_ms: finish.duration_ms,
+                error,
+            };
+            if let Err(err) = serde_json::to_writer(&mut file, &entry) {
+                self.system_task_quarantine_ids.remove(&finish.run_id);
+                return Err(err).context("failed to append system-task quarantine");
+            }
+            if let Err(err) = file.write_all(b"\n") {
+                self.system_task_quarantine_ids.remove(&finish.run_id);
+                return Err(err).context("failed to append system-task quarantine delimiter");
+            }
+            appended = true;
+        }
+        if appended {
+            file.sync_data()
+                .context("failed to sync system-task quarantine")?;
+        }
         Ok(())
     }
 
@@ -318,6 +342,14 @@ impl TerminalJournal {
             .expect("current terminal journal segment exists")
             .path
             .clone();
+        let system_task_quarantine_ids =
+            fs::read_to_string(directory.join("system-task-quarantine.jsonl"))
+                .ok()
+                .into_iter()
+                .flat_map(|contents| contents.lines().map(str::to_owned).collect::<Vec<_>>())
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+                .filter_map(|value| value.get("run_id").and_then(serde_json::Value::as_i64))
+                .collect();
         Ok(Self {
             directory,
             current_file: open_append_file(&current_path)?,
@@ -328,6 +360,7 @@ impl TerminalJournal {
             replay_segments,
             replay_count,
             deferred_writes: VecDeque::new(),
+            system_task_quarantine_ids,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
             overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
@@ -521,6 +554,8 @@ impl TerminalJournal {
     ) -> Vec<BatchedTerminalInvocationWrite> {
         let mut writes = Vec::new();
         let mut estimated_bytes = 0_usize;
+        let mut scanned_bytes = 0_usize;
+        let mut scanned_lines = 0_usize;
         while writes.len() < max_writes {
             let Some(cursor) = self.replay_segments.front_mut() else {
                 break;
@@ -536,32 +571,50 @@ impl TerminalJournal {
             if reader.seek(SeekFrom::Start(cursor.byte_offset)).is_err() {
                 break;
             }
-            let mut line_bytes = Vec::new();
             let mut reached_end = false;
             let mut produced = None;
             loop {
-                let line_start = cursor.byte_offset;
-                line_bytes.clear();
-                let Ok(read) = reader.read_until(b'\n', &mut line_bytes) else {
+                let stream_start = cursor.byte_offset;
+                let mut stream =
+                    serde_json::Deserializer::from_reader(&mut reader).into_iter::<JournalLine>();
+                let parsed = stream.next();
+                drop(stream);
+                let Ok(stream_end) = reader.stream_position() else {
                     break;
                 };
-                if read == 0 {
+                if stream_end == stream_start {
                     reached_end = true;
                     break;
                 }
-                cursor.byte_offset = cursor.byte_offset.saturating_add(read as u64);
-                let Ok(line) =
-                    std::str::from_utf8(line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes))
-                else {
-                    continue;
-                };
-                let Ok(parsed) = serde_json::from_str::<JournalLine>(line) else {
+                scanned_bytes = scanned_bytes.saturating_add(
+                    stream_end
+                        .saturating_sub(stream_start)
+                        .min(usize::MAX as u64) as usize,
+                );
+                scanned_lines = scanned_lines.saturating_add(1);
+                cursor.byte_offset = stream_end;
+                let Some(Ok(parsed)) = parsed else {
+                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+                    {
+                        break;
+                    }
                     continue;
                 };
                 let Some(entry) = parsed.entry else {
+                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+                    {
+                        break;
+                    }
                     continue;
                 };
                 if segment.acknowledged.contains(&entry.sequence) {
+                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+                    {
+                        break;
+                    }
                     continue;
                 }
                 let record = entry.record;
@@ -580,7 +633,7 @@ impl TerminalJournal {
                 };
                 let write_bytes = write.estimated_memory_bytes();
                 if !writes.is_empty() && estimated_bytes.saturating_add(write_bytes) > max_bytes {
-                    cursor.byte_offset = line_start;
+                    cursor.byte_offset = stream_start;
                     reached_end = false;
                     break;
                 }
@@ -595,6 +648,11 @@ impl TerminalJournal {
             if reached_end {
                 self.replay_segments.pop_front();
                 continue;
+            }
+            if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+            {
+                break;
             }
             break;
         }
