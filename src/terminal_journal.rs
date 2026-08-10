@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -19,6 +19,7 @@ use crate::{
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_millis(20);
+const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
@@ -91,8 +92,22 @@ impl JournalSegment {
 #[derive(Debug)]
 struct LoadedJournalSegment {
     segment: JournalSegment,
-    entries: Vec<JournalTerminalRecord>,
+    entries: Vec<JournalEntryMetadata>,
     acknowledgement_sequences: HashSet<u64>,
+}
+
+#[derive(Debug)]
+struct JournalEntryMetadata {
+    sequence: u64,
+    invoke_id: String,
+    occurred_at: String,
+    raw_capture: bool,
+}
+
+#[derive(Debug)]
+struct JournalReplayCursor {
+    first_sequence: u64,
+    byte_offset: u64,
 }
 
 #[derive(Debug)]
@@ -103,7 +118,8 @@ pub(crate) struct TerminalJournal {
     pending_by_key: HashMap<(String, String, bool), Vec<u64>>,
     next_sequence: u64,
     pending_bytes: u64,
-    replay: Vec<JournalTerminalRecord>,
+    replay_segments: VecDeque<JournalReplayCursor>,
+    replay_count: usize,
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
@@ -233,7 +249,7 @@ impl TerminalJournal {
         paths.sort();
 
         let mut segments = BTreeMap::new();
-        let mut entries = Vec::new();
+        let mut loaded_segments = Vec::new();
         let mut acknowledged_sequences = HashSet::new();
         let mut next_sequence = 1_u64;
         let mut pending_bytes = 0_u64;
@@ -242,7 +258,7 @@ impl TerminalJournal {
             next_sequence = next_sequence.max(loaded.segment.last_sequence.saturating_add(1));
             pending_bytes = pending_bytes.saturating_add(loaded.segment.bytes);
             acknowledged_sequences.extend(loaded.acknowledgement_sequences);
-            entries.extend(loaded.entries);
+            loaded_segments.push((loaded.segment.first_sequence, loaded.entries));
             segments.insert(loaded.segment.first_sequence, loaded.segment);
         }
 
@@ -270,16 +286,27 @@ impl TerminalJournal {
             );
         }
         let mut pending_by_key = HashMap::new();
-        let mut replay = Vec::new();
-        for entry in entries {
-            if acknowledged_sequences.contains(&entry.sequence) {
-                continue;
+        let mut replay_segments = VecDeque::new();
+        let mut replay_count = 0_usize;
+        for (first_sequence, entries) in loaded_segments {
+            let mut segment_has_replay = false;
+            for entry in entries {
+                if acknowledged_sequences.contains(&entry.sequence) {
+                    continue;
+                }
+                pending_by_key
+                    .entry((entry.invoke_id, entry.occurred_at, entry.raw_capture))
+                    .or_insert_with(Vec::new)
+                    .push(entry.sequence);
+                replay_count = replay_count.saturating_add(1);
+                segment_has_replay = true;
             }
-            pending_by_key
-                .entry(entry_key(&entry))
-                .or_insert_with(Vec::new)
-                .push(entry.sequence);
-            replay.push(entry);
+            if segment_has_replay {
+                replay_segments.push_back(JournalReplayCursor {
+                    first_sequence,
+                    byte_offset: 0,
+                });
+            }
         }
         segments
             .get_mut(&current_start)
@@ -298,7 +325,8 @@ impl TerminalJournal {
             pending_by_key,
             next_sequence,
             pending_bytes,
-            replay,
+            replay_segments,
+            replay_count,
             deferred_writes: VecDeque::new(),
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
@@ -417,6 +445,7 @@ impl TerminalJournal {
             return;
         };
         let mut pending_sequences = Vec::new();
+        let mut acknowledged_replay_count = 0_usize;
         for sequence in sequences {
             let Ok(encoded) = encode_acknowledgement_line(sequence) else {
                 warn!(
@@ -457,6 +486,7 @@ impl TerminalJournal {
                 .expect("current terminal journal segment exists")
                 .bytes = updated_current_bytes;
             self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
+            acknowledged_replay_count = acknowledged_replay_count.saturating_add(1);
         }
         if pending_sequences.is_empty() {
             self.pending_by_key.remove(&key);
@@ -464,6 +494,7 @@ impl TerminalJournal {
             self.pending_by_key.insert(key, pending_sequences);
         }
         self.last_checkpoint_at = Instant::now();
+        self.replay_count = self.replay_count.saturating_sub(acknowledged_replay_count);
         self.remove_fully_acknowledged_segments();
         if !self.sync_failed && self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
             self.overflowed = false;
@@ -471,16 +502,73 @@ impl TerminalJournal {
     }
 
     pub(crate) fn take_replay(&mut self) -> Vec<BatchedTerminalInvocationWrite> {
-        let replay = std::mem::take(&mut self.replay);
-        replay
-            .into_iter()
-            .map(|entry| {
+        self.take_replay_chunk(usize::MAX, usize::MAX)
+    }
+
+    pub(crate) fn queue_replay_for_dispatch(&mut self, max_writes: usize) {
+        if max_writes == 0 || self.deferred_writes.len() >= max_writes {
+            return;
+        }
+        let available = max_writes.saturating_sub(self.deferred_writes.len());
+        let replay = self.take_replay_chunk(available, TERMINAL_JOURNAL_REPLAY_MAX_BYTES);
+        self.deferred_writes.extend(replay);
+    }
+
+    fn take_replay_chunk(
+        &mut self,
+        max_writes: usize,
+        max_bytes: usize,
+    ) -> Vec<BatchedTerminalInvocationWrite> {
+        let mut writes = Vec::new();
+        let mut estimated_bytes = 0_usize;
+        while writes.len() < max_writes {
+            let Some(cursor) = self.replay_segments.front_mut() else {
+                break;
+            };
+            let Some(segment) = self.segments.get(&cursor.first_sequence) else {
+                self.replay_segments.pop_front();
+                continue;
+            };
+            let Ok(file) = File::open(&segment.path) else {
+                break;
+            };
+            let mut reader = BufReader::new(file);
+            if reader.seek(SeekFrom::Start(cursor.byte_offset)).is_err() {
+                break;
+            }
+            let mut line_bytes = Vec::new();
+            let mut reached_end = false;
+            let mut produced = None;
+            loop {
+                let line_start = cursor.byte_offset;
+                line_bytes.clear();
+                let Ok(read) = reader.read_until(b'\n', &mut line_bytes) else {
+                    break;
+                };
+                if read == 0 {
+                    reached_end = true;
+                    break;
+                }
+                cursor.byte_offset = cursor.byte_offset.saturating_add(read as u64);
+                let Ok(line) =
+                    std::str::from_utf8(line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes))
+                else {
+                    continue;
+                };
+                let Ok(parsed) = serde_json::from_str::<JournalLine>(line) else {
+                    continue;
+                };
+                let Some(entry) = parsed.entry else {
+                    continue;
+                };
+                if segment.acknowledged.contains(&entry.sequence) {
+                    continue;
+                }
                 let record = entry.record;
                 let startup_backfill_tasks = startup_backfill_tasks_for_terminal(
                     &api_invocation_from_runtime_record(&record),
                 );
-                BatchedTerminalInvocationWrite {
-                    record,
+                let write = BatchedTerminalInvocationWrite {
                     capture_started: entry.capture_elapsed_ms.and_then(|elapsed_ms| {
                         Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
                     }),
@@ -488,9 +576,29 @@ impl TerminalJournal {
                     dashboard_terminal_sequence: None,
                     terminal_projection_event_ids: Vec::new(),
                     startup_backfill_tasks,
+                    record,
+                };
+                let write_bytes = write.estimated_memory_bytes();
+                if !writes.is_empty() && estimated_bytes.saturating_add(write_bytes) > max_bytes {
+                    cursor.byte_offset = line_start;
+                    reached_end = false;
+                    break;
                 }
-            })
-            .collect()
+                estimated_bytes = estimated_bytes.saturating_add(write_bytes);
+                produced = Some(write);
+                break;
+            }
+            if let Some(write) = produced {
+                writes.push(write);
+                continue;
+            }
+            if reached_end {
+                self.replay_segments.pop_front();
+                continue;
+            }
+            break;
+        }
+        writes
     }
 
     pub(crate) fn defer_write(&mut self, write: BatchedTerminalInvocationWrite) -> bool {
@@ -498,9 +606,8 @@ impl TerminalJournal {
         true
     }
 
-    pub(crate) fn queue_replay_for_dispatch(&mut self) {
-        let replay = self.take_replay();
-        self.deferred_writes.extend(replay);
+    pub(crate) fn deferred_write_count(&self) -> usize {
+        self.deferred_writes.len()
     }
 
     pub(crate) fn take_deferred_writes(
@@ -516,7 +623,7 @@ impl TerminalJournal {
             pending_records: self.pending_by_key.len(),
             pending_bytes: self.pending_bytes,
             segment_count: self.segments.len(),
-            replay_count: self.replay.len(),
+            replay_count: self.replay_count,
             checkpoint_lag_ms: self.last_checkpoint_at.elapsed().as_millis() as u64,
             overflowed: self.overflowed,
         }
@@ -655,7 +762,12 @@ fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
             break;
         }
         match (line.entry, line.acknowledged_sequence) {
-            (Some(entry), None) => entries.push(entry),
+            (Some(entry), None) => entries.push(JournalEntryMetadata {
+                sequence: entry.sequence,
+                invoke_id: entry.record.invoke_id,
+                occurred_at: entry.record.occurred_at,
+                raw_capture: entry.raw_capture,
+            }),
             (None, Some(sequence)) => {
                 acknowledged.insert(sequence);
             }
@@ -766,14 +878,6 @@ fn repair_corrupt_segment_tail(path: &Path, valid_prefix: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn entry_key(entry: &JournalTerminalRecord) -> (String, String, bool) {
-    (
-        entry.record.invoke_id.clone(),
-        entry.record.occurred_at.clone(),
-        entry.raw_capture,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +918,38 @@ mod tests {
         let replayed_after_ack =
             TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
         assert_eq!(replayed_after_ack.stats().replay_count, 0);
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_dispatch_is_bounded_by_the_requested_batch_size() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-replay-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        for index in 0..5 {
+            let record = crate::tests::test_proxy_capture_record(
+                &format!("journal-replay-{index}"),
+                &format!("2026-07-29T00:0{index}:00Z"),
+            );
+            journal.append(&record, false, None);
+        }
+        journal.force_sync().expect("sync replay records");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        reopened.queue_replay_for_dispatch(2);
+        assert_eq!(reopened.deferred_write_count(), 2);
+        let first_batch = reopened.take_deferred_writes(2);
+        assert_eq!(first_batch.len(), 2);
+        reopened.queue_replay_for_dispatch(2);
+        assert_eq!(reopened.deferred_write_count(), 2);
+        let second_batch = reopened.take_deferred_writes(2);
+        assert_eq!(second_batch.len(), 2);
+        reopened.queue_replay_for_dispatch(2);
+        assert_eq!(reopened.deferred_write_count(), 1);
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }

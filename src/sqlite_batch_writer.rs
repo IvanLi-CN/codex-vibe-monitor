@@ -13,7 +13,7 @@ use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
     sync::{Mutex, RwLock, mpsc, oneshot},
     task::JoinHandle,
-    time::{MissedTickBehavior, interval, sleep},
+    time::{MissedTickBehavior, interval, sleep, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -592,7 +592,7 @@ impl BatchedTerminalInvocationWrite {
         )
     }
 
-    fn estimated_memory_bytes(&self) -> usize {
+    pub(crate) fn estimated_memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.record.estimated_memory_bytes())
             .saturating_add(
@@ -1310,7 +1310,7 @@ impl SqliteBatchWriter {
             .unwrap_or_default();
         let mut terminal_journal = terminal_journal;
         if let Some(journal) = terminal_journal.as_mut() {
-            journal.queue_replay_for_dispatch();
+            journal.queue_replay_for_dispatch(SQLITE_BATCH_MAX_ROWS);
         }
         let terminal_journal = Arc::new(std::sync::Mutex::new(terminal_journal));
         queued_p1_count.store(replay_writes, Ordering::SeqCst);
@@ -1677,31 +1677,74 @@ impl SqliteBatchWriter {
         let Some(handle) = self.handle.lock().await.take() else {
             return;
         };
+        let shutdown_deadline = tokio::time::Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
         let (sender, receiver) = oneshot::channel();
         let queued_depth_snapshot = self
             .write_sender
             .max_capacity()
             .saturating_sub(self.write_sender.capacity());
-        if let Err(err) = self
-            .control_sender
-            .send(SqliteBatchWriterControl::Shutdown {
-                queued_depth_snapshot,
-                responder: sender,
-            })
-            .await
+        let barrier_sent = match timeout_at(
+            shutdown_deadline,
+            self.control_sender
+                .send(SqliteBatchWriterControl::Shutdown {
+                    queued_depth_snapshot,
+                    responder: sender,
+                }),
+        )
+        .await
         {
-            warn!(error = %err, "sqlite batch writer shutdown barrier could not be queued");
-        } else if let Ok(Err(err)) = receiver.await {
-            warn!(error = %err, "sqlite batch writer shutdown drain failed");
+            Ok(Ok(())) => true,
+            Ok(Err(err)) => {
+                warn!(error = %err, "sqlite batch writer shutdown barrier could not be queued");
+                false
+            }
+            Err(_) => {
+                warn!("sqlite batch writer shutdown barrier queue timed out");
+                false
+            }
+        };
+        if barrier_sent {
+            match timeout_at(shutdown_deadline, receiver).await {
+                Ok(Ok(Err(err))) => {
+                    warn!(error = %err, "sqlite batch writer shutdown drain failed");
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, "sqlite batch writer shutdown responder dropped");
+                }
+                Err(_) => {
+                    warn!("sqlite batch writer shutdown drain timed out");
+                }
+                Ok(Ok(Ok(()))) => {}
+            }
         }
-        if let Err(err) = handle.await {
-            warn!(error = %err, "sqlite batch writer task failed during shutdown");
+        let mut handle = handle;
+        match timeout_at(shutdown_deadline, &mut handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(error = %err, "sqlite batch writer task failed during shutdown"),
+            Err(_) => {
+                warn!("sqlite batch writer task exceeded shutdown deadline; aborting");
+                handle.abort();
+                let _ = handle.await;
+            }
         }
         self.journal_sync_shutdown.cancel();
-        if let Some(handle) = self.journal_sync_handle.lock().await.take()
-            && let Err(err) = handle.await
-        {
-            warn!(error = %err, "terminal journal sync task failed during shutdown");
+        if let Some(mut handle) = self.journal_sync_handle.lock().await.take() {
+            match timeout_at(
+                tokio::time::Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE,
+                &mut handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    warn!(error = %err, "terminal journal sync task failed during shutdown")
+                }
+                Err(_) => {
+                    warn!("terminal journal sync task exceeded shutdown deadline; aborting");
+                    handle.abort();
+                    let _ = handle.await;
+                }
+            }
         }
     }
 
@@ -2046,22 +2089,35 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 continue;
                             }
                             let flush_batch = take_next_bounded_batch(&mut pending);
-                            let Some(retained) = flush_pending_batch_accounted(
-                                &accounting,
-                                &pool,
-                                pricing_catalog.as_ref(),
-                                flush_batch,
-                                FlushReason::Shutdown,
-                                prompt_cache_conversation_cache.as_ref(),
-                                &terminal_runtime_store,
-                                &dashboard_activity_snapshot_cache,
-                                &terminal_projection_hub,
-                                &dashboard_reconcile_gate,
-                                &terminal_journal,
+                            let flush_rows = flush_batch.logical_rows();
+                            let flush_bytes = flush_batch.estimated_memory_bytes();
+                            let retained = match timeout_at(
+                                shutdown_deadline.into(),
+                                flush_pending_batch_accounted(
+                                    &accounting,
+                                    &pool,
+                                    pricing_catalog.as_ref(),
+                                    flush_batch,
+                                    FlushReason::Shutdown,
+                                    prompt_cache_conversation_cache.as_ref(),
+                                    &terminal_runtime_store,
+                                    &dashboard_activity_snapshot_cache,
+                                    &terminal_projection_hub,
+                                    &dashboard_reconcile_gate,
+                                    &terminal_journal,
+                                ),
                             )
                             .await
-                            else {
-                                continue;
+                            {
+                                Ok(Some(retained)) => retained,
+                                Ok(None) => continue,
+                                Err(_) => {
+                                    accounting.release(flush_rows, flush_bytes);
+                                    result = Err(format!(
+                                        "sqlite batch writer shutdown flush exceeded deadline with {flush_rows} rows"
+                                    ));
+                                    break;
+                                }
                             };
                             let logical_rows = retained.batch.logical_rows();
                             let failed = retained.failed;
@@ -2303,22 +2359,36 @@ pub(crate) async fn run_sqlite_batch_writer(
                             break;
                         }
                         let flush_batch = take_next_bounded_batch(&mut pending);
-                        let Some(retained) = flush_pending_batch_accounted(
-                            &accounting,
-                            &pool,
-                            pricing_catalog.as_ref(),
-                            flush_batch,
-                            FlushReason::Shutdown,
-                            prompt_cache_conversation_cache.as_ref(),
-                            &terminal_runtime_store,
-                            &dashboard_activity_snapshot_cache,
-                            &terminal_projection_hub,
-                            &dashboard_reconcile_gate,
-                            &terminal_journal,
+                        let flush_rows = flush_batch.logical_rows();
+                        let flush_bytes = flush_batch.estimated_memory_bytes();
+                        let retained = match timeout_at(
+                            shutdown_deadline.into(),
+                            flush_pending_batch_accounted(
+                                &accounting,
+                                &pool,
+                                pricing_catalog.as_ref(),
+                                flush_batch,
+                                FlushReason::Shutdown,
+                                prompt_cache_conversation_cache.as_ref(),
+                                &terminal_runtime_store,
+                                &dashboard_activity_snapshot_cache,
+                                &terminal_projection_hub,
+                                &dashboard_reconcile_gate,
+                                &terminal_journal,
+                            ),
                         )
                         .await
-                        else {
-                            continue;
+                        {
+                            Ok(Some(retained)) => retained,
+                            Ok(None) => continue,
+                            Err(_) => {
+                                accounting.release(flush_rows, flush_bytes);
+                                warn!(
+                                    flush_rows,
+                                    "sqlite batch writer receiver shutdown flush exceeded deadline"
+                                );
+                                break;
+                            }
                         };
                         let retained_rows_before_merge = retained.batch.logical_rows();
                         let retained_bytes_before_merge = retained.batch.estimated_memory_bytes();
@@ -2640,6 +2710,8 @@ fn drain_terminal_journal_deferred_writes(
     if let Ok(mut guard) = terminal_journal.lock()
         && let Some(journal) = guard.as_mut()
     {
+        let deferred_capacity = max_writes.saturating_sub(journal.deferred_write_count());
+        journal.queue_replay_for_dispatch(deferred_capacity);
         for terminal in journal.take_deferred_writes(max_writes) {
             decrement_queued_p1_count(queued_p1_count);
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
@@ -2810,12 +2882,15 @@ fn release_shutdown_pending_batch(
     batch: &PendingBatch,
     reason: &str,
 ) -> Result<()> {
+    let mut quarantine_error = None;
     if !batch.system_task_finishes.is_empty() {
         let error = anyhow::anyhow!(reason.to_string());
-        quarantine_system_task_batch(terminal_journal, batch, &error)?;
+        if let Err(err) = quarantine_system_task_batch(terminal_journal, batch, &error) {
+            quarantine_error = Some(err);
+        }
     }
     accounting.release(batch.logical_rows(), batch.estimated_memory_bytes());
-    Ok(())
+    quarantine_error.map_or(Ok(()), Err)
 }
 
 #[expect(
@@ -3344,7 +3419,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 .await
                 .with_context(|| "flush terminal runtime proxy invocation")?
             };
-            let derived_identity = if let Some(persisted) = persisted {
+            let derived_identity = if let Some(persisted) = persisted.as_ref() {
                 if persisted
                     .prompt_cache_key
                     .as_deref()
@@ -3352,7 +3427,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 {
                     should_invalidate_prompt_cache_conversations = true;
                 }
-                Some((persisted.id, persisted.occurred_at))
+                Some((persisted.id, persisted.occurred_at.clone()))
             } else {
                 let identity = load_persisted_invocation_identity_tx(
                     terminal_tx.as_mut(),
@@ -3369,12 +3444,19 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.record.occurred_at
             )
         })?;
-            persisted_terminals.push((terminal, invocation_id, occurred_at));
+            let payload_metadata =
+                persisted
+                    .as_ref()
+                    .map(|record| crate::TerminalPayloadMetadata {
+                        prompt_cache_key: record.prompt_cache_key.clone(),
+                        upstream_account_id: record.upstream_account_id,
+                    });
+            persisted_terminals.push((terminal, invocation_id, occurred_at, payload_metadata));
         }
         terminal_tx.commit().await?;
     }
 
-    for (terminal, invocation_id, occurred_at) in persisted_terminals {
+    for (terminal, invocation_id, occurred_at, payload_metadata) in persisted_terminals {
         deferred_batch.add_startup_backfill_wake_tasks(&terminal.startup_backfill_tasks);
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
@@ -3413,7 +3495,11 @@ pub(crate) async fn flush_pending_batch_inner(
                 }
             }
         }
-        let payload_metadata = crate::terminal_payload_metadata(terminal.record.payload.as_deref());
+        // The persistence helper already materialized this payload into the returned invocation.
+        // Reuse those fields instead of parsing the same terminal payload again on the P2 path.
+        let payload_metadata = payload_metadata.unwrap_or_else(|| {
+            crate::terminal_payload_metadata(terminal.record.payload.as_deref())
+        });
         if payload_metadata
             .prompt_cache_key
             .as_deref()
