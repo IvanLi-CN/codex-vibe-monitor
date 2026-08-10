@@ -110,6 +110,7 @@ impl ProxySqliteWriteCoordinator {
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
+                notify_background_eligibility: false,
             };
         }
 
@@ -135,6 +136,7 @@ impl ProxySqliteWriteCoordinator {
                         class,
                         coordinated: true,
                         lock_wait: requested_at.elapsed(),
+                        notify_background_eligibility: true,
                     };
                 }
             }
@@ -155,6 +157,7 @@ impl ProxySqliteWriteCoordinator {
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
+                notify_background_eligibility: false,
             });
         }
         let mut state = self.state.lock().expect("proxy sqlite coordinator state");
@@ -167,6 +170,7 @@ impl ProxySqliteWriteCoordinator {
             class,
             coordinated: true,
             lock_wait: requested_at.elapsed(),
+            notify_background_eligibility: true,
         })
     }
 
@@ -193,6 +197,7 @@ pub(crate) struct ProxySqliteWritePermit {
     class: ProxySqliteWriteClass,
     coordinated: bool,
     lock_wait: Duration,
+    notify_background_eligibility: bool,
 }
 
 impl ProxySqliteWritePermit {
@@ -202,6 +207,10 @@ impl ProxySqliteWritePermit {
 
     pub(crate) fn write_class(&self) -> &'static str {
         self.class.as_str()
+    }
+
+    pub(crate) fn suppress_background_eligibility_wakeup(&mut self) {
+        self.notify_background_eligibility = false;
     }
 }
 
@@ -242,7 +251,9 @@ impl Drop for ProxySqliteWritePermit {
             state.active = None;
         }
         self.coordinator.notify.notify_waiters();
-        crate::db_pressure::global_db_pressure_gate().notify_background_eligibility();
+        if self.notify_background_eligibility {
+            crate::db_pressure::global_db_pressure_gate().notify_background_eligibility();
+        }
     }
 }
 
