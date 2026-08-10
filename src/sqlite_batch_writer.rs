@@ -1553,22 +1553,54 @@ impl SqliteBatchWriter {
             TerminalJournalDurabilityMode::MemoryOverflow
         ) {
             let terminals = [&recovery_terminal];
-            if let Err(err) = TerminalJournal::quarantine_shutdown_batch_at_database_path(
-                &self.database_path,
-                &terminals,
-                &[],
-                "terminal journal memory-overflow recovery",
-            ) {
+            let mut recovery_persisted = false;
+            if let Ok(mut guard) = self.terminal_journal.lock()
+                && let Some(journal) = guard.as_mut()
+            {
+                match journal.quarantine_shutdown_batch(
+                    &terminals,
+                    &[],
+                    "terminal journal memory-overflow recovery",
+                ) {
+                    Ok(()) => {
+                        journal.remember_shutdown_recovery(&terminals);
+                        recovery_persisted = true;
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            invoke_id = %recovery_terminal.record.invoke_id,
+                            occurred_at = %recovery_terminal.record.occurred_at,
+                            "terminal memory-overflow recovery sink failed"
+                        );
+                        if TerminalJournal::quarantine_shutdown_batch_at_database_path(
+                            &self.database_path,
+                            &terminals,
+                            &[],
+                            "terminal journal memory-overflow recovery",
+                        )
+                        .is_ok()
+                        {
+                            journal.remember_shutdown_recovery(&terminals);
+                            recovery_persisted = true;
+                        }
+                    }
+                }
+            }
+            if !recovery_persisted
+                && let Err(err) = TerminalJournal::quarantine_shutdown_batch_at_database_path(
+                    &self.database_path,
+                    &terminals,
+                    &[],
+                    "terminal journal memory-overflow recovery",
+                )
+            {
                 warn!(
                     error = %err,
                     invoke_id = %recovery_terminal.record.invoke_id,
                     occurred_at = %recovery_terminal.record.occurred_at,
                     "terminal memory-overflow recovery sink failed"
                 );
-            } else if let Ok(mut journal) = self.terminal_journal.lock()
-                && let Some(journal) = journal.as_mut()
-            {
-                journal.remember_shutdown_recovery(&terminals);
             }
         }
         TerminalEnqueueOutcome {
@@ -3021,6 +3053,7 @@ fn quarantine_shutdown_batch(
     let terminals = batch.terminal_invocations.values().collect::<Vec<_>>();
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
     let mut errors = Vec::new();
+    let mut recovery_persisted = false;
     match terminal_journal.lock() {
         Ok(mut guard) => match guard.as_mut() {
             Some(journal) => {
@@ -3030,10 +3063,23 @@ fn quarantine_shutdown_batch(
                 if let Err(err) = journal.quarantine_system_task_finishes(&finishes, &error) {
                     errors.push(format!("system-task quarantine failed: {err:#}"));
                 }
+                if !errors.is_empty() {
+                    match journal.quarantine_shutdown_batch(&terminals, &finishes, &error) {
+                        Ok(()) => {
+                            journal.remember_shutdown_recovery(&terminals);
+                            recovery_persisted = true;
+                        }
+                        Err(err) => errors.push(format!("shutdown recovery failed: {err:#}")),
+                    }
+                }
             }
             None => errors.push("terminal journal unavailable for shutdown quarantine".to_string()),
         },
         Err(_) => errors.push("terminal journal lock poisoned".to_string()),
+    }
+    if recovery_persisted {
+        warn!(errors = ?errors, "shutdown quarantine used the journal recovery sink");
+        return Ok(());
     }
     if errors.is_empty() {
         Ok(())

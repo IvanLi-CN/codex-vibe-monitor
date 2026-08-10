@@ -273,8 +273,33 @@ impl TerminalJournal {
         Ok(())
     }
 
+    pub(crate) fn quarantine_shutdown_batch(
+        &mut self,
+        terminals: &[&BatchedTerminalInvocationWrite],
+        finishes: &[&BatchedSystemTaskFinish],
+        error: &str,
+    ) -> Result<()> {
+        Self::quarantine_shutdown_batch_at_directory(&self.directory, terminals, finishes, error)
+    }
+
     pub(crate) fn quarantine_shutdown_batch_at_database_path(
         database_path: &Path,
+        terminals: &[&BatchedTerminalInvocationWrite],
+        finishes: &[&BatchedSystemTaskFinish],
+        error: &str,
+    ) -> Result<()> {
+        let directory = terminal_journal_directory(database_path);
+        fs::create_dir_all(&directory).with_context(|| {
+            format!(
+                "failed to create independent terminal recovery directory {}",
+                directory.display()
+            )
+        })?;
+        Self::quarantine_shutdown_batch_at_directory(&directory, terminals, finishes, error)
+    }
+
+    fn quarantine_shutdown_batch_at_directory(
+        directory: &Path,
         terminals: &[&BatchedTerminalInvocationWrite],
         finishes: &[&BatchedSystemTaskFinish],
         error: &str,
@@ -292,10 +317,9 @@ impl TerminalJournal {
             error: &'a str,
         }
 
-        let directory = terminal_journal_directory(database_path);
-        fs::create_dir_all(&directory).with_context(|| {
+        fs::create_dir_all(directory).with_context(|| {
             format!(
-                "failed to create independent terminal recovery directory {}",
+                "failed to create terminal journal directory {}",
                 directory.display()
             )
         })?;
@@ -617,6 +641,7 @@ impl TerminalJournal {
             return;
         };
         let recovery_only = recovery_pending && sequences.is_empty();
+        let mut recovery_ack_durable = true;
         if recovery_pending {
             if let Err(err) = append_shutdown_terminal_ack(
                 &self.directory.join("shutdown-terminal-quarantine.jsonl"),
@@ -627,9 +652,13 @@ impl TerminalJournal {
                 warn!(error = %err, invoke_id, occurred_at, "failed to checkpoint shutdown terminal recovery acknowledgement");
                 self.sync_failed = true;
                 self.overflowed = true;
-                return;
+                recovery_ack_durable = false;
+                if recovery_only {
+                    return;
+                }
+            } else {
+                self.shutdown_recovery_pending.remove(&key);
             }
-            self.shutdown_recovery_pending.remove(&key);
         }
         let mut pending_sequences = Vec::new();
         let mut written_sequences = Vec::new();
@@ -705,6 +734,7 @@ impl TerminalJournal {
             .saturating_sub(acknowledged_replay_count + usize::from(recovery_only));
         self.remove_fully_acknowledged_segments();
         if recovery_pending
+            && recovery_ack_durable
             && let Err(err) = compact_shutdown_terminal_recovery(
                 &self.directory.join("shutdown-terminal-quarantine.jsonl"),
                 &self.shutdown_recovery_pending,
