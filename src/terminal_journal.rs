@@ -22,8 +22,6 @@ pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_milli
 const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES: usize = 1024;
-const SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES: usize = 4 * 1024 * 1024;
-const SYSTEM_TASK_QUARANTINE_INDEX_MAX_LINES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
@@ -685,36 +683,19 @@ impl TerminalJournal {
             let mut produced = None;
             loop {
                 let stream_start = cursor.byte_offset;
-                let (mut parsed, budget_exhausted) = {
+                let parsed = {
                     let mut budget_reader = ReplayBudgetReader {
                         reader: &mut reader,
                         remaining: TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
                     };
                     let mut stream = serde_json::Deserializer::from_reader(&mut budget_reader)
                         .into_iter::<JournalLine>();
-                    let parsed = stream.next();
-                    (parsed, budget_reader.remaining == 0)
+                    stream.next()
                 };
-                let mut stream_end = match reader.stream_position() {
+                let stream_end = match reader.stream_position() {
                     Ok(stream_end) => stream_end,
                     Err(_) => break,
                 };
-                let mut oversized_record = false;
-                if parsed.as_ref().is_some_and(Result::is_err) && budget_exhausted {
-                    if reader.seek(SeekFrom::Start(stream_start)).is_err() {
-                        break;
-                    }
-                    parsed = {
-                        let mut stream = serde_json::Deserializer::from_reader(&mut reader)
-                            .into_iter::<JournalLine>();
-                        stream.next()
-                    };
-                    stream_end = match reader.stream_position() {
-                        Ok(stream_end) => stream_end,
-                        Err(_) => break,
-                    };
-                    oversized_record = parsed.as_ref().is_some_and(Result::is_ok);
-                }
                 if stream_end == stream_start {
                     reached_end = true;
                     break;
@@ -748,14 +729,6 @@ impl TerminalJournal {
                     }
                     continue;
                 };
-                if oversized_record {
-                    warn!(
-                        sequence = entry.sequence,
-                        record_bytes = stream_end.saturating_sub(stream_start),
-                        replay_batch_bytes = TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
-                        "replaying a single terminal journal record larger than the normal batch budget"
-                    );
-                }
                 if segment.acknowledged.contains(&entry.sequence) {
                     if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
                         || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
@@ -936,22 +909,12 @@ fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
     let mut reader = BufReader::new(file);
     let mut ids = HashSet::new();
     let mut line = String::new();
-    let mut bytes_read = 0_usize;
-    for _ in 0..SYSTEM_TASK_QUARANTINE_INDEX_MAX_LINES {
+    loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
             break;
         };
         if read == 0 {
-            break;
-        }
-        bytes_read = bytes_read.saturating_add(read);
-        if bytes_read > SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES {
-            warn!(
-                path = %path.display(),
-                max_bytes = SYSTEM_TASK_QUARANTINE_INDEX_MAX_BYTES,
-                "bounded system-task quarantine index reached its startup budget"
-            );
             break;
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)

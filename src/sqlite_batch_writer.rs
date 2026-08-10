@@ -1274,6 +1274,7 @@ pub(crate) struct SqliteBatchWriter {
         Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    database_path: std::path::PathBuf,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     #[cfg(test)]
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
@@ -1357,6 +1358,7 @@ impl SqliteBatchWriter {
             dashboard_activity_snapshot_cache,
             terminal_projection_hub,
             terminal_journal,
+            database_path: database_path.to_path_buf(),
             dashboard_reconcile_gate,
             #[cfg(test)]
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
@@ -1401,6 +1403,7 @@ impl SqliteBatchWriter {
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
             terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
             terminal_journal: Arc::new(std::sync::Mutex::new(None)),
+            database_path: std::path::PathBuf::from("test-sqlite-batch-writer.db"),
             dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(None),
@@ -1521,6 +1524,7 @@ impl SqliteBatchWriter {
             .p1_priority_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let recovery_terminal = terminal.clone();
         let journal = self
             .terminal_journal
             .lock()
@@ -1544,6 +1548,25 @@ impl SqliteBatchWriter {
             SqliteBatchWrite::TerminalInvocation(terminal),
             journal.durability_mode,
         );
+        if matches!(
+            journal.durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        ) {
+            let terminals = [&recovery_terminal];
+            if let Err(err) = TerminalJournal::quarantine_shutdown_batch_at_database_path(
+                &self.database_path,
+                &terminals,
+                &[],
+                "terminal journal memory-overflow recovery",
+            ) {
+                warn!(
+                    error = %err,
+                    invoke_id = %recovery_terminal.record.invoke_id,
+                    occurred_at = %recovery_terminal.record.occurred_at,
+                    "terminal memory-overflow recovery sink failed"
+                );
+            }
+        }
         TerminalEnqueueOutcome {
             enqueued,
             durability_mode: journal.durability_mode,
@@ -1726,14 +1749,25 @@ impl SqliteBatchWriter {
         }
         let mut handle = handle;
         let worker_deadline = tokio::time::Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
-        match timeout_at(worker_deadline, &mut handle).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => warn!(error = %err, "sqlite batch writer task failed during shutdown"),
-            Err(_) => {
-                warn!("sqlite batch writer task exceeded shutdown deadline; aborting");
-                handle.abort();
-                let _ = handle.await;
+        let worker_timed_out = match timeout_at(worker_deadline, &mut handle).await {
+            Ok(Ok(())) => false,
+            Ok(Err(err)) => {
+                warn!(error = %err, "sqlite batch writer task failed during shutdown");
+                false
             }
+            Err(_) => {
+                warn!(
+                    "sqlite batch writer task exceeded shutdown deadline; retaining worker ownership for recovery"
+                );
+                true
+            }
+        };
+        if worker_timed_out {
+            // Do not abort a worker that still owns an in-flight batch. The worker's own
+            // bounded shutdown path will quarantine that batch; keeping the handle lets a
+            // later shutdown attempt observe completion instead of losing memory-overflow P1.
+            *self.handle.lock().await = Some(handle);
+            return;
         }
         let (abandoned_depth, abandoned_bytes) = self.accounting.clear_after_shutdown();
         self.queued_p1_count.store(0, Ordering::SeqCst);
