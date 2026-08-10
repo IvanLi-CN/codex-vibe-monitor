@@ -138,12 +138,21 @@ async fn wait_for_p2_deadline(due_at: Option<Instant>) {
     }
 }
 
-fn p2_deadline_ready(
-    pending: &PendingBatch,
-    p2_schedule: &P2ScheduleState,
-    write_receiver: &mpsc::Receiver<SqliteBatchWrite>,
-) -> bool {
-    pending.has_p2() && write_receiver.is_empty() && p2_schedule.ready(Instant::now())
+fn p2_deadline_ready(pending: &PendingBatch, p2_schedule: &P2ScheduleState) -> bool {
+    pending.has_p2() && p2_schedule.ready(Instant::now())
+}
+
+fn drain_queued_writes_before_dispatch(
+    write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
+    pending: &mut PendingBatch,
+    accounting: &PendingQueueAccounting,
+    p2_schedule: &mut P2ScheduleState,
+) {
+    drain_queued_batch_writes(write_receiver, pending, accounting, SQLITE_BATCH_MAX_ROWS);
+    if pending.has_p2() {
+        p2_schedule.arm_if_idle(Instant::now());
+        accounting.update_p2_schedule(p2_schedule);
+    }
 }
 
 impl P1RetryState {
@@ -1576,6 +1585,12 @@ pub(crate) async fn run_sqlite_batch_writer(
     let mut transaction_sequence = 0_u64;
 
     loop {
+        drain_queued_writes_before_dispatch(
+            &mut write_receiver,
+            &mut pending,
+            &accounting,
+            &mut p2_schedule,
+        );
         tokio::select! {
             biased;
             _ = crate::db_pressure::global_db_pressure_gate()
@@ -1589,7 +1604,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 accounting.update_p2_schedule(&p2_schedule);
             }
             _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if p2_deadline_ready(&pending, &p2_schedule, &write_receiver) =>
+                if p2_deadline_ready(&pending, &p2_schedule) =>
             {
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
@@ -1749,7 +1764,11 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     Ok(())
                                 }
                             }
-                            None => Ok(()),
+                            None => {
+                                p2_schedule.succeeded();
+                                accounting.update_p2_schedule(&p2_schedule);
+                                Ok(())
+                            },
                         };
                         let _ = responder.send(result);
                     }
@@ -2891,7 +2910,8 @@ mod tests {
     }
 
     #[test]
-    fn queued_p1_write_blocks_ready_p2_deadline() {
+    fn queued_p1_write_is_drained_before_ready_p2_deadline() {
+        let accounting = PendingQueueAccounting::default();
         let mut pending = PendingBatch::default();
         pending.push(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
@@ -2901,17 +2921,58 @@ mod tests {
         ));
         let mut schedule = P2ScheduleState::default();
         schedule.wake_background_eligible();
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, mut receiver) = mpsc::channel(1);
         sender
             .try_send(SqliteBatchWrite::TerminalInvocation(
                 terminal_write_for_coalescing("queued-p1-priority", None),
             ))
             .expect("queue P1 terminal");
+        drain_queued_writes_before_dispatch(
+            &mut receiver,
+            &mut pending,
+            &accounting,
+            &mut schedule,
+        );
 
         assert!(
-            !p2_deadline_ready(&pending, &schedule, &receiver),
-            "a queued P1 terminal must be received before a ready P2 deadline"
+            receiver.is_empty(),
+            "queued P1 must be classified before checking the P2 deadline"
         );
+        assert_eq!(pending.terminal_invocations.len(), 1);
+        assert!(p2_deadline_ready(&pending, &schedule));
+    }
+
+    #[test]
+    fn queued_p2_does_not_block_ready_p2_deadline() {
+        let accounting = PendingQueueAccounting::default();
+        let mut pending = PendingBatch::default();
+        pending.push(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_997,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        ));
+        let mut schedule = P2ScheduleState::default();
+        schedule.wake_background_eligible();
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .try_send(SqliteBatchWrite::AccountSelectedTouch(
+                BatchedAccountSelectedTouch {
+                    account_id: 999_996,
+                    selected_at: "2026-08-10T12:00:01Z".to_string(),
+                },
+            ))
+            .expect("queue P2 write");
+
+        drain_queued_writes_before_dispatch(
+            &mut receiver,
+            &mut pending,
+            &accounting,
+            &mut schedule,
+        );
+
+        assert!(receiver.is_empty());
+        assert!(p2_deadline_ready(&pending, &schedule));
     }
 
     #[tokio::test]
@@ -3717,6 +3778,134 @@ mod tests {
         assert_eq!(row.1, Some(23.0));
         assert_eq!(row.2, Some(37.0));
         writer.shutdown_and_drain().await;
+    }
+
+    #[tokio::test]
+    async fn flush_now_resets_completed_p2_schedule() {
+        let pool = test_pool().await;
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
+        );
+        assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_995,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        )));
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if writer.accounting_snapshot().p2_wake_reason.as_deref()
+                    == Some("coalesced_deadline")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("writer should arm the P2 coalescing deadline before FlushNow");
+
+        writer
+            .flush_now(&pool)
+            .await
+            .expect("FlushNow should complete the pending P2 batch");
+        let reset = writer.accounting_snapshot();
+        assert_eq!(reset.pending_depth, 0);
+        assert_eq!(reset.p2_next_attempt_in_ms, 0);
+        assert_eq!(reset.p2_wake_reason, None);
+
+        assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_994,
+                selected_at: "2026-08-10T12:00:01Z".to_string(),
+            },
+        )));
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                let snapshot = writer.accounting_snapshot();
+                if snapshot.p2_wake_reason.as_deref() == Some("coalesced_deadline") {
+                    assert!(snapshot.p2_next_attempt_in_ms >= 200);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("new P2 work should receive a full coalescing interval");
+        writer.shutdown_and_drain().await;
+    }
+
+    #[tokio::test]
+    async fn queued_p2_work_does_not_starve_its_scheduled_flush() {
+        let pool = test_pool().await;
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
+        );
+        assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_993,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        )));
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if writer.accounting_snapshot().p2_wake_reason.as_deref()
+                    == Some("coalesced_deadline")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("writer should arm the P2 coalescing deadline");
+
+        let producer_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let producer = {
+            let producer_active = producer_active.clone();
+            let producer_writer = writer.clone();
+            tokio::spawn(async move {
+                while producer_active.load(std::sync::atomic::Ordering::Acquire) {
+                    for _ in 0..1024 {
+                        let _ = producer_writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+                            BatchedAccountSelectedTouch {
+                                account_id: 999_992,
+                                selected_at: "2026-08-10T12:00:01Z".to_string(),
+                            },
+                        ));
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let resumed = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if writer.accounting_snapshot().p2_flush_attempt_count > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        producer_active.store(false, std::sync::atomic::Ordering::Release);
+        producer.abort();
+        let _ = producer.await;
+        writer.shutdown_and_drain().await;
+        assert!(
+            resumed,
+            "queued P2 writes must not prevent the scheduled P2 flush"
+        );
     }
 
     #[tokio::test]
