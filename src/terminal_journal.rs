@@ -554,7 +554,10 @@ impl TerminalJournal {
         let mut estimated_bytes = 0_usize;
         let mut scanned_bytes = 0_usize;
         let mut scanned_lines = 0_usize;
-        while writes.len() < max_writes {
+        while writes.len() < max_writes
+            && scanned_bytes < TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+            && scanned_lines < TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+        {
             let Some(cursor) = self.replay_segments.front_mut() else {
                 break;
             };
@@ -573,33 +576,51 @@ impl TerminalJournal {
             let mut produced = None;
             loop {
                 let stream_start = cursor.byte_offset;
-                let parsed = {
+                let (mut parsed, budget_exhausted) = {
                     let mut budget_reader = ReplayBudgetReader {
                         reader: &mut reader,
                         remaining: TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
                     };
                     let mut stream = serde_json::Deserializer::from_reader(&mut budget_reader)
                         .into_iter::<JournalLine>();
-                    stream.next()
+                    let parsed = stream.next();
+                    (parsed, budget_reader.remaining == 0)
                 };
-                let Ok(stream_end) = reader.stream_position() else {
-                    break;
+                let mut stream_end = match reader.stream_position() {
+                    Ok(stream_end) => stream_end,
+                    Err(_) => break,
                 };
+                let mut oversized_record = false;
+                if parsed.as_ref().is_some_and(Result::is_err) && budget_exhausted {
+                    if reader.seek(SeekFrom::Start(stream_start)).is_err() {
+                        break;
+                    }
+                    parsed = {
+                        let mut stream = serde_json::Deserializer::from_reader(&mut reader)
+                            .into_iter::<JournalLine>();
+                        stream.next()
+                    };
+                    stream_end = match reader.stream_position() {
+                        Ok(stream_end) => stream_end,
+                        Err(_) => break,
+                    };
+                    oversized_record = parsed.as_ref().is_some_and(Result::is_ok);
+                }
                 if stream_end == stream_start {
                     reached_end = true;
                     break;
                 }
+                let Some(parsed) = parsed else {
+                    cursor.byte_offset = stream_end;
+                    reached_end = true;
+                    break;
+                };
                 scanned_bytes = scanned_bytes.saturating_add(
                     stream_end
                         .saturating_sub(stream_start)
                         .min(usize::MAX as u64) as usize,
                 );
                 scanned_lines = scanned_lines.saturating_add(1);
-                let Some(parsed) = parsed else {
-                    cursor.byte_offset = stream_end;
-                    reached_end = true;
-                    break;
-                };
                 let Ok(parsed) = parsed else {
                     let skipped_end = skip_replay_line(&mut reader).unwrap_or(stream_end);
                     scanned_bytes = scanned_bytes.saturating_add(
@@ -624,6 +645,14 @@ impl TerminalJournal {
                     }
                     continue;
                 };
+                if oversized_record {
+                    warn!(
+                        sequence = entry.sequence,
+                        record_bytes = stream_end.saturating_sub(stream_start),
+                        replay_batch_bytes = TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
+                        "replaying a single terminal journal record larger than the normal batch budget"
+                    );
+                }
                 if segment.acknowledged.contains(&entry.sequence) {
                     if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
                         || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES

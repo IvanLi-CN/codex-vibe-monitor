@@ -1724,7 +1724,8 @@ impl SqliteBatchWriter {
             }
         }
         let mut handle = handle;
-        match timeout_at(shutdown_deadline, &mut handle).await {
+        let worker_deadline = tokio::time::Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
+        match timeout_at(worker_deadline, &mut handle).await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => warn!(error = %err, "sqlite batch writer task failed during shutdown"),
             Err(_) => {
