@@ -1,5 +1,14 @@
 use super::*;
 
+#[cfg(test)]
+fn broadcast_test_record_payload(state: &AppState, record: &ApiInvocation) {
+    if state.broadcaster.receiver_count() > 0 {
+        let _ = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![record.clone()],
+        });
+    }
+}
+
 pub(crate) fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -20,6 +29,37 @@ pub(crate) fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<Str
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TerminalPayloadMetadata {
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+}
+
+pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloadMetadata {
+    let Some(payload) = payload else {
+        return TerminalPayloadMetadata::default();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return TerminalPayloadMetadata::default();
+    };
+    let prompt_cache_key = value
+        .get("promptCacheKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let upstream_account_id = value.get("upstreamAccountId").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+    });
+    TerminalPayloadMetadata {
+        prompt_cache_key,
+        upstream_account_id,
+    }
 }
 
 pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
@@ -1565,13 +1605,15 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
     }
 
     let summary_invoke_id = records[0].invoke_id.clone();
-    if state.broadcaster.receiver_count() > 0 {
+    for record in &records {
         state
-            .broadcaster
-            .send(BroadcastPayload::Records { records })
-            .map_err(|err| {
-                anyhow!("failed to broadcast recovered proxy invocation records: {err}")
-            })?;
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::invocation(
+                record,
+                RuntimeMutationKind::Recovery,
+            ));
+        #[cfg(test)]
+        broadcast_test_record_payload(state, record);
     }
     schedule_dashboard_activity_live_snapshot(state);
     schedule_proxy_capture_follow_up_worker(state, &summary_invoke_id).await?;
@@ -2009,32 +2051,21 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
     state: &AppState,
     invoke_id: &str,
 ) -> Result<()> {
-    if state.broadcaster.receiver_count() == 0 {
-        return Ok(());
-    }
-
-    let attempts = match query_pool_attempt_records_from_live(&state.pool, invoke_id).await {
-        Ok(attempts) => attempts,
-        Err(err) => {
-            let err = anyhow!("failed to load live pool attempts for SSE broadcast: {err:?}");
-            if crate::is_sqlite_lock_error(&err) {
-                warn!(
-                    invoke_id,
-                    sqlite_locked = true,
-                    "pool attempts snapshot broadcast skipped because sqlite is locked"
-                );
-                return Ok(());
-            }
-            return Err(err);
-        }
-    };
     state
-        .broadcaster
-        .send(BroadcastPayload::PoolAttempts {
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::AttemptChanged {
+            invoke_id: invoke_id.to_string(),
+        });
+    #[cfg(test)]
+    if state.broadcaster.receiver_count() > 0 {
+        let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
+            .await
+            .map_err(|err| anyhow!("failed to load test pool attempt snapshot: {err:?}"))?;
+        let _ = state.broadcaster.send(BroadcastPayload::PoolAttempts {
             invoke_id: invoke_id.to_string(),
             attempts,
-        })
-        .map_err(|err| anyhow!("failed to broadcast pool attempts snapshot: {err}"))?;
+        });
+    }
     Ok(())
 }
 
@@ -2976,7 +3007,54 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
 }
 
 pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
-    let payload = record.payload.as_deref();
+    let payload = record
+        .payload
+        .as_deref()
+        .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+    let payload_text = |key: &str| {
+        payload
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    };
+    let payload_i64 = |key: &str| {
+        payload
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(crate::proxy::json_value_to_i64)
+    };
+    let payload_f64 = |key: &str| {
+        payload
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_f64)
+    };
+    let prompt_cache_key = payload_text("promptCacheKey");
+    let sticky_key = payload
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("stickyKey")
+                .or_else(|| value.get("promptCacheKey"))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let upstream_account_id = payload
+        .as_ref()
+        .and_then(|value| value.get("upstreamAccountId"))
+        .and_then(crate::proxy::json_value_to_i64);
+    let upstream_account_name = payload_text("upstreamAccountName");
+    let blocked_binding_json = payload
+        .as_ref()
+        .and_then(|value| value.get("blockedBinding"))
+        .filter(|value| value.is_object())
+        .and_then(|value| serde_json::to_string(value).ok());
+    let blocked_binding = parse_blocked_binding_json(blocked_binding_json.as_deref());
     let failure = resolve_failure_classification(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
@@ -2989,15 +3067,15 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         invoke_id: record.invoke_id.clone(),
         occurred_at: record.occurred_at.clone(),
         source: SOURCE_PROXY.to_string(),
-        proxy_display_name: payload_text(payload, "proxyDisplayName"),
+        proxy_display_name: payload_text("proxyDisplayName"),
         model: record.model.clone(),
-        request_model: payload_text(payload, "requestModel"),
-        response_model: payload_text(payload, "responseModel"),
+        request_model: payload_text("requestModel"),
+        response_model: payload_text("responseModel"),
         input_tokens: record.usage.input_tokens,
         output_tokens: record.usage.output_tokens,
         cache_input_tokens: record.usage.cache_input_tokens,
         reasoning_tokens: record.usage.reasoning_tokens,
-        reasoning_effort: payload_text(payload, "reasoningEffort"),
+        reasoning_effort: payload_text("reasoningEffort"),
         total_tokens: record.usage.total_tokens,
         cost: record.cost,
         cost_input: record.cost_breakdown.map(|value| value.input),
@@ -3011,40 +3089,40 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         status: Some(record.status.clone()),
         live_phase: None,
         error_message: record.error_message.clone(),
-        downstream_status_code: payload_i64(payload, "downstreamStatusCode"),
+        downstream_status_code: payload_i64("downstreamStatusCode"),
         failure_kind: failure
             .failure_kind
             .clone()
             .or_else(|| record.failure_kind.clone()),
-        blocked_binding: blocked_binding_from_payload(payload),
-        blocked_binding_json: blocked_binding_json_from_payload(payload),
-        stream_terminal_event: payload_text(payload, "streamTerminalEvent"),
-        upstream_error_code: payload_text(payload, "upstreamErrorCode"),
-        upstream_error_message: payload_text(payload, "upstreamErrorMessage"),
-        downstream_error_message: payload_text(payload, "downstreamErrorMessage"),
-        upstream_request_id: payload_text(payload, "upstreamRequestId"),
+        blocked_binding,
+        blocked_binding_json,
+        stream_terminal_event: payload_text("streamTerminalEvent"),
+        upstream_error_code: payload_text("upstreamErrorCode"),
+        upstream_error_message: payload_text("upstreamErrorMessage"),
+        downstream_error_message: payload_text("downstreamErrorMessage"),
+        upstream_request_id: payload_text("upstreamRequestId"),
         failure_class: Some(failure.failure_class.as_str().to_string()),
         is_actionable: Some(failure.is_actionable),
-        endpoint: payload_text(payload, "endpoint"),
-        compaction_request_kind: payload_text(payload, "compactionRequestKind"),
-        compaction_response_kind: payload_text(payload, "compactionResponseKind"),
-        image_intent: payload_text(payload, "imageIntent"),
-        requester_ip: payload_text(payload, "requesterIp"),
-        prompt_cache_key: prompt_cache_key_from_payload(payload),
-        sticky_key: sticky_key_from_payload(payload),
-        route_mode: payload_text(payload, "routeMode"),
-        upstream_account_id: upstream_account_id_from_payload(payload),
-        upstream_account_name: upstream_account_name_from_payload(payload),
-        response_content_encoding: payload_text(payload, "responseContentEncoding"),
-        request_compression_algorithm: payload_text(payload, "requestCompressionAlgorithm"),
+        endpoint: payload_text("endpoint"),
+        compaction_request_kind: payload_text("compactionRequestKind"),
+        compaction_response_kind: payload_text("compactionResponseKind"),
+        image_intent: payload_text("imageIntent"),
+        requester_ip: payload_text("requesterIp"),
+        prompt_cache_key,
+        sticky_key,
+        route_mode: payload_text("routeMode"),
+        upstream_account_id,
+        upstream_account_name,
+        response_content_encoding: payload_text("responseContentEncoding"),
+        request_compression_algorithm: payload_text("requestCompressionAlgorithm"),
         transport: None,
-        pool_attempt_count: payload_i64(payload, "poolAttemptCount"),
-        pool_distinct_account_count: payload_i64(payload, "poolDistinctAccountCount"),
-        pool_attempt_terminal_reason: payload_text(payload, "poolAttemptTerminalReason"),
-        requested_service_tier: payload_text(payload, "requestedServiceTier"),
-        service_tier: payload_text(payload, "serviceTier"),
-        billing_service_tier: payload_text(payload, "billingServiceTier"),
-        proxy_weight_delta: payload_f64(payload, "proxyWeightDelta"),
+        pool_attempt_count: payload_i64("poolAttemptCount"),
+        pool_distinct_account_count: payload_i64("poolDistinctAccountCount"),
+        pool_attempt_terminal_reason: payload_text("poolAttemptTerminalReason"),
+        requested_service_tier: payload_text("requestedServiceTier"),
+        service_tier: payload_text("serviceTier"),
+        billing_service_tier: payload_text("billingServiceTier"),
+        proxy_weight_delta: payload_f64("proxyWeightDelta"),
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
         cost_audit: None,
@@ -3214,7 +3292,20 @@ pub(crate) async fn touch_invocation_upstream_account_last_activity_tx(
     occurred_at: &str,
     payload: Option<&str>,
 ) -> Result<()> {
-    if let Some(upstream_account_id) = upstream_account_id_from_payload(payload) {
+    touch_upstream_account_last_activity_tx(
+        tx,
+        occurred_at,
+        upstream_account_id_from_payload(payload),
+    )
+    .await
+}
+
+pub(crate) async fn touch_upstream_account_last_activity_tx(
+    tx: &mut SqliteConnection,
+    occurred_at: &str,
+    upstream_account_id: Option<i64>,
+) -> Result<()> {
+    if let Some(upstream_account_id) = upstream_account_id {
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
@@ -3262,17 +3353,14 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     state
         .dashboard_network_speed_cache
         .observe_dashboard_activity_runtime_snapshot(&persisted_record, Utc::now());
-    if state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![persisted_record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast runtime proxy capture snapshot"
-        );
-    }
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::invocation(
+            &persisted_record,
+            RuntimeMutationKind::RuntimeUpsert,
+        ));
+    #[cfg(test)]
+    broadcast_test_record_payload(state, &persisted_record);
     schedule_dashboard_activity_live_snapshot(state);
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -3318,16 +3406,14 @@ pub(crate) fn broadcast_proxy_capture_first_token_runtime_snapshot(
     state
         .dashboard_network_speed_cache
         .observe_dashboard_activity_runtime_snapshot(&record, Utc::now());
-    if state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id, "failed to broadcast first-token runtime proxy capture snapshot"
-        );
-    }
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::invocation(
+            &record,
+            RuntimeMutationKind::LifecyclePhase,
+        ));
+    #[cfg(test)]
+    broadcast_test_record_payload(state, &record);
     schedule_dashboard_activity_live_snapshot(state);
 }
 
@@ -3369,17 +3455,24 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
         .finish_invocation(invoke_id, occurred_at);
     let removed_runtime_snapshot = state
         .proxy_runtime_invocations
-        .remove_non_terminal(invoke_id, occurred_at)
-        .is_some();
+        .remove_non_terminal(invoke_id, occurred_at);
+    if let Some(record) = &removed_runtime_snapshot {
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::invocation(
+                record,
+                RuntimeMutationKind::RuntimeRemoved,
+            ));
+    }
     debug!(
         invoke_id,
         occurred_at,
         reason,
-        terminal_removed_runtime_snapshot = removed_runtime_snapshot,
+        terminal_removed_runtime_snapshot = removed_runtime_snapshot.is_some(),
         terminal_already_tombstoned = false,
         "non-terminal proxy runtime snapshot removed by key"
     );
-    removed_runtime_snapshot
+    removed_runtime_snapshot.is_some()
 }
 
 pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
@@ -3430,19 +3523,14 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
         terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized by key"
     );
-    if state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id,
-            occurred_at,
-            reason,
-            "failed to broadcast terminalized proxy runtime snapshot"
-        );
-    }
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::invocation(
+            &record,
+            RuntimeMutationKind::TerminalCommitted,
+        ));
+    #[cfg(test)]
+    broadcast_test_record_payload(state, &record);
     true
 }
 
@@ -3509,19 +3597,14 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
         terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized with error overlay"
     );
-    if state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id,
-            occurred_at,
-            reason,
-            "failed to broadcast terminal error proxy runtime snapshot"
-        );
-    }
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::invocation(
+            &record,
+            RuntimeMutationKind::TerminalCommitted,
+        ));
+    #[cfg(test)]
+    broadcast_test_record_payload(state, &record);
     true
 }
 
@@ -3549,6 +3632,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     }
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
     let delta = &projection.dashboard;
+    let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -3566,6 +3650,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 raw_capture: false,
                 dashboard_terminal_sequence: delta.terminal_sequence,
                 terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                startup_backfill_tasks,
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
@@ -3604,17 +3689,15 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
-    if terminal_enqueued
-        && state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![persisted_record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast terminal proxy capture record"
-        );
+    if terminal_enqueued {
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::invocation(
+                &persisted_record,
+                RuntimeMutationKind::TerminalCommitted,
+            ));
+        #[cfg(test)]
+        broadcast_test_record_payload(state, &persisted_record);
     }
     if terminal_enqueued {
         schedule_dashboard_activity_live_snapshot(state);

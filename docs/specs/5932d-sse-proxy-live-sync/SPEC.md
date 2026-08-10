@@ -256,5 +256,7 @@ PR: none
 
 ## Terminal Projection 边界
 
+热路径的 mutation 通过共享 typed runtime event bus 路由到投影和 SSE materializer。SSE delivery 只接收不可变共享 frame；历史/详情 topic 仅按 durable identity 执行有界 hydrate。无活跃订阅时，事件只推进投影/dirty 状态，不预处理无关 topic。
+
 - terminal journal 的 P1 ACK 需要向共享 projection hub 发布持久 row cursor；Dashboard 和长期统计各自推进 consumer cursor，不能把长期 rollup 成功作为 P1 或 Dashboard live publish 的前置条件。
 - Dashboard 5 秒 topic cadence 始终只读其内存累计态。长期统计的 60 秒物化是独立 P2 consumer，并始终受 SQLite pressure gate 约束。

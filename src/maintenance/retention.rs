@@ -993,9 +993,12 @@ pub(crate) async fn run_data_retention_maintenance(
             account_rows_written = manifest_refresh.account_rows_written,
             "refreshed upstream activity manifest before waking archive backfill"
         );
-        wake_source_unavailable_backfills(
+        wake_startup_backfill_tasks(
             pool,
-            StartupBackfillTask::UpstreamActivityArchives.name(),
+            &[
+                StartupBackfillTask::UpstreamActivityArchives,
+                StartupBackfillTask::HistoricalRollups,
+            ],
             if pruned.1 > 0 {
                 "invocation_detail_prune_archive_materialized"
             } else {

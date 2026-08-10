@@ -1,5 +1,7 @@
 # Stats 长期用量与性能统计（#5k89c）
 
+长期统计接收 TerminalProjectionHub 的 durable cursor mutation，不消费完整 `ApiInvocation` 广播。历史 repair/backfill 由来源恢复、归档重写和 coverage 事件唤醒；无 actionable work 时不运行周期性全窗扫描。
+
 > 当前有效规范以本文为准；实现状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
 ## 背景

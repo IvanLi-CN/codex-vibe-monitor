@@ -66,6 +66,31 @@ pub(crate) struct RuntimeInvocationEntry {
     pub(crate) updated_at: Instant,
 }
 
+/// Typed data needed by the active Prompt Cache projection. This deliberately excludes the
+/// complete runtime record and its raw/detail fields.
+#[derive(Debug, Clone)]
+pub(crate) struct PromptCacheRuntimeProjection {
+    pub(crate) row_id: i64,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) preview: PromptCacheConversationInvocationPreviewResponse,
+}
+
+impl PromptCacheRuntimeProjection {
+    pub(crate) fn from_record(record: &ApiInvocation) -> Option<Self> {
+        let prompt_cache_key =
+            normalize_trimmed_optional_string_local(record.prompt_cache_key.clone());
+        let sticky_key = normalize_trimmed_optional_string_local(record.sticky_key.clone());
+        let preview_key = prompt_cache_key.clone().or_else(|| sticky_key.clone())?;
+        Some(Self {
+            row_id: record.id,
+            prompt_cache_key,
+            sticky_key,
+            preview: prompt_cache_invocation_preview_from_runtime_record(record, preview_key),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RuntimeInvocationStoreUpsertOutcome {
     pub(crate) running_count: usize,
@@ -85,7 +110,6 @@ pub(crate) struct RuntimeInvocationStoreRemoveOutcome {
     pub(crate) already_terminal: bool,
 }
 
-pub(crate) const DASHBOARD_RUNTIME_PROJECTION_MODE_ENV: &str = "DASHBOARD_RUNTIME_PROJECTION_MODE";
 pub(crate) const DASHBOARD_RUNTIME_PROJECTION_COALESCE: Duration = Duration::from_millis(250);
 pub(crate) const DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE: Duration = Duration::from_secs(1);
 pub(crate) const DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE: Duration = Duration::from_secs(5);
@@ -99,19 +123,30 @@ pub(crate) enum RuntimeProjectionMode {
 }
 
 impl RuntimeProjectionMode {
+    pub(crate) fn reject_removed_legacy_env() -> Result<()> {
+        for env_name in [
+            "DASHBOARD_RUNTIME_PROJECTION_MODE",
+            "PROMPT_CACHE_TOPIC_PROJECTION_MODE",
+        ] {
+            if std::env::var(env_name)
+                .ok()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("legacy"))
+            {
+                bail!(
+                    "{env_name}=legacy is unsupported; the typed runtime mutation bus is mandatory"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
         match value.map(str::trim).filter(|value| !value.is_empty()) {
             None | Some("auto") => Ok(Self::Auto),
-            Some("legacy") => Ok(Self::Legacy),
             Some(value) => bail!(
-                "invalid {DASHBOARD_RUNTIME_PROJECTION_MODE_ENV} value `{value}`; expected `auto` or `legacy`"
+                "runtime projection mode `{value}` is unsupported; the typed runtime mutation bus is mandatory"
             ),
         }
-    }
-
-    pub(crate) fn from_env() -> Result<Self> {
-        let value = std::env::var(DASHBOARD_RUNTIME_PROJECTION_MODE_ENV).ok();
-        Self::parse(value.as_deref())
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -509,6 +544,8 @@ pub(crate) struct RuntimeProjectionHub {
     request_whole_body_materialization_count: AtomicU64,
     request_rewrite_buffer_peak_bytes: AtomicU64,
     request_pipeline_last: std::sync::Mutex<RequestPipelineLastState>,
+    #[cfg(test)]
+    full_record_clone_count: AtomicU64,
 }
 
 pub(crate) type ProxyRuntimeInvocationStore = RuntimeProjectionHub;
@@ -535,6 +572,8 @@ impl RuntimeProjectionHub {
             request_whole_body_materialization_count: AtomicU64::new(0),
             request_rewrite_buffer_peak_bytes: AtomicU64::new(0),
             request_pipeline_last: std::sync::Mutex::new(RequestPipelineLastState::default()),
+            #[cfg(test)]
+            full_record_clone_count: AtomicU64::new(0),
         }
     }
 
@@ -1727,9 +1766,9 @@ impl RuntimeProjectionHub {
         removed
     }
 
-    pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> usize {
+    pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> Vec<ApiInvocation> {
         let Ok(mut guard) = self.inner.lock() else {
-            return 0;
+            return Vec::new();
         };
         let keys = guard
             .records
@@ -1739,31 +1778,36 @@ impl RuntimeProjectionHub {
             })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
-        let removed_count = keys
+        let removed = keys
             .iter()
-            .filter(|key| guard.records.remove(key).is_some())
-            .count();
-        if removed_count > 0 {
+            .filter_map(|key| {
+                guard
+                    .records
+                    .remove(key)
+                    .map(|entry| (key.clone(), entry.record))
+            })
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
             let now = Instant::now();
-            for key in &keys {
+            for (key, _) in &removed {
                 guard.projection_tombstones.insert(key.clone(), now);
             }
         }
-        let pruned_count = if removed_count > 0 {
+        let pruned_count = if !removed.is_empty() {
             prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
         } else {
             0
         };
         drop(guard);
-        if removed_count > 0 {
-            for key in keys {
-                self.update_dashboard_runtime_record(key, None, "runtime_remove");
+        if !removed.is_empty() {
+            for (key, _) in &removed {
+                self.update_dashboard_runtime_record(key.clone(), None, "runtime_remove");
             }
         }
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         }
-        removed_count
+        removed.into_iter().map(|(_, record)| record).collect()
     }
 
     pub(crate) fn remove_persisted_terminal_overlay(
@@ -1805,6 +1849,42 @@ impl RuntimeProjectionHub {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         }
         snapshot
+    }
+
+    pub(crate) fn record_by_identity(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> Option<ApiInvocation> {
+        #[cfg(test)]
+        self.full_record_clone_count.fetch_add(1, Ordering::Relaxed);
+        let guard = self.inner.lock().ok()?;
+        guard
+            .records
+            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+            .map(|entry| entry.record.clone())
+    }
+
+    pub(crate) fn prompt_cache_projection_by_identity(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> Option<PromptCacheRuntimeProjection> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .records
+            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
+            .and_then(|entry| PromptCacheRuntimeProjection::from_record(&entry.record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_full_record_clone_count(&self) {
+        self.full_record_clone_count.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn full_record_clone_count(&self) -> u64 {
+        self.full_record_clone_count.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]

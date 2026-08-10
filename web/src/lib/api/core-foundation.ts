@@ -2253,6 +2253,32 @@ export interface RuntimePressureRequestPipelineHealth {
   parseWindowBytes?: number;
 }
 
+export interface RuntimePressureEventBusHealth {
+  state: string;
+  publishedCount: number;
+  processedEventCount: number;
+  coalescedEventCount: number;
+  businessPayloadCloneCount: number;
+  topicWorkCount: number;
+  routerLaggedCount: number;
+  routerGapCount: number;
+  cursorRecoveryCount: number;
+}
+
+export interface RuntimePressureBackfillHealth {
+  state: string;
+  wakeGeneration: number;
+  wakeCount: number;
+  dueDispatchCount: number;
+  noopSuppressedCount: number;
+  pressureDeferCount: number;
+  failureCount: number;
+  wokenTaskCount: number;
+  scheduledTaskCount: number;
+  deferredTaskCount: number;
+  failedTaskCount: number;
+}
+
 export interface RuntimePressureHealth {
   state: string;
   process: RuntimePressureProcessHealth;
@@ -2263,6 +2289,8 @@ export interface RuntimePressureHealth {
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
   requestPipeline?: RuntimePressureRequestPipelineHealth;
+  eventBus?: RuntimePressureEventBusHealth;
+  backfill?: RuntimePressureBackfillHealth;
 }
 
 export interface SystemStatusResponse {
@@ -4137,6 +4165,8 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const projectionSlices = (projection.sliceCounters ?? {}) as Record<string, unknown>;
   const delivery = (payload.delivery ?? {}) as Record<string, unknown>;
   const requestPipeline = payload.requestPipeline as Record<string, unknown> | undefined;
+  const eventBus = payload.eventBus as Record<string, unknown> | undefined;
+  const backfill = payload.backfill as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
@@ -4245,6 +4275,34 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           parseWindowCpuMs: number(requestPipeline.parseWindowCpuMs),
           parseWindowWallMs: number(requestPipeline.parseWindowWallMs),
           parseWindowBytes: number(requestPipeline.parseWindowBytes),
+        }
+      : undefined,
+    eventBus: eventBus
+      ? {
+          state: optionalString(eventBus.state) ?? "unknown",
+          publishedCount: number(eventBus.publishedCount),
+          processedEventCount: number(eventBus.processedEventCount),
+          coalescedEventCount: number(eventBus.coalescedEventCount),
+          businessPayloadCloneCount: number(eventBus.businessPayloadCloneCount),
+          topicWorkCount: number(eventBus.topicWorkCount),
+          routerLaggedCount: number(eventBus.routerLaggedCount),
+          routerGapCount: number(eventBus.routerGapCount),
+          cursorRecoveryCount: number(eventBus.cursorRecoveryCount),
+        }
+      : undefined,
+    backfill: backfill
+      ? {
+          state: optionalString(backfill.state) ?? "unknown",
+          wakeGeneration: number(backfill.wakeGeneration),
+          wakeCount: number(backfill.wakeCount),
+          dueDispatchCount: number(backfill.dueDispatchCount),
+          noopSuppressedCount: number(backfill.noopSuppressedCount),
+          pressureDeferCount: number(backfill.pressureDeferCount),
+          failureCount: number(backfill.failureCount),
+          wokenTaskCount: number(backfill.wokenTaskCount),
+          scheduledTaskCount: number(backfill.scheduledTaskCount),
+          deferredTaskCount: number(backfill.deferredTaskCount),
+          failedTaskCount: number(backfill.failedTaskCount),
         }
       : undefined,
   };

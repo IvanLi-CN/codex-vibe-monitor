@@ -53,13 +53,14 @@
 - terminal totals 使用 `5s` 内存发布，baseline reconcile 使用 `60s` cadence。压力或 last-good 状态机沿用既有退避与精确恢复语义。
 - `PendingQueueAccounting` 统一拥有 enqueue、coalesce、batch replacement、P1 -> P2 transfer 与 completion 的 byte/depth 变化；业务阶段不得直接执行裸 `fetch_sub`。
 - accounting 不变量破坏必须进入 degraded health 并保留证据，不能 wrap 到 `usize::MAX` 或继续报告 healthy。
+- startup backfill 的 supervisor 按持久化 task deadline 或匹配 repair wake 调度，不使用全局固定 ticker。空闲等待不得扫描 task progress、执行无关 maintenance 或写 `system_task_runs`；source-unavailable task 只在相关 archive/payload/coverage 输入变化或每日受限 probe 时运行。
 
 ## Public Contracts
 
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
-- `DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=legacy` 是运维 kill switch；默认 `auto`，不得暴露为 owner-facing UI 开关。Dashboard legacy delivery 只保留一个发布版本，并在新链连续 12 小时通过线上门槛后由独立清理变更删除。
+- typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
 

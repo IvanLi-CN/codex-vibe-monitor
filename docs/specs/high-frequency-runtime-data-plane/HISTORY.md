@@ -1,5 +1,12 @@
 # High-Frequency Runtime Data Plane History
 
+## Typed Runtime Event Bus Initiative
+
+- Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.
+- Production hot paths use compact typed runtime mutations. `ApiInvocation`, `serde_json::Value`, and complete topic snapshots must not enter the event bus; historical/detail views hydrate only bounded durable identities.
+- Startup backfill is event-woken with dynamic next-due scheduling and a daily bounded probe; no actionable work must not issue queries or write `system_task_runs`.
+- The initiative adds only `runtimePressureHealth.eventBus` and `runtimePressureHealth.backfill` diagnostics. HTTP/SSE wire shapes remain unchanged and legacy runtime-bus modes are removed.
+
 ## Key Decisions
 
 - P2 派生写从 P1 的 20ms ticker 中分离，使用 250ms 固定合并、pressure deadline 与分类 lock retry；Prompt Cache window topic 同步改为 500ms active projection，通用 Records 不再触发整窗 SQLite hydrate。

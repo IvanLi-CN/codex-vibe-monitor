@@ -81,7 +81,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
+    sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
@@ -124,6 +124,7 @@ mod proxy_sqlite_write_coordinator;
     reason = "Runtime shutdown coordination preserves established task handles."
 )]
 mod runtime;
+mod runtime_mutation_bus;
 mod schema;
 mod share_links;
 pub(crate) use dashboard_network_speed::*;
@@ -155,6 +156,7 @@ pub(crate) use memory_diagnostics::*;
 pub(crate) use pricing::*;
 use proxy::*;
 pub(crate) use runtime::*;
+pub(crate) use runtime_mutation_bus::*;
 pub(crate) use schema::*;
 pub(crate) use share_links::*;
 use sqlite_batch_writer::*;

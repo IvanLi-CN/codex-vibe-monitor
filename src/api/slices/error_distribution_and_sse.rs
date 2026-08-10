@@ -2128,15 +2128,12 @@ mod tests {
     }
 
     #[test]
-    fn runtime_projection_mode_keeps_auto_default_and_legacy_kill_switch() {
+    fn runtime_projection_mode_rejects_removed_legacy_kill_switch() {
         assert_eq!(
             RuntimeProjectionMode::parse(None).expect("default projection mode"),
             RuntimeProjectionMode::Auto
         );
-        assert_eq!(
-            RuntimeProjectionMode::parse(Some("legacy")).expect("legacy projection mode"),
-            RuntimeProjectionMode::Legacy
-        );
+        assert!(RuntimeProjectionMode::parse(Some("legacy")).is_err());
         assert!(RuntimeProjectionMode::parse(Some("invalid")).is_err());
     }
 
@@ -2443,7 +2440,11 @@ mod tests {
         .expect("install baseline capture");
         hub.upsert(restored.clone());
 
-        assert_eq!(hub.remove_non_terminal_by_invoke_id(&restored.invoke_id), 1);
+        assert_eq!(
+            hub.remove_non_terminal_by_invoke_id(&restored.invoke_id)
+                .len(),
+            1
+        );
         let capture = hub
             .capture_memory_snapshot()
             .expect("removed baseline-backed projection snapshot");
@@ -3315,8 +3316,20 @@ pub(crate) async fn put_pricing_settings(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let mut guard = state.pricing_catalog.write().await;
-    *guard = next.clone();
+    {
+        let mut guard = state.pricing_catalog.write().await;
+        *guard = next.clone();
+    }
+    if let Err(err) = wake_startup_backfill_tasks_with_pricing_catalog(
+        &state.pool,
+        &[StartupBackfillTask::ProxyCost],
+        Some(&next),
+        "pricing_catalog_updated",
+    )
+    .await
+    {
+        warn!(error = %err, "failed to wake ProxyCost backfill after pricing catalog update");
+    }
     Ok(Json(PricingSettingsResponse::from_catalog(&next)))
 }
 
@@ -4400,12 +4413,17 @@ pub(crate) enum BroadcastPayload {
     Version {
         version: String,
     },
+    // Test-only observer shims let pre-existing persistence tests assert their durable
+    // side effects without reinstating complete records on the production runtime bus.
+    #[cfg(test)]
     Records {
         records: Vec<ApiInvocation>,
     },
+    #[cfg(test)]
     PromptCacheConversationChanged {
         prompt_cache_key: String,
     },
+    #[cfg(test)]
     PromptCacheConversationStickyRouteChanged {
         sticky_key: String,
         previous_upstream_account_id: i64,
@@ -4424,6 +4442,7 @@ pub(crate) enum BroadcastPayload {
         #[serde(skip)]
         slice: Box<DashboardTerminalProjectionSlice>,
     },
+    #[cfg(test)]
     #[serde(rename = "pool_attempts")]
     PoolAttempts {
         invoke_id: String,

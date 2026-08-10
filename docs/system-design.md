@@ -55,6 +55,8 @@ flowchart LR
 
 - Dashboard current/phase、network/rate、terminal totals 分别以 `250ms`、`1s`、`5s` 固定 deadline 合并，SQLite baseline 每 `60s` 对账。各切片独立推进 revision，network 更新不得唤醒完整 activity/summary projection。
 - 健康 `today / 1d / 7d` live render 只读 Runtime/Terminal Projection；已有 last-good 时失败不会在订阅请求链同步查库。
+- 高频 runtime mutation 统一进入 typed event bus；router 先按活跃 topic 依赖筛选 `TopicWork`，再由 projection/materializer 处理。`ApiInvocation`、通用 JSON 和完整 topic snapshot 不得进入热总线。
+- startup backfill 由 terminal/archive/payload/coverage 事件唤醒并持有动态 `next_due`；无 actionable work 不查询数据库、不写 `system_task_runs`，source-unavailable 任务仅每日做有界复检。
 - `yesterday / previous7d / usage` 与其他 closed-range 查询继续使用 exact DB builder。
 - typed materializer 根据 topic dependency revision tuple 生成一个 `Arc<SerializedTopicFrame>`。delivery 不接收完整业务 snapshot 或通用 JSON overlay；subscriber 数量只增加引用，不增加 builder 或 serialization 次数。
 - 第一位 owner subscriber 激活 producer；无 owner subscriber 时停止周期构建并标记 dirty，重新订阅时恢复 fresh snapshot/replay 语义。
@@ -68,7 +70,7 @@ flowchart LR
 
 ## 6. 健康与回退
 
-- `DASHBOARD_RUNTIME_PROJECTION_MODE=auto|legacy` 控制 Dashboard 投影路径；默认 `auto`。
+- typed runtime mutation bus 是 Dashboard 与 Prompt Cache 的唯一生产热路径；`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 和 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 不再可用，不能重新启用完整记录广播或全窗 topic 重建。
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
 - `PROXY_SQLITE_WRITE_COORDINATOR_MODE=coordinated|legacy` 控制代理热写协调器；默认 `coordinated`，legacy 只保留一个发布周期用于显式回滚。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。

@@ -3,6 +3,7 @@ use super::*;
 pub(crate) async fn run() -> Result<()> {
     dotenv().ok();
     dotenvy::from_filename(".env.local").ok();
+    RuntimeProjectionMode::reject_removed_legacy_env()?;
     init_tracing();
     let startup_started_at = Instant::now();
 
@@ -124,7 +125,7 @@ pub(crate) async fn run() -> Result<()> {
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
     let proxy_runtime_invocations =
-        Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::from_env()?));
+        Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
     let dashboard_network_speed_cache =
         Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
     proxy_runtime_invocations
@@ -138,6 +139,7 @@ pub(crate) async fn run() -> Result<()> {
         pool.clone(),
         shutdown.clone(),
         prompt_cache_conversation_cache.clone(),
+        pricing_catalog.clone(),
         &config.database_path,
     );
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
@@ -146,6 +148,7 @@ pub(crate) async fn run() -> Result<()> {
     sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
     let subscription_hub = Arc::new(SubscriptionHub::new());
+    terminal_projection_hub.set_runtime_mutation_bus(subscription_hub.runtime_mutation_bus());
 
     let state = Arc::new(AppState {
         config: config.clone(),

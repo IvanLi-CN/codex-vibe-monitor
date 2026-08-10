@@ -1,4 +1,5 @@
 use super::*;
+use crate::db_pressure::{DbPressureDenyReason, DbPressureGate};
 use axum::http::header;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -6,9 +7,10 @@ use serde::ser::{SerializeSeq, SerializeStruct};
 use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
-    Mutex as StdMutex, OnceLock,
+    Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
 };
+use tokio::sync::Notify;
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -36,15 +38,10 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
-
-fn prompt_cache_topic_projection_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        !std::env::var("PROMPT_CACHE_TOPIC_PROJECTION_MODE")
-            .ok()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("legacy"))
-    })
-}
+const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
+const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
+const RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -214,10 +211,14 @@ impl SerializedTopicFrame {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardTopicTopologyCounterSnapshot {
+    pub(crate) active_subscriber_count: u64,
+    pub(crate) builder_count: u64,
     pub(crate) materialization_count: u64,
     pub(crate) serialization_count: u64,
     pub(crate) payload_clone_count: u64,
     pub(crate) frame_bytes_count: u64,
+    pub(crate) frame_reused: u64,
+    pub(crate) cursor_advanced: u64,
     pub(crate) lagged_count: u64,
     pub(crate) skipped_count: u64,
     pub(crate) business_payload_count: u64,
@@ -235,10 +236,14 @@ pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
 
 #[derive(Debug, Default)]
 struct DashboardTopicTopologyCounters {
+    active_subscriber_count: AtomicU64,
+    builder_count: AtomicU64,
     materialization_count: AtomicU64,
     serialization_count: AtomicU64,
     payload_clone_count: AtomicU64,
     frame_bytes_count: AtomicU64,
+    frame_reused: AtomicU64,
+    cursor_advanced: AtomicU64,
     lagged_count: AtomicU64,
     skipped_count: AtomicU64,
     business_payload_count: AtomicU64,
@@ -248,10 +253,14 @@ struct DashboardTopicTopologyCounters {
 impl DashboardTopicTopologyCounters {
     fn snapshot(&self) -> DashboardTopicTopologyCounterSnapshot {
         DashboardTopicTopologyCounterSnapshot {
+            active_subscriber_count: self.active_subscriber_count.load(Ordering::Relaxed),
+            builder_count: self.builder_count.load(Ordering::Relaxed),
             materialization_count: self.materialization_count.load(Ordering::Relaxed),
             serialization_count: self.serialization_count.load(Ordering::Relaxed),
             payload_clone_count: self.payload_clone_count.load(Ordering::Relaxed),
             frame_bytes_count: self.frame_bytes_count.load(Ordering::Relaxed),
+            frame_reused: self.frame_reused.load(Ordering::Relaxed),
+            cursor_advanced: self.cursor_advanced.load(Ordering::Relaxed),
             lagged_count: self.lagged_count.load(Ordering::Relaxed),
             skipped_count: self.skipped_count.load(Ordering::Relaxed),
             business_payload_count: self.business_payload_count.load(Ordering::Relaxed),
@@ -261,10 +270,13 @@ impl DashboardTopicTopologyCounters {
 
     #[cfg(test)]
     fn reset(&self) {
+        self.builder_count.store(0, Ordering::Relaxed);
         self.materialization_count.store(0, Ordering::Relaxed);
         self.serialization_count.store(0, Ordering::Relaxed);
         self.payload_clone_count.store(0, Ordering::Relaxed);
         self.frame_bytes_count.store(0, Ordering::Relaxed);
+        self.frame_reused.store(0, Ordering::Relaxed);
+        self.cursor_advanced.store(0, Ordering::Relaxed);
         self.lagged_count.store(0, Ordering::Relaxed);
         self.skipped_count.store(0, Ordering::Relaxed);
         self.business_payload_count.store(0, Ordering::Relaxed);
@@ -291,8 +303,17 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
-    fn record_materialization(&self, topic_name: &str) {
+    fn set_active_subscriber_count(&self, topic_name: &str, count: usize) {
         if let Some(topic) = self.for_topic(topic_name) {
+            topic
+                .active_subscriber_count
+                .store(count as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_builder(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.builder_count.fetch_add(1, Ordering::Relaxed);
             topic.materialization_count.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -303,6 +324,27 @@ impl DashboardDeliveryTopologyCounters {
             topic
                 .frame_bytes_count
                 .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_frame_reused(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.frame_reused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_shared_frame_delivery(&self, topic_name: &str) {
+        let Some(topic) = self.for_topic(topic_name) else {
+            return;
+        };
+        if topic.active_subscriber_count.load(Ordering::Relaxed) > 1 {
+            topic.frame_reused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_cursor_advanced(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.cursor_advanced.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -371,6 +413,10 @@ pub(crate) struct PromptCacheTopicProjectionHealthSnapshot {
     pub(crate) mode: String,
     pub(crate) active_topic_count: u64,
     pub(crate) dirty_key_count: u64,
+    pub(crate) dirty_last_good_topic_count: u64,
+    pub(crate) pressure_deferred_topic_count: u64,
+    pub(crate) failed_or_stale_topic_count: u64,
+    pub(crate) recovery_state: String,
     pub(crate) coalesced_event_count: u64,
     pub(crate) full_hydration_count: u64,
     pub(crate) bounded_key_hydration_count: u64,
@@ -388,6 +434,8 @@ type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFrame
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
+    runtime_mutation_bus: Arc<RuntimeMutationBus>,
+    runtime_topic_recovery_notify: Arc<Notify>,
     serialization_count: AtomicU64,
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
     #[cfg(test)]
@@ -398,6 +446,7 @@ pub(crate) struct SubscriptionHub {
 struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
     active_topics: HashMap<String, SubscriptionTopic>,
+    active_topic_dependencies: HashMap<RuntimeTopicDependency, HashSet<String>>,
     active_subscribers: HashMap<String, usize>,
     active_topic_names: HashMap<String, usize>,
     dashboard_live_subscriber_count: usize,
@@ -407,6 +456,10 @@ struct SubscriptionHubState {
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
+    runtime_topic_recovery_generation: u64,
+    runtime_topic_recovery_queue: VecDeque<(String, u64)>,
+    runtime_topic_recovery_queued: HashSet<String>,
+    runtime_topic_recovery_running: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -421,11 +474,14 @@ struct CachedSubscriptionTopic {
     conversation_overview_refresh_in_flight: bool,
     conversation_overview_refresh_pending: bool,
     dirty: bool,
+    runtime_topic_recovery_generation: u64,
+    runtime_topic_recovery_retry_at: Option<Instant>,
     summary_refresh_scheduled: bool,
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
     prompt_cache_refresh_scheduled: bool,
+    prompt_cache_reconcile_scheduled: bool,
     prompt_cache_pending_records: BTreeMap<String, PromptCacheTopicDelta>,
     prompt_cache_applied_terminal_ids: HashSet<String>,
     prompt_cache_coalesced_event_count: u64,
@@ -435,6 +491,7 @@ struct CachedSubscriptionTopic {
     prompt_cache_baseline_row_id: i64,
     prompt_cache_response_source: &'static str,
     prompt_cache_reconcile_required: bool,
+    prompt_cache_pressure_deferred: bool,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
     continuity_reset_cursor: Option<u64>,
@@ -449,12 +506,34 @@ struct CachedSubscriptionTopic {
 }
 
 #[derive(Debug, Clone)]
+struct RuntimeTopicWork {
+    topic: SubscriptionTopic,
+    terminal_event_count: u64,
+    includes_invocation_mutation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RuntimeTopicDependency {
+    Invocation,
+    PromptCacheProjection,
+    PromptCacheWindow,
+    PromptCacheStickyWindow,
+    Attempt(String),
+    Binding(String),
+    HistoryPromptCacheKey(String),
+    HistoryStickyKey(String),
+    StickyRoute(String),
+}
+
+#[derive(Debug, Clone)]
 struct PromptCacheTopicDelta {
     row_id: i64,
     identity: String,
+    invoke_id: String,
     prompt_cache_key: Option<String>,
     sticky_key: Option<String>,
-    occurred_at: Value,
+    occurred_at: String,
+    is_runtime_removed: bool,
     status: String,
     is_terminal: bool,
     is_success: bool,
@@ -462,7 +541,7 @@ struct PromptCacheTopicDelta {
     cost: f64,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
-    preview: Value,
+    preview: Option<PromptCacheConversationInvocationPreviewResponse>,
 }
 
 struct PromptCacheBaselineBuild {
@@ -471,56 +550,77 @@ struct PromptCacheBaselineBuild {
 }
 
 impl PromptCacheTopicDelta {
+    #[cfg(test)]
     fn from_record(record: &ApiInvocation) -> Result<Option<Self>, ApiError> {
-        let prompt_cache_key = record
-            .prompt_cache_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string);
-        let sticky_key = record
-            .sticky_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string);
-        if prompt_cache_key.is_none() && sticky_key.is_none() {
-            return Ok(None);
+        Ok(PromptCacheRuntimeProjection::from_record(record)
+            .as_ref()
+            .and_then(Self::from_runtime_projection))
+    }
+
+    fn from_runtime_mutation(
+        mutation: &RuntimeInvocationMutation,
+        runtime_projection: Option<&PromptCacheRuntimeProjection>,
+    ) -> Result<Option<Self>, ApiError> {
+        if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+            return Ok(Self::from_runtime_removal(mutation));
         }
-        let preview_key = prompt_cache_key
-            .clone()
-            .or_else(|| sticky_key.clone())
-            .expect("at least one prompt cache identity");
-        let preview = serde_json::to_value(prompt_cache_invocation_preview_from_runtime_record(
-            record,
-            preview_key,
-        ))?;
-        let occurred_at = preview
-            .get("occurredAt")
-            .cloned()
-            .unwrap_or_else(|| Value::String(record.occurred_at.clone()));
-        let status = record
-            .status
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        Ok(Some(Self {
-            row_id: record.id,
-            identity: format!("{}\0{}", record.invoke_id, record.occurred_at),
-            prompt_cache_key,
-            sticky_key,
-            occurred_at,
+        Ok(runtime_projection.and_then(Self::from_runtime_projection))
+    }
+
+    fn from_runtime_projection(projection: &PromptCacheRuntimeProjection) -> Option<Self> {
+        let preview = projection.preview.clone();
+        let status = preview.status.clone();
+        Some(Self {
+            row_id: projection.row_id,
+            identity: format!("{}\0{}", preview.invoke_id, preview.occurred_at),
+            invoke_id: preview.invoke_id.clone(),
+            prompt_cache_key: projection.prompt_cache_key.clone(),
+            sticky_key: projection.sticky_key.clone(),
+            occurred_at: parse_to_utc_datetime(&preview.occurred_at)
+                .map(format_utc_iso)
+                .unwrap_or_else(|| preview.occurred_at.clone()),
+            is_runtime_removed: false,
             is_terminal: prompt_invocation_status_counts_toward_terminal_totals(Some(&status)),
             is_success: prompt_invocation_status_is_success_like(
                 Some(&status),
-                record.error_message.as_deref(),
+                preview.error_message.as_deref(),
             ),
             status,
-            request_tokens: record.total_tokens.unwrap_or_default().max(0),
-            cost: record.cost.unwrap_or_default(),
-            upstream_account_id: record.upstream_account_id,
-            upstream_account_name: record.upstream_account_name.clone(),
-            preview,
-        }))
+            request_tokens: preview.total_tokens.max(0),
+            cost: preview.cost.unwrap_or_default(),
+            upstream_account_id: preview.upstream_account_id,
+            upstream_account_name: preview.upstream_account_name.clone(),
+            preview: Some(preview),
+        })
+    }
+
+    fn from_runtime_removal(mutation: &RuntimeInvocationMutation) -> Option<Self> {
+        if mutation.prompt_cache_key.is_none() && mutation.sticky_key.is_none() {
+            return None;
+        }
+        let occurred_at = parse_to_utc_datetime(&mutation.identity.occurred_at)
+            .map(format_utc_iso)
+            .unwrap_or_else(|| mutation.identity.occurred_at.clone());
+        Some(Self {
+            row_id: mutation.row_id.unwrap_or_default(),
+            identity: format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            ),
+            invoke_id: mutation.identity.invoke_id.clone(),
+            prompt_cache_key: mutation.prompt_cache_key.clone(),
+            sticky_key: mutation.sticky_key.clone(),
+            occurred_at,
+            is_runtime_removed: true,
+            status: "unknown".to_string(),
+            is_terminal: mutation.is_terminal,
+            is_success: false,
+            request_tokens: 0,
+            cost: 0.0,
+            upstream_account_id: mutation.upstream_account_id,
+            upstream_account_name: None,
+            preview: None,
+        })
     }
 }
 
@@ -1126,6 +1226,26 @@ impl ConversationSubscriptionScope {
         }
     }
 
+    fn matches_runtime_mutation(&self, mutation: &RuntimeInvocationMutation) -> bool {
+        match self {
+            Self::PromptCacheKey(prompt_cache_key) => mutation
+                .prompt_cache_key
+                .as_deref()
+                .is_some_and(|value| value == prompt_cache_key),
+            Self::StickyKey {
+                sticky_key,
+                upstream_account_id,
+            } => {
+                mutation
+                    .sticky_key
+                    .as_deref()
+                    .or(mutation.prompt_cache_key.as_deref())
+                    .is_some_and(|value| value == sticky_key)
+                    && mutation.upstream_account_id == Some(*upstream_account_id)
+            }
+        }
+    }
+
     fn matches_sticky_route_change(
         &self,
         sticky_key: &str,
@@ -1201,23 +1321,21 @@ impl SubscriptionHub {
             )
         });
         let mut snapshot = PromptCacheTopicProjectionHealthSnapshot {
-            mode: if prompt_cache_topic_projection_enabled() {
-                "memory".to_string()
-            } else {
-                "legacy".to_string()
-            },
+            mode: "memory".to_string(),
             response_source: "memory".to_string(),
+            recovery_state: "healthy".to_string(),
             ..PromptCacheTopicProjectionHealthSnapshot::default()
         };
         for (topic_key, cached) in prompt_topics {
-            snapshot.active_topic_count = snapshot.active_topic_count.saturating_add(u64::from(
-                guard
-                    .active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    > 0,
-            ));
+            let active = guard
+                .active_subscribers
+                .get(topic_key)
+                .copied()
+                .unwrap_or_default()
+                > 0;
+            snapshot.active_topic_count = snapshot
+                .active_topic_count
+                .saturating_add(u64::from(active));
             snapshot.dirty_key_count = snapshot
                 .dirty_key_count
                 .saturating_add(cached.prompt_cache_pending_records.len() as u64);
@@ -1240,12 +1358,29 @@ impl SubscriptionHub {
                     .map(|started| started.elapsed().as_millis() as u64)
                     .unwrap_or_default(),
             );
-            if cached.dirty {
+            if active && cached.dirty {
+                snapshot.dirty_last_good_topic_count =
+                    snapshot.dirty_last_good_topic_count.saturating_add(1);
+                if cached.prompt_cache_pressure_deferred {
+                    snapshot.pressure_deferred_topic_count =
+                        snapshot.pressure_deferred_topic_count.saturating_add(1);
+                } else {
+                    snapshot.failed_or_stale_topic_count =
+                        snapshot.failed_or_stale_topic_count.saturating_add(1);
+                }
                 snapshot.response_source = "dirty_last_good".to_string();
             } else if cached.prompt_cache_response_source != "memory" {
                 snapshot.response_source = cached.prompt_cache_response_source.to_string();
             }
         }
+        snapshot.recovery_state = if snapshot.failed_or_stale_topic_count > 0 {
+            "failed_or_stale"
+        } else if snapshot.pressure_deferred_topic_count > 0 {
+            "pressure_deferred"
+        } else {
+            "healthy"
+        }
+        .to_string();
         snapshot
     }
 
@@ -1254,6 +1389,8 @@ impl SubscriptionHub {
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
             broadcaster,
+            runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
+            runtime_topic_recovery_notify: Arc::new(Notify::new()),
             serialization_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
             #[cfg(test)]
@@ -1263,6 +1400,18 @@ impl SubscriptionHub {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
         self.broadcaster.subscribe()
+    }
+
+    pub(crate) fn publish_runtime_mutation(&self, mutation: RuntimeMutation) {
+        self.runtime_mutation_bus.publish(mutation);
+    }
+
+    pub(crate) fn runtime_mutation_bus_health(&self) -> RuntimeMutationBusHealth {
+        self.runtime_mutation_bus.health()
+    }
+
+    pub(crate) fn runtime_mutation_bus(&self) -> Arc<RuntimeMutationBus> {
+        self.runtime_mutation_bus.clone()
     }
 
     fn serialize_frame(
@@ -1278,6 +1427,8 @@ impl SubscriptionHub {
         self.serialization_count.fetch_add(1, Ordering::Relaxed);
         self.dashboard_topology_counters
             .record_serialization(&frame.descriptor.topic, frame.retained_bytes());
+        self.dashboard_topology_counters
+            .record_cursor_advanced(&frame.descriptor.topic);
         Ok(frame)
     }
 
@@ -1292,6 +1443,11 @@ impl SubscriptionHub {
 
     pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
         self.dashboard_topology_counters.has_degraded_signal()
+    }
+
+    fn record_dashboard_topology_frame_delivery(&self, frame: &SerializedTopicFrame) {
+        self.dashboard_topology_counters
+            .record_shared_frame_delivery(&frame.descriptor.topic);
     }
 
     #[cfg(test)]
@@ -1405,6 +1561,95 @@ impl SubscriptionHub {
         guard.dashboard_live_subscriber_count > 0
     }
 
+    fn register_active_topic_dependencies(
+        guard: &mut SubscriptionHubState,
+        topic_key: &str,
+        topic: &SubscriptionTopic,
+    ) {
+        for dependency in topic.runtime_topic_dependencies() {
+            guard
+                .active_topic_dependencies
+                .entry(dependency)
+                .or_default()
+                .insert(topic_key.to_string());
+        }
+    }
+
+    fn release_active_topic_dependencies(
+        guard: &mut SubscriptionHubState,
+        topic_key: &str,
+        topic: &SubscriptionTopic,
+    ) {
+        for dependency in topic.runtime_topic_dependencies() {
+            let Some(topic_keys) = guard.active_topic_dependencies.get_mut(&dependency) else {
+                continue;
+            };
+            topic_keys.remove(topic_key);
+            if topic_keys.is_empty() {
+                guard.active_topic_dependencies.remove(&dependency);
+            }
+        }
+    }
+
+    fn active_topic_keys_for_dependency(
+        guard: &SubscriptionHubState,
+        dependency: &RuntimeTopicDependency,
+    ) -> Vec<String> {
+        guard
+            .active_topic_dependencies
+            .get(dependency)
+            .map(|topic_keys| topic_keys.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn collect_runtime_topic_work(
+        guard: &SubscriptionHubState,
+        mutations: &[SequencedRuntimeMutation],
+    ) -> Vec<RuntimeTopicWork> {
+        let candidate_topic_keys = mutations
+            .iter()
+            .flat_map(|mutation| mutation.mutation.topic_dependencies())
+            .flat_map(|dependency| Self::active_topic_keys_for_dependency(guard, &dependency))
+            .collect::<HashSet<_>>();
+
+        candidate_topic_keys
+            .into_iter()
+            .filter_map(|topic_key| {
+                let topic = guard.active_topics.get(&topic_key)?;
+                if guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                    || guard
+                        .topics
+                        .get(&topic_key)
+                        .is_some_and(|cached| cached.dirty)
+                    || !mutations
+                        .iter()
+                        .any(|mutation| topic.is_affected_by_runtime_mutation(&mutation.mutation))
+                {
+                    return None;
+                }
+                Some(RuntimeTopicWork {
+                    topic: topic.clone(),
+                    terminal_event_count: mutations
+                        .iter()
+                        .filter(|mutation| {
+                            topic.is_affected_by_runtime_mutation(&mutation.mutation)
+                                && mutation.mutation.is_terminal_invocation()
+                        })
+                        .count() as u64,
+                    includes_invocation_mutation: mutations.iter().any(|mutation| {
+                        topic.is_affected_by_runtime_mutation(&mutation.mutation)
+                            && mutation.mutation.is_invocation()
+                    }),
+                })
+            })
+            .collect()
+    }
+
     async fn register_topic_subscribers(
         self: &Arc<Self>,
         topics: &[SubscriptionTopic],
@@ -1430,13 +1675,26 @@ impl SubscriptionHub {
         let mut guard = self.state.lock().await;
         for topic in topics {
             let topic_key = topic.cache_key()?;
-            guard.active_topics.insert(topic_key, topic.clone());
+            guard.active_topics.insert(topic_key.clone(), topic.clone());
+            Self::register_active_topic_dependencies(&mut guard, &topic_key, topic);
         }
         for topic_key in &topic_keys {
-            *guard
-                .active_subscribers
-                .entry(topic_key.clone())
-                .or_insert(0) += 1;
+            let active_subscriber_count = {
+                let count = guard
+                    .active_subscribers
+                    .entry(topic_key.clone())
+                    .or_insert(0);
+                *count += 1;
+                *count
+            };
+            if let Some(topic) = guard.active_topics.get(topic_key) {
+                self.dashboard_topology_counters
+                    .set_active_subscriber_count(topic.name(), active_subscriber_count);
+                if active_subscriber_count > 1 && guard.topics.contains_key(topic_key) {
+                    self.dashboard_topology_counters
+                        .record_frame_reused(topic.name());
+                }
+            }
         }
         for topic_name in &topic_names {
             *guard
@@ -1482,10 +1740,30 @@ impl SubscriptionHub {
             .map(|(topic_key, _)| topic_key.clone())
             .collect::<Vec<_>>();
         for topic_key in &topic_keys {
-            *guard
-                .active_subscribers
-                .entry(topic_key.clone())
-                .or_insert(0) += 1;
+            if let Some(topic) = guard
+                .topics
+                .get(topic_key)
+                .map(|cached| cached.topic.clone())
+            {
+                guard.active_topics.insert(topic_key.clone(), topic.clone());
+                Self::register_active_topic_dependencies(&mut guard, topic_key, &topic);
+            }
+            let active_subscriber_count = {
+                let count = guard
+                    .active_subscribers
+                    .entry(topic_key.clone())
+                    .or_insert(0);
+                *count += 1;
+                *count
+            };
+            if let Some(topic) = guard.active_topics.get(topic_key) {
+                self.dashboard_topology_counters
+                    .set_active_subscriber_count(topic.name(), active_subscriber_count);
+                if active_subscriber_count > 1 && guard.topics.contains_key(topic_key) {
+                    self.dashboard_topology_counters
+                        .record_frame_reused(topic.name());
+                }
+            }
         }
         TopicSubscriptionLease {
             hub: self.clone(),
@@ -1503,27 +1781,52 @@ impl SubscriptionHub {
     ) {
         let mut guard = self.state.lock().await;
         for topic_key in topic_keys {
-            match guard.active_subscribers.get_mut(&topic_key) {
-                Some(count) if *count > 1 => *count -= 1,
+            let topic_name = guard
+                .active_topics
+                .get(&topic_key)
+                .or_else(|| guard.topics.get(&topic_key).map(|cached| &cached.topic))
+                .map(|topic| topic.name());
+            let active_subscriber_count = match guard.active_subscribers.get_mut(&topic_key) {
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    *count
+                }
                 Some(_) => {
                     guard.active_subscribers.remove(&topic_key);
-                    guard.active_topics.remove(&topic_key);
+                    if let Some(topic) = guard.active_topics.remove(&topic_key) {
+                        Self::release_active_topic_dependencies(&mut guard, &topic_key, &topic);
+                    }
                     guard.prompt_cache_prebaseline_records.remove(&topic_key);
-                    if let Some(cached) = guard.topics.get_mut(&topic_key)
-                        && matches!(
+                    guard.runtime_topic_recovery_generation =
+                        guard.runtime_topic_recovery_generation.saturating_add(1);
+                    let recovery_generation = guard.runtime_topic_recovery_generation;
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        // A disconnected owner cannot consume the mutation stream. Rebuild this
+                        // selection before it can resume instead of scanning retained caches for
+                        // every runtime event.
+                        cached.dirty = true;
+                        cached.runtime_topic_recovery_generation = recovery_generation;
+                        cached.runtime_topic_recovery_retry_at = None;
+                        cached.refresh_scheduled = false;
+                        cached.latest_live_snapshot = None;
+                        if matches!(
                             cached.topic,
                             SubscriptionTopic::PromptCacheWindow { .. }
                                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
-                        )
-                    {
-                        cached.prompt_cache_pending_records.clear();
-                        cached.prompt_cache_applied_terminal_ids.clear();
-                        cached.prompt_cache_refresh_scheduled = false;
-                        cached.prompt_cache_baseline_at = None;
-                        cached.dirty = true;
+                        ) {
+                            cached.prompt_cache_pending_records.clear();
+                            cached.prompt_cache_applied_terminal_ids.clear();
+                            cached.prompt_cache_refresh_scheduled = false;
+                            cached.prompt_cache_baseline_at = None;
+                        }
                     }
+                    0
                 }
-                None => {}
+                None => 0,
+            };
+            if let Some(topic_name) = topic_name {
+                self.dashboard_topology_counters
+                    .set_active_subscriber_count(topic_name, active_subscriber_count);
             }
         }
         for topic_name in topic_names {
@@ -1716,6 +2019,10 @@ impl SubscriptionHub {
                     });
                 }
             }
+            if cached.dirty {
+                self.schedule_dirty_topic_recovery(state.clone(), topic.clone())
+                    .await;
+            }
         }
 
         Ok(PreparedSubscriptionConnection {
@@ -1791,14 +2098,53 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
         let topic_key = topic.cache_key()?;
-        if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned()
-            && !existing.dirty
-            && (!topic.is_closed_summary_topic()
-                || existing.calendar_anchor == subscription_calendar_anchor(&topic))
+        let (existing, has_active_owner) = {
+            let guard = self.state.lock().await;
+            (
+                guard.topics.get(&topic_key).cloned(),
+                guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0,
+            )
+        };
+        if let Some(existing) = existing
+            && ((has_active_owner
+                && existing.dirty
+                && !existing
+                    .dashboard_materializer
+                    .as_ref()
+                    .is_some_and(DashboardTopicMaterializer::requires_terminal_window_rebase))
+                || (!existing.dirty
+                    && (!topic.is_closed_summary_topic()
+                        || existing.calendar_anchor == subscription_calendar_anchor(&topic))))
         {
             return Ok(existing);
         }
-        self.refresh_topic(state, topic, false).await
+        if !has_active_owner {
+            #[cfg(test)]
+            return self.refresh_topic(state, topic, false).await;
+            #[cfg(not(test))]
+            return Err(ApiError::from(anyhow!(
+                "subscription topic setup requires an active owner"
+            )));
+        }
+        for _ in 0..SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS {
+            if let Some(cached) = self
+                .refresh_topic_if_active(state.clone(), topic.clone(), false)
+                .await?
+            {
+                return Ok(cached);
+            }
+            if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned() {
+                return Ok(existing);
+            }
+        }
+        Err(ApiError::from(anyhow!(
+            "subscription topic changed before its bounded initial snapshot was ready"
+        )))
     }
 
     async fn refresh_topic(
@@ -1895,6 +2241,28 @@ impl SubscriptionHub {
             SubscriptionTopic::PromptCacheWindow { .. }
                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
         );
+        // A recovery or owner disconnect may happen while a cold build is in flight. Capture
+        // the cache generation before building so an old result can never clear newer dirty
+        // state or replace the retained last-good frame.
+        let (refresh_generation, refresh_had_cached_topic) = if require_active_owner {
+            let guard = self.state.lock().await;
+            if guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                == 0
+            {
+                return Ok(None);
+            }
+            guard
+                .topics
+                .get(&topic_key)
+                .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
+                .unwrap_or((Some(guard.runtime_topic_recovery_generation), false))
+        } else {
+            (None, false)
+        };
         let (mut built_payload, prompt_cache_build) = if is_prompt_cache_topic {
             let (payload, build) = self
                 .build_prompt_cache_consistent_baseline(state.clone(), &topic)
@@ -1904,24 +2272,38 @@ impl SubscriptionHub {
             (topic.build_cached_payload(state.clone()).await?, None)
         };
         self.dashboard_topology_counters
-            .record_materialization(topic.name());
+            .record_builder(topic.name());
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
-            if require_active_owner
-                && guard
+            if require_active_owner {
+                let active = guard
                     .active_subscribers
                     .get(&topic_key)
                     .copied()
                     .unwrap_or_default()
-                    == 0
-            {
-                if let Some(cached) = guard.topics.get_mut(&topic_key) {
-                    cached.dirty = true;
-                    cached.refresh_scheduled = false;
-                    cached.latest_live_snapshot = None;
+                    > 0;
+                let generation_matches = if refresh_had_cached_topic {
+                    guard.topics.get(&topic_key).is_some_and(|cached| {
+                        Some(cached.runtime_topic_recovery_generation) == refresh_generation
+                    })
+                } else {
+                    Some(guard.runtime_topic_recovery_generation) == refresh_generation
+                        && guard.topics.get(&topic_key).is_none_or(|cached| {
+                            Some(cached.runtime_topic_recovery_generation) == refresh_generation
+                        })
+                };
+                if !active || !generation_matches {
+                    // A newer gap or owner generation owns the cache now. Only the owner that
+                    // observed this generation may dirty it; never invalidate a newer clean
+                    // frame committed by a reconnecting subscriber.
+                    if !active && let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                        cached.refresh_scheduled = false;
+                        cached.latest_live_snapshot = None;
+                    }
+                    return Ok(None);
                 }
-                return Ok(None);
             }
             if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
                 && let Some(live) = guard
@@ -1982,6 +2364,7 @@ impl SubscriptionHub {
                 {
                     existing.dirty = false;
                     existing.refresh_scheduled = false;
+                    existing.runtime_topic_recovery_retry_at = None;
                     existing.snapshot_built_at = Instant::now();
                     existing.dashboard_materializer = refreshed_dashboard_materializer.clone();
                     existing.dashboard_base_revision = existing.cursor;
@@ -1999,6 +2382,8 @@ impl SubscriptionHub {
                     return Ok(Some(existing.clone()));
                 }
                 if reuse_unchanged_cached_topic(existing, &serialized_payload).is_some() {
+                    self.dashboard_topology_counters
+                        .record_frame_reused(topic.name());
                     if let Some(build) = &prompt_cache_build {
                         existing.prompt_cache_full_hydration_count =
                             existing.prompt_cache_full_hydration_count.saturating_add(1);
@@ -2058,6 +2443,13 @@ impl SubscriptionHub {
                     .get(&topic_key)
                     .is_some_and(|entry| entry.conversation_overview_refresh_pending),
                 dirty: false,
+                runtime_topic_recovery_generation: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(guard.runtime_topic_recovery_generation, |entry| {
+                        entry.runtime_topic_recovery_generation
+                    }),
+                runtime_topic_recovery_retry_at: None,
                 summary_refresh_scheduled: guard
                     .topics
                     .get(&topic_key)
@@ -2078,6 +2470,10 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .is_some_and(|entry| entry.prompt_cache_refresh_scheduled),
+                prompt_cache_reconcile_scheduled: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.prompt_cache_reconcile_scheduled),
                 prompt_cache_pending_records: BTreeMap::new(),
                 prompt_cache_applied_terminal_ids: if matches!(
                     topic,
@@ -2116,6 +2512,7 @@ impl SubscriptionHub {
                     "initial_baseline"
                 },
                 prompt_cache_reconcile_required: false,
+                prompt_cache_pressure_deferred: false,
                 latest_live_snapshot: guard
                     .topics
                     .get(&topic_key)
@@ -2316,12 +2713,14 @@ impl SubscriptionHub {
             }
             if cached.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice() {
                 cached.dashboard_materialized_revision = Some(pending.revision);
+                self.dashboard_topology_counters
+                    .record_frame_reused(pending.topic_name);
                 return Ok(());
             }
 
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
-                .record_materialization(pending.topic_name);
+                .record_builder(pending.topic_name);
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
@@ -2345,6 +2744,387 @@ impl SubscriptionHub {
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
+    }
+
+    async fn handle_runtime_mutation_batch(
+        &self,
+        state: Arc<AppState>,
+        mutations: Vec<SequencedRuntimeMutation>,
+    ) {
+        let received_count = mutations.len();
+        let mutations = coalesce_runtime_mutations(mutations);
+        if mutations.is_empty() {
+            return;
+        }
+        self.runtime_mutation_bus
+            .record_router_batch(received_count, mutations.len());
+        self.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+
+        for mutation in &mutations {
+            match &mutation.mutation {
+                RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_binding_projection(state.clone(), prompt_cache_key)
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            prompt_cache_key,
+                            "failed to apply bounded prompt cache binding projection"
+                        );
+                    }
+                }
+                RuntimeMutation::StickyRouteChanged {
+                    sticky_key,
+                    previous_upstream_account_id,
+                    upstream_account_id,
+                } => {
+                    if let Err(err) = self
+                        .apply_prompt_cache_sticky_route_projection(
+                            state.clone(),
+                            sticky_key,
+                            *previous_upstream_account_id,
+                            *upstream_account_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            sticky_key, "failed to apply prompt cache sticky route projection"
+                        );
+                    }
+                }
+                RuntimeMutation::Invocation(_) | RuntimeMutation::AttemptChanged { .. } => {}
+            }
+        }
+
+        // The dependency index contains only active selections. Disconnection removes a topic
+        // from the index and leaves its retained frame dirty, so the router never scans retained
+        // caches or clones a runtime event into the hot path.
+        let affected = {
+            let guard = self.state.lock().await;
+            Self::collect_runtime_topic_work(&guard, &mutations)
+        };
+        self.runtime_mutation_bus.record_topic_work(affected.len());
+
+        for work in affected {
+            // Dashboard activity, summary, and network are materialized by their dedicated
+            // runtime projection slices. A generic mutation must never send them back through
+            // the DB-backed topic builder.
+            if work.topic.uses_summary_live_overlay()
+                || work.topic.uses_dashboard_activity_live_overlay()
+                || work.topic.uses_dashboard_network_live_snapshot()
+            {
+                continue;
+            }
+            if work.topic.uses_summary_topic_refresh() && work.terminal_event_count > 0 {
+                if let Err(err) = self
+                    .schedule_summary_topic_refresh(
+                        state.clone(),
+                        work.topic.clone(),
+                        work.terminal_event_count,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule summary topic refresh"
+                    );
+                }
+                continue;
+            }
+            if work.topic.uses_conversation_overview_refresh() && work.includes_invocation_mutation
+            {
+                if let Err(err) = self
+                    .schedule_conversation_overview_topic_refresh(state.clone(), work.topic.clone())
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule conversation overview topic refresh"
+                    );
+                }
+                continue;
+            }
+            if let Err(err) = self
+                .refresh_topic_if_active(state.clone(), work.topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %work.topic.name(),
+                    "failed to refresh subscription topic after typed runtime mutation"
+                );
+            }
+        }
+    }
+
+    async fn mark_runtime_mutation_gap_and_recover(
+        &self,
+        state: Arc<AppState>,
+        skipped: u64,
+        reason: &'static str,
+    ) {
+        let (active_topic_count, recovery_scheduled) = {
+            let mut guard = self.state.lock().await;
+            guard.runtime_topic_recovery_generation =
+                guard.runtime_topic_recovery_generation.saturating_add(1);
+            let recovery_generation = guard.runtime_topic_recovery_generation;
+            let active_topic_keys = guard
+                .active_topics
+                .iter()
+                .filter(|(topic_key, _)| {
+                    guard
+                        .active_subscribers
+                        .get(*topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        > 0
+                })
+                .map(|(topic_key, _)| topic_key.clone())
+                .collect::<Vec<_>>();
+            for topic_key in &active_topic_keys {
+                let Some(cached) = guard.topics.get_mut(topic_key) else {
+                    continue;
+                };
+                cached.dirty = true;
+                cached.refresh_scheduled = false;
+                cached.latest_live_snapshot = None;
+                cached.continuity_reset_cursor = Some(cached.cursor);
+                cached.runtime_topic_recovery_generation = recovery_generation;
+                cached.runtime_topic_recovery_retry_at = None;
+                if matches!(
+                    cached.topic,
+                    SubscriptionTopic::PromptCacheWindow { .. }
+                        | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                ) {
+                    // Prompt Cache keeps its last-good frame. Its server-push reconciler performs
+                    // the bounded cold rebuild later instead of doing a full window build from
+                    // this cursor-gap handler.
+                    cached.prompt_cache_pending_records.clear();
+                    cached.prompt_cache_refresh_scheduled = false;
+                    cached.prompt_cache_reconcile_required = true;
+                    cached.prompt_cache_pressure_deferred = false;
+                }
+            }
+            let recovery_scheduled = Self::enqueue_runtime_topic_recovery_locked(&mut guard);
+            (active_topic_keys.len(), recovery_scheduled)
+        };
+        warn!(
+            skipped,
+            reason,
+            recovery = "dirty_last_good",
+            active_topic_count,
+            "runtime mutation cursor continuity lost; scheduling bounded topic recovery"
+        );
+        if recovery_scheduled {
+            let hub = state.subscription_hub.clone();
+            tokio::spawn(async move {
+                hub.run_runtime_topic_recovery(state).await;
+            });
+        }
+        self.runtime_topic_recovery_notify.notify_one();
+    }
+
+    async fn schedule_dirty_topic_recovery(&self, state: Arc<AppState>, topic: SubscriptionTopic) {
+        if matches!(
+            &topic,
+            SubscriptionTopic::PromptCacheWindow { .. }
+                | SubscriptionTopic::PromptCacheStickyWindow { .. }
+        ) {
+            if self
+                .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                .await
+            {
+                Self::spawn_prompt_cache_topic_reconcile(state, topic);
+            }
+            return;
+        }
+
+        let recovery_scheduled = {
+            let mut guard = self.state.lock().await;
+            Self::enqueue_runtime_topic_recovery_locked(&mut guard)
+        };
+        if recovery_scheduled {
+            let hub = state.subscription_hub.clone();
+            tokio::spawn(async move {
+                hub.run_runtime_topic_recovery(state).await;
+            });
+        }
+        self.runtime_topic_recovery_notify.notify_one();
+    }
+
+    fn next_runtime_topic_recovery_retry_delay_locked(
+        guard: &SubscriptionHubState,
+    ) -> Option<Duration> {
+        let now = Instant::now();
+        guard
+            .active_topics
+            .iter()
+            .filter_map(|(topic_key, topic)| {
+                if guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                    || matches!(
+                        topic,
+                        SubscriptionTopic::PromptCacheWindow { .. }
+                            | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                    )
+                {
+                    return None;
+                }
+                guard.topics.get(topic_key).and_then(|cached| {
+                    cached
+                        .dirty
+                        .then_some(cached.runtime_topic_recovery_retry_at)?
+                })
+            })
+            .filter(|retry_at| *retry_at > now)
+            .map(|retry_at| retry_at.duration_since(now))
+            .min()
+    }
+
+    fn enqueue_runtime_topic_recovery_locked(guard: &mut SubscriptionHubState) -> bool {
+        let active_topic_keys = guard
+            .active_topics
+            .keys()
+            .filter(|topic_key| {
+                guard
+                    .active_subscribers
+                    .get(*topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for topic_key in active_topic_keys {
+            if guard.runtime_topic_recovery_queue.len() >= RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY {
+                break;
+            }
+            if guard.runtime_topic_recovery_queued.contains(&topic_key) {
+                continue;
+            }
+            let Some(cached) = guard.topics.get(&topic_key) else {
+                continue;
+            };
+            if !cached.dirty
+                || cached
+                    .runtime_topic_recovery_retry_at
+                    .is_some_and(|retry_at| retry_at > Instant::now())
+            {
+                continue;
+            }
+            if matches!(
+                cached.topic,
+                SubscriptionTopic::PromptCacheWindow { .. }
+                    | SubscriptionTopic::PromptCacheStickyWindow { .. }
+            ) {
+                continue;
+            }
+            let recovery_generation = cached.runtime_topic_recovery_generation;
+            guard
+                .runtime_topic_recovery_queued
+                .insert(topic_key.clone());
+            guard
+                .runtime_topic_recovery_queue
+                .push_back((topic_key, recovery_generation));
+        }
+        if guard.runtime_topic_recovery_running || guard.runtime_topic_recovery_queue.is_empty() {
+            return false;
+        }
+        guard.runtime_topic_recovery_running = true;
+        true
+    }
+
+    async fn run_runtime_topic_recovery(self: Arc<Self>, state: Arc<AppState>) {
+        loop {
+            let (topics, retry_delay) = {
+                let mut guard = self.state.lock().await;
+                let mut topics = Vec::with_capacity(RUNTIME_TOPIC_RECOVERY_BATCH_SIZE);
+                while topics.len() < RUNTIME_TOPIC_RECOVERY_BATCH_SIZE {
+                    if guard.runtime_topic_recovery_queue.is_empty() {
+                        Self::enqueue_runtime_topic_recovery_locked(&mut guard);
+                    }
+                    let Some((topic_key, recovery_generation)) =
+                        guard.runtime_topic_recovery_queue.pop_front()
+                    else {
+                        break;
+                    };
+                    guard.runtime_topic_recovery_queued.remove(&topic_key);
+                    if guard
+                        .active_subscribers
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                    {
+                        continue;
+                    }
+                    let Some(cached) = guard.topics.get(&topic_key) else {
+                        continue;
+                    };
+                    if cached.dirty
+                        && cached.runtime_topic_recovery_generation == recovery_generation
+                    {
+                        topics.push(cached.topic.clone());
+                    }
+                }
+                let retry_delay = (topics.is_empty()
+                    && guard.runtime_topic_recovery_queue.is_empty())
+                .then(|| Self::next_runtime_topic_recovery_retry_delay_locked(&guard))
+                .flatten();
+                if topics.is_empty()
+                    && guard.runtime_topic_recovery_queue.is_empty()
+                    && retry_delay.is_none()
+                {
+                    guard.runtime_topic_recovery_running = false;
+                }
+                (topics, retry_delay)
+            };
+            if topics.is_empty() {
+                if let Some(delay) = retry_delay {
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = self.runtime_topic_recovery_notify.notified() => {}
+                    }
+                    continue;
+                }
+                return;
+            }
+            for topic in topics {
+                if let Err(err) = self
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await
+                {
+                    self.defer_runtime_topic_recovery_retry(&topic).await;
+                    warn!(
+                        ?err,
+                        topic = %topic.name(),
+                        recovery = "dirty_last_good",
+                        "bounded runtime mutation recovery retained last-good topic frame"
+                    );
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn defer_runtime_topic_recovery_retry(&self, topic: &SubscriptionTopic) -> Duration {
+        let Ok(topic_key) = topic.cache_key() else {
+            return RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF;
+        };
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+        }
+        RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
     }
 
     pub(crate) async fn handle_internal_broadcast(
@@ -2380,48 +3160,6 @@ impl SubscriptionHub {
             }
             _ => {}
         }
-        if let BroadcastPayload::Records { records } = &payload
-            && prompt_cache_topic_projection_enabled()
-        {
-            self.schedule_prompt_cache_topic_projection(state.clone(), records)
-                .await;
-        }
-        if prompt_cache_topic_projection_enabled() {
-            match &payload {
-                BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => {
-                    if let Err(err) = self
-                        .apply_prompt_cache_binding_projection(state.as_ref(), prompt_cache_key)
-                        .await
-                    {
-                        warn!(
-                            ?err,
-                            prompt_cache_key,
-                            "failed to apply bounded prompt cache binding projection"
-                        );
-                    }
-                }
-                BroadcastPayload::PromptCacheConversationStickyRouteChanged {
-                    sticky_key,
-                    previous_upstream_account_id,
-                    upstream_account_id,
-                } => {
-                    if let Err(err) = self
-                        .apply_prompt_cache_sticky_route_projection(
-                            sticky_key,
-                            *previous_upstream_account_id,
-                            *upstream_account_id,
-                        )
-                        .await
-                    {
-                        warn!(
-                            ?err,
-                            sticky_key, "failed to apply prompt cache sticky route projection"
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();
@@ -2441,6 +3179,12 @@ impl SubscriptionHub {
                         cached.latest_live_snapshot = None;
                         return None;
                     }
+                    if cached.dirty {
+                        // Runtime cursor recovery owns this selection. Retain last-good until
+                        // its bounded work commits instead of allowing another broadcast path
+                        // to publish a partial frame.
+                        return None;
+                    }
                     if matches!(payload, BroadcastPayload::DashboardActivityLive { .. })
                         && (cached.topic.uses_summary_live_overlay()
                             || cached.topic.uses_dashboard_activity_live_overlay())
@@ -2458,19 +3202,6 @@ impl SubscriptionHub {
         };
 
         for cached in affected {
-            if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto
-                && matches!(
-                    &payload,
-                    BroadcastPayload::Records { records }
-                        if records
-                            .iter()
-                            .any(crate::app_state::runtime_store_record_is_terminal)
-                )
-                && (cached.topic.uses_summary_live_overlay()
-                    || cached.topic.uses_dashboard_activity_live_overlay())
-            {
-                continue;
-            }
             if cached.topic.uses_summary_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
             {
@@ -2482,52 +3213,6 @@ impl SubscriptionHub {
                         ?err,
                         topic = %cached.topic.name(),
                         "failed to apply summary live overlay"
-                    );
-                }
-                continue;
-            }
-
-            if cached.topic.uses_summary_topic_refresh()
-                && let BroadcastPayload::Records { records } = &payload
-            {
-                if records
-                    .iter()
-                    .any(crate::app_state::runtime_store_record_is_terminal)
-                    && let Err(err) = self
-                        .schedule_summary_topic_refresh(
-                            state.clone(),
-                            cached.topic.clone(),
-                            records.len() as u64,
-                        )
-                        .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule summary topic refresh"
-                    );
-                }
-                continue;
-            }
-
-            if cached.topic.uses_conversation_overview_refresh()
-                && matches!(
-                    payload,
-                    BroadcastPayload::Records { .. }
-                        | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. }
-                )
-            {
-                if let Err(err) = self
-                    .schedule_conversation_overview_topic_refresh(
-                        state.clone(),
-                        cached.topic.clone(),
-                    )
-                    .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule conversation overview topic refresh"
                     );
                 }
                 continue;
@@ -2553,34 +3238,8 @@ impl SubscriptionHub {
                 continue;
             }
 
-            if matches!(&payload, BroadcastPayload::Records { .. })
-                && cached.topic.uses_dashboard_activity_live_overlay()
-            {
-                let needs_refresh = match &payload {
-                    BroadcastPayload::Records { records } => records
-                        .iter()
-                        .any(crate::app_state::runtime_store_record_is_terminal),
-                    _ => false,
-                };
-                if needs_refresh
-                    && let Err(err) = self
-                        .schedule_dashboard_activity_topic_refresh(
-                            state.clone(),
-                            cached.topic.clone(),
-                        )
-                        .await
-                {
-                    warn!(
-                        ?err,
-                        topic = %cached.topic.name(),
-                        "failed to schedule dashboard activity topic refresh"
-                    );
-                }
-                continue;
-            }
-
             if let Err(err) = self
-                .refresh_topic(state.clone(), cached.topic.clone(), true)
+                .refresh_topic_if_active(state.clone(), cached.topic.clone(), true)
                 .await
             {
                 warn!(
@@ -2755,6 +3414,85 @@ impl SubscriptionHub {
         }
     }
 
+    async fn mark_prompt_cache_topic_dirty_and_schedule_reconcile(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        cached.dirty = true;
+        cached.refresh_scheduled = false;
+        cached.prompt_cache_refresh_scheduled = false;
+        cached.prompt_cache_reconcile_required = true;
+        cached.prompt_cache_pressure_deferred = false;
+        if active && !cached.prompt_cache_reconcile_scheduled {
+            cached.prompt_cache_reconcile_scheduled = true;
+            return true;
+        }
+        false
+    }
+
+    async fn prompt_cache_topic_reconcile_delay(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> Option<Duration> {
+        let topic_key = topic.cache_key().ok()?;
+        let guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let cached = guard.topics.get(&topic_key)?;
+        if !active || (!cached.dirty && !cached.prompt_cache_reconcile_required) {
+            return None;
+        }
+        Some(
+            cached
+                .prompt_cache_baseline_at
+                .map(|baseline_at| {
+                    PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL.saturating_sub(baseline_at.elapsed())
+                })
+                .unwrap_or_default(),
+        )
+    }
+
+    async fn begin_prompt_cache_topic_reconcile(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if !active
+            || cached.prompt_cache_reconcile_scheduled
+            || (!cached.dirty && !cached.prompt_cache_reconcile_required)
+        {
+            return false;
+        }
+        cached.prompt_cache_reconcile_scheduled = true;
+        true
+    }
+
     async fn begin_conversation_overview_topic_refresh(&self, topic: &SubscriptionTopic) -> bool {
         let Ok(topic_key) = topic.cache_key() else {
             return false;
@@ -2880,43 +3618,92 @@ impl SubscriptionHub {
     async fn schedule_prompt_cache_topic_projection(
         &self,
         state: Arc<AppState>,
-        records: &[ApiInvocation],
+        mutations: &[SequencedRuntimeMutation],
     ) {
-        let records = records
-            .iter()
-            .map(PromptCacheTopicDelta::from_record)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|records| records.into_iter().flatten().collect::<Vec<_>>());
-        let Ok(records) = records else {
-            warn!("failed to build compact prompt cache topic delta");
-            return;
+        // The active dependency lookup comes before the compact preview lookup below. Inactive
+        // Prompt Cache topics therefore never allocate preview data or read runtime state.
+        let active_topic_keys = {
+            let guard = self.state.lock().await;
+            Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::PromptCacheProjection,
+            )
         };
-        if records.is_empty() {
+        if active_topic_keys.is_empty() {
             return;
         }
 
-        let scheduled = {
-            let mut guard = self.state.lock().await;
-            let active_topics = guard.active_topics.clone();
-            let mut scheduled = Vec::new();
-            for (topic_key, topic) in active_topics {
-                if !matches!(
-                    topic,
-                    SubscriptionTopic::PromptCacheWindow { .. }
-                        | SubscriptionTopic::PromptCacheStickyWindow { .. }
-                ) {
-                    continue;
+        let mut records = Vec::new();
+        let mut reconcile_required = false;
+        for mutation in mutations {
+            let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+                continue;
+            };
+            if mutation.prompt_cache_key.is_none() && mutation.sticky_key.is_none() {
+                continue;
+            }
+            let runtime_projection =
+                (mutation.kind != RuntimeMutationKind::RuntimeRemoved).then(|| {
+                    state
+                        .proxy_runtime_invocations
+                        .prompt_cache_projection_by_identity(
+                            &mutation.identity.invoke_id,
+                            &mutation.identity.occurred_at,
+                        )
+                });
+            let runtime_projection = runtime_projection.flatten();
+            match PromptCacheTopicDelta::from_runtime_mutation(
+                mutation,
+                runtime_projection.as_ref(),
+            ) {
+                Ok(Some(record)) => records.push(record),
+                Ok(None) => reconcile_required = true,
+                Err(err) => {
+                    reconcile_required = true;
+                    warn!(?err, "failed to build active prompt cache topic delta");
                 }
+            }
+        }
+        if records.is_empty() && !reconcile_required {
+            return;
+        }
+
+        let (scheduled, reconciles) = {
+            let mut guard = self.state.lock().await;
+            let mut scheduled = Vec::new();
+            let mut reconciles = Vec::new();
+            for topic_key in active_topic_keys {
+                let Some(topic) = guard.active_topics.get(&topic_key).cloned() else {
+                    continue;
+                };
                 let Some(cached) = guard.topics.get_mut(&topic_key) else {
-                    let pending = guard
-                        .prompt_cache_prebaseline_records
-                        .entry(topic_key)
-                        .or_default();
-                    for record in &records {
-                        pending.insert(record.identity.clone(), record.clone());
+                    if !records.is_empty() {
+                        let pending = guard
+                            .prompt_cache_prebaseline_records
+                            .entry(topic_key)
+                            .or_default();
+                        for record in &records {
+                            pending.insert(record.identity.clone(), record.clone());
+                        }
                     }
                     continue;
                 };
+                let requires_bounded_reconcile = reconcile_required || cached.dirty;
+                if requires_bounded_reconcile {
+                    cached.dirty = true;
+                    cached.prompt_cache_reconcile_required = true;
+                    if !cached.prompt_cache_reconcile_scheduled {
+                        cached.prompt_cache_reconcile_scheduled = true;
+                        reconciles.push(topic);
+                    }
+                    // A gap means the retained payload may be missing an earlier mutation.
+                    // Do not append a later delta to that stale frame; one active selection is
+                    // rebuilt asynchronously from its bounded cold source instead.
+                    continue;
+                }
+                if records.is_empty() {
+                    continue;
+                }
                 let before = cached.prompt_cache_pending_records.len();
                 for record in &records {
                     cached
@@ -2937,7 +3724,7 @@ impl SubscriptionHub {
                     scheduled.push(topic);
                 }
             }
-            scheduled
+            (scheduled, reconciles)
         };
 
         for topic in scheduled {
@@ -2955,9 +3742,109 @@ impl SubscriptionHub {
                         response_source = "last_good",
                         "prompt cache in-memory topic materialization failed"
                     );
-                    hub.mark_topic_dirty(&topic).await;
+                    if hub
+                        .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                        .await
+                    {
+                        SubscriptionHub::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
+                    }
                 }
             });
+        }
+        for topic in reconciles {
+            Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
+        }
+    }
+
+    fn spawn_prompt_cache_topic_reconcile(state: Arc<AppState>, topic: SubscriptionTopic) {
+        let hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(delay) = hub.prompt_cache_topic_reconcile_delay(&topic).await else {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = state.shutdown.cancelled() => {
+                        hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                        return;
+                    }
+                }
+                let Ok(topic_key) = topic.cache_key() else {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
+                };
+                if !hub.has_active_topic_key(&topic_key).await {
+                    hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                    return;
+                }
+                let gate = crate::db_pressure::global_db_pressure_gate();
+                let observed_eligibility = gate.eligibility_generation();
+                match gate.try_begin_background("prompt_cache_topic_reconcile") {
+                    Ok(_permit) => {
+                        let result = hub
+                            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                            .await;
+                        hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                        if let Err(err) = result {
+                            warn!(
+                                ?err,
+                                topic = topic.name(),
+                                response_source = "last_good",
+                                "bounded prompt cache topic reconcile failed"
+                            );
+                            hub.mark_topic_dirty(&topic).await;
+                            hub.set_prompt_cache_pressure_deferred(&topic, false).await;
+                        }
+                        return;
+                    }
+                    Err(reason) => {
+                        hub.set_prompt_cache_pressure_deferred(&topic, true).await;
+                        tracing::debug!(
+                            topic = %topic.name(),
+                            reconcile_outcome = "pressure_deferred",
+                            defer_reason = %reason,
+                            "prompt cache topic reconcile deferred"
+                        );
+                        tokio::select! {
+                            _ = wait_for_prompt_cache_reconcile_eligibility(
+                                gate,
+                                observed_eligibility,
+                                reason,
+                            ) => {}
+                            _ = state.shutdown.cancelled() => {
+                                hub.finish_prompt_cache_topic_reconcile(&topic).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    async fn finish_prompt_cache_topic_reconcile(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+            cached.prompt_cache_reconcile_scheduled = false;
+        }
+    }
+
+    async fn set_prompt_cache_pressure_deferred(
+        &self,
+        topic: &SubscriptionTopic,
+        pressure_deferred: bool,
+    ) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key)
+            && cached.dirty
+        {
+            cached.prompt_cache_pressure_deferred = pressure_deferred;
         }
     }
 
@@ -2985,15 +3872,27 @@ impl SubscriptionHub {
             let records = std::mem::take(&mut cached.prompt_cache_pending_records)
                 .into_values()
                 .collect::<Vec<_>>();
-            if records.is_empty()
-                || !apply_prompt_cache_records_to_payload(
-                    topic,
-                    &mut cached.snapshot_payload,
-                    &records,
-                    &mut cached.prompt_cache_applied_terminal_ids,
-                    cached.prompt_cache_baseline_row_id,
-                )?
-            {
+            if records.is_empty() {
+                return Ok(());
+            }
+            let applied = match apply_prompt_cache_records_to_payload(
+                topic,
+                &mut cached.snapshot_payload,
+                &records,
+                &mut cached.prompt_cache_applied_terminal_ids,
+                cached.prompt_cache_baseline_row_id,
+            ) {
+                Ok(applied) => applied,
+                Err(err) => {
+                    for record in records {
+                        cached
+                            .prompt_cache_pending_records
+                            .insert(record.identity.clone(), record);
+                    }
+                    return Err(err);
+                }
+            };
+            if !applied {
                 return Ok(());
             }
             let next_cursor = cached.cursor.saturating_add(1);
@@ -3053,6 +3952,11 @@ impl SubscriptionHub {
             let Some(cached) = guard.topics.get_mut(topic_key) else {
                 return Ok(());
             };
+            if cached.dirty {
+                // A cursor gap makes the retained frame incomplete. Keep it byte-for-byte as
+                // last-good until the bounded reconcile below replaces it.
+                return Ok(());
+            }
             let now = Utc::now();
             let activity_cutoff = match cached.topic {
                 SubscriptionTopic::PromptCacheWindow {
@@ -3160,27 +4064,53 @@ impl SubscriptionHub {
 
     async fn apply_prompt_cache_binding_projection(
         &self,
-        state: &AppState,
+        state: Arc<AppState>,
         prompt_cache_key: &str,
     ) -> Result<(), ApiError> {
+        let has_active_prompt_cache_window = {
+            let guard = self.state.lock().await;
+            !Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::PromptCacheWindow,
+            )
+            .is_empty()
+        };
+        if !has_active_prompt_cache_window {
+            return Ok(());
+        }
         let binding = serde_json::to_value(
             load_prompt_cache_conversation_binding_response_for_key(
-                state,
+                state.as_ref(),
                 prompt_cache_key.to_string(),
             )
             .await?,
         )?;
         let mut dispatches = Vec::new();
+        let mut reconciles = Vec::new();
         let mut guard = self.state.lock().await;
-        let active_subscribers = guard.active_subscribers.clone();
-        for (topic_key, cached) in &mut guard.topics {
-            if !matches!(cached.topic, SubscriptionTopic::PromptCacheWindow { .. })
-                || active_subscribers
-                    .get(topic_key)
-                    .copied()
-                    .unwrap_or_default()
-                    == 0
+        let active_topic_keys = Self::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheWindow,
+        );
+        for topic_key in active_topic_keys {
+            if guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                == 0
             {
+                continue;
+            }
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                continue;
+            };
+            if cached.dirty {
+                cached.prompt_cache_reconcile_required = true;
+                if !cached.prompt_cache_reconcile_scheduled {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    reconciles.push(cached.topic.clone());
+                }
                 continue;
             }
             cached.prompt_cache_bounded_key_hydration_count = cached
@@ -3192,6 +4122,10 @@ impl SubscriptionHub {
                 &binding,
             ) else {
                 cached.prompt_cache_reconcile_required = true;
+                if !cached.prompt_cache_reconcile_scheduled {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    reconciles.push(cached.topic.clone());
+                }
                 continue;
             };
             if !changed {
@@ -3223,36 +4157,63 @@ impl SubscriptionHub {
         for dispatch in dispatches {
             let _ = self.broadcaster.send(dispatch);
         }
+        for topic in reconciles {
+            Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
+        }
         Ok(())
     }
 
     async fn apply_prompt_cache_sticky_route_projection(
         &self,
+        state: Arc<AppState>,
         sticky_key: &str,
         previous_upstream_account_id: i64,
         upstream_account_id: i64,
     ) -> Result<(), ApiError> {
         let mut dispatches = Vec::new();
+        let mut reconciles = Vec::new();
         let mut guard = self.state.lock().await;
-        let active_subscribers = guard.active_subscribers.clone();
-        for (topic_key, cached) in &mut guard.topics {
-            let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = cached.topic else {
-                continue;
-            };
-            if active_subscribers
-                .get(topic_key)
+        let active_topic_keys = Self::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheStickyWindow,
+        );
+        if active_topic_keys.is_empty() {
+            return Ok(());
+        }
+        for topic_key in active_topic_keys {
+            if guard
+                .active_subscribers
+                .get(&topic_key)
                 .copied()
                 .unwrap_or_default()
                 == 0
             {
                 continue;
             }
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                continue;
+            };
+            if cached.dirty {
+                cached.prompt_cache_reconcile_required = true;
+                if !cached.prompt_cache_reconcile_scheduled {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    reconciles.push(cached.topic.clone());
+                }
+                continue;
+            }
+            let SubscriptionTopic::PromptCacheStickyWindow { account_id, .. } = cached.topic else {
+                continue;
+            };
             let Some(conversations) = cached
                 .snapshot_payload
                 .get_mut("conversations")
                 .and_then(Value::as_array_mut)
             else {
                 cached.prompt_cache_reconcile_required = true;
+                if !cached.prompt_cache_reconcile_scheduled {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    reconciles.push(cached.topic.clone());
+                }
                 continue;
             };
             let before = conversations.len();
@@ -3267,6 +4228,10 @@ impl SubscriptionHub {
                 })
             {
                 cached.prompt_cache_reconcile_required = true;
+                if !cached.prompt_cache_reconcile_scheduled {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    reconciles.push(cached.topic.clone());
+                }
             }
             if conversations.len() == before {
                 continue;
@@ -3296,6 +4261,9 @@ impl SubscriptionHub {
         drop(guard);
         for dispatch in dispatches {
             let _ = self.broadcaster.send(dispatch);
+        }
+        for topic in reconciles {
+            Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
         }
         Ok(())
     }
@@ -4048,8 +5016,7 @@ fn apply_prompt_cache_records_to_payload(
             SubscriptionTopic::PromptCacheStickyWindow { .. } => "stickyKey",
             _ => return Ok(false),
         };
-        let preview = record.preview.clone();
-        let occurred_at = record.occurred_at.clone();
+        let occurred_at = Value::String(record.occurred_at.clone());
         let status = record.status.as_str();
         let is_terminal = record.is_terminal;
         let is_success = record.is_success;
@@ -4057,6 +5024,31 @@ fn apply_prompt_cache_records_to_payload(
         let conversation_index = conversations.iter().position(|conversation| {
             conversation.get(key_field).and_then(Value::as_str) == Some(key)
         });
+        if record.is_runtime_removed {
+            let Some(index) = conversation_index else {
+                continue;
+            };
+            let Some(conversation) = conversations[index].as_object_mut() else {
+                continue;
+            };
+            let Some(recent) = conversation
+                .get_mut("recentInvocations")
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            let count_before = recent.len();
+            recent.retain(|item| {
+                item.get("invokeId").and_then(Value::as_str) != Some(record.invoke_id.as_str())
+                    || item.get("occurredAt") != Some(&occurred_at)
+            });
+            changed |= recent.len() != count_before;
+            continue;
+        }
+        let Some(preview) = record.preview.as_ref() else {
+            continue;
+        };
+        let preview = serde_json::to_value(preview)?;
         let index = match conversation_index {
             Some(index) => index,
             None => {
@@ -4851,19 +5843,35 @@ fn dashboard_network_timeseries_live_point<'a>(
         .map(|point_index| (point_index, bucket))
 }
 
+async fn wait_for_prompt_cache_reconcile_eligibility(
+    gate: &DbPressureGate,
+    observed_eligibility: u64,
+    reason: DbPressureDenyReason,
+) {
+    match reason {
+        DbPressureDenyReason::PressureCooldown { remaining_ms } => {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(remaining_ms.max(1))) => {}
+                _ = gate.wait_for_eligibility_change(observed_eligibility) => {}
+            }
+        }
+        DbPressureDenyReason::BackgroundBusy => {
+            gate.wait_for_eligibility_change(observed_eligibility).await;
+        }
+    }
+}
+
 async fn run_server_push_topic_loop(
     hub: Arc<SubscriptionHub>,
     state: Arc<AppState>,
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
-    if prompt_cache_topic_projection_enabled()
-        && matches!(
-            topic,
-            SubscriptionTopic::PromptCacheWindow { .. }
-                | SubscriptionTopic::PromptCacheStickyWindow { .. }
-        )
-    {
+    if matches!(
+        topic,
+        SubscriptionTopic::PromptCacheWindow { .. }
+            | SubscriptionTopic::PromptCacheStickyWindow { .. }
+    ) {
         let mut interval = tokio::time::interval(PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
@@ -4883,24 +5891,10 @@ async fn run_server_push_topic_loop(
                     if !hub.prompt_cache_reconcile_required(&topic_key).await {
                         continue;
                     }
-                    match crate::db_pressure::global_db_pressure_gate()
-                        .try_begin_background("prompt_cache_topic_reconcile")
-                    {
-                        Ok(_permit) => {
-                            if let Err(err) = hub
-                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
-                                .await
-                            {
-                                warn!(?err, topic = %topic.name(), reconcile_outcome = "retained_last_good", "prompt cache topic reconcile failed");
-                            }
-                        }
-                        Err(reason) => tracing::debug!(
-                            topic = %topic.name(),
-                            reconcile_outcome = "pressure_deferred",
-                            defer_reason = %reason,
-                            "prompt cache topic reconcile deferred"
-                        ),
+                    if !hub.begin_prompt_cache_topic_reconcile(&topic).await {
+                        continue;
                     }
+                    SubscriptionHub::spawn_prompt_cache_topic_reconcile(state.clone(), topic.clone());
                 }
             }
         }
@@ -4921,7 +5915,10 @@ async fn run_server_push_topic_loop(
                     if hub.stop_server_push_task_if_idle(&topic_key).await {
                         break;
                     }
-                    if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                    if let Err(err) = hub
+                        .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                        .await
+                    {
                         warn!(?err, topic = %topic.name(), "failed to push legacy network recent topic cadence");
                     }
                 }
@@ -4940,7 +5937,10 @@ async fn run_server_push_topic_loop(
                 if hub.stop_server_push_task_if_idle(&topic_key).await {
                     break;
                 }
-                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                if let Err(err) = hub
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await
+                {
                     warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
                 }
             }
@@ -4952,13 +5952,14 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
     let hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let mut receiver = state.broadcaster.subscribe();
+    let listener_state = state.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 item = receiver.recv() => {
                     match item {
-                        Ok(payload) => hub.handle_internal_broadcast(state.clone(), payload).await,
+                        Ok(payload) => hub.handle_internal_broadcast(listener_state.clone(), payload).await,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             warn!(skipped, "subscription mutation listener lagged");
                         }
@@ -4968,6 +5969,86 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
             }
         }
     });
+    spawn_runtime_mutation_router(state);
+}
+
+fn spawn_runtime_mutation_router(state: Arc<AppState>) {
+    let hub = state.subscription_hub.clone();
+    let bus = hub.runtime_mutation_bus();
+    if !bus.claim_router() {
+        return;
+    }
+    let shutdown = state.shutdown.clone();
+    let mut receiver = bus.subscribe();
+    tokio::spawn(async move {
+        let mut last_sequence = 0_u64;
+        loop {
+            let first = tokio::select! {
+                _ = shutdown.cancelled() => return,
+                item = receiver.recv() => item,
+            };
+            let first = match first {
+                Ok(first) => first,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    bus.record_router_lag();
+                    bus.record_router_gap();
+                    bus.record_cursor_recovery();
+                    hub.mark_runtime_mutation_gap_and_recover(
+                        state.clone(),
+                        skipped,
+                        "receiver_lagged",
+                    )
+                    .await;
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            };
+            let mut batch = vec![first];
+            let mut lagged = 0_u64;
+            while batch.len() < RUNTIME_MUTATION_ROUTER_MAX_BATCH {
+                match receiver.try_recv() {
+                    Ok(mutation) => batch.push(mutation),
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                        lagged = lagged.saturating_add(skipped);
+                        break;
+                    }
+                    Err(broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+            if lagged > 0 {
+                bus.record_router_lag();
+                bus.record_router_gap();
+                bus.record_cursor_recovery();
+                hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "receiver_lagged")
+                    .await;
+                continue;
+            }
+            if runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &batch) {
+                bus.record_router_gap();
+                bus.record_cursor_recovery();
+                hub.mark_runtime_mutation_gap_and_recover(state.clone(), lagged, "cursor_gap")
+                    .await;
+                continue;
+            }
+            hub.handle_runtime_mutation_batch(state.clone(), batch)
+                .await;
+        }
+    });
+}
+
+fn runtime_mutation_batch_has_sequence_gap(
+    last_sequence: &mut u64,
+    batch: &[SequencedRuntimeMutation],
+) -> bool {
+    let mut gap = false;
+    for mutation in batch {
+        if mutation.sequence != last_sequence.saturating_add(1) {
+            gap = true;
+        }
+        *last_sequence = mutation.sequence;
+    }
+    gap
 }
 
 pub(crate) async fn topic_sse_stream(
@@ -5071,6 +6152,8 @@ pub(crate) async fn topic_sse_stream(
                             continue;
                         }
                         last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        dashboard_topology_hub
+                            .record_dashboard_topology_frame_delivery(&dispatch.frame);
                         #[cfg(test)]
                         if let Some(attempt) = dashboard_topology_observer_attempt {
                             dashboard_topology_hub
@@ -5105,11 +6188,10 @@ pub(crate) async fn topic_sse_stream(
 impl SubscriptionTopic {
     fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
-            || (prompt_cache_topic_projection_enabled()
-                && matches!(
-                    self,
-                    Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
-                ))
+            || matches!(
+                self,
+                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
+            )
             || (mode == RuntimeProjectionMode::Legacy
                 && matches!(self, Self::DashboardNetworkRecentCurrent))
     }
@@ -5142,6 +6224,54 @@ impl SubscriptionTopic {
             self,
             Self::DashboardNetworkTimeseriesWindow { .. } | Self::DashboardNetworkRecentCurrent
         )
+    }
+
+    fn runtime_topic_dependencies(&self) -> Vec<RuntimeTopicDependency> {
+        match self {
+            // These topics receive their revisions from the RuntimeProjectionHub directly, so
+            // they intentionally do not create generic router work.
+            Self::DashboardActivityCurrent { .. }
+            | Self::DashboardNetworkTimeseriesWindow { .. }
+            | Self::DashboardNetworkRecentCurrent
+            | Self::SummaryCurrent { .. }
+            | Self::AppVersion
+            | Self::QuotaCurrent => Vec::new(),
+            Self::PromptCacheWindow { .. } => vec![
+                RuntimeTopicDependency::PromptCacheProjection,
+                RuntimeTopicDependency::PromptCacheWindow,
+            ],
+            Self::PromptCacheStickyWindow { .. } => vec![
+                RuntimeTopicDependency::PromptCacheProjection,
+                RuntimeTopicDependency::PromptCacheStickyWindow,
+            ],
+            Self::PromptCacheConversationBindingCurrent { scope }
+            | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
+                vec![RuntimeTopicDependency::Binding(
+                    scope.binding_key().to_string(),
+                )]
+            }
+            Self::InvocationPoolAttempts { invoke_id } => {
+                vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
+            }
+            Self::InvocationHistoryWindow { scope } | Self::InvocationHistoryOverview { scope } => {
+                match scope {
+                    ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key) => vec![
+                        RuntimeTopicDependency::HistoryPromptCacheKey(prompt_cache_key.clone()),
+                        RuntimeTopicDependency::StickyRoute(prompt_cache_key.clone()),
+                    ],
+                    ConversationSubscriptionScope::StickyKey { sticky_key, .. } => vec![
+                        RuntimeTopicDependency::HistoryPromptCacheKey(sticky_key.clone()),
+                        RuntimeTopicDependency::HistoryStickyKey(sticky_key.clone()),
+                        RuntimeTopicDependency::StickyRoute(sticky_key.clone()),
+                    ],
+                }
+            }
+            Self::DashboardWorkingConversationsCurrent { .. }
+            | Self::InvocationWindow { .. }
+            | Self::TimeseriesOpenWindow { .. }
+            | Self::ParallelWorkCurrent { .. }
+            | Self::ForwardProxyLive => vec![RuntimeTopicDependency::Invocation],
+        }
     }
 
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
@@ -5567,45 +6697,46 @@ impl SubscriptionTopic {
         )
     }
 
-    fn is_affected_by(&self, payload: &BroadcastPayload) -> bool {
-        if self.is_closed_summary_topic()
-            && matches!(
-                payload,
-                BroadcastPayload::Records { .. } | BroadcastPayload::DashboardActivityLive { .. }
-            )
-        {
-            return false;
-        }
-
-        match payload {
-            BroadcastPayload::Records { records } => match self {
-                Self::InvocationHistoryWindow { scope }
-                | Self::InvocationHistoryOverview { scope } => {
-                    records.iter().any(|record| scope.matches_record(record))
+    fn is_affected_by_runtime_mutation(&self, mutation: &RuntimeMutation) -> bool {
+        match mutation {
+            RuntimeMutation::Invocation(mutation) => {
+                if self.is_closed_summary_topic() {
+                    return false;
                 }
-                Self::DashboardActivityCurrent { .. }
-                | Self::DashboardNetworkTimeseriesWindow { .. }
-                | Self::DashboardNetworkRecentCurrent
-                | Self::DashboardWorkingConversationsCurrent { .. }
-                | Self::InvocationWindow { .. }
-                | Self::SummaryCurrent { .. }
-                | Self::TimeseriesOpenWindow { .. }
-                | Self::ParallelWorkCurrent { .. }
-                | Self::ForwardProxyLive => true,
-                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. } => {
-                    !prompt_cache_topic_projection_enabled()
+                match self {
+                    Self::InvocationHistoryWindow { scope }
+                    | Self::InvocationHistoryOverview { scope } => {
+                        scope.matches_runtime_mutation(mutation)
+                    }
+                    Self::DashboardActivityCurrent { .. }
+                    | Self::DashboardNetworkTimeseriesWindow { .. }
+                    | Self::DashboardNetworkRecentCurrent
+                    | Self::DashboardWorkingConversationsCurrent { .. }
+                    | Self::InvocationWindow { .. }
+                    | Self::SummaryCurrent { .. }
+                    | Self::TimeseriesOpenWindow { .. }
+                    | Self::ParallelWorkCurrent { .. }
+                    | Self::ForwardProxyLive => true,
+                    Self::AppVersion
+                    | Self::QuotaCurrent
+                    | Self::PromptCacheConversationBindingCurrent { .. }
+                    | Self::PromptCacheConversationOperationsWindow { .. }
+                    | Self::PromptCacheWindow { .. }
+                    | Self::PromptCacheStickyWindow { .. }
+                    | Self::InvocationPoolAttempts { .. } => false,
                 }
-                _ => false,
-            },
-            BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key } => match self {
+            }
+            RuntimeMutation::AttemptChanged { invoke_id } => matches!(
+                self,
+                Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
+            ),
+            RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => matches!(
+                self,
                 Self::PromptCacheConversationBindingCurrent { scope }
-                | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
-                    scope.binding_key() == prompt_cache_key
-                }
-                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
-                _ => false,
-            },
-            BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+                    | Self::PromptCacheConversationOperationsWindow { scope, .. }
+                    if scope.binding_key() == prompt_cache_key
+            ),
+            RuntimeMutation::StickyRouteChanged {
                 sticky_key,
                 previous_upstream_account_id,
                 upstream_account_id,
@@ -5616,14 +6747,19 @@ impl SubscriptionTopic {
                     *previous_upstream_account_id,
                     *upstream_account_id,
                 ),
-                Self::PromptCacheWindow { .. } => !prompt_cache_topic_projection_enabled(),
-                Self::PromptCacheStickyWindow { account_id, .. } => {
-                    !prompt_cache_topic_projection_enabled()
-                        && (*previous_upstream_account_id == *account_id
-                            || *upstream_account_id == *account_id)
-                }
                 _ => false,
             },
+        }
+    }
+
+    fn is_affected_by(&self, payload: &BroadcastPayload) -> bool {
+        if self.is_closed_summary_topic()
+            && matches!(payload, BroadcastPayload::DashboardActivityLive { .. })
+        {
+            return false;
+        }
+
+        match payload {
             BroadcastPayload::DashboardActivityLive { .. } => {
                 matches!(
                     self,
@@ -5637,12 +6773,13 @@ impl SubscriptionTopic {
             ),
             BroadcastPayload::DashboardCurrentSlice { .. }
             | BroadcastPayload::DashboardTerminalSlice { .. } => false,
-            BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
-                self,
-                Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
-            ),
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
+            #[cfg(test)]
+            BroadcastPayload::Records { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PromptCacheConversationChanged { .. }
+            | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => false,
         }
     }
 
@@ -6053,6 +7190,38 @@ impl SubscriptionTopic {
     }
 }
 
+impl RuntimeMutation {
+    fn topic_dependencies(&self) -> Vec<RuntimeTopicDependency> {
+        match self {
+            Self::Invocation(mutation) => {
+                let mut dependencies = vec![
+                    RuntimeTopicDependency::Invocation,
+                    RuntimeTopicDependency::PromptCacheProjection,
+                ];
+                if let Some(prompt_cache_key) = mutation.prompt_cache_key.as_ref() {
+                    dependencies.push(RuntimeTopicDependency::HistoryPromptCacheKey(
+                        prompt_cache_key.clone(),
+                    ));
+                }
+                if let Some(sticky_key) = mutation.sticky_key.as_ref() {
+                    dependencies.push(RuntimeTopicDependency::HistoryStickyKey(sticky_key.clone()));
+                }
+                dependencies
+            }
+            Self::AttemptChanged { invoke_id } => {
+                vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
+            }
+            Self::PromptCacheBindingChanged { prompt_cache_key } => {
+                vec![RuntimeTopicDependency::Binding(prompt_cache_key.clone())]
+            }
+            Self::StickyRouteChanged { sticky_key, .. } => vec![
+                RuntimeTopicDependency::StickyRoute(sticky_key.clone()),
+                RuntimeTopicDependency::PromptCacheStickyWindow,
+            ],
+        }
+    }
+}
+
 fn decode_topics_query(raw: Option<&str>) -> Result<Vec<SubscriptionTopicDescriptor>, ApiError> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Vec::new());
@@ -6137,6 +7306,11 @@ fn reuse_unchanged_cached_topic(
     }
     existing.dirty = false;
     existing.refresh_scheduled = false;
+    existing.runtime_topic_recovery_retry_at = None;
+    // A successful Prompt Cache baseline can serialize identically to last-good. It still
+    // proves reconciliation completed, so do not keep scheduling the same cold hydration.
+    existing.prompt_cache_reconcile_required = false;
+    existing.prompt_cache_pressure_deferred = false;
     existing.snapshot_built_at = Instant::now();
     Some(existing.clone())
 }
@@ -6375,6 +7549,926 @@ fn prompt_cache_selection_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_mutation_sequence_gap_discards_partial_batch() {
+        let mut last_sequence = 0;
+        let first = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "first".to_string(),
+            },
+        }];
+        assert!(!runtime_mutation_batch_has_sequence_gap(
+            &mut last_sequence,
+            &first
+        ));
+
+        let gap = [SequencedRuntimeMutation {
+            sequence: 3,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "after-gap".to_string(),
+            },
+        }];
+        assert!(runtime_mutation_batch_has_sequence_gap(
+            &mut last_sequence,
+            &gap
+        ));
+        assert_eq!(last_sequence, 3);
+
+        let recovered = [SequencedRuntimeMutation {
+            sequence: 4,
+            mutation: RuntimeMutation::AttemptChanged {
+                invoke_id: "after-recovery".to_string(),
+            },
+        }];
+        assert!(
+            !runtime_mutation_batch_has_sequence_gap(&mut last_sequence, &recovered),
+            "the first batch after recovery must advance from the discarded gap batch"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_dependency_index_selects_only_the_matching_active_history_topic() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let active_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let inactive_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("retained-key".to_string()),
+        };
+        let active_key = active_topic.cache_key().expect("active topic key");
+        let inactive_key = inactive_topic.cache_key().expect("inactive topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[], Utc::now()),
+            );
+            guard.topics.insert(
+                inactive_key.clone(),
+                seeded_cached_topic(inactive_topic, &[], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active history topic");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("invoke-1", "2026-08-09 12:00:00"),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("selected-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        let guard = hub.state.lock().await;
+        let work = SubscriptionHub::collect_runtime_topic_work(&guard, &mutations);
+        let indexed = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::HistoryPromptCacheKey("selected-key".to_string()),
+        );
+        assert_eq!(indexed, vec![active_key.clone()]);
+        assert_eq!(work.len(), 1);
+        assert_eq!(
+            work[0].topic.cache_key().expect("work topic key"),
+            active_key
+        );
+        assert_ne!(
+            work[0].topic.cache_key().expect("work topic key"),
+            inactive_key,
+            "retained inactive topic must not become router work"
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn releasing_last_owner_removes_dependency_index_and_marks_last_good_dirty() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("disconnect-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[], Utc::now()),
+            );
+        }
+        let mut lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+        let topic_keys = std::mem::take(&mut lease.topic_keys);
+        let topic_names = std::mem::take(&mut lease.topic_names);
+        hub.release_topic_subscribers(topic_keys, topic_names, lease.owns_dashboard_live)
+            .await;
+        drop(lease);
+
+        let guard = hub.state.lock().await;
+        assert!(!guard.active_topics.contains_key(&topic_key));
+        assert!(
+            SubscriptionHub::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::HistoryPromptCacheKey("disconnect-key".to_string()),
+            )
+            .is_empty()
+        );
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.dirty),
+            "the retained frame must rebuild before a future owner reconnects"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_dependency_index_omits_retained_inactive_windows() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let active_topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let inactive_topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(10),
+            detail_level: PromptCacheConversationDetailLevel::Compact,
+            recent_invocation_limit: Some(5),
+        };
+        let active_key = active_topic
+            .cache_key()
+            .expect("active prompt cache topic key");
+        let inactive_key = inactive_topic
+            .cache_key()
+            .expect("inactive prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[], Utc::now()),
+            );
+            guard.topics.insert(
+                inactive_key.clone(),
+                seeded_cached_topic(inactive_topic, &[], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active prompt cache topic");
+
+        let guard = hub.state.lock().await;
+        let projection_keys = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheProjection,
+        );
+        let binding_keys = SubscriptionHub::active_topic_keys_for_dependency(
+            &guard,
+            &RuntimeTopicDependency::PromptCacheWindow,
+        );
+        assert_eq!(projection_keys, vec![active_key.clone()]);
+        assert_eq!(binding_keys, vec![active_key]);
+        assert!(
+            !projection_keys.contains(&inactive_key),
+            "retained inactive prompt cache windows must not receive runtime deltas"
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn inactive_prompt_cache_owner_skips_runtime_projection_materialization() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "inactive-prompt-cache".to_string();
+        record.prompt_cache_key = Some("cache-key".to_string());
+        state.proxy_runtime_invocations.upsert(record.clone());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeUpsert),
+        }];
+
+        hub.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("retained inactive prompt cache topic");
+        assert_eq!(cached.cursor, 7);
+        assert!(cached.prompt_cache_pending_records.is_empty());
+        assert!(!cached.prompt_cache_refresh_scheduled);
+        assert!(
+            !guard
+                .prompt_cache_prebaseline_records
+                .contains_key(&topic_key),
+            "an inactive owner must not receive deferred prompt cache work"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_prompt_cache_projection_uses_typed_preview_without_full_record_clone() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        hub.state.lock().await.topics.insert(
+            topic_key.clone(),
+            seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+        );
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "compact-prompt-cache-projection".to_string();
+        record.prompt_cache_key = Some("cache-key".to_string());
+        record.request_raw_path = Some("runtime-only-raw-path".repeat(256));
+        state.proxy_runtime_invocations.upsert(record.clone());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeUpsert),
+        }];
+
+        state
+            .proxy_runtime_invocations
+            .reset_full_record_clone_count();
+        hub.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+
+        assert_eq!(
+            state.proxy_runtime_invocations.full_record_clone_count(),
+            0,
+            "active prompt cache projection must not clone ApiInvocation"
+        );
+        let guard = hub.state.lock().await;
+        let delta = guard
+            .topics
+            .get(&topic_key)
+            .and_then(|cached| cached.prompt_cache_pending_records.values().next())
+            .expect("typed prompt cache delta");
+        let preview = delta.preview.as_ref().expect("typed prompt cache preview");
+        assert_eq!(preview.invoke_id, "compact-prompt-cache-projection");
+        assert_eq!(preview.prompt_cache_key.as_deref(), Some("cache-key"));
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn runtime_gap_preserves_prompt_cache_last_good_and_defers_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        let last_good = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        let last_good_frame = last_good.snapshot_frame.clone();
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(topic_key.clone(), last_good);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        hub.mark_runtime_mutation_gap_and_recover(state.clone(), 4, "cursor_gap")
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("active prompt cache topic");
+        assert!(cached.dirty);
+        assert_eq!(cached.continuity_reset_cursor, Some(7));
+        assert!(cached.prompt_cache_reconcile_required);
+        assert_eq!(cached.prompt_cache_full_hydration_count, 0);
+        assert!(Arc::ptr_eq(&cached.snapshot_frame, &last_good_frame));
+        assert!(guard.runtime_topic_recovery_queue.is_empty());
+        assert!(!guard.runtime_topic_recovery_running);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn active_dirty_prompt_cache_last_good_degrades_aggregate_health() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        cached.dirty = true;
+        cached.prompt_cache_reconcile_required = true;
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key.clone(), cached);
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        let stale = crate::load_runtime_pressure_health(state.as_ref()).await;
+        assert_eq!(stale.state, "degraded");
+        assert_eq!(
+            stale.prompt_cache_projection.recovery_state,
+            "failed_or_stale"
+        );
+        assert_eq!(stale.prompt_cache_projection.failed_or_stale_topic_count, 1);
+
+        hub.state
+            .lock()
+            .await
+            .topics
+            .get_mut(&topic_key)
+            .expect("active prompt cache topic")
+            .prompt_cache_pressure_deferred = true;
+        let deferred = crate::load_runtime_pressure_health(state.as_ref()).await;
+        assert_eq!(deferred.state, "deferred");
+        assert_eq!(
+            deferred.prompt_cache_projection.recovery_state,
+            "pressure_deferred"
+        );
+        assert_eq!(
+            deferred
+                .prompt_cache_projection
+                .pressure_deferred_topic_count,
+            1
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn repeated_runtime_gaps_dedupe_bounded_recovery_jobs() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+            // Keep the worker parked so this test can observe the queued representation.
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        hub.mark_runtime_mutation_gap_and_recover(state.clone(), 2, "cursor_gap")
+            .await;
+        hub.mark_runtime_mutation_gap_and_recover(state.clone(), 3, "receiver_lagged")
+            .await;
+
+        let mut guard = hub.state.lock().await;
+        assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
+        assert_eq!(
+            guard.runtime_topic_recovery_queue.front(),
+            Some(&(topic_key.clone(), 1)),
+            "the queued job retains its original generation and is re-enqueued once with the\n             newer generation after the worker observes the mismatch"
+        );
+        assert!(guard.runtime_topic_recovery_queued.contains(&topic_key));
+        assert_eq!(
+            guard
+                .topics
+                .get(&topic_key)
+                .expect("active history topic")
+                .runtime_topic_recovery_generation,
+            2
+        );
+        guard.runtime_topic_recovery_running = false;
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn inactive_owner_skips_cold_prompt_cache_hydration() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+
+        state.pool.close().await;
+
+        assert!(
+            hub.refresh_topic_if_active(state, topic, true)
+                .await
+                .expect("inactive guard must return before acquiring the closed database pool")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn active_owner_without_cached_topic_commits_guarded_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        let cached = hub
+            .refresh_topic_if_active(state, topic, true)
+            .await
+            .expect("active owner can cold build")
+            .expect("guarded refresh commits when no generation changed");
+
+        assert_eq!(
+            cached.topic.cache_key().expect("cached topic key"),
+            topic_key
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn unrelated_topic_disconnect_does_not_block_active_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let active_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("active-key".to_string()),
+        };
+        let released_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("released-key".to_string()),
+        };
+        let active_key = active_topic.cache_key().expect("active topic key");
+        let released_key = released_topic.cache_key().expect("released topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                active_key.clone(),
+                seeded_cached_topic(active_topic.clone(), &[7], Utc::now()),
+            );
+            guard.topics.insert(
+                released_key.clone(),
+                seeded_cached_topic(released_topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let active_lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&active_topic))
+            .await
+            .expect("register active topic");
+        let released_lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&released_topic))
+            .await
+            .expect("register released topic");
+        hub.release_topic_subscribers(
+            vec![released_key],
+            vec![released_topic.name().to_string()],
+            false,
+        )
+        .await;
+
+        assert!(
+            hub.refresh_topic_if_active(state, active_topic, true)
+                .await
+                .expect("active refresh")
+                .is_some()
+        );
+        drop(released_lease);
+        drop(active_lease);
+    }
+
+    #[tokio::test]
+    async fn dirty_last_good_reconnect_skips_synchronous_cold_hydration() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        let mut last_good = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        last_good.dirty = true;
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(topic_key.clone(), last_good);
+            // Keep the bounded recovery worker parked so this test can prove that preparing the
+            // connection itself never acquires SQLite for a retained last-good frame.
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+        state.pool.close().await;
+
+        let prepared = hub
+            .prepare_connection(state, vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("reconnect must serve last-good without a database read");
+
+        assert_eq!(prepared.initial.len(), 1);
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .expect("retained history topic")
+                .dirty
+        );
+        assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn runtime_recovery_retry_cooldown_defers_dirty_topic_requeue() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            guard.topics.insert(topic_key.clone(), cached);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        assert_eq!(
+            hub.defer_runtime_topic_recovery_retry(&topic).await,
+            RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
+        );
+
+        let mut guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .and_then(|cached| cached.runtime_topic_recovery_retry_at)
+                .is_some_and(|retry_at| retry_at > Instant::now())
+        );
+        assert!(!SubscriptionHub::enqueue_runtime_topic_recovery_locked(
+            &mut guard
+        ));
+        assert!(guard.runtime_topic_recovery_queue.is_empty());
+        assert!(SubscriptionHub::next_runtime_topic_recovery_retry_delay_locked(&guard).is_some());
+        guard
+            .topics
+            .get_mut(&topic_key)
+            .expect("dirty history topic")
+            .runtime_topic_recovery_retry_at = Some(Instant::now());
+        assert!(SubscriptionHub::enqueue_runtime_topic_recovery_locked(
+            &mut guard
+        ));
+        assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn newer_runtime_gap_clears_topic_recovery_cooldown() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+
+        hub.mark_runtime_mutation_gap_and_recover(state, 1, "cursor_gap")
+            .await;
+
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .expect("dirty history topic")
+                .runtime_topic_recovery_retry_at
+                .is_none()
+        );
+        assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn dirty_topics_do_not_bypass_bounded_gap_recovery() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("selected-key".to_string()),
+        };
+        let topic_key = topic.cache_key().expect("history topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            guard.topics.insert(topic_key, cached);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register history owner");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("invoke-1", "2026-08-09 12:00:00"),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("selected-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        let guard = hub.state.lock().await;
+        assert!(SubscriptionHub::collect_runtime_topic_work(&guard, &mutations).is_empty());
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn dirty_prompt_cache_topic_retains_last_good_until_bounded_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        let last_good = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        let last_good_frame = last_good.snapshot_frame.clone();
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(topic_key.clone(), last_good);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+        hub.mark_runtime_mutation_gap_and_recover(state.clone(), 4, "cursor_gap")
+            .await;
+
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "post-gap-prompt-cache".to_string();
+        record.prompt_cache_key = Some("cache-key".to_string());
+        state.proxy_runtime_invocations.upsert(record.clone());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 5,
+            mutation: RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeUpsert),
+        }];
+        hub.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("active prompt cache topic");
+        assert!(cached.dirty);
+        assert!(cached.prompt_cache_reconcile_scheduled);
+        assert!(!cached.prompt_cache_refresh_scheduled);
+        assert!(cached.prompt_cache_pending_records.is_empty());
+        assert_eq!(cached.cursor, 7);
+        assert!(Arc::ptr_eq(&cached.snapshot_frame, &last_good_frame));
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn dirty_prompt_cache_reconcile_respects_baseline_cadence() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.dirty = true;
+            cached.prompt_cache_reconcile_required = true;
+            cached.prompt_cache_baseline_at = Some(Instant::now());
+            guard.topics.insert(topic_key, cached);
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        assert!(
+            hub.prompt_cache_topic_reconcile_delay(&topic)
+                .await
+                .is_some_and(|delay| delay > Duration::from_secs(59))
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_pressure_defer_wakes_on_eligibility_change() {
+        let gate = DbPressureGate::new(1, Duration::from_millis(10));
+        let permit = gate
+            .try_begin_background("prompt_cache_topic_reconcile")
+            .expect("occupy only background slot");
+        let observed_eligibility = gate.eligibility_generation();
+        let reason = gate
+            .try_begin_background("prompt_cache_topic_reconcile")
+            .expect_err("second background task is deferred");
+
+        drop(permit);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_prompt_cache_reconcile_eligibility(&gate, observed_eligibility, reason),
+        )
+        .await
+        .expect("eligible background slot wakes deferred prompt cache recovery");
+    }
+
+    #[tokio::test]
+    async fn missing_runtime_identity_schedules_active_prompt_cache_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("recovered", "2026-08-09 12:00:00"),
+                kind: RuntimeMutationKind::Recovery,
+                row_id: Some(1),
+                is_terminal: true,
+                prompt_cache_key: Some("cache-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        hub.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("active prompt cache topic");
+        assert!(cached.dirty);
+        assert!(cached.prompt_cache_reconcile_required);
+        assert!(cached.prompt_cache_reconcile_scheduled);
+        assert!(cached.prompt_cache_pending_records.is_empty());
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_materialization_failure_marks_and_schedules_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache owner");
+
+        assert!(
+            hub.mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                .await
+        );
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("active prompt cache topic");
+        assert!(cached.dirty);
+        assert!(cached.prompt_cache_reconcile_required);
+        assert!(cached.prompt_cache_reconcile_scheduled);
+        drop(guard);
+        drop(lease);
+    }
 
     fn summary_topic() -> SubscriptionTopic {
         SubscriptionTopic::SummaryCurrent {
@@ -6895,7 +8989,11 @@ mod tests {
                 topic.materialization_count >= 1,
                 "each active Dashboard topic should materialize an immutable frame"
             );
+            assert_eq!(topic.active_subscriber_count, 2);
+            assert_eq!(topic.builder_count, topic.materialization_count);
             assert!(topic.frame_bytes_count > 0);
+            assert_eq!(topic.cursor_advanced, topic.serialization_count);
+            assert!(topic.frame_reused > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
         }
@@ -6982,6 +9080,50 @@ mod tests {
                 .expect("cached topic")
                 .replay_events
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn releasing_the_last_subscriber_marks_cached_topic_dirty() {
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::InvocationWindow {
+            limit: 20,
+            model: None,
+            status: None,
+        };
+        let topic_key = topic.cache_key().expect("invocation topic key");
+        hub.state.lock().await.topics.insert(
+            topic_key.clone(),
+            seeded_cached_topic(topic, &[], Utc::now()),
+        );
+        {
+            let mut guard = hub.state.lock().await;
+            guard.active_topics.insert(
+                topic_key.clone(),
+                SubscriptionTopic::InvocationWindow {
+                    limit: 20,
+                    model: None,
+                    status: None,
+                },
+            );
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        hub.release_topic_subscribers(
+            vec![topic_key.clone()],
+            vec!["invocations.window".to_string()],
+            false,
+        )
+        .await;
+
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.dirty),
+            "a reconnect must rebuild cached data changed while no owner was subscribed"
         );
     }
 
@@ -8420,11 +10562,14 @@ mod tests {
             conversation_overview_refresh_in_flight: false,
             conversation_overview_refresh_pending: false,
             dirty: false,
+            runtime_topic_recovery_generation: 0,
+            runtime_topic_recovery_retry_at: None,
             summary_refresh_scheduled: false,
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
             prompt_cache_refresh_scheduled: false,
+            prompt_cache_reconcile_scheduled: false,
             prompt_cache_pending_records: BTreeMap::new(),
             prompt_cache_applied_terminal_ids: HashSet::new(),
             prompt_cache_coalesced_event_count: 0,
@@ -8434,6 +10579,7 @@ mod tests {
             prompt_cache_baseline_row_id: 0,
             prompt_cache_response_source: "memory",
             prompt_cache_reconcile_required: false,
+            prompt_cache_pressure_deferred: false,
             latest_live_snapshot: None,
             calendar_anchor: None,
             continuity_reset_cursor: None,
@@ -8513,9 +10659,19 @@ mod tests {
         assert_eq!(topic.descriptor(), descriptor);
         assert_eq!(topic.name(), "dashboard.network-recent.current");
         assert_eq!(topic.schema_epoch(), "dashboard.network-recent.current/v1");
-        assert!(topic.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new()
-        }));
+        assert!(
+            topic.is_affected_by_runtime_mutation(&RuntimeMutation::Invocation(
+                RuntimeInvocationMutation {
+                    identity: RuntimeInvocationIdentity::new("network", "2026-07-20 00:00:00"),
+                    kind: RuntimeMutationKind::RuntimeUpsert,
+                    row_id: None,
+                    is_terminal: false,
+                    prompt_cache_key: None,
+                    sticky_key: None,
+                    upstream_account_id: None,
+                }
+            ))
+        );
         assert!(
             !topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
                 snapshot: Box::new(DashboardActivityLiveSnapshot {
@@ -8577,7 +10733,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_configuration_events_only_refresh_binding_and_operations_topics() {
+    fn typed_runtime_binding_events_only_refresh_binding_and_operations_topics() {
         let scope_params = BTreeMap::from([("promptCacheKey".to_string(), "pck-1".to_string())]);
         let calls = SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
             topic: "invocation-history.window".to_string(),
@@ -8599,25 +10755,29 @@ mod tests {
             params: scope_params,
         })
         .expect("operations topic should parse");
-        let event = BroadcastPayload::PromptCacheConversationChanged {
+        let event = RuntimeMutation::PromptCacheBindingChanged {
             prompt_cache_key: "pck-1".to_string(),
         };
 
-        assert!(!calls.is_affected_by(&event));
-        assert!(!overview.is_affected_by(&event));
-        assert!(binding.is_affected_by(&event));
-        assert!(operations.is_affected_by(&event));
-        assert!(
-            !binding.is_affected_by(&BroadcastPayload::PromptCacheConversationChanged {
+        assert!(!calls.is_affected_by_runtime_mutation(&event));
+        assert!(!overview.is_affected_by_runtime_mutation(&event));
+        assert!(binding.is_affected_by_runtime_mutation(&event));
+        assert!(operations.is_affected_by_runtime_mutation(&event));
+        assert!(!binding.is_affected_by_runtime_mutation(
+            &RuntimeMutation::PromptCacheBindingChanged {
                 prompt_cache_key: "pck-2".to_string(),
+            }
+        ));
+        assert!(
+            !binding.is_affected_by_runtime_mutation(&RuntimeMutation::AttemptChanged {
+                invoke_id: "other".to_string(),
             })
         );
-        assert!(!binding.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new(),
-        }));
-        assert!(!operations.is_affected_by(&BroadcastPayload::Records {
-            records: Vec::new(),
-        }));
+        assert!(
+            !operations.is_affected_by_runtime_mutation(&RuntimeMutation::AttemptChanged {
+                invoke_id: "other".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -8631,16 +10791,16 @@ mod tests {
         let prompt_cache_topic = SubscriptionTopic::InvocationHistoryOverview {
             scope: ConversationSubscriptionScope::PromptCacheKey("sticky-1".to_string()),
         };
-        let event = BroadcastPayload::PromptCacheConversationStickyRouteChanged {
+        let event = RuntimeMutation::StickyRouteChanged {
             sticky_key: "sticky-1".to_string(),
             previous_upstream_account_id: 41,
             upstream_account_id: 42,
         };
 
-        assert!(topic_for(41).is_affected_by(&event));
-        assert!(topic_for(42).is_affected_by(&event));
-        assert!(!topic_for(43).is_affected_by(&event));
-        assert!(prompt_cache_topic.is_affected_by(&event));
+        assert!(topic_for(41).is_affected_by_runtime_mutation(&event));
+        assert!(topic_for(42).is_affected_by_runtime_mutation(&event));
+        assert!(!topic_for(43).is_affected_by_runtime_mutation(&event));
+        assert!(prompt_cache_topic.is_affected_by_runtime_mutation(&event));
     }
 
     #[tokio::test]
@@ -8943,12 +11103,14 @@ mod tests {
         let topic = summary_topic();
         let mut cached = seeded_cached_topic(topic, &[], Utc::now());
         cached.refresh_scheduled = true;
+        cached.prompt_cache_reconcile_required = true;
         let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
 
         let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
 
         assert!(reused.is_some());
         assert!(!cached.refresh_scheduled);
+        assert!(!cached.prompt_cache_reconcile_required);
         cached.refresh_scheduled = true;
         assert!(
             cached.refresh_scheduled,
@@ -9053,6 +11215,66 @@ mod tests {
         )
         .expect("deduplicate repeated terminal delta");
         assert_eq!(payload["conversations"][0]["requestCount"], 1);
+    }
+
+    #[test]
+    fn typed_runtime_removal_clears_the_matching_prompt_cache_preview() {
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::Count(20),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let mut payload = serde_json::json!({ "conversations": [] });
+        let mut record = dashboard_runtime_topology_live_record("2026-08-08 10:00:00");
+        record.invoke_id = "runtime-removal".to_string();
+        record.prompt_cache_key = Some("cache-key".to_string());
+        record.status = Some("running".to_string());
+
+        let upsert = PromptCacheTopicDelta::from_record(&record)
+            .expect("build compact runtime delta")
+            .expect("prompt cache runtime delta");
+        let RuntimeMutation::Invocation(removal) =
+            RuntimeMutation::invocation(&record, RuntimeMutationKind::RuntimeRemoved)
+        else {
+            unreachable!("runtime removal must produce an invocation mutation");
+        };
+        let removal = PromptCacheTopicDelta::from_runtime_mutation(&removal, None)
+            .expect("build compact removal delta")
+            .expect("prompt cache removal delta");
+        let mut applied_terminal_ids = HashSet::new();
+
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut payload,
+            &[upsert],
+            &mut applied_terminal_ids,
+            0,
+        )
+        .expect("apply runtime preview");
+        assert_eq!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent previews")
+                .len(),
+            1
+        );
+
+        assert!(
+            apply_prompt_cache_records_to_payload(
+                &topic,
+                &mut payload,
+                &[removal],
+                &mut applied_terminal_ids,
+                0,
+            )
+            .expect("remove runtime preview")
+        );
+        assert!(
+            payload["conversations"][0]["recentInvocations"]
+                .as_array()
+                .expect("recent previews")
+                .is_empty()
+        );
     }
 
     #[test]

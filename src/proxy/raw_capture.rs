@@ -1017,6 +1017,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     }
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
     let delta = &projection.dashboard;
+    let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -1034,6 +1035,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                 raw_capture: true,
                 dashboard_terminal_sequence: delta.terminal_sequence,
                 terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                startup_backfill_tasks,
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
@@ -1072,17 +1074,19 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
-    if terminal_enqueued
-        && state.broadcaster.receiver_count() > 0
-        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-            records: vec![inserted_record],
-        })
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast new proxy capture record"
-        );
+    if terminal_enqueued {
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::invocation(
+                &inserted_record,
+                RuntimeMutationKind::TerminalCommitted,
+            ));
+        #[cfg(test)]
+        if state.broadcaster.receiver_count() > 0 {
+            let _ = state.broadcaster.send(BroadcastPayload::Records {
+                records: vec![inserted_record.clone()],
+            });
+        }
     }
     if terminal_enqueued {
         schedule_dashboard_activity_live_snapshot(state);

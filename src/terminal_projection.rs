@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -10,9 +10,9 @@ use std::{
 use tokio::sync::Notify;
 
 use crate::{
-    ApiInvocation, AppState, DashboardActivityTerminalDeltaOutcome, SOURCE_PROXY,
-    apply_dashboard_activity_terminal_record, ensure_dashboard_activity_live_snapshot_producer,
-    rollback_dashboard_activity_terminal_record,
+    ApiInvocation, AppState, DashboardActivityTerminalDeltaOutcome, RuntimeMutation,
+    RuntimeMutationBus, SOURCE_PROXY, apply_dashboard_activity_terminal_record,
+    ensure_dashboard_activity_live_snapshot_producer, rollback_dashboard_activity_terminal_record,
 };
 
 pub(crate) const TERMINAL_PROJECTION_MAX_PENDING_EVENTS: usize = 10_000;
@@ -161,6 +161,7 @@ pub(crate) struct TerminalProjectionHub {
     next_event_id: AtomicU64,
     state: Mutex<TerminalProjectionHubState>,
     persisted_notify: Notify,
+    runtime_mutation_bus: Mutex<Option<Arc<RuntimeMutationBus>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -170,6 +171,14 @@ pub(crate) struct TerminalProjectionRegistration {
 }
 
 impl TerminalProjectionHub {
+    pub(crate) fn set_runtime_mutation_bus(&self, bus: Arc<RuntimeMutationBus>) {
+        let mut target = self
+            .runtime_mutation_bus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *target = Some(bus);
+    }
+
     pub(crate) fn register_pending(
         &self,
         record: &ApiInvocation,
@@ -293,6 +302,19 @@ impl TerminalProjectionHub {
         state.last_persisted_row_id = state.last_persisted_row_id.max(row_id);
         state.persisted_ack_count = state.persisted_ack_count.saturating_add(1);
         state.last_ack_at = Some(Instant::now());
+        let runtime_mutation_bus = self
+            .runtime_mutation_bus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        drop(state);
+        if let Some(runtime_mutation_bus) = runtime_mutation_bus {
+            runtime_mutation_bus.publish(RuntimeMutation::terminal_persisted_ack(
+                invoke_id,
+                occurred_at,
+                row_id,
+            ));
+        }
         self.persisted_notify.notify_one();
     }
 
@@ -542,6 +564,7 @@ impl TerminalProjectionHub {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use crate::RuntimeMutationKind;
 
     fn timeseries_delta() -> TimeseriesTerminalDelta {
         TimeseriesTerminalDelta {
@@ -580,6 +603,24 @@ mod tests {
         let health = hub.health();
         assert_eq!(health.pending_event_count, 0);
         assert_eq!(health.pruned_event_count, 2);
+    }
+
+    #[test]
+    fn persisted_ack_emits_compact_runtime_cursor_mutation() {
+        let hub = TerminalProjectionHub::default();
+        let bus = Arc::new(RuntimeMutationBus::new());
+        let mut receiver = bus.subscribe();
+        hub.set_runtime_mutation_bus(bus);
+
+        hub.acknowledge_persisted(None, "invoke", "2026-08-09 12:00:00", 42);
+
+        let mutation = receiver.try_recv().expect("persisted ACK mutation");
+        let RuntimeMutation::Invocation(mutation) = mutation.mutation else {
+            panic!("expected compact invocation mutation");
+        };
+        assert_eq!(mutation.kind, RuntimeMutationKind::TerminalPersistedAck);
+        assert_eq!(mutation.row_id, Some(42));
+        assert!(mutation.is_terminal);
     }
 
     #[test]
