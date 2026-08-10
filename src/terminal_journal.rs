@@ -74,6 +74,19 @@ struct JournalLine {
     checksum: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ShutdownTerminalRecoveryLine {
+    invoke_id: String,
+    occurred_at: String,
+    raw_capture: bool,
+    #[serde(default)]
+    acknowledged: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    record: Option<ProxyCaptureRecord>,
+}
+
 #[derive(Debug)]
 struct JournalSegment {
     path: PathBuf,
@@ -260,14 +273,6 @@ impl TerminalJournal {
         error: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
-        struct TerminalEntry<'a> {
-            invoke_id: &'a str,
-            occurred_at: &'a str,
-            raw_capture: bool,
-            error: &'a str,
-            record: &'a ProxyCaptureRecord,
-        }
-        #[derive(Serialize)]
         struct SystemTaskEntry<'a> {
             run_id: i64,
             task_kind: &'static str,
@@ -299,12 +304,13 @@ impl TerminalJournal {
             for terminal in terminals {
                 serde_json::to_writer(
                     &mut file,
-                    &TerminalEntry {
-                        invoke_id: &terminal.record.invoke_id,
-                        occurred_at: &terminal.record.occurred_at,
+                    &ShutdownTerminalRecoveryLine {
+                        invoke_id: terminal.record.invoke_id.clone(),
+                        occurred_at: terminal.record.occurred_at.clone(),
                         raw_capture: terminal.raw_capture,
-                        error,
-                        record: &terminal.record,
+                        acknowledged: false,
+                        error: Some(error.to_string()),
+                        record: Some(terminal.record.clone()),
                     },
                 )
                 .context("failed to encode terminal recovery entry")?;
@@ -449,9 +455,24 @@ impl TerminalJournal {
             .expect("current terminal journal segment exists")
             .path
             .clone();
+        let mut deferred_writes = VecDeque::new();
+        for terminal in
+            load_shutdown_terminal_recovery(&directory.join("shutdown-terminal-quarantine.jsonl"))
+        {
+            let key = (
+                terminal.record.invoke_id.clone(),
+                terminal.record.occurred_at.clone(),
+                terminal.raw_capture,
+            );
+            if pending_by_key.contains_key(&key) {
+                continue;
+            }
+            pending_by_key.insert(key, Vec::new());
+            deferred_writes.push_back(terminal);
+        }
         let system_task_quarantine_ids =
             load_system_task_quarantine_ids(&directory.join("system-task-quarantine.jsonl"));
-        Ok(Self {
+        let journal = Self {
             directory,
             current_file: open_append_file(&current_path)?,
             segments,
@@ -459,15 +480,16 @@ impl TerminalJournal {
             next_sequence,
             pending_bytes,
             replay_segments,
-            replay_count,
-            deferred_writes: VecDeque::new(),
+            replay_count: replay_count.saturating_add(deferred_writes.len()),
+            deferred_writes,
             replay_blocked: false,
             system_task_quarantine_ids,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
             overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
             sync_failed: false,
-        })
+        };
+        Ok(journal)
     }
 
     pub(crate) fn append(
@@ -575,12 +597,20 @@ impl TerminalJournal {
     }
 
     pub(crate) fn acknowledge(&mut self, invoke_id: &str, occurred_at: &str, raw_capture: bool) {
+        if let Err(err) = append_shutdown_terminal_ack(
+            &self.directory.join("shutdown-terminal-quarantine.jsonl"),
+            invoke_id,
+            occurred_at,
+            raw_capture,
+        ) {
+            warn!(error = %err, invoke_id, occurred_at, "failed to checkpoint shutdown terminal recovery acknowledgement");
+        }
         let key = (invoke_id.to_string(), occurred_at.to_string(), raw_capture);
         let Some(sequences) = self.pending_by_key.get(&key).cloned() else {
             return;
         };
         let mut pending_sequences = Vec::new();
-        let mut acknowledged_replay_count = 0_usize;
+        let mut written_sequences = Vec::new();
         for sequence in sequences {
             let Ok(encoded) = encode_acknowledgement_line(sequence) else {
                 warn!(
@@ -594,16 +624,6 @@ impl TerminalJournal {
                 warn!(error = %err, sequence, "terminal journal acknowledgement append failed");
                 pending_sequences.push(sequence);
                 continue;
-            }
-            let acknowledgement_target = self.segments.iter().find_map(|(start, segment)| {
-                segment.sequences.contains(&sequence).then_some(*start)
-            });
-            if let Some(start) = acknowledgement_target {
-                self.segments
-                    .get_mut(&start)
-                    .expect("terminal journal acknowledgement target exists")
-                    .acknowledged
-                    .insert(sequence);
             }
             let current_start = self
                 .segments
@@ -621,7 +641,36 @@ impl TerminalJournal {
                 .expect("current terminal journal segment exists")
                 .bytes = updated_current_bytes;
             self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
-            acknowledged_replay_count = acknowledged_replay_count.saturating_add(1);
+            written_sequences.push(sequence);
+        }
+        let mut acknowledged_replay_count = 0_usize;
+        if !written_sequences.is_empty() {
+            if let Err(err) = self.current_file.sync_data() {
+                warn!(
+                    error = %err,
+                    count = written_sequences.len(),
+                    "terminal journal acknowledgement checkpoint failed"
+                );
+                self.sync_failed = true;
+                self.overflowed = true;
+                pending_sequences.extend(written_sequences);
+            } else {
+                self.last_sync_at = Instant::now();
+                for sequence in written_sequences {
+                    let acknowledgement_target =
+                        self.segments.iter().find_map(|(start, segment)| {
+                            segment.sequences.contains(&sequence).then_some(*start)
+                        });
+                    if let Some(start) = acknowledgement_target {
+                        self.segments
+                            .get_mut(&start)
+                            .expect("terminal journal acknowledgement target exists")
+                            .acknowledged
+                            .insert(sequence);
+                    }
+                    acknowledged_replay_count = acknowledged_replay_count.saturating_add(1);
+                }
+            }
         }
         if pending_sequences.is_empty() {
             self.pending_by_key.remove(&key);
@@ -902,6 +951,43 @@ impl Read for ReplayBudgetReader<'_> {
     }
 }
 
+fn append_shutdown_terminal_ack(
+    path: &Path,
+    invoke_id: &str,
+    occurred_at: &str,
+    raw_capture: bool,
+) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "failed to open shutdown terminal recovery {}",
+                path.display()
+            )
+        })?;
+    serde_json::to_writer(
+        &mut file,
+        &ShutdownTerminalRecoveryLine {
+            invoke_id: invoke_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            raw_capture,
+            acknowledged: true,
+            error: None,
+            record: None,
+        },
+    )
+    .context("failed to encode shutdown terminal recovery acknowledgement")?;
+    file.write_all(b"\n")
+        .context("failed to append shutdown terminal recovery acknowledgement")?;
+    file.sync_data()
+        .context("failed to sync shutdown terminal recovery acknowledgement")?;
+    Ok(())
+}
+
 fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
     let Ok(file) = File::open(path) else {
         return HashSet::new();
@@ -924,6 +1010,54 @@ fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
         }
     }
     ids
+}
+
+fn load_shutdown_terminal_recovery(path: &Path) -> Vec<BatchedTerminalInvocationWrite> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut entries = HashMap::<(String, String, bool), Option<ProxyCaptureRecord>>::new();
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let Ok(entry) = serde_json::from_str::<ShutdownTerminalRecoveryLine>(&line) else {
+            warn!(path = %path.display(), "ignoring corrupt shutdown terminal recovery line");
+            continue;
+        };
+        let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
+        if entry.acknowledged {
+            entries.insert(key, None);
+        } else if entry.record.is_some() {
+            entries.insert(key, entry.record);
+        }
+    }
+    entries
+        .into_iter()
+        .filter_map(|((invoke_id, occurred_at, raw_capture), record)| {
+            let record = record?;
+            Some(BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture,
+                dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: startup_backfill_tasks_for_terminal(
+                    &api_invocation_from_runtime_record(&record),
+                ),
+                record: ProxyCaptureRecord {
+                    invoke_id,
+                    occurred_at,
+                    ..record
+                },
+            })
+        })
+        .collect()
 }
 
 fn segment_path(directory: &Path, first_sequence: u64) -> PathBuf {
