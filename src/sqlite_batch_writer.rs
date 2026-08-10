@@ -1516,6 +1516,9 @@ impl SqliteBatchWriter {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.accounting.rollback_enqueue(estimated_bytes);
+                if is_p1 {
+                    decrement_queued_p1_count(&self.queued_p1_count);
+                }
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!("terminal journal-backed retry could not reach closed sqlite batch writer");
                 false
@@ -1978,6 +1981,17 @@ pub(crate) async fn run_sqlite_batch_writer(
                     pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
                 };
                 drop(priority_guard);
+                if flush_batch.terminal_invocations.is_empty()
+                    && flush_batch.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
+                {
+                    warn!(
+                        flush_priority = "P2",
+                        batch_rows = flush_batch.logical_rows(),
+                        batch_bytes = flush_batch.estimated_memory_bytes(),
+                        max_batch_bytes = SQLITE_BATCH_MAX_BYTES,
+                        "isolating oversized single P2 write"
+                    );
+                }
                 if let Some(retained) =
                     flush_pending_batch_accounted(
                         &accounting,
@@ -2138,6 +2152,17 @@ pub(crate) async fn run_sqlite_batch_writer(
                         continue;
                     };
                     drop(priority_guard);
+                    if flush_batch.terminal_invocations.is_empty()
+                        && flush_batch.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
+                    {
+                        warn!(
+                            flush_priority = "P2",
+                            batch_rows = flush_batch.logical_rows(),
+                            batch_bytes = flush_batch.estimated_memory_bytes(),
+                            max_batch_bytes = SQLITE_BATCH_MAX_BYTES,
+                            "isolating oversized single P2 write"
+                        );
+                    }
                     let submitted_p1 = !flush_batch.terminal_invocations.is_empty();
                     let submitted_p2 = flush_batch.has_p2();
                     if let Some(retained) =
@@ -2725,10 +2750,12 @@ pub(crate) async fn flush_pending_batch(
     };
 
     let mut deferred_batch = PendingBatch::default();
-    if let Some(system_task_batch) = system_task_batch {
+    let mut system_task_failure = None;
+    let mut system_task_lock_failure = false;
+    if let Some(system_task_batch) = system_task_batch.as_ref() {
         match flush_pending_batch_inner(
             pool,
-            &system_task_batch,
+            system_task_batch,
             pricing_catalog,
             prompt_cache_conversation_cache,
             terminal_runtime_store,
@@ -2748,15 +2775,11 @@ pub(crate) async fn flush_pending_batch(
                     p2_deferred_count = system_task_batch.logical_rows(),
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     flush_reason,
-                    system_task_scope = %summarize_system_task_batch_scope(&system_task_batch),
+                    system_task_scope = %summarize_system_task_batch_scope(system_task_batch),
                     "sqlite batch writer P2 system-task flush failed"
                 );
-                drop(permit);
-                return Some(RetainedBatch::p2_failed(
-                    system_task_batch,
-                    true,
-                    is_sqlite_lock_error(&err),
-                ));
+                system_task_lock_failure = is_sqlite_lock_error(&err);
+                system_task_failure = Some(err);
             }
         }
     }
@@ -2773,7 +2796,20 @@ pub(crate) async fn flush_pending_batch(
     )
     .await
     {
-        Ok(main_deferred) => deferred_batch.merge_p2(main_deferred),
+        Ok(main_deferred) => {
+            deferred_batch.merge_p2(main_deferred);
+            if system_task_failure.is_some() {
+                let mut retry_batch =
+                    system_task_batch.expect("system task failure must retain its isolated batch");
+                retry_batch.merge_p2(deferred_batch);
+                drop(permit);
+                return Some(RetainedBatch::p2_failed(
+                    retry_batch,
+                    true,
+                    system_task_lock_failure,
+                ));
+            }
+        }
         Err(err) => {
             crate::db_pressure::global_db_pressure_gate()
                 .record_error("sqlite_batch_writer_p2", &err);
@@ -2786,9 +2822,30 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
+            if system_task_failure.is_some() && !crate::db_pressure::is_db_pressure_error(&err) {
+                cleanup_discarded_p2_runtime_overlays(&batch, terminal_runtime_store);
+                let retry_batch =
+                    system_task_batch.expect("system task failure must retain its isolated batch");
+                return Some(RetainedBatch::p2_failed(
+                    retry_batch,
+                    true,
+                    system_task_lock_failure,
+                ));
+            }
+            if let Some(system_task_batch) = system_task_batch {
+                let mut retry_batch = system_task_batch;
+                retry_batch.merge_p2(batch);
+                return Some(RetainedBatch::p2_failed(
+                    retry_batch,
+                    true,
+                    system_task_lock_failure || is_sqlite_lock_error(&err),
+                ));
+            }
+            let retryable_failure = crate::db_pressure::is_db_pressure_error(&err)
+                || !batch.system_task_finishes.is_empty();
             return Some(RetainedBatch::p2_failed(
                 batch,
-                crate::db_pressure::is_db_pressure_error(&err),
+                retryable_failure,
                 is_sqlite_lock_error(&err),
             ));
         }
