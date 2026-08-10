@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::{
-    BatchedTerminalInvocationWrite, ProxyCaptureRecord, api_invocation_from_runtime_record,
-    startup_backfill_tasks_for_terminal,
+    BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ProxyCaptureRecord,
+    api_invocation_from_runtime_record, startup_backfill_tasks_for_terminal,
 };
 
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
@@ -144,6 +144,50 @@ impl TerminalJournal {
             .context("failed to append terminal quarantine delimiter")?;
         file.sync_data()
             .context("failed to sync terminal quarantine")?;
+        Ok(())
+    }
+
+    pub(crate) fn quarantine_system_task_finish(
+        &mut self,
+        finish: &BatchedSystemTaskFinish,
+        error: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct QuarantineEntry<'a> {
+            run_id: i64,
+            task_kind: &'static str,
+            trigger_kind: &'a str,
+            status: &'static str,
+            summary: &'a Option<String>,
+            detail: &'a Option<String>,
+            finished_at: &'a str,
+            duration_ms: i64,
+            error: &'a str,
+        }
+
+        let path = self.directory.join("system-task-quarantine.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open system-task quarantine {}", path.display()))?;
+        let entry = QuarantineEntry {
+            run_id: finish.run_id,
+            task_kind: finish.task_kind.as_str(),
+            trigger_kind: &finish.trigger_kind,
+            status: finish.status.as_str(),
+            summary: &finish.summary,
+            detail: &finish.detail,
+            finished_at: &finish.finished_at,
+            duration_ms: finish.duration_ms,
+            error,
+        };
+        serde_json::to_writer(&mut file, &entry)
+            .context("failed to encode system-task quarantine")?;
+        file.write_all(b"\n")
+            .context("failed to append system-task quarantine delimiter")?;
+        file.sync_data()
+            .context("failed to sync system-task quarantine")?;
         Ok(())
     }
 

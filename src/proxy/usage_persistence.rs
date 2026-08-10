@@ -3214,7 +3214,20 @@ pub(crate) async fn touch_invocation_upstream_account_last_activity_tx(
     occurred_at: &str,
     payload: Option<&str>,
 ) -> Result<()> {
-    if let Some(upstream_account_id) = upstream_account_id_from_payload(payload) {
+    touch_upstream_account_last_activity_tx(
+        tx,
+        occurred_at,
+        upstream_account_id_from_payload(payload),
+    )
+    .await
+}
+
+pub(crate) async fn touch_upstream_account_last_activity_tx(
+    tx: &mut SqliteConnection,
+    occurred_at: &str,
+    upstream_account_id: Option<i64>,
+) -> Result<()> {
+    if let Some(upstream_account_id) = upstream_account_id {
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts

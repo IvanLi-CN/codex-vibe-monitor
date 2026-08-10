@@ -558,7 +558,7 @@ pub(crate) struct BatchedAttemptProgress {
 pub(crate) struct BatchedInvocationDerivedWrites {
     pub(crate) invocation_id: i64,
     pub(crate) occurred_at: String,
-    pub(crate) payload: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
     pub(crate) terminal_overlay_key: Option<(String, String)>,
 }
 
@@ -1226,7 +1226,6 @@ fn estimated_attempt_progress_memory_bytes(progress: &BatchedAttemptProgress) ->
 fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedWrites) -> usize {
     std::mem::size_of::<BatchedInvocationDerivedWrites>()
         .saturating_add(derived.occurred_at.capacity())
-        .saturating_add(estimated_option_string_bytes(&derived.payload))
         .saturating_add(
             derived
                 .terminal_overlay_key
@@ -2043,23 +2042,49 @@ pub(crate) async fn run_sqlite_batch_writer(
                             };
                             let logical_rows = retained.batch.logical_rows();
                             let failed = retained.failed;
+                            let retained_rows_before_merge = retained.batch.logical_rows();
+                            let retained_bytes_before_merge = retained.batch.estimated_memory_bytes();
+                            let pending_rows_before_merge = pending.logical_rows();
+                            let pending_bytes_before_merge = pending.estimated_memory_bytes();
+                            let p2_defer_reason = retained.p2_defer;
+                            let p2_deferred = p2_defer_reason.is_some();
                             let mut retained_batch = retained.batch;
                             retained_batch.merge_all(pending.take());
-                            let retained_depth = retained_batch.logical_rows();
-                            let retained_bytes = retained_batch.estimated_memory_bytes();
-                            accounting.release(retained_depth, retained_bytes);
                             if failed {
                                 result = Err(format!(
                                     "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
                                 ));
+                                accounting.release(
+                                    retained_rows_before_merge + pending_rows_before_merge,
+                                    retained_bytes_before_merge + pending_bytes_before_merge,
+                                );
                                 break;
+                            }
+                            if !retained_batch.terminal_invocations.is_empty() {
+                                pending = retained_batch;
+                                continue;
+                            }
+                            if p2_deferred {
+                                pending = retained_batch;
+                                let delay = match p2_defer_reason {
+                                    Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                        Duration::from_millis(remaining_ms.max(1))
+                                    }
+                                    Some(P2DeferReason::BackgroundBusy { .. }) | None => {
+                                        Duration::from_millis(250)
+                                    }
+                                };
+                                sleep(delay).await;
+                                continue;
+                            }
+                            if !retained_batch.is_empty() {
+                                pending = retained_batch;
+                                continue;
                             }
                             warn!(
                                 logical_rows,
-                                retained_bytes,
-                                "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
+                                "sqlite batch writer completed shutdown drain"
                             );
-                            break;
                         }
                         let _ = responder.send(result);
                         return;
@@ -2233,17 +2258,47 @@ pub(crate) async fn run_sqlite_batch_writer(
                         else {
                             continue;
                         };
+                        let retained_rows_before_merge = retained.batch.logical_rows();
+                        let retained_bytes_before_merge = retained.batch.estimated_memory_bytes();
+                        let pending_rows_before_merge = pending.logical_rows();
+                        let pending_bytes_before_merge = pending.estimated_memory_bytes();
+                        let p2_defer_reason = retained.p2_defer;
+                        let p2_deferred = p2_defer_reason.is_some();
                         let mut retained_batch = retained.batch;
                         retained_batch.merge_all(pending.take());
-                        let retained_rows = retained_batch.logical_rows();
-                        let retained_bytes = retained_batch.estimated_memory_bytes();
-                        accounting.release(retained_rows, retained_bytes);
-                        warn!(
-                            retained_rows,
-                            retained_bytes,
-                            failed = retained.failed,
-                            "sqlite batch writer released retained memory accounting after receiver shutdown"
-                        );
+                        if retained.failed {
+                            accounting.release(
+                                retained_rows_before_merge + pending_rows_before_merge,
+                                retained_bytes_before_merge + pending_bytes_before_merge,
+                            );
+                            warn!(
+                                retained_rows = retained_batch.logical_rows(),
+                                retained_bytes = retained_batch.estimated_memory_bytes(),
+                                "sqlite batch writer released failed retained memory accounting after receiver shutdown"
+                            );
+                            break;
+                        }
+                        if !retained_batch.terminal_invocations.is_empty() {
+                            pending = retained_batch;
+                            continue;
+                        }
+                        if p2_deferred {
+                            pending = retained_batch;
+                            let delay = match p2_defer_reason {
+                                Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                    Duration::from_millis(remaining_ms.max(1))
+                                }
+                                Some(P2DeferReason::BackgroundBusy { .. }) | None => {
+                                    Duration::from_millis(250)
+                                }
+                            };
+                            sleep(delay).await;
+                            continue;
+                        }
+                        if !retained_batch.is_empty() {
+                            pending = retained_batch;
+                            continue;
+                        }
                         break;
                     }
                     return;
@@ -2643,6 +2698,24 @@ fn cleanup_discarded_p2_runtime_overlays(
         .count()
 }
 
+fn quarantine_system_task_batch(
+    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    batch: &PendingBatch,
+    error: &anyhow::Error,
+) -> Result<usize> {
+    let mut journal = terminal_journal
+        .lock()
+        .map_err(|_| anyhow::anyhow!("terminal journal lock poisoned"))?;
+    let journal = journal
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("terminal journal unavailable for quarantine"))?;
+    let error = format!("{error:#}");
+    for finish in batch.system_task_finishes.values() {
+        journal.quarantine_system_task_finish(finish, &error)?;
+    }
+    Ok(batch.system_task_finishes.len())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Flush dependencies mirror the single-writer ownership boundaries."
@@ -2937,16 +3010,35 @@ pub(crate) async fn flush_pending_batch(
     {
         Ok(main_deferred) => {
             deferred_batch.merge_p2(main_deferred);
-            if system_task_failure.is_some() {
+            if let Some(system_task_error) = system_task_failure.as_ref() {
                 if !system_task_retryable_failure {
+                    let system_task_batch_ref = system_task_batch
+                        .as_ref()
+                        .expect("system task failure must retain its isolated batch");
+                    let quarantine_result = quarantine_system_task_batch(
+                        terminal_journal,
+                        system_task_batch_ref,
+                        system_task_error,
+                    );
+                    if let Err(quarantine_error) = quarantine_result {
+                        warn!(
+                            error = %quarantine_error,
+                            flush_priority = "P2",
+                            system_task_scope = %summarize_system_task_batch_scope(
+                                system_task_batch_ref
+                            ),
+                            "system-task quarantine failed; retaining completion for retry"
+                        );
+                        let mut retry_batch = system_task_batch
+                            .expect("system task failure must retain its isolated batch");
+                        retry_batch.merge_p2(deferred_batch);
+                        drop(permit);
+                        return Some(RetainedBatch::p2_failed(retry_batch, true, false));
+                    }
                     warn!(
                         flush_priority = "P2",
-                        system_task_scope = %summarize_system_task_batch_scope(
-                            system_task_batch
-                                .as_ref()
-                                .expect("system task failure must retain its isolated batch")
-                        ),
-                        "discarded deterministic system-task completion after failed finalization"
+                        system_task_scope = %summarize_system_task_batch_scope(system_task_batch_ref),
+                        "quarantined deterministic system-task completion after failed finalization"
                     );
                     drop(permit);
                     return if deferred_batch.is_empty() {
@@ -2978,10 +3070,22 @@ pub(crate) async fn flush_pending_batch(
                 "sqlite batch writer P2 flush failed"
             );
             drop(permit);
-            if system_task_failure.is_some() && !crate::db_pressure::is_db_pressure_error(&err) {
+            if !crate::db_pressure::is_db_pressure_error(&err)
+                && let Some(system_task_error) = system_task_failure.as_ref()
+            {
                 cleanup_discarded_p2_runtime_overlays(&batch, terminal_runtime_store);
                 let retry_batch =
                     system_task_batch.expect("system task failure must retain its isolated batch");
+                if !system_task_retryable_failure
+                    && quarantine_system_task_batch(
+                        terminal_journal,
+                        &retry_batch,
+                        system_task_error,
+                    )
+                    .is_ok()
+                {
+                    return None;
+                }
                 return Some(RetainedBatch::p2_failed(
                     retry_batch,
                     system_task_retryable_failure,
@@ -2989,7 +3093,21 @@ pub(crate) async fn flush_pending_batch(
                 ));
             }
             if let Some(system_task_batch) = system_task_batch {
-                if system_task_failure.is_some() {
+                if let Some(system_task_error) = system_task_failure.as_ref() {
+                    if !system_task_retryable_failure
+                        && quarantine_system_task_batch(
+                            terminal_journal,
+                            &system_task_batch,
+                            system_task_error,
+                        )
+                        .is_ok()
+                    {
+                        return Some(RetainedBatch::p2_failed(
+                            batch,
+                            crate::db_pressure::is_db_pressure_error(&err),
+                            is_sqlite_lock_error(&err),
+                        ));
+                    }
                     let mut retry_batch = system_task_batch;
                     retry_batch.merge_p2(batch);
                     return Some(RetainedBatch::p2_failed(
@@ -3203,7 +3321,9 @@ pub(crate) async fn flush_pending_batch_inner(
             BatchedInvocationDerivedWrites {
                 invocation_id,
                 occurred_at,
-                payload: terminal.record.payload.clone(),
+                upstream_account_id: crate::upstream_account_id_from_payload(
+                    terminal.record.payload.as_deref(),
+                ),
                 terminal_overlay_key: Some((
                     terminal.record.invoke_id.clone(),
                     terminal.record.occurred_at.clone(),
@@ -3332,10 +3452,10 @@ pub(crate) async fn flush_pending_batch_inner(
             if let Some(key) = derived.terminal_overlay_key.clone() {
                 terminal_overlay_keys.push(key);
             }
-            touch_invocation_upstream_account_last_activity_tx(
+            crate::touch_upstream_account_last_activity_tx(
                 tx.as_mut(),
                 &derived.occurred_at,
-                derived.payload.as_deref(),
+                derived.upstream_account_id,
             )
             .await?;
         }
@@ -4773,7 +4893,7 @@ mod tests {
                 BatchedInvocationDerivedWrites {
                     invocation_id: max_id,
                     occurred_at: "2026-07-01 10:00:00".to_string(),
-                    payload: None,
+                    upstream_account_id: None,
                     terminal_overlay_key: None,
                 },
             )],
