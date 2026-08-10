@@ -138,8 +138,24 @@ async fn wait_for_p2_deadline(due_at: Option<Instant>) {
     }
 }
 
-fn p2_deadline_ready(pending: &PendingBatch, p2_schedule: &P2ScheduleState) -> bool {
-    pending.has_p2() && p2_schedule.ready(Instant::now())
+fn p2_deadline_ready(
+    pending: &PendingBatch,
+    p2_schedule: &P2ScheduleState,
+    queued_p1_count: &AtomicUsize,
+) -> bool {
+    pending.has_p2()
+        && p2_schedule.ready(Instant::now())
+        && queued_p1_count.load(Ordering::SeqCst) == 0
+}
+
+fn is_p1_terminal_write(write: &SqliteBatchWrite) -> bool {
+    matches!(write, SqliteBatchWrite::TerminalInvocation(_))
+}
+
+fn decrement_queued_p1_count(queued_p1_count: &AtomicUsize) {
+    let _ = queued_p1_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+        count.checked_sub(1)
+    });
 }
 
 fn drain_queued_writes_before_dispatch(
@@ -147,12 +163,39 @@ fn drain_queued_writes_before_dispatch(
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,
     p2_schedule: &mut P2ScheduleState,
+    max_messages: usize,
+    queued_p1_count: &AtomicUsize,
 ) {
-    drain_queued_batch_writes(write_receiver, pending, accounting, SQLITE_BATCH_MAX_ROWS);
+    drain_queued_batch_writes(
+        write_receiver,
+        pending,
+        accounting,
+        max_messages,
+        queued_p1_count,
+    );
     if pending.has_p2() {
         p2_schedule.arm_if_idle(Instant::now());
         accounting.update_p2_schedule(p2_schedule);
     }
+}
+
+fn drain_queued_writes_before_p2_dispatch(
+    write_receiver: &mut mpsc::Receiver<SqliteBatchWrite>,
+    pending: &mut PendingBatch,
+    accounting: &PendingQueueAccounting,
+    p2_schedule: &mut P2ScheduleState,
+    queued_p1_count: &AtomicUsize,
+) {
+    // A snapshot keeps the priority scan bounded even while P2 producers continue writing.
+    let queued_messages = write_receiver.len();
+    drain_queued_writes_before_dispatch(
+        write_receiver,
+        pending,
+        accounting,
+        p2_schedule,
+        queued_messages,
+        queued_p1_count,
+    );
 }
 
 impl P1RetryState {
@@ -1033,6 +1076,7 @@ impl PendingBatch {
 #[derive(Debug)]
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
+    queued_p1_count: Arc<AtomicUsize>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
     accounting: Arc<PendingQueueAccounting>,
     dropped_writes: Arc<AtomicU64>,
@@ -1062,6 +1106,7 @@ impl SqliteBatchWriter {
         database_path: &Path,
     ) -> Arc<Self> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
+        let queued_p1_count = Arc::new(AtomicUsize::new(0));
         let (control_sender, control_receiver) = mpsc::channel(128);
         let accounting = Arc::new(PendingQueueAccounting::default());
         let dropped_writes = Arc::new(AtomicU64::new(0));
@@ -1102,9 +1147,11 @@ impl SqliteBatchWriter {
             terminal_projection_hub.clone(),
             dashboard_reconcile_gate.clone(),
             terminal_journal.clone(),
+            queued_p1_count.clone(),
         ));
         let writer = Arc::new(Self {
             write_sender,
+            queued_p1_count,
             control_sender,
             accounting,
             dropped_writes,
@@ -1152,6 +1199,7 @@ impl SqliteBatchWriter {
         let (control_sender, _control_receiver) = mpsc::channel(1);
         Arc::new(Self {
             write_sender,
+            queued_p1_count: Arc::new(AtomicUsize::new(0)),
             control_sender,
             accounting: Arc::new(PendingQueueAccounting::default()),
             dropped_writes: Arc::new(AtomicU64::new(0)),
@@ -1210,6 +1258,7 @@ impl SqliteBatchWriter {
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
+        let is_p1 = is_p1_terminal_write(&write);
         #[cfg(test)]
         if let Some(buffered_writes) = &self.buffered_writes {
             match buffered_writes.lock() {
@@ -1231,9 +1280,15 @@ impl SqliteBatchWriter {
         }
 
         self.accounting.enqueue(estimated_bytes);
+        if is_p1 {
+            self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
+        }
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(err) => {
+                if is_p1 {
+                    decrement_queued_p1_count(&self.queued_p1_count);
+                }
                 self.accounting.rollback_enqueue(estimated_bytes);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -1302,9 +1357,16 @@ impl SqliteBatchWriter {
     ) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
         self.accounting.enqueue(estimated_bytes);
+        let is_p1 = is_p1_terminal_write(&write);
+        if is_p1 {
+            self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
+        }
         match self.write_sender.try_send(write) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(write)) => {
+                if is_p1 {
+                    decrement_queued_p1_count(&self.queued_p1_count);
+                }
                 self.accounting.rollback_enqueue(estimated_bytes);
                 let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
                     && self
@@ -1571,6 +1633,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    queued_p1_count: Arc<AtomicUsize>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1590,6 +1653,8 @@ pub(crate) async fn run_sqlite_batch_writer(
             &mut pending,
             &accounting,
             &mut p2_schedule,
+            SQLITE_BATCH_MAX_ROWS,
+            &queued_p1_count,
         );
         tokio::select! {
             biased;
@@ -1603,9 +1668,164 @@ pub(crate) async fn run_sqlite_batch_writer(
                 p2_schedule.wake_background_eligible();
                 accounting.update_p2_schedule(&p2_schedule);
             }
+            maybe_control = control_receiver.recv(), if !control_closed => {
+                if let Some(control) = maybe_control {
+                    match control {
+                    SqliteBatchWriterControl::FlushNow {
+                        queued_depth_snapshot,
+                        responder,
+                    } => {
+                        drain_queued_batch_writes(
+                            &mut write_receiver,
+                            &mut pending,
+                            &accounting,
+                            queued_depth_snapshot,
+                            &queued_p1_count,
+                        );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            &accounting,
+                            usize::MAX,
+                        );
+                        let result = match flush_pending_batch_accounted(
+                            &accounting,
+                            &pool,
+                            pricing_catalog.as_ref(),
+                            pending.take(),
+                            FlushReason::Barrier,
+                            prompt_cache_conversation_cache.as_ref(),
+                            &terminal_runtime_store,
+                            &dashboard_activity_snapshot_cache,
+                            &terminal_projection_hub,
+                            &dashboard_reconcile_gate,
+                            &terminal_journal,
+                        )
+                        .await
+                        {
+                            Some(retained) => {
+                                let logical_rows = retained.batch.logical_rows();
+                                let failed = retained.failed;
+                                match retained.p2_defer {
+                                    Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                                        p2_schedule.defer_pressure(
+                                            Duration::from_millis(remaining_ms),
+                                            P2WakeReason::PressureCooldownElapsed,
+                                        );
+                                    }
+                                    Some(P2DeferReason::BackgroundBusy {
+                                        observed_generation,
+                                    }) => {
+                                        p2_eligibility_generation = observed_generation;
+                                        p2_schedule.defer_until_background_eligible();
+                                    }
+                                    None if retained.failed
+                                        && retained.batch.has_p2()
+                                        && retained.batch.terminal_invocations.is_empty() =>
+                                    {
+                                        transaction_sequence = transaction_sequence.saturating_add(1);
+                                        p2_schedule.failed(transaction_sequence);
+                                        if retained.p2_lock_failure {
+                                            accounting.p2_lock_retried();
+                                        }
+                                    }
+                                    None if retained.batch.has_p2() => {
+                                        p2_schedule.arm_if_idle(Instant::now());
+                                    }
+                                    None => p2_schedule.succeeded(),
+                                }
+                                accounting.update_p2_schedule(&p2_schedule);
+                                pending = retained.batch;
+                                if failed {
+                                    Err(format!(
+                                        "sqlite batch writer retained {logical_rows} logical rows after forced flush"
+                                    ))
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            None => {
+                                p2_schedule.succeeded();
+                                accounting.update_p2_schedule(&p2_schedule);
+                                Ok(())
+                            },
+                        };
+                        let _ = responder.send(result);
+                    }
+                    SqliteBatchWriterControl::Shutdown { responder, .. } => {
+                        write_receiver.close();
+                        drain_queued_batch_writes(
+                            &mut write_receiver,
+                            &mut pending,
+                            &accounting,
+                            usize::MAX,
+                            &queued_p1_count,
+                        );
+                        drain_terminal_journal_deferred_writes(
+                            &terminal_journal,
+                            &mut pending,
+                            &accounting,
+                            usize::MAX,
+                        );
+                        let result = if pending.is_empty() {
+                            Ok(())
+                        } else {
+                            match flush_pending_batch_accounted(
+                                &accounting,
+                                &pool,
+                                pricing_catalog.as_ref(),
+                                pending.take(),
+                                FlushReason::Shutdown,
+                                prompt_cache_conversation_cache.as_ref(),
+                                &terminal_runtime_store,
+                                &dashboard_activity_snapshot_cache,
+                                &terminal_projection_hub,
+                                &dashboard_reconcile_gate,
+                                &terminal_journal,
+                            )
+                            .await
+                            {
+                                Some(retained) => {
+                                    let logical_rows = retained.batch.logical_rows();
+                                    accounting.complete(
+                                        retained.batch.logical_rows(),
+                                        0,
+                                        retained.batch.estimated_memory_bytes(),
+                                        0,
+                                    );
+                                    if retained.failed {
+                                        Err(format!(
+                                            "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
+                                        ))
+                                    } else {
+                                        warn!(
+                                            logical_rows,
+                                            "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
+                                        );
+                                        Ok(())
+                                    }
+                                }
+                                None => Ok(()),
+                            }
+                        };
+                        let _ = responder.send(result);
+                        return;
+                    }
+                    }
+                } else {
+                    control_closed = true;
+                }
+            }
             _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if p2_deadline_ready(&pending, &p2_schedule) =>
+                if p2_deadline_ready(&pending, &p2_schedule, &queued_p1_count) =>
             {
+                drain_queued_writes_before_p2_dispatch(
+                    &mut write_receiver,
+                    &mut pending,
+                    &accounting,
+                    &mut p2_schedule,
+                    &queued_p1_count,
+                );
                 let now = Instant::now();
                 let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
                 let flush_batch = if submitted_p1 {
@@ -1689,152 +1909,6 @@ pub(crate) async fn run_sqlite_batch_writer(
                     accounting.update_p2_schedule(&p2_schedule);
                 }
             }
-            maybe_control = control_receiver.recv(), if !control_closed => {
-                if let Some(control) = maybe_control {
-                    match control {
-                    SqliteBatchWriterControl::FlushNow {
-                        queued_depth_snapshot,
-                        responder,
-                    } => {
-                        drain_queued_batch_writes(
-                            &mut write_receiver,
-                            &mut pending,
-                            &accounting,
-                            queued_depth_snapshot,
-                        );
-                        drain_terminal_journal_deferred_writes(
-                            &terminal_journal,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                        );
-                        let result = match flush_pending_batch_accounted(
-                            &accounting,
-                            &pool,
-                            pricing_catalog.as_ref(),
-                            pending.take(),
-                            FlushReason::Barrier,
-                            prompt_cache_conversation_cache.as_ref(),
-                            &terminal_runtime_store,
-                            &dashboard_activity_snapshot_cache,
-                            &terminal_projection_hub,
-                            &dashboard_reconcile_gate,
-                            &terminal_journal,
-                        )
-                        .await
-                        {
-                            Some(retained) => {
-                                let logical_rows = retained.batch.logical_rows();
-                                let failed = retained.failed;
-                                match retained.p2_defer {
-                                    Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
-                                        p2_schedule.defer_pressure(
-                                            Duration::from_millis(remaining_ms),
-                                            P2WakeReason::PressureCooldownElapsed,
-                                        );
-                                    }
-                                    Some(P2DeferReason::BackgroundBusy {
-                                        observed_generation,
-                                    }) => {
-                                        p2_eligibility_generation = observed_generation;
-                                        p2_schedule.defer_until_background_eligible();
-                                    }
-                                    None if retained.failed
-                                        && retained.batch.has_p2()
-                                        && retained.batch.terminal_invocations.is_empty() =>
-                                    {
-                                        transaction_sequence = transaction_sequence.saturating_add(1);
-                                        p2_schedule.failed(transaction_sequence);
-                                        if retained.p2_lock_failure {
-                                            accounting.p2_lock_retried();
-                                        }
-                                    }
-                                    None if retained.batch.has_p2() => {
-                                        p2_schedule.arm_if_idle(Instant::now());
-                                    }
-                                    None => p2_schedule.succeeded(),
-                                }
-                                accounting.update_p2_schedule(&p2_schedule);
-                                pending = retained.batch;
-                                if failed {
-                                    Err(format!(
-                                        "sqlite batch writer retained {logical_rows} logical rows after forced flush"
-                                    ))
-                                } else {
-                                    Ok(())
-                                }
-                            }
-                            None => {
-                                p2_schedule.succeeded();
-                                accounting.update_p2_schedule(&p2_schedule);
-                                Ok(())
-                            },
-                        };
-                        let _ = responder.send(result);
-                    }
-                    SqliteBatchWriterControl::Shutdown { responder, .. } => {
-                        write_receiver.close();
-                        drain_queued_batch_writes(
-                            &mut write_receiver,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                        );
-                        drain_terminal_journal_deferred_writes(
-                            &terminal_journal,
-                            &mut pending,
-                            &accounting,
-                            usize::MAX,
-                        );
-                        let result = if pending.is_empty() {
-                            Ok(())
-                        } else {
-                            match flush_pending_batch_accounted(
-                                &accounting,
-                                &pool,
-                                pricing_catalog.as_ref(),
-                                pending.take(),
-                                FlushReason::Shutdown,
-                                prompt_cache_conversation_cache.as_ref(),
-                                &terminal_runtime_store,
-                                &dashboard_activity_snapshot_cache,
-                                &terminal_projection_hub,
-                                &dashboard_reconcile_gate,
-                                &terminal_journal,
-                            )
-                            .await
-                            {
-                                Some(retained) => {
-                                    let logical_rows = retained.batch.logical_rows();
-                                    accounting.complete(
-                                        retained.batch.logical_rows(),
-                                        0,
-                                        retained.batch.estimated_memory_bytes(),
-                                        0,
-                                    );
-                                    if retained.failed {
-                                        Err(format!(
-                                            "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
-                                        ))
-                                    } else {
-                                        warn!(
-                                            logical_rows,
-                                            "sqlite batch writer skipped deferred P2 writes during shutdown after P1 drain"
-                                        );
-                                        Ok(())
-                                    }
-                                }
-                                None => Ok(()),
-                            }
-                        };
-                        let _ = responder.send(result);
-                        return;
-                    }
-                    }
-                } else {
-                    control_closed = true;
-                }
-            }
             _ = deferred_ticker.tick() => {
                 let deferred_capacity = SQLITE_BATCH_MAX_ROWS.saturating_sub(pending.logical_rows());
                 drain_terminal_journal_deferred_writes(
@@ -1883,6 +1957,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                     }
                     return;
                 };
+                if is_p1_terminal_write(&write) {
+                    decrement_queued_p1_count(&queued_p1_count);
+                }
                 pending.push_accounted(write, &accounting);
                 if pending.has_p2() {
                     p2_schedule.arm_if_idle(Instant::now());
@@ -2123,10 +2200,14 @@ pub(crate) fn drain_queued_batch_writes(
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,
     max_messages: usize,
+    queued_p1_count: &AtomicUsize,
 ) {
     for _ in 0..max_messages {
         match write_receiver.try_recv() {
             Ok(write) => {
+                if is_p1_terminal_write(&write) {
+                    decrement_queued_p1_count(queued_p1_count);
+                }
                 pending.push_accounted(write, accounting);
             }
             Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
@@ -2921,6 +3002,7 @@ mod tests {
         ));
         let mut schedule = P2ScheduleState::default();
         schedule.wake_background_eligible();
+        let queued_p1_count = AtomicUsize::new(0);
         let (sender, mut receiver) = mpsc::channel(1);
         sender
             .try_send(SqliteBatchWrite::TerminalInvocation(
@@ -2932,6 +3014,8 @@ mod tests {
             &mut pending,
             &accounting,
             &mut schedule,
+            SQLITE_BATCH_MAX_ROWS,
+            &queued_p1_count,
         );
 
         assert!(
@@ -2939,7 +3023,7 @@ mod tests {
             "queued P1 must be classified before checking the P2 deadline"
         );
         assert_eq!(pending.terminal_invocations.len(), 1);
-        assert!(p2_deadline_ready(&pending, &schedule));
+        assert!(p2_deadline_ready(&pending, &schedule, &queued_p1_count));
     }
 
     #[test]
@@ -2954,6 +3038,7 @@ mod tests {
         ));
         let mut schedule = P2ScheduleState::default();
         schedule.wake_background_eligible();
+        let queued_p1_count = AtomicUsize::new(0);
         let (sender, mut receiver) = mpsc::channel(1);
         sender
             .try_send(SqliteBatchWrite::AccountSelectedTouch(
@@ -2969,10 +3054,12 @@ mod tests {
             &mut pending,
             &accounting,
             &mut schedule,
+            SQLITE_BATCH_MAX_ROWS,
+            &queued_p1_count,
         );
 
         assert!(receiver.is_empty());
-        assert!(p2_deadline_ready(&pending, &schedule));
+        assert!(p2_deadline_ready(&pending, &schedule, &queued_p1_count));
     }
 
     #[tokio::test]
@@ -3135,6 +3222,120 @@ mod tests {
             "normal P2 batch should flush without retention"
         );
         assert_eq!(accounting.snapshot().p2_flush_attempt_count, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn p1_queued_after_a_deep_p2_backlog_runs_first() {
+        const ACCOUNT_ID: i64 = 999_998;
+        const P1_INVOKE_ID: &str = "deep-deferred-p2-p1-priority";
+
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, last_selected_at, created_at, updated_at
+            )
+            VALUES (999998, 'api_key', 'codex', 'Priority Test', 'active', 1, NULL, '2026-08-10T12:00:00Z', '2026-08-10T12:00:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed P2 account");
+        sqlx::query("CREATE TABLE batch_writer_dispatch_order (write_class TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create dispatch order table");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER batch_writer_p1_dispatch_order
+            AFTER INSERT ON codex_invocations
+            WHEN NEW.invoke_id = 'deep-deferred-p2-p1-priority'
+            BEGIN
+                INSERT INTO batch_writer_dispatch_order (write_class) VALUES ('p1');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create P1 dispatch order trigger");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER batch_writer_p2_dispatch_order
+            AFTER UPDATE OF last_selected_at ON pool_upstream_accounts
+            WHEN NEW.id = 999998
+            BEGIN
+                INSERT INTO batch_writer_dispatch_order (write_class) VALUES ('p2');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create P2 dispatch order trigger");
+
+        let writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            CancellationToken::new(),
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
+            Arc::new(RwLock::new(PricingCatalog::default())),
+            &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
+        );
+
+        assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: ACCOUNT_ID,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        )));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if writer.accounting_snapshot().p2_wake_reason.as_deref()
+                    == Some("coalesced_deadline")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("initial P2 batch should arm its fixed coalescing deadline");
+
+        for offset in 0..=SQLITE_BATCH_MAX_ROWS {
+            assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
+                BatchedAccountSelectedTouch {
+                    account_id: ACCOUNT_ID,
+                    selected_at: format!("2026-08-10T12:01:{offset:02}Z"),
+                },
+            )));
+        }
+        assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
+            terminal_write_for_coalescing(P1_INVOKE_ID, None),
+        )));
+
+        // Keep the single-threaded writer asleep until its fixed P2 deadline is overdue.
+        std::thread::sleep(SQLITE_P2_COALESCE_INTERVAL + Duration::from_millis(10));
+        let order = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let order = sqlx::query_scalar::<_, String>(
+                    "SELECT write_class FROM batch_writer_dispatch_order ORDER BY rowid",
+                )
+                .fetch_all(&pool)
+                .await
+                .expect("load writer dispatch order");
+                if order.len() >= 2 {
+                    return order;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        writer.shutdown_and_drain().await;
+
+        let order = order.expect("writer should dispatch both P1 and P2 work");
+        assert_eq!(
+            order,
+            vec!["p1".to_string(), "p2".to_string()],
+            "the writer must classify the full queued snapshot before dispatching overdue P2 work"
+        );
     }
 
     async fn pending_attempt(pool: &SqlitePool, invoke_id: &str) -> PendingPoolAttemptRecord {
