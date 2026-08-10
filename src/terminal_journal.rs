@@ -23,6 +23,12 @@ const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES: usize = 1024;
 
+type ShutdownRecoveryKey = (String, String, bool);
+type LoadedShutdownTerminalRecovery = (
+    HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
+    Vec<BatchedTerminalInvocationWrite>,
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
     Journal,
@@ -137,6 +143,7 @@ pub(crate) struct TerminalJournal {
     replay_count: usize,
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
     replay_blocked: bool,
+    shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
     system_task_quarantine_ids: HashSet<i64>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
@@ -455,10 +462,11 @@ impl TerminalJournal {
             .expect("current terminal journal segment exists")
             .path
             .clone();
+        let shutdown_recovery_path = directory.join("shutdown-terminal-quarantine.jsonl");
+        let (shutdown_recovery_pending, recovery_writes) =
+            load_shutdown_terminal_recovery(&shutdown_recovery_path);
         let mut deferred_writes = VecDeque::new();
-        for terminal in
-            load_shutdown_terminal_recovery(&directory.join("shutdown-terminal-quarantine.jsonl"))
-        {
+        for terminal in recovery_writes {
             let key = (
                 terminal.record.invoke_id.clone(),
                 terminal.record.occurred_at.clone(),
@@ -483,6 +491,7 @@ impl TerminalJournal {
             replay_count: replay_count.saturating_add(deferred_writes.len()),
             deferred_writes,
             replay_blocked: false,
+            shutdown_recovery_pending,
             system_task_quarantine_ids,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
@@ -597,18 +606,31 @@ impl TerminalJournal {
     }
 
     pub(crate) fn acknowledge(&mut self, invoke_id: &str, occurred_at: &str, raw_capture: bool) {
-        if let Err(err) = append_shutdown_terminal_ack(
-            &self.directory.join("shutdown-terminal-quarantine.jsonl"),
-            invoke_id,
-            occurred_at,
-            raw_capture,
-        ) {
-            warn!(error = %err, invoke_id, occurred_at, "failed to checkpoint shutdown terminal recovery acknowledgement");
-        }
         let key = (invoke_id.to_string(), occurred_at.to_string(), raw_capture);
-        let Some(sequences) = self.pending_by_key.get(&key).cloned() else {
+        let recovery_pending = self.shutdown_recovery_pending.contains_key(&key);
+        let Some(sequences) = self
+            .pending_by_key
+            .get(&key)
+            .cloned()
+            .or_else(|| recovery_pending.then_some(Vec::new()))
+        else {
             return;
         };
+        let recovery_only = recovery_pending && sequences.is_empty();
+        if recovery_pending {
+            if let Err(err) = append_shutdown_terminal_ack(
+                &self.directory.join("shutdown-terminal-quarantine.jsonl"),
+                invoke_id,
+                occurred_at,
+                raw_capture,
+            ) {
+                warn!(error = %err, invoke_id, occurred_at, "failed to checkpoint shutdown terminal recovery acknowledgement");
+                self.sync_failed = true;
+                self.overflowed = true;
+                return;
+            }
+            self.shutdown_recovery_pending.remove(&key);
+        }
         let mut pending_sequences = Vec::new();
         let mut written_sequences = Vec::new();
         for sequence in sequences {
@@ -678,10 +700,41 @@ impl TerminalJournal {
             self.pending_by_key.insert(key, pending_sequences);
         }
         self.last_checkpoint_at = Instant::now();
-        self.replay_count = self.replay_count.saturating_sub(acknowledged_replay_count);
+        self.replay_count = self
+            .replay_count
+            .saturating_sub(acknowledged_replay_count + usize::from(recovery_only));
         self.remove_fully_acknowledged_segments();
+        if recovery_pending
+            && let Err(err) = compact_shutdown_terminal_recovery(
+                &self.directory.join("shutdown-terminal-quarantine.jsonl"),
+                &self.shutdown_recovery_pending,
+            )
+        {
+            warn!(error = %err, "failed to compact shutdown terminal recovery sink");
+        }
         if !self.sync_failed && self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
             self.overflowed = false;
+        }
+    }
+
+    pub(crate) fn remember_shutdown_recovery(
+        &mut self,
+        terminals: &[&BatchedTerminalInvocationWrite],
+    ) {
+        for terminal in terminals {
+            let key = (
+                terminal.record.invoke_id.clone(),
+                terminal.record.occurred_at.clone(),
+                terminal.raw_capture,
+            );
+            if self
+                .shutdown_recovery_pending
+                .insert(key.clone(), terminal.record.clone())
+                .is_none()
+                && !self.pending_by_key.contains_key(&key)
+            {
+                self.replay_count = self.replay_count.saturating_add(1);
+            }
         }
     }
 
@@ -958,7 +1011,10 @@ fn append_shutdown_terminal_ack(
     raw_capture: bool,
 ) -> Result<()> {
     if !path.exists() {
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "shutdown terminal recovery file is missing: {}",
+            path.display()
+        ));
     }
     let mut file = OpenOptions::new()
         .append(true)
@@ -1012,16 +1068,18 @@ fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
     ids
 }
 
-fn load_shutdown_terminal_recovery(path: &Path) -> Vec<BatchedTerminalInvocationWrite> {
+fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecovery {
     let Ok(file) = File::open(path) else {
-        return Vec::new();
+        return (HashMap::new(), Vec::new());
     };
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    let mut entries = HashMap::<(String, String, bool), Option<ProxyCaptureRecord>>::new();
+    let mut entries = HashMap::<ShutdownRecoveryKey, Option<ProxyCaptureRecord>>::new();
+    let mut corrupt = false;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
+            corrupt = true;
             break;
         };
         if read == 0 {
@@ -1029,6 +1087,7 @@ fn load_shutdown_terminal_recovery(path: &Path) -> Vec<BatchedTerminalInvocation
         }
         let Ok(entry) = serde_json::from_str::<ShutdownTerminalRecoveryLine>(&line) else {
             warn!(path = %path.display(), "ignoring corrupt shutdown terminal recovery line");
+            corrupt = true;
             continue;
         };
         let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
@@ -1038,26 +1097,82 @@ fn load_shutdown_terminal_recovery(path: &Path) -> Vec<BatchedTerminalInvocation
             entries.insert(key, entry.record);
         }
     }
-    entries
+    let pending = entries
         .into_iter()
         .filter_map(|((invoke_id, occurred_at, raw_capture), record)| {
             let record = record?;
-            Some(BatchedTerminalInvocationWrite {
+            Some(((invoke_id, occurred_at, raw_capture), record))
+        })
+        .collect::<HashMap<_, _>>();
+    let writes = pending
+        .iter()
+        .map(
+            |((invoke_id, occurred_at, raw_capture), record)| BatchedTerminalInvocationWrite {
                 capture_started: None,
-                raw_capture,
+                raw_capture: *raw_capture,
                 dashboard_terminal_sequence: None,
                 terminal_projection_event_ids: Vec::new(),
                 startup_backfill_tasks: startup_backfill_tasks_for_terminal(
-                    &api_invocation_from_runtime_record(&record),
+                    &api_invocation_from_runtime_record(record),
                 ),
                 record: ProxyCaptureRecord {
-                    invoke_id,
-                    occurred_at,
-                    ..record
+                    invoke_id: invoke_id.clone(),
+                    occurred_at: occurred_at.clone(),
+                    ..record.clone()
                 },
-            })
-        })
-        .collect()
+            },
+        )
+        .collect();
+    if !corrupt {
+        let _ = compact_shutdown_terminal_recovery(path, &pending);
+    }
+    (pending, writes)
+}
+
+fn compact_shutdown_terminal_recovery(
+    path: &Path,
+    pending: &HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
+) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let temporary_path = path.with_extension("jsonl.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .with_context(|| {
+            format!(
+                "failed to open temporary shutdown terminal recovery {}",
+                temporary_path.display()
+            )
+        })?;
+    for ((invoke_id, occurred_at, raw_capture), record) in pending {
+        serde_json::to_writer(
+            &mut file,
+            &ShutdownTerminalRecoveryLine {
+                invoke_id: invoke_id.clone(),
+                occurred_at: occurred_at.clone(),
+                raw_capture: *raw_capture,
+                acknowledged: false,
+                error: Some("recovery snapshot".to_string()),
+                record: Some(record.clone()),
+            },
+        )
+        .context("failed to encode shutdown terminal recovery snapshot")?;
+        file.write_all(b"\n")
+            .context("failed to append shutdown terminal recovery snapshot delimiter")?;
+    }
+    file.sync_data()
+        .context("failed to sync shutdown terminal recovery snapshot")?;
+    fs::rename(&temporary_path, path).with_context(|| {
+        format!(
+            "failed to atomically publish shutdown terminal recovery {}",
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn segment_path(directory: &Path, first_sequence: u64) -> PathBuf {
@@ -1269,11 +1384,66 @@ mod tests {
         replayed.acknowledge("journal-1", "2026-07-29T00:00:00Z", false);
         replayed.force_sync().expect("sync acknowledgement");
         assert_eq!(replayed.stats().pending_records, 0);
+        assert!(
+            !terminal_journal_directory(&database_path)
+                .join("shutdown-terminal-quarantine.jsonl")
+                .exists()
+        );
         drop(replayed);
 
         let replayed_after_ack =
             TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
         assert_eq!(replayed_after_ack.stats().replay_count, 0);
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn shutdown_recovery_replays_and_compacts_after_acknowledgement() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-shutdown-recovery-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record =
+            crate::tests::test_proxy_capture_record("shutdown-recovery-1", "2026-07-29T00:00:00Z");
+        let terminal = BatchedTerminalInvocationWrite {
+            record: record.clone(),
+            capture_started: None,
+            raw_capture: false,
+            dashboard_terminal_sequence: None,
+            terminal_projection_event_ids: Vec::new(),
+            startup_backfill_tasks: Vec::new(),
+        };
+
+        let journal = TerminalJournal::open(&database_path).expect("open journal");
+        TerminalJournal::quarantine_shutdown_batch_at_database_path(
+            &database_path,
+            &[&terminal],
+            &[],
+            "test recovery",
+        )
+        .expect("write shutdown recovery");
+        drop(journal);
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("reopen recovery journal");
+        assert_eq!(recovered.stats().replay_count, 1);
+        assert_eq!(recovered.take_deferred_writes(1).len(), 1);
+        recovered.acknowledge(&record.invoke_id, &record.occurred_at, false);
+        assert_eq!(recovered.stats().replay_count, 0);
+        drop(recovered);
+
+        let recovery_path =
+            terminal_journal_directory(&database_path).join("shutdown-terminal-quarantine.jsonl");
+        assert!(
+            fs::read_to_string(&recovery_path)
+                .expect("read compacted recovery")
+                .trim()
+                .is_empty()
+        );
+        let reopened = TerminalJournal::open(&database_path).expect("reopen compacted recovery");
+        assert_eq!(reopened.stats().replay_count, 0);
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }

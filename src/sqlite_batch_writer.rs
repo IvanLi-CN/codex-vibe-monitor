@@ -1565,6 +1565,10 @@ impl SqliteBatchWriter {
                     occurred_at = %recovery_terminal.record.occurred_at,
                     "terminal memory-overflow recovery sink failed"
                 );
+            } else if let Ok(mut journal) = self.terminal_journal.lock()
+                && let Some(journal) = journal.as_mut()
+            {
+                journal.remember_shutdown_recovery(&terminals);
             }
         }
         TerminalEnqueueOutcome {
@@ -3041,6 +3045,11 @@ fn quarantine_shutdown_batch(
             &error,
         ) {
             Ok(()) => {
+                if let Ok(mut guard) = terminal_journal.lock()
+                    && let Some(journal) = guard.as_mut()
+                {
+                    journal.remember_shutdown_recovery(&terminals);
+                }
                 warn!(
                     errors = ?errors,
                     "shutdown quarantine used the independent recovery sink"
