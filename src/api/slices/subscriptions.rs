@@ -7071,6 +7071,8 @@ impl SubscriptionTopic {
                         page: Some(1),
                         page_size: Some(SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT),
                         info_type: info_type.clone(),
+                        routing_scope: None,
+                        routing_model: None,
                     }),
                 )
                 .await?;

@@ -713,7 +713,9 @@ pub(crate) fn prompt_cache_conversation_operation_events_create_sql(table_name: 
             sticky_before_json TEXT,
             sticky_after_json TEXT,
             invoke_id TEXT,
-            routing_context_json TEXT
+            routing_context_json TEXT,
+            routing_scope_json TEXT,
+            sticky_transitions_json TEXT
         )
         "#
     )
@@ -3699,6 +3701,36 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .context("failed to add prompt-cache operation routing context column")?;
     }
+    if !existing_prompt_cache_operation_event_columns.contains("routing_scope_json") {
+        sqlx::query(
+            "ALTER TABLE prompt_cache_conversation_operation_events ADD COLUMN routing_scope_json TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add prompt-cache operation routing scope column")?;
+    }
+    if !existing_prompt_cache_operation_event_columns.contains("sticky_transitions_json") {
+        sqlx::query(
+            "ALTER TABLE prompt_cache_conversation_operation_events ADD COLUMN sticky_transitions_json TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add prompt-cache operation sticky transitions column")?;
+    }
+    sqlx::query(
+        r#"
+        UPDATE prompt_cache_conversation_operation_events
+        SET routing_scope_json = '{"kind":"all"}'
+        WHERE routing_scope_json IS NULL
+          AND EXISTS (
+              SELECT 1 FROM json_each(prompt_cache_conversation_operation_events.info_types_json)
+              WHERE json_each.value = 'routing'
+          )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate legacy prompt-cache routing event scopes")?;
 
     sqlx::query(
         r#"

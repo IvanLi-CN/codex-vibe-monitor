@@ -2,7 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 pub(crate) const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
@@ -109,6 +109,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) encrypted_owner_account_id: Option<i64>,
     pub(crate) encrypted_owner_account_name: Option<String>,
     pub(crate) encrypted_owner_group_name: Option<String>,
+    pub(crate) sticky_routes: Vec<PromptCacheConversationStickyRouteResponse>,
     pub(crate) timeouts: RoutingTimeoutSettings,
     pub(crate) timeout_field_sources: RoutingTimeoutFieldSources,
     pub(crate) allow_switch_upstream: Option<bool>,
@@ -121,6 +122,17 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) policy_field_sources: PromptCacheConversationPolicyFieldSources,
     pub(crate) updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationStickyRouteResponse {
+    pub(crate) model_key: Option<String>,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) last_seen_at: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -139,6 +151,8 @@ pub(crate) struct PromptCacheConversationOperationEventRow {
     pub(crate) sticky_after_json: Option<String>,
     pub(crate) invoke_id: Option<String>,
     pub(crate) routing_context_json: Option<String>,
+    pub(crate) routing_scope_json: Option<String>,
+    pub(crate) sticky_transitions_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +184,24 @@ pub(crate) struct PromptCacheConversationOperationRoutingContext {
     pub(crate) causing_http_status: Option<u16>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationRoutingScope {
+    pub(crate) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationStickyTransition {
+    pub(crate) model_key: Option<String>,
+    pub(crate) before: Option<PromptCacheConversationOperationStickySnapshot>,
+    pub(crate) after: Option<PromptCacheConversationOperationStickySnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationOperationEventResponse {
@@ -187,6 +219,8 @@ pub(crate) struct PromptCacheConversationOperationEventResponse {
     pub(crate) sticky_after: Option<PromptCacheConversationOperationStickySnapshot>,
     pub(crate) invoke_id: Option<String>,
     pub(crate) routing_context: Option<PromptCacheConversationOperationRoutingContext>,
+    pub(crate) routing_scope: Option<PromptCacheConversationOperationRoutingScope>,
+    pub(crate) sticky_transitions: Vec<PromptCacheConversationOperationStickyTransition>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,6 +230,7 @@ pub(crate) struct PromptCacheConversationOperationEventListResponse {
     pub(crate) total: i64,
     pub(crate) page: usize,
     pub(crate) page_size: usize,
+    pub(crate) routing_model_facets: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +239,8 @@ pub(crate) struct ListPromptCacheConversationOperationEventsQuery {
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     pub(crate) info_type: Option<String>,
+    pub(crate) routing_scope: Option<String>,
+    pub(crate) routing_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +427,8 @@ pub(crate) async fn binding_response_for_none(
     let forward_proxy_key =
         resolve_effective_forward_proxy_key_for_account(state, effective_account_id).await;
     let forward_proxy_keys = forward_proxy_key.iter().cloned().collect::<Vec<_>>();
+    let sticky_routes =
+        load_prompt_cache_conversation_sticky_routes(&state.pool, &prompt_cache_key).await?;
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key,
@@ -401,6 +440,7 @@ pub(crate) async fn binding_response_for_none(
         encrypted_owner_account_id: None,
         encrypted_owner_account_name: None,
         encrypted_owner_group_name: None,
+        sticky_routes,
         timeouts,
         timeout_field_sources,
         allow_switch_upstream: Some(effective_policy.allow_cut_out()),
@@ -536,6 +576,8 @@ pub(crate) async fn binding_response_from_row(
     } else {
         row_forward_proxy_keys
     };
+    let sticky_routes =
+        load_prompt_cache_conversation_sticky_routes(&state.pool, &row.prompt_cache_key).await?;
 
     Ok(PromptCacheConversationBindingResponse {
         prompt_cache_key: row.prompt_cache_key,
@@ -552,6 +594,7 @@ pub(crate) async fn binding_response_from_row(
         encrypted_owner_account_name: owner
             .and_then(|value| value.owner_upstream_account_name.clone()),
         encrypted_owner_group_name: owner.and_then(|value| value.owner_group_name.clone()),
+        sticky_routes,
         timeouts,
         timeout_field_sources,
         allow_switch_upstream: row
@@ -725,6 +768,49 @@ pub(crate) async fn load_sticky_account_id(
     .map_err(Into::into)
 }
 
+async fn load_prompt_cache_conversation_sticky_routes(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Vec<PromptCacheConversationStickyRouteResponse>> {
+    load_prompt_cache_conversation_sticky_routes_executor(pool, prompt_cache_key).await
+}
+
+async fn load_prompt_cache_conversation_sticky_routes_executor<'e, E>(
+    executor: E,
+    prompt_cache_key: &str,
+) -> Result<Vec<PromptCacheConversationStickyRouteResponse>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, PromptCacheConversationStickyRouteResponse>(
+        r#"
+        SELECT
+            route.model_key,
+            route.account_id AS upstream_account_id,
+            account.display_name AS upstream_account_name,
+            route.created_at,
+            route.updated_at,
+            route.last_seen_at
+        FROM (
+            SELECT NULL AS model_key, sticky_key, account_id, created_at, updated_at, last_seen_at
+            FROM pool_sticky_routes
+            WHERE sticky_key = ?1
+            UNION ALL
+            SELECT model_key, sticky_key, account_id, created_at, updated_at, last_seen_at
+            FROM pool_sticky_model_routes
+            WHERE sticky_key = ?1
+        ) AS route
+        LEFT JOIN pool_upstream_accounts AS account
+          ON account.id = route.account_id
+        ORDER BY route.model_key IS NOT NULL ASC, route.model_key ASC
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_all(executor)
+    .await
+    .map_err(Into::into)
+}
+
 pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot_executor<'e, E>(
     executor: E,
     prompt_cache_key: &str,
@@ -759,6 +845,50 @@ where
             upstream_account_name: value.account_name,
         }),
     )
+}
+
+async fn load_prompt_cache_conversation_sticky_snapshot_for_model_executor<'e, E>(
+    executor: E,
+    prompt_cache_key: &str,
+    model_key: Option<&str>,
+) -> Result<Option<PromptCacheConversationOperationStickySnapshot>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let Some(model_key) = model_key else {
+        return load_prompt_cache_conversation_sticky_snapshot_executor(executor, prompt_cache_key)
+            .await;
+    };
+
+    #[derive(Debug, FromRow)]
+    struct StickySnapshotRow {
+        account_id: i64,
+        account_name: Option<String>,
+    }
+
+    sqlx::query_as::<_, StickySnapshotRow>(
+        r#"
+        SELECT
+            sticky.account_id,
+            account.display_name AS account_name
+        FROM pool_sticky_model_routes AS sticky
+        LEFT JOIN pool_upstream_accounts AS account
+          ON account.id = sticky.account_id
+        WHERE sticky.sticky_key = ?1 AND sticky.model_key = ?2
+        LIMIT 1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(model_key)
+    .fetch_optional(executor)
+    .await
+    .map(|row| {
+        row.map(|value| PromptCacheConversationOperationStickySnapshot {
+            upstream_account_id: value.account_id,
+            upstream_account_name: value.account_name,
+        })
+    })
+    .map_err(Into::into)
 }
 
 pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
@@ -1002,6 +1132,33 @@ fn normalize_prompt_cache_conversation_operation_info_type(
     }
 }
 
+fn normalize_prompt_cache_conversation_operation_routing_scope(
+    raw: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match raw {
+        "all" | "model" => Ok(Some(raw.to_string())),
+        _ => Err(ApiError::bad_request(anyhow!(
+            "routingScope must be one of: all, model"
+        ))),
+    }
+}
+
+fn normalize_prompt_cache_conversation_operation_routing_model(
+    raw: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    normalize_sticky_model_key(Some(raw))
+        .ok_or_else(|| {
+            ApiError::bad_request(anyhow!("routingModel must contain a non-empty model name"))
+        })
+        .map(Some)
+}
+
 async fn append_prompt_cache_conversation_operation_event_executor<'e, E>(
     executor: E,
     input: AppendPromptCacheConversationOperationEventInput,
@@ -1023,6 +1180,18 @@ async fn append_prompt_cache_conversation_operation_event_with_routing_context_e
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
+    let routing_scope = input
+        .info_types
+        .iter()
+        .any(|value| value == PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING)
+        .then(|| {
+            serde_json::to_string(&PromptCacheConversationOperationRoutingScope {
+                kind: "all".to_string(),
+                model_key: None,
+                request_model: None,
+            })
+        })
+        .transpose()?;
     sqlx::query(
         r#"
         INSERT INTO prompt_cache_conversation_operation_events (
@@ -1038,9 +1207,10 @@ where
             sticky_before_json,
             sticky_after_json,
             invoke_id,
-            routing_context_json
+            routing_context_json,
+            routing_scope_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         "#,
     )
     .bind(input.prompt_cache_key)
@@ -1084,9 +1254,208 @@ where
             .map(|value| serde_json::to_string(&value))
             .transpose()?,
     )
+    .bind(routing_scope)
     .execute(executor)
     .await?;
     Ok(())
+}
+
+async fn append_prompt_cache_conversation_operation_event_with_routing_scope_executor<'e, E>(
+    executor: E,
+    input: AppendPromptCacheConversationOperationEventInput,
+    routing_context: Option<PromptCacheConversationOperationRoutingContext>,
+    routing_scope: PromptCacheConversationOperationRoutingScope,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_operation_events (
+            prompt_cache_key,
+            action,
+            origin,
+            info_types_json,
+            occurred_at,
+            headline,
+            changed_fields_json,
+            binding_before_json,
+            binding_after_json,
+            sticky_before_json,
+            sticky_after_json,
+            invoke_id,
+            routing_context_json,
+            routing_scope_json
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "#,
+    )
+    .bind(input.prompt_cache_key)
+    .bind(input.action)
+    .bind(input.origin)
+    .bind(serde_json::to_string(&input.info_types)?)
+    .bind(input.occurred_at)
+    .bind(input.headline)
+    .bind(
+        (!input.changed_fields.is_empty())
+            .then(|| serde_json::to_string(&input.changed_fields))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(input.invoke_id)
+    .bind(
+        routing_context
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(serde_json::to_string(&routing_scope)?)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+async fn append_prompt_cache_conversation_operation_event_with_sticky_transitions_executor<'e, E>(
+    executor: E,
+    input: AppendPromptCacheConversationOperationEventInput,
+    sticky_transitions: &[PromptCacheConversationOperationStickyTransition],
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let routing_scope = PromptCacheConversationOperationRoutingScope {
+        kind: "all".to_string(),
+        model_key: None,
+        request_model: None,
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_operation_events (
+            prompt_cache_key,
+            action,
+            origin,
+            info_types_json,
+            occurred_at,
+            headline,
+            changed_fields_json,
+            binding_before_json,
+            binding_after_json,
+            sticky_before_json,
+            sticky_after_json,
+            invoke_id,
+            routing_scope_json,
+            sticky_transitions_json
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "#,
+    )
+    .bind(input.prompt_cache_key)
+    .bind(input.action)
+    .bind(input.origin)
+    .bind(serde_json::to_string(&input.info_types)?)
+    .bind(input.occurred_at)
+    .bind(input.headline)
+    .bind(
+        (!input.changed_fields.is_empty())
+            .then(|| serde_json::to_string(&input.changed_fields))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(input.invoke_id)
+    .bind(serde_json::to_string(&routing_scope)?)
+    .bind(serde_json::to_string(sticky_transitions)?)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+fn prompt_cache_conversation_sticky_transitions(
+    before: &[PromptCacheConversationStickyRouteResponse],
+    after: &[PromptCacheConversationStickyRouteResponse],
+) -> Vec<PromptCacheConversationOperationStickyTransition> {
+    fn snapshots(
+        routes: &[PromptCacheConversationStickyRouteResponse],
+    ) -> BTreeMap<Option<String>, PromptCacheConversationOperationStickySnapshot> {
+        routes
+            .iter()
+            .map(|route| {
+                (
+                    route.model_key.clone(),
+                    PromptCacheConversationOperationStickySnapshot {
+                        upstream_account_id: route.upstream_account_id,
+                        upstream_account_name: route.upstream_account_name.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    let before = snapshots(before);
+    let after = snapshots(after);
+    let mut model_keys = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    model_keys.sort();
+    model_keys.dedup();
+    model_keys
+        .into_iter()
+        .filter_map(|model_key| {
+            let before = before.get(&model_key).cloned();
+            let after = after.get(&model_key).cloned();
+            (before != after).then_some(PromptCacheConversationOperationStickyTransition {
+                model_key,
+                before,
+                after,
+            })
+        })
+        .collect()
 }
 
 pub(crate) async fn append_runtime_sticky_target_cleared_event_executor<'e, E>(
@@ -1097,6 +1466,7 @@ pub(crate) async fn append_runtime_sticky_target_cleared_event_executor<'e, E>(
     occurred_at: &str,
     invoke_id: Option<String>,
     routing_context: PromptCacheConversationOperationRoutingContext,
+    routing_scope: PromptCacheConversationOperationRoutingScope,
 ) -> Result<()>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -1117,10 +1487,11 @@ where
             changed_fields_json,
             sticky_before_json,
             invoke_id,
-            routing_context_json
+            routing_context_json,
+            routing_scope_json
         )
         VALUES (?1, 'stickyTargetCleared', 'systemAuto', '["routing"]', ?2,
-                'Sticky target cleared', '["stickyTarget"]', ?3, ?4, ?5)
+                'Sticky target cleared', '["stickyTarget"]', ?3, ?4, ?5, ?6)
         "#,
     )
     .bind(prompt_cache_key)
@@ -1128,6 +1499,7 @@ where
     .bind(serde_json::to_string(&sticky_before)?)
     .bind(invoke_id)
     .bind(serde_json::to_string(&routing_context)?)
+    .bind(serde_json::to_string(&routing_scope)?)
     .execute(executor)
     .await?;
     Ok(())
@@ -1141,22 +1513,23 @@ async fn load_runtime_attempt_routing_context_executor<'e, E>(
     Option<String>,
     Option<PoolRoutingSelectionAudit>,
     Option<String>,
+    Option<String>,
 )>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let Some(attempt_id) = attempt_id else {
-        return Ok((None, None, None, None));
+        return Ok((None, None, None, None, None));
     };
-    sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT attempt_public_id, routing_source, routing_selection_audit_json, invoke_id FROM pool_upstream_request_attempts WHERE id = ?1",
+    sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT attempt_public_id, routing_source, routing_selection_audit_json, invoke_id, request_model FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(executor)
     .await
     .map(|value| {
         value
-            .map(|(attempt_public_id, routing_source, routing_selection_audit_json, invoke_id)| {
+            .map(|(attempt_public_id, routing_source, routing_selection_audit_json, invoke_id, request_model)| {
                 (
                     attempt_public_id,
                     routing_source,
@@ -1164,9 +1537,10 @@ where
                         .as_deref()
                         .and_then(|raw| serde_json::from_str(raw).ok()),
                     invoke_id,
+                    request_model,
                 )
             })
-            .unwrap_or((None, None, None, None))
+            .unwrap_or((None, None, None, None, None))
     })
     .map_err(Into::into)
 }
@@ -1174,21 +1548,37 @@ where
 async fn load_pending_sticky_clear_cause_executor<'e, E>(
     executor: E,
     sticky_key: &str,
+    model_key: Option<&str>,
 ) -> Result<(Option<String>, Option<u16>)>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
-        r#"
-        SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
-        FROM pool_sticky_route_generations
-        WHERE sticky_key = ?1
-        LIMIT 1
-        "#,
-    )
-    .bind(sticky_key)
-    .fetch_optional(executor)
-    .await?;
+    let row = if let Some(model_key) = model_key {
+        sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            r#"
+            SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+            FROM pool_sticky_model_route_generations
+            WHERE sticky_key = ?1 AND model_key = ?2
+            LIMIT 1
+            "#,
+        )
+        .bind(sticky_key)
+        .bind(model_key)
+        .fetch_optional(executor)
+        .await?
+    } else {
+        sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            r#"
+            SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+            FROM pool_sticky_route_generations
+            WHERE sticky_key = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(sticky_key)
+        .fetch_optional(executor)
+        .await?
+    };
     Ok(row
         .map(|(attempt_id, status)| {
             (
@@ -1268,23 +1658,56 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         .context("failed to acquire runtime sticky event write lock")?;
 
     let write_outcome: Result<RuntimeStickyMutation> = async {
-        let (trigger_attempt_id, routing_source, routing_selection_audit, trigger_invoke_id) =
+        let (trigger_attempt_id, routing_source, routing_selection_audit, trigger_invoke_id, request_model) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
-        let pending_clear_cause =
-            load_pending_sticky_clear_cause_executor(conn.as_mut(), sticky_key).await?;
-        let current_generation =
+        let current_epoch =
             load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
+        let model_key = normalize_sticky_model_key(request_model.as_deref());
+        let pending_clear_cause = load_pending_sticky_clear_cause_executor(
+            conn.as_mut(),
+            sticky_key,
+            model_key.as_deref(),
+        )
+        .await?;
+        let routing_scope = PromptCacheConversationOperationRoutingScope {
+            kind: if model_key.is_some() {
+                "model".to_string()
+            } else {
+                "all".to_string()
+            },
+            model_key: model_key.clone(),
+            request_model: model_key.as_ref().and_then(|model_key| {
+                request_model
+                    .clone()
+                    .filter(|request_model| request_model != model_key)
+            }),
+        };
+        let current_generation = if let Some(model_key) = model_key.as_deref() {
+            load_sticky_model_generation_executor(conn.as_mut(), sticky_key, model_key).await?
+        } else {
+            current_epoch
+        };
         let sticky_before = if event_prompt_cache_key.is_some() {
-            load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
-                .await?
+            load_prompt_cache_conversation_sticky_snapshot_for_model_executor(
+                conn.as_mut(),
+                sticky_key,
+                model_key.as_deref(),
+            )
+            .await?
         } else {
             None
         };
         if let Some(expected_generation) = sticky_affinity_generation
-            && current_generation != expected_generation
+            && (if model_key.is_some() {
+                let (expected_epoch, expected_model_generation) =
+                    unpack_sticky_affinity_token(expected_generation);
+                current_epoch != expected_epoch || current_generation != expected_model_generation
+            } else {
+                current_generation != expected_generation
+            })
         {
             if let Some(prompt_cache_key) = event_prompt_cache_key {
-                append_prompt_cache_conversation_operation_event_with_routing_context_executor(
+                append_prompt_cache_conversation_operation_event_with_routing_scope_executor(
                     conn.as_mut(),
                     AppendPromptCacheConversationOperationEventInput {
                         prompt_cache_key: prompt_cache_key.to_string(),
@@ -1315,29 +1738,58 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                         causing_attempt_id: None,
                         causing_http_status: None,
                     }),
+                    routing_scope.clone(),
                 )
                 .await?;
             }
             return Ok(RuntimeStickyMutation::Suppressed);
         }
 
-        let previous_account_id = sqlx::query_scalar::<_, i64>(
-            "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
-        )
-        .bind(sticky_key)
-        .fetch_optional(conn.as_mut())
-        .await?;
+        let previous_account_id = if let Some(model_key) = model_key.as_deref() {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT account_id FROM pool_sticky_model_routes WHERE sticky_key = ?1 AND model_key = ?2 LIMIT 1",
+            )
+            .bind(sticky_key)
+            .bind(model_key)
+            .fetch_optional(conn.as_mut())
+            .await?
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+            )
+            .bind(sticky_key)
+            .fetch_optional(conn.as_mut())
+            .await?
+        };
         let target_changed = previous_account_id != Some(upstream_account_id);
-        upsert_sticky_route_executor(conn.as_mut(), sticky_key, upstream_account_id, now_iso)
+        if let Some(model_key) = model_key.as_deref() {
+            upsert_sticky_model_route_executor(
+                conn.as_mut(),
+                sticky_key,
+                model_key,
+                upstream_account_id,
+                now_iso,
+            )
             .await?;
-        if target_changed {
-            bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+            if target_changed {
+                bump_sticky_model_generation_executor(conn.as_mut(), sticky_key, model_key, now_iso)
+                    .await?;
+            }
+        } else {
+            upsert_sticky_route_executor(conn.as_mut(), sticky_key, upstream_account_id, now_iso)
+                .await?;
+            if target_changed {
+                bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+            }
         }
 
         if let Some(prompt_cache_key) = event_prompt_cache_key {
-            let sticky_after =
-                load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
-                    .await?;
+            let sticky_after = load_prompt_cache_conversation_sticky_snapshot_for_model_executor(
+                conn.as_mut(),
+                sticky_key,
+                model_key.as_deref(),
+            )
+            .await?;
 
             let sticky_changed = sticky_before != sticky_after;
             if sticky_changed && let Some(sticky_after) = sticky_after {
@@ -1346,7 +1798,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 } else {
                     (None, None)
                 };
-                append_prompt_cache_conversation_operation_event_with_routing_context_executor(
+                append_prompt_cache_conversation_operation_event_with_routing_scope_executor(
                     conn.as_mut(),
                     AppendPromptCacheConversationOperationEventInput {
                         prompt_cache_key: prompt_cache_key.to_string(),
@@ -1383,6 +1835,7 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                         causing_attempt_id,
                         causing_http_status,
                     }),
+                    routing_scope,
                 )
                 .await?;
             }
@@ -1449,6 +1902,17 @@ fn prompt_cache_conversation_operation_event_response_from_row(
         routing_context: row.routing_context_json.and_then(|value| {
             serde_json::from_str::<PromptCacheConversationOperationRoutingContext>(&value).ok()
         }),
+        routing_scope: row.routing_scope_json.and_then(|value| {
+            serde_json::from_str::<PromptCacheConversationOperationRoutingScope>(&value).ok()
+        }),
+        sticky_transitions: row
+            .sticky_transitions_json
+            .as_deref()
+            .and_then(|value| {
+                serde_json::from_str::<Vec<PromptCacheConversationOperationStickyTransition>>(value)
+                    .ok()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -2121,7 +2585,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     }
 
     let now_iso = format_utc_iso(Utc::now());
-    upsert_sticky_route_and_bump_generation_if_changed(
+    overwrite_sticky_routes_for_manual_binding(
         pool,
         prompt_cache_key,
         upstream_account_id,
@@ -2460,6 +2924,7 @@ async fn clear_prompt_cache_conversation_affinity(
     prompt_cache_key: &str,
     origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    let _write_guard = PROMPT_CACHE_BINDING_WRITE_LOCK.lock().await;
     let mut conn = state.pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(conn.as_mut())
@@ -2475,6 +2940,9 @@ async fn clear_prompt_cache_conversation_affinity(
             prompt_cache_key,
         )
         .await?;
+        let sticky_routes_before =
+            load_prompt_cache_conversation_sticky_routes_executor(conn.as_mut(), prompt_cache_key)
+                .await?;
         let now_iso = format_utc_iso(Utc::now());
         bump_sticky_affinity_generation_executor(conn.as_mut(), prompt_cache_key, &now_iso).await?;
         sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
@@ -2482,9 +2950,12 @@ async fn clear_prompt_cache_conversation_affinity(
             .execute(conn.as_mut())
             .await?;
         delete_sticky_route_executor(conn.as_mut(), prompt_cache_key).await?;
+        delete_sticky_model_routes_executor(conn.as_mut(), prompt_cache_key).await?;
         delete_prompt_cache_encrypted_session_owner_executor(conn.as_mut(), prompt_cache_key)
             .await?;
-        append_prompt_cache_conversation_operation_event_executor(
+        let sticky_transitions =
+            prompt_cache_conversation_sticky_transitions(&sticky_routes_before, &[]);
+        append_prompt_cache_conversation_operation_event_with_sticky_transitions_executor(
             conn.as_mut(),
             AppendPromptCacheConversationOperationEventInput {
                 prompt_cache_key: prompt_cache_key.to_string(),
@@ -2506,30 +2977,9 @@ async fn clear_prompt_cache_conversation_affinity(
                 sticky_after: None,
                 invoke_id: None,
             },
+            &sticky_transitions,
         )
         .await?;
-        if sticky_before.is_some() {
-            append_prompt_cache_conversation_operation_event_executor(
-                conn.as_mut(),
-                AppendPromptCacheConversationOperationEventInput {
-                    prompt_cache_key: prompt_cache_key.to_string(),
-                    action: "stickyTargetCleared".to_string(),
-                    origin: origin.to_string(),
-                    info_types: vec![
-                        PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string(),
-                    ],
-                    occurred_at: now_iso,
-                    headline: prompt_cache_conversation_operation_headline("stickyTargetCleared"),
-                    changed_fields: vec!["stickyTarget".to_string()],
-                    binding_before: None,
-                    binding_after: None,
-                    sticky_before,
-                    sticky_after: None,
-                    invoke_id: None,
-                },
-            )
-            .await?;
-        }
         Ok(())
     }
     .await;
@@ -2696,6 +3146,8 @@ async fn save_prompt_cache_conversation_binding_for_key(
         load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
     let sticky_before =
         load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
+    let sticky_routes_before =
+        load_prompt_cache_conversation_sticky_routes(&state.pool, prompt_cache_key).await?;
     let next_responses_first_byte_timeout_secs = next_optional_value(
         responses_first_byte_timeout_secs,
         existing_row
@@ -2958,7 +3410,12 @@ async fn save_prompt_cache_conversation_binding_for_key(
             })?;
             let _ =
                 ensure_upstream_account_binding_target(&state.pool, upstream_account_id).await?;
-            sqlx::query(
+            let mut conn = state.pool.acquire().await?;
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(conn.as_mut())
+                .await?;
+            let write_result: anyhow::Result<()> = async {
+                sqlx::query(
                 r#"
                 INSERT INTO prompt_cache_conversation_bindings (
                     prompt_cache_key,
@@ -3018,16 +3475,28 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(&next_available_models_mode)
             .bind(&next_forward_proxy_key)
             .bind(&next_forward_proxy_keys_json)
-            .execute(&state.pool)
+            .execute(conn.as_mut())
             .await?;
-            let now_iso = format_utc_iso(Utc::now());
-            upsert_sticky_route_and_bump_generation_if_changed(
-                &state.pool,
-                prompt_cache_key,
-                upstream_account_id,
-                &now_iso,
-            )
-            .await?;
+                let now_iso = format_utc_iso(Utc::now());
+                overwrite_sticky_routes_for_manual_binding_executor(
+                    conn.as_mut(),
+                    prompt_cache_key,
+                    upstream_account_id,
+                    &now_iso,
+                )
+                .await?;
+                Ok(())
+            }
+            .await;
+            match write_result {
+                Ok(()) => {
+                    sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+                }
+                Err(error) => {
+                    let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+                    return Err(error.into());
+                }
+            }
         }
         _ => {
             return Err(ApiError::bad_request(anyhow!(
@@ -3040,6 +3509,10 @@ async fn save_prompt_cache_conversation_binding_for_key(
         load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
     let sticky_after =
         load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
+    let sticky_routes_after =
+        load_prompt_cache_conversation_sticky_routes(&state.pool, prompt_cache_key).await?;
+    let sticky_transitions =
+        prompt_cache_conversation_sticky_transitions(&sticky_routes_before, &sticky_routes_after);
     let occurred_at = format_utc_iso(Utc::now());
     let binding_before =
         prompt_cache_conversation_operation_binding_snapshot_from_row(existing_row.as_ref());
@@ -3051,24 +3524,30 @@ async fn save_prompt_cache_conversation_binding_for_key(
         } else {
             "manualBindingUpdated"
         };
-        append_prompt_cache_conversation_operation_event(
-            &state.pool,
-            AppendPromptCacheConversationOperationEventInput {
-                prompt_cache_key: prompt_cache_key.to_string(),
-                action: action.to_string(),
-                origin: origin.to_string(),
-                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
-                occurred_at: occurred_at.clone(),
-                headline: prompt_cache_conversation_operation_headline(action),
-                changed_fields: vec!["bindingKind".to_string()],
-                binding_before: Some(binding_before.clone()),
-                binding_after: Some(binding_after.clone()),
-                sticky_before: sticky_before.clone(),
-                sticky_after: sticky_after.clone(),
-                invoke_id: None,
-            },
-        )
-        .await?;
+        let input = AppendPromptCacheConversationOperationEventInput {
+            prompt_cache_key: prompt_cache_key.to_string(),
+            action: action.to_string(),
+            origin: origin.to_string(),
+            info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+            occurred_at: occurred_at.clone(),
+            headline: prompt_cache_conversation_operation_headline(action),
+            changed_fields: vec!["bindingKind".to_string()],
+            binding_before: Some(binding_before.clone()),
+            binding_after: Some(binding_after.clone()),
+            sticky_before: sticky_before.clone(),
+            sticky_after: sticky_after.clone(),
+            invoke_id: None,
+        };
+        if sticky_transitions.is_empty() {
+            append_prompt_cache_conversation_operation_event(&state.pool, input).await?;
+        } else {
+            append_prompt_cache_conversation_operation_event_with_sticky_transitions_executor(
+                &state.pool,
+                input,
+                &sticky_transitions,
+            )
+            .await?;
+        }
     }
 
     let policy_changed_fields =
@@ -3094,7 +3573,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
         .await?;
     }
 
-    if sticky_before != sticky_after {
+    if sticky_before != sticky_after && binding_before == binding_after {
         let (action, sticky_after_event) = match sticky_after.clone() {
             Some(snapshot) => ("stickyTargetChanged", Some(snapshot)),
             None => ("stickyTargetCleared", None),
@@ -3152,6 +3631,21 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
     ))
 }
 
+pub(crate) async fn post_prompt_cache_conversation_affinity_reset(
+    State(state): State<Arc<AppState>>,
+    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
+) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
+    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+    Ok(Json(
+        clear_prompt_cache_conversation_affinity(
+            state.as_ref(),
+            &prompt_cache_key,
+            PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DETAIL_DRAWER,
+        )
+        .await?,
+    ))
+}
+
 pub(crate) async fn list_prompt_cache_conversation_operation_events(
     State(state): State<Arc<AppState>>,
     AxumPath(encoded_prompt_cache_key): AxumPath<String>,
@@ -3167,103 +3661,95 @@ pub(crate) async fn list_prompt_cache_conversation_operation_events(
         .clamp(1, PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE);
     let info_type =
         normalize_prompt_cache_conversation_operation_info_type(query.info_type.as_deref())?;
+    let routing_scope = normalize_prompt_cache_conversation_operation_routing_scope(
+        query.routing_scope.as_deref(),
+    )?;
+    let routing_model = normalize_prompt_cache_conversation_operation_routing_model(
+        query.routing_model.as_deref(),
+    )?;
     let offset = (page - 1) * page_size;
 
-    let total = if let Some(info_type) = info_type.as_deref() {
-        sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT COUNT(*)
-            FROM prompt_cache_conversation_operation_events
-            WHERE prompt_cache_key = ?1
-              AND EXISTS (
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM prompt_cache_conversation_operation_events
+        WHERE prompt_cache_key = ?1
+          AND (
+            ?2 IS NULL
+            OR EXISTS (
                 SELECT 1
                 FROM json_each(prompt_cache_conversation_operation_events.info_types_json)
                 WHERE json_each.value = ?2
-              )
-            "#,
-        )
-        .bind(&prompt_cache_key)
-        .bind(info_type)
-        .fetch_one(&state.pool)
-        .await?
-    } else {
-        sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT COUNT(*)
-            FROM prompt_cache_conversation_operation_events
-            WHERE prompt_cache_key = ?1
-            "#,
-        )
-        .bind(&prompt_cache_key)
-        .fetch_one(&state.pool)
-        .await?
-    };
+            )
+          )
+          AND (?3 IS NULL OR json_extract(routing_scope_json, '$.kind') = ?3)
+          AND (?4 IS NULL OR json_extract(routing_scope_json, '$.modelKey') = ?4)
+        "#,
+    )
+    .bind(&prompt_cache_key)
+    .bind(info_type.as_deref())
+    .bind(routing_scope.as_deref())
+    .bind(routing_model.as_deref())
+    .fetch_one(&state.pool)
+    .await?;
 
-    let rows = if let Some(info_type) = info_type.as_deref() {
-        sqlx::query_as::<_, PromptCacheConversationOperationEventRow>(
-            r#"
-            SELECT
-                id,
-                prompt_cache_key,
-                action,
-                origin,
-                info_types_json,
-                occurred_at,
-                headline,
-                changed_fields_json,
-                binding_before_json,
-                binding_after_json,
-                sticky_before_json,
-                sticky_after_json,
-                invoke_id,
-                routing_context_json
-            FROM prompt_cache_conversation_operation_events
-            WHERE prompt_cache_key = ?1
-              AND EXISTS (
+    let rows = sqlx::query_as::<_, PromptCacheConversationOperationEventRow>(
+        r#"
+        SELECT
+            id,
+            prompt_cache_key,
+            action,
+            origin,
+            info_types_json,
+            occurred_at,
+            headline,
+            changed_fields_json,
+            binding_before_json,
+            binding_after_json,
+            sticky_before_json,
+            sticky_after_json,
+            invoke_id,
+            routing_context_json,
+            routing_scope_json,
+            sticky_transitions_json
+        FROM prompt_cache_conversation_operation_events
+        WHERE prompt_cache_key = ?1
+          AND (
+            ?2 IS NULL
+            OR EXISTS (
                 SELECT 1
                 FROM json_each(prompt_cache_conversation_operation_events.info_types_json)
                 WHERE json_each.value = ?2
-              )
-            ORDER BY occurred_at DESC, id DESC
-            LIMIT ?3 OFFSET ?4
-            "#,
-        )
-        .bind(&prompt_cache_key)
-        .bind(info_type)
-        .bind(page_size as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.pool)
-        .await?
-    } else {
-        sqlx::query_as::<_, PromptCacheConversationOperationEventRow>(
-            r#"
-            SELECT
-                id,
-                prompt_cache_key,
-                action,
-                origin,
-                info_types_json,
-                occurred_at,
-                headline,
-                changed_fields_json,
-                binding_before_json,
-                binding_after_json,
-                sticky_before_json,
-                sticky_after_json,
-                invoke_id,
-                routing_context_json
-            FROM prompt_cache_conversation_operation_events
-            WHERE prompt_cache_key = ?1
-            ORDER BY occurred_at DESC, id DESC
-            LIMIT ?2 OFFSET ?3
-            "#,
-        )
-        .bind(&prompt_cache_key)
-        .bind(page_size as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.pool)
-        .await?
-    };
+            )
+          )
+          AND (?3 IS NULL OR json_extract(routing_scope_json, '$.kind') = ?3)
+          AND (?4 IS NULL OR json_extract(routing_scope_json, '$.modelKey') = ?4)
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT ?5 OFFSET ?6
+        "#,
+    )
+    .bind(&prompt_cache_key)
+    .bind(info_type.as_deref())
+    .bind(routing_scope.as_deref())
+    .bind(routing_model.as_deref())
+    .bind(page_size as i64)
+    .bind(offset as i64)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let routing_model_facets = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT json_extract(routing_scope_json, '$.modelKey')
+        FROM prompt_cache_conversation_operation_events
+        WHERE prompt_cache_key = ?1
+          AND json_extract(routing_scope_json, '$.kind') = 'model'
+          AND json_extract(routing_scope_json, '$.modelKey') IS NOT NULL
+        ORDER BY 1 ASC
+        "#,
+    )
+    .bind(&prompt_cache_key)
+    .fetch_all(&state.pool)
+    .await?;
 
     Ok(Json(PromptCacheConversationOperationEventListResponse {
         items: rows
@@ -3273,6 +3759,7 @@ pub(crate) async fn list_prompt_cache_conversation_operation_events(
         total,
         page,
         page_size,
+        routing_model_facets,
     }))
 }
 

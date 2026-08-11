@@ -296,6 +296,16 @@ pub(crate) struct PoolStickyRouteRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+pub(crate) struct PoolStickyModelRouteRow {
+    pub(crate) sticky_key: String,
+    pub(crate) model_key: String,
+    pub(crate) account_id: i64,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) last_seen_at: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
 pub(crate) struct AccountRoutingCandidateRow {
     pub(crate) id: i64,
     pub(crate) plan_type: Option<String>,

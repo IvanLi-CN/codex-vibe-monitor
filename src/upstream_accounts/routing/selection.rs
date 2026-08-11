@@ -903,7 +903,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut resolved_candidates = Vec::new();
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
         let (route, generation) =
-            load_sticky_route_with_generation(&state.pool, sticky_key).await?;
+            load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
+                .await?;
         (route, Some(generation))
     } else {
         (None, None)

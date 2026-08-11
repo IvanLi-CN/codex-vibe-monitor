@@ -1840,6 +1840,7 @@ export interface PromptCacheConversationBindingResponse {
   encryptedOwnerAccountId: number | null;
   encryptedOwnerAccountName: string | null;
   encryptedOwnerGroupName: string | null;
+  stickyRoutes?: PromptCacheConversationStickyRoute[];
   timeouts: PoolRoutingTimeoutSettings;
   timeoutFieldSources: EffectiveRoutingTimeoutFieldSources;
   allowSwitchUpstream?: boolean | null;
@@ -1860,6 +1861,15 @@ export interface PromptCacheConversationBindingResponse {
     forwardProxyKey: EffectiveRoutingRuleSource;
   };
   updatedAt: string | null;
+}
+
+export interface PromptCacheConversationStickyRoute {
+  modelKey: string | null;
+  upstreamAccountId: number;
+  upstreamAccountName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
 }
 
 export type PromptCacheConversationOperationInfoType =
@@ -1902,6 +1912,18 @@ export interface PromptCacheConversationOperationRoutingContext {
   causingHttpStatus: number | null;
 }
 
+export interface PromptCacheConversationOperationRoutingScope {
+  kind: "all" | "model";
+  modelKey: string | null;
+  requestModel: string | null;
+}
+
+export interface PromptCacheConversationOperationStickyTransition {
+  modelKey: string | null;
+  before: PromptCacheConversationOperationStickySnapshot | null;
+  after: PromptCacheConversationOperationStickySnapshot | null;
+}
+
 export interface PromptCacheConversationOperationEvent {
   id: number;
   promptCacheKey: string;
@@ -1917,6 +1939,8 @@ export interface PromptCacheConversationOperationEvent {
   stickyAfter: PromptCacheConversationOperationStickySnapshot | null;
   invokeId: string | null;
   routingContext?: PromptCacheConversationOperationRoutingContext | null;
+  routingScope?: PromptCacheConversationOperationRoutingScope | null;
+  stickyTransitions?: PromptCacheConversationOperationStickyTransition[];
 }
 
 export interface PromptCacheConversationOperationEventListResponse {
@@ -1924,6 +1948,7 @@ export interface PromptCacheConversationOperationEventListResponse {
   total: number;
   page: number;
   pageSize: number;
+  routingModelFacets?: string[];
 }
 
 export type PromptCacheConversationBindingTimeoutPatch = {
@@ -2024,6 +2049,8 @@ export interface FetchPromptCacheConversationOperationEventsQuery {
   page?: number;
   pageSize?: number;
   infoType?: PromptCacheConversationOperationInfoType;
+  routingScope?: "all" | "model";
+  routingModel?: string;
 }
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
@@ -3420,6 +3447,32 @@ function normalizePromptCacheConversationBindingResponse(
     typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
       ? raw.forwardProxyKey.trim()
       : (forwardProxyKeys[0] ?? null);
+  const stickyRoutes = Array.isArray(raw.stickyRoutes)
+    ? raw.stickyRoutes.flatMap((value): PromptCacheConversationStickyRoute[] => {
+        const route = (value ?? {}) as Record<string, unknown>;
+        const upstreamAccountId = normalizeFiniteNumber(route.upstreamAccountId);
+        const createdAt = typeof route.createdAt === "string" ? route.createdAt.trim() : "";
+        const updatedAt = typeof route.updatedAt === "string" ? route.updatedAt.trim() : "";
+        const lastSeenAt = typeof route.lastSeenAt === "string" ? route.lastSeenAt.trim() : "";
+        if (upstreamAccountId == null || !createdAt || !updatedAt || !lastSeenAt) return [];
+        return [
+          {
+            modelKey:
+              typeof route.modelKey === "string" && route.modelKey.trim()
+                ? route.modelKey.trim()
+                : null,
+            upstreamAccountId,
+            upstreamAccountName:
+              typeof route.upstreamAccountName === "string" && route.upstreamAccountName.trim()
+                ? route.upstreamAccountName.trim()
+                : null,
+            createdAt,
+            updatedAt,
+            lastSeenAt,
+          },
+        ];
+      })
+    : [];
   return {
     promptCacheKey: typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
     bindingKind:
@@ -3444,6 +3497,7 @@ function normalizePromptCacheConversationBindingResponse(
       typeof raw.encryptedOwnerGroupName === "string" && raw.encryptedOwnerGroupName.trim()
         ? raw.encryptedOwnerGroupName.trim()
         : null,
+    stickyRoutes,
     timeouts: normalizePoolRoutingTimeoutSettings(raw.timeouts),
     timeoutFieldSources: normalizeRoutingTimeoutFieldSources(raw.timeoutFieldSources),
     allowSwitchUpstream:
@@ -3672,6 +3726,39 @@ function normalizePromptCacheConversationOperationRoutingContext(
   };
 }
 
+function normalizePromptCacheConversationOperationRoutingScope(
+  raw: unknown,
+): PromptCacheConversationOperationRoutingScope | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const kind = payload.kind === "all" || payload.kind === "model" ? payload.kind : null;
+  if (kind == null) return null;
+  return {
+    kind,
+    modelKey:
+      typeof payload.modelKey === "string" && payload.modelKey.trim()
+        ? payload.modelKey.trim()
+        : null,
+    requestModel:
+      typeof payload.requestModel === "string" && payload.requestModel.trim()
+        ? payload.requestModel.trim()
+        : null,
+  };
+}
+
+function normalizePromptCacheConversationOperationStickyTransition(
+  raw: unknown,
+): PromptCacheConversationOperationStickyTransition | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    modelKey:
+      typeof payload.modelKey === "string" && payload.modelKey.trim()
+        ? payload.modelKey.trim()
+        : null,
+    before: normalizePromptCacheConversationOperationStickySnapshot(payload.before),
+    after: normalizePromptCacheConversationOperationStickySnapshot(payload.after),
+  };
+}
+
 function normalizePromptCacheConversationOperationEvent(
   raw: unknown,
 ): PromptCacheConversationOperationEvent | null {
@@ -3726,6 +3813,15 @@ function normalizePromptCacheConversationOperationEvent(
     invokeId:
       typeof payload.invokeId === "string" && payload.invokeId.trim() ? payload.invokeId : null,
     routingContext: normalizePromptCacheConversationOperationRoutingContext(payload.routingContext),
+    routingScope: normalizePromptCacheConversationOperationRoutingScope(payload.routingScope),
+    stickyTransitions: Array.isArray(payload.stickyTransitions)
+      ? payload.stickyTransitions
+          .map(normalizePromptCacheConversationOperationStickyTransition)
+          .filter(
+            (transition): transition is PromptCacheConversationOperationStickyTransition =>
+              transition != null,
+          )
+      : [],
   };
 }
 
@@ -3741,6 +3837,12 @@ function normalizePromptCacheConversationOperationEventListResponse(
     total: normalizeFiniteNumber(payload.total) ?? 0,
     page: normalizeFiniteNumber(payload.page) ?? 1,
     pageSize: normalizeFiniteNumber(payload.pageSize) ?? 20,
+    routingModelFacets: Array.isArray(payload.routingModelFacets)
+      ? payload.routingModelFacets
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [],
   };
 }
 
@@ -4770,6 +4872,12 @@ export async function fetchPromptCacheConversationOperationEvents(
   if (query?.infoType) {
     search.set("infoType", query.infoType);
   }
+  if (query?.routingScope) {
+    search.set("routingScope", query.routingScope);
+  }
+  if (query?.routingModel?.trim()) {
+    search.set("routingModel", query.routingModel.trim());
+  }
   const suffix = search.toString() ? `?${search.toString()}` : "";
   const raw = await fetchJson<unknown>(
     `/api/stats/prompt-cache-conversation-binding-events/${encodeURIComponent(promptCacheKey)}${suffix}`,
@@ -4790,6 +4898,17 @@ export async function updatePromptCacheConversationBinding(
       body: JSON.stringify(payload),
       signal,
     },
+  );
+  return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
+}
+
+export async function resetPromptCacheConversationAffinity(
+  promptCacheKey: string,
+  signal?: AbortSignal,
+): Promise<PromptCacheConversationBindingResponse> {
+  const raw = await fetchJson<Record<string, unknown>>(
+    `/api/stats/prompt-cache-conversation-bindings/reset-affinity/${encodeURIComponent(promptCacheKey)}`,
+    { method: "POST", signal },
   );
   return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
 }
