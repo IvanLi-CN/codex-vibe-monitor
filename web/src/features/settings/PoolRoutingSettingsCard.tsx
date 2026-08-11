@@ -267,7 +267,7 @@ export function PoolRoutingSettingsCard({
             </div>
           </div>
           <div className="flex flex-col gap-3 min-[769px]:flex-row min-[769px]:items-center">
-            <div className="w-full min-[769px]:w-[10.5rem] min-[769px]:shrink-0">
+            <div className="w-full min-[769px]:w-auto min-[769px]:shrink-0">
               <Button
                 type="button"
                 variant="outline"
@@ -277,7 +277,7 @@ export function PoolRoutingSettingsCard({
                 disabled={!writesEnabled || busy}
                 data-mode={draft.availableModelsMode}
                 onClick={() => onAvailableModelsModeChange(nextAvailableModelsMode)}
-                className="hidden h-10 w-full justify-between rounded-lg px-3 text-sm font-semibold min-[769px]:inline-flex"
+                className="hidden h-9 w-auto gap-1.5 rounded-md px-3 min-[769px]:inline-flex"
               >
                 <span>{availableModelsModeLabel}</span>
                 <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
