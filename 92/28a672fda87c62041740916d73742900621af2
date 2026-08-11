@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.58.7",
+  "base_stable_version": "2.58.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-11T08:20:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.58.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c7f3f0555453a51e435fee3f72805b351eef010c",
+  "pr_number": 779,
+  "pr_title": "fix(web): restore image edit chip contrast",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.58.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.58.7",
+  "target_sha": "9228a672fda87c62041740916d73742900621af2",
+  "type_label": "type:patch"
+}
