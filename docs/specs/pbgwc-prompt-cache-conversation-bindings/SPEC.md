@@ -65,6 +65,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
 - Prompt Cache conversation detail tabs are ordered `概览 / 调用 / 路由 / 设置 / 事件记录`. The 路由 tab owns manual binding, encrypted-owner, fallback, and model-bucket views; 设置 retains policy, rewrite, proxy, and timeout editors.
+- Each current-route upstream-account value with a valid account ID opens that account's shared detail view. Values without an ID remain non-interactive text.
 - Owner-facing copy uses `事件记录` because the stream contains manual writes plus automatic runtime/system events; internal compatibility keeps `promptCacheConversationTab=operations` and `prompt_cache_conversation_operation_events`.
 - The events tab keeps one event stream and one lightweight filter row; it does not split into nested subtabs.
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
@@ -264,6 +265,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
+- Given a current Sticky routing target has a valid upstream account ID, selecting its account value opens the shared upstream-account detail view.
 - Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
 - Given the conversation detail drawer is open on the Settings tab, the operator can see effective values plus source badges for 切出, FAST mode, image tool, available models, and one proxy node, then override or clear each field independently.
 - Given `?promptCacheConversationTab=routing`, both the overlay drawer and compact detail page open directly to the routing tab; existing `overview / calls / settings / operations` deep links remain compatible.

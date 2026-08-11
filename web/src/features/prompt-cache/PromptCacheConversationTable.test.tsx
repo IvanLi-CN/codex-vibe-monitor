@@ -2341,6 +2341,66 @@ describe("PromptCacheConversationTable", () => {
     expect(findButtonByAriaLabel("清除对话覆盖: 代理")).toBeNull();
   });
 
+  it("opens account detail from a current routing target", async () => {
+    const onOpenUpstreamAccount = vi.fn();
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-routing-account",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      stickyRoutes: [
+        {
+          modelKey: "gpt-5.4",
+          upstreamAccountId: 42,
+          upstreamAccountName: "Pool Alpha",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+      ],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    renderInteractive(
+      {
+        rangeStart: "2026-03-02T00:00:00Z",
+        rangeEnd: "2026-03-03T00:00:00Z",
+        selectionMode: "count",
+        selectedLimit: 50,
+        selectedActivityHours: null,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation({
+            promptCacheKey: "pck-routing-account",
+            requestCount: 1,
+            totalTokens: 100,
+            totalCost: 0.01,
+            createdAt: "2026-03-02T10:00:00Z",
+            lastActivityAt: "2026-03-02T12:30:00Z",
+            last24hRequests: [],
+          }),
+        ],
+      },
+      { onOpenUpstreamAccount },
+    );
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+
+    const routeAccountButton = findButtonByAriaLabel("查看 Pool Alpha 的账号详情");
+    expect(routeAccountButton).not.toBeNull();
+    await act(async () => {
+      routeAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha");
+  });
+
   it("preserves binding drafts across remote changes until the operator chooses a resolution", async () => {
     const stats: PromptCacheConversationsResponse = {
       rangeStart: "2026-03-02T00:00:00Z",

@@ -3421,28 +3421,56 @@ export function PromptCacheConversationHistoryDrawer({
                 </tr>
               </thead>
               <tbody>
-                {(binding.stickyRoutes ?? []).map((route) => (
-                  <tr
-                    key={`${route.modelKey ?? "all"}-${route.upstreamAccountId}`}
-                    className="border-b border-base-content/5 last:border-0"
-                  >
-                    <td className="px-2 py-2 font-mono text-base-content">
-                      {route.modelKey ?? t("live.conversations.drawer.routing.allModels")}
-                    </td>
-                    <td className="px-2 py-2 text-base-content/80">
-                      {route.upstreamAccountName ?? `#${route.upstreamAccountId}`}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
-                      {formatConversationOperationOccurredAt(route.createdAt)}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
-                      {formatConversationOperationOccurredAt(route.updatedAt)}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
-                      {formatConversationOperationOccurredAt(route.lastSeenAt)}
-                    </td>
-                  </tr>
-                ))}
+                {(binding.stickyRoutes ?? []).map((route) => {
+                  const routeAccountId =
+                    typeof route.upstreamAccountId === "number" &&
+                    Number.isFinite(route.upstreamAccountId)
+                      ? Math.trunc(route.upstreamAccountId)
+                      : null;
+                  const routeAccountLabel =
+                    route.upstreamAccountName ?? `#${route.upstreamAccountId}`;
+                  const canOpenRouteAccount =
+                    routeAccountId != null && onOpenUpstreamAccount != null;
+
+                  return (
+                    <tr
+                      key={`${route.modelKey ?? "all"}-${route.upstreamAccountId}`}
+                      className="border-b border-base-content/5 last:border-0"
+                    >
+                      <td className="px-2 py-2 font-mono text-base-content">
+                        {route.modelKey ?? t("live.conversations.drawer.routing.allModels")}
+                      </td>
+                      <td className="px-2 py-2 text-base-content/80">
+                        {canOpenRouteAccount ? (
+                          <button
+                            type="button"
+                            className="max-w-full truncate text-left font-medium transition hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                            aria-label={t("live.conversations.drawer.routing.openAccount", {
+                              account: routeAccountLabel,
+                            })}
+                            title={t("live.conversations.drawer.routing.openAccount", {
+                              account: routeAccountLabel,
+                            })}
+                            onClick={() => onOpenUpstreamAccount(routeAccountId, routeAccountLabel)}
+                          >
+                            {routeAccountLabel}
+                          </button>
+                        ) : (
+                          <span>{routeAccountLabel}</span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                        {formatConversationOperationOccurredAt(route.createdAt)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                        {formatConversationOperationOccurredAt(route.updatedAt)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                        {formatConversationOperationOccurredAt(route.lastSeenAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

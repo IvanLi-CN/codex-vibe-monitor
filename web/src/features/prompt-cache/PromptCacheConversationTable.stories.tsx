@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ApiInvocation,
@@ -2186,6 +2186,7 @@ export const DrawerRouting: Story = {
     stats: routingStoryStats,
     isLoading: false,
     error: null,
+    onOpenUpstreamAccount: fn(),
   },
   globals: {
     themeMode: "dark",
@@ -2199,7 +2200,7 @@ export const DrawerRouting: Story = {
       },
     },
   },
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, args }) => {
     bindingByPromptCacheKey.set(
       CONVERSATION_ROUTING_KEY,
       buildBindingResponse({
@@ -2259,6 +2260,13 @@ export const DrawerRouting: Story = {
     await expect(documentScope.getAllByText(/全部模型|All models/i).length).toBeGreaterThan(0);
     await expect(await documentScope.findByText(/gpt-5\.4/)).toBeInTheDocument();
     await expect(documentScope.getAllByText("mia.7rmmq@support.example").length).toBeGreaterThan(0);
+
+    await userEvent.click(
+      documentScope.getByRole("button", {
+        name: /查看 mia\.7rmmq@support\.example 的账号详情|View details for mia\.7rmmq@support\.example/i,
+      }),
+    );
+    await expect(args.onOpenUpstreamAccount).toHaveBeenCalledWith(22, "mia.7rmmq@support.example");
 
     await userEvent.click(
       documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
