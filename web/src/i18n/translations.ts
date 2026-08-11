@@ -1724,6 +1724,8 @@ const baseTranslations = {
     "settings.routing.models.mode": "Model policy mode",
     "settings.routing.models.allowlist": "Allowlist",
     "settings.routing.models.denylist": "Denylist",
+    "settings.routing.models.toggle":
+      "Switch model policy mode (current: {{current}}; next: {{next}})",
     "settings.routing.models.search": "Search models",
     "settings.routing.models.empty": "No model restriction",
     "settings.routing.models.clear": "Clear selection",
@@ -4622,6 +4624,7 @@ const baseTranslations = {
     "settings.routing.models.mode": "模型策略模式",
     "settings.routing.models.allowlist": "白名单",
     "settings.routing.models.denylist": "黑名单",
+    "settings.routing.models.toggle": "切换模型策略模式（当前：{{current}}；下一步：{{next}}）",
     "settings.routing.models.search": "搜索模型",
     "settings.routing.models.empty": "不限制模型",
     "settings.routing.models.clear": "清除选择",

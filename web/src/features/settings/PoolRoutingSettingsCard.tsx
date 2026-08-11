@@ -26,6 +26,7 @@ import {
   type MultiSelectFilterOption,
 } from "../account-pool/MultiSelectFilterCombobox";
 import { PolicyInlineOptionGroup } from "../account-pool/PolicyInlineOptionGroup";
+import { AppIcon } from "../shared/AppIcon";
 
 type RoutingTimeoutFieldKey =
   | "responsesFirstByteTimeoutSecs"
@@ -130,6 +131,20 @@ export function PoolRoutingSettingsCard({
         ? t("settings.routing.unsaved")
         : t("settings.routing.saved");
   const statusChipTone = !writesEnabled ? "secondary" : canSave ? "warning" : "success";
+  const availableModelsModeLabel =
+    draft.availableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const nextAvailableModelsMode =
+    draft.availableModelsMode === "allowlist" ? "denylist" : "allowlist";
+  const nextAvailableModelsModeLabel =
+    nextAvailableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const availableModelsModeToggleLabel = t("settings.routing.models.toggle", {
+    current: availableModelsModeLabel,
+    next: nextAvailableModelsModeLabel,
+  });
 
   return (
     <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
@@ -253,16 +268,32 @@ export function PoolRoutingSettingsCard({
           </div>
           <div className="flex flex-col gap-3 min-[769px]:flex-row min-[769px]:items-center">
             <div className="w-full min-[769px]:w-[10.5rem] min-[769px]:shrink-0">
-              <PolicyInlineOptionGroup<AvailableModelsMode>
-                ariaLabel={t("settings.routing.models.mode")}
-                value={draft.availableModelsMode}
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={draft.availableModelsMode === "allowlist"}
+                aria-label={availableModelsModeToggleLabel}
+                title={availableModelsModeToggleLabel}
                 disabled={!writesEnabled || busy}
-                options={[
-                  { value: "allowlist", label: t("settings.routing.models.allowlist") },
-                  { value: "denylist", label: t("settings.routing.models.denylist") },
-                ]}
-                onChange={onAvailableModelsModeChange}
-              />
+                data-mode={draft.availableModelsMode}
+                onClick={() => onAvailableModelsModeChange(nextAvailableModelsMode)}
+                className="hidden h-10 w-full justify-between rounded-lg px-3 text-sm font-semibold min-[769px]:inline-flex"
+              >
+                <span>{availableModelsModeLabel}</span>
+                <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
+              </Button>
+              <div className="min-[769px]:hidden">
+                <PolicyInlineOptionGroup<AvailableModelsMode>
+                  ariaLabel={t("settings.routing.models.mode")}
+                  value={draft.availableModelsMode}
+                  disabled={!writesEnabled || busy}
+                  options={[
+                    { value: "allowlist", label: t("settings.routing.models.allowlist") },
+                    { value: "denylist", label: t("settings.routing.models.denylist") },
+                  ]}
+                  onChange={onAvailableModelsModeChange}
+                />
+              </div>
             </div>
             <div className="min-w-0 flex-1">
               <MultiSelectFilterCombobox

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
+import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { AvailableModelsMode } from "../../lib/api";
 import { PoolRoutingSettingsCard } from "./PoolRoutingSettingsCard";
@@ -44,7 +45,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content sm:px-10">
+        <div className="min-h-screen bg-base-200 px-[30px] pb-[9.5px] pt-[10.5px] text-base-content sm:px-10">
           <div className="mx-auto max-w-4xl">
             <Story />
           </div>
@@ -91,5 +92,26 @@ export const ModelPolicy: Story = {
         onSave={() => undefined}
       />
     );
+  },
+};
+
+export const DesktopModeToggle: Story = {
+  ...ModelPolicy,
+  tags: ["test"],
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1280",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", {
+      name: /切换模型策略模式|Switch model policy mode/,
+    });
+
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(toggle).toHaveTextContent(/黑名单|Denylist/);
   },
 };
