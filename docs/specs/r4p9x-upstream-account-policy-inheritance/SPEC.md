@@ -383,8 +383,10 @@ theme. Both images passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
 Evidence binding commit: `f827964ed8dc4b70d19914d6eff6ab32ddba53dc`.
 
+PR: include
 ![Root model policy desktop](./assets/model-policy-desktop.png)
 
+PR: include
 ![Root model policy compact mobile](./assets/model-policy-mobile.png)
 
 Visual evidence is captured from stable Storybook scenarios for:
