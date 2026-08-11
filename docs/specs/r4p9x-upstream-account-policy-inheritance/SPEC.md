@@ -378,6 +378,7 @@ evidence with the Storybook-managed `desktop1280` and `mobile393` viewports.
 The desktop capture uses the light theme; the compact capture uses the dark
 theme. Both images passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
+Evidence binding commit: `a232fd596896783a223ad206df440abf4693b6b9`.
 
 ![Root model policy desktop](./assets/model-policy-desktop.png)
 
