@@ -27,6 +27,8 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
   fetchPromptCacheConversationOperationEvents: vi.fn(),
   fetchUpstreamAccounts: vi.fn(),
+  resetPromptCacheConversationAffinity:
+    vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
   updatePromptCacheConversationBinding: vi.fn(),
 }));
 
@@ -69,6 +71,7 @@ vi.mock("../../lib/api", async () => {
     fetchPromptCacheConversationOperationEvents:
       apiMocks.fetchPromptCacheConversationOperationEvents,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
+    resetPromptCacheConversationAffinity: apiMocks.resetPromptCacheConversationAffinity,
     updatePromptCacheConversationBinding: apiMocks.updatePromptCacheConversationBinding,
   };
 });
@@ -223,6 +226,7 @@ describe("PromptCacheConversationTable", () => {
     apiMocks.fetchPromptCacheConversationBinding.mockReset();
     apiMocks.fetchPromptCacheConversationOperationEvents.mockReset();
     apiMocks.fetchUpstreamAccounts.mockReset();
+    apiMocks.resetPromptCacheConversationAffinity.mockReset();
     apiMocks.updatePromptCacheConversationBinding.mockReset();
     detailTopicMocks.current = {
       calls: { data: null as unknown, lastKind: null },
@@ -265,6 +269,14 @@ describe("PromptCacheConversationTable", () => {
       pageSize: 20,
     });
     apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-history",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: null,
+    });
+    apiMocks.resetPromptCacheConversationAffinity.mockResolvedValue({
       promptCacheKey: "pck-history",
       bindingKind: "none",
       groupName: null,
@@ -2245,6 +2257,88 @@ describe("PromptCacheConversationTable", () => {
       upstreamAccountId: 77,
     });
     expect(document.body.textContent).toContain("当前：账号 Pool Beta");
+  });
+
+  it("resets policy drafts after clearing binding and affinity", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-reset-affinity",
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+      allowSwitchUpstream: false,
+      fastModeRewriteMode: "force_add",
+      imageToolRewriteMode: "force_remove",
+      codexImagegenRewriteMode: "fill_missing",
+      availableModels: ["gpt-5.4"],
+      forwardProxyKeys: ["__direct__"],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.resetPromptCacheConversationAffinity.mockResolvedValue({
+      promptCacheKey: "pck-reset-affinity",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: null,
+      imageToolRewriteMode: null,
+      codexImagegenRewriteMode: null,
+      availableModels: null,
+      forwardProxyKeys: null,
+      updatedAt: "2026-03-02T12:01:00Z",
+    });
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-reset-affinity",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+        }),
+      ],
+    });
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+    await act(async () => {
+      findButtonByAriaLabel("清空绑定并重选")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    const dialog = document.body.querySelector('[role="alertdialog"]');
+    const confirm = Array.from(dialog?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("清空并重选"),
+    );
+    await act(async () => {
+      confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() =>
+      expect(apiMocks.resetPromptCacheConversationAffinity).toHaveBeenCalledWith(
+        "pck-reset-affinity",
+      ),
+    );
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    expect(findButtonByAriaLabel("清除对话覆盖: 切出")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: FAST 模式")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 图片工具")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 可用模型")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 代理")).toBeNull();
   });
 
   it("preserves binding drafts across remote changes until the operator chooses a resolution", async () => {

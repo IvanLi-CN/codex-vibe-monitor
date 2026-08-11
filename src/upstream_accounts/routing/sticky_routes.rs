@@ -916,6 +916,12 @@ pub(crate) async fn overwrite_sticky_routes_for_manual_binding_executor(
     account_id: i64,
     now_iso: &str,
 ) -> Result<()> {
+    let fallback_account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1 LIMIT 1",
+    )
+    .bind(sticky_key)
+    .fetch_optional(&mut *conn)
+    .await?;
     let model_routes = sqlx::query_as::<_, (String, i64)>(
         "SELECT model_key, account_id FROM pool_sticky_model_routes WHERE sticky_key = ?1",
     )
@@ -923,8 +929,18 @@ pub(crate) async fn overwrite_sticky_routes_for_manual_binding_executor(
     .fetch_all(&mut *conn)
     .await?;
 
+    let fallback_changed = fallback_account_id != Some(account_id);
+    let model_routes_changed = model_routes
+        .iter()
+        .any(|(_, previous_account_id)| *previous_account_id != account_id);
+    if !fallback_changed && !model_routes_changed {
+        return Ok(());
+    }
+
     bump_sticky_affinity_generation_executor(&mut *conn, sticky_key, now_iso).await?;
-    upsert_sticky_route_executor(&mut *conn, sticky_key, account_id, now_iso).await?;
+    if fallback_changed {
+        upsert_sticky_route_executor(&mut *conn, sticky_key, account_id, now_iso).await?;
+    }
     for (model_key, previous_account_id) in model_routes {
         if previous_account_id != account_id {
             upsert_sticky_model_route_executor(
@@ -933,15 +949,6 @@ pub(crate) async fn overwrite_sticky_routes_for_manual_binding_executor(
             .await?;
             bump_sticky_model_generation_executor(&mut *conn, sticky_key, &model_key, now_iso)
                 .await?;
-        } else {
-            sqlx::query(
-                "UPDATE pool_sticky_model_routes SET updated_at = ?3, last_seen_at = ?3 WHERE sticky_key = ?1 AND model_key = ?2",
-            )
-            .bind(sticky_key)
-            .bind(&model_key)
-            .bind(now_iso)
-            .execute(&mut *conn)
-            .await?;
         }
     }
     Ok(())
@@ -1198,7 +1205,11 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                         model_key: exact_model_route
                             .as_ref()
                             .and_then(|_| model_key.clone()),
-                        request_model,
+                        request_model: exact_model_route.as_ref().and_then(|_| {
+                            request_model.filter(|request_model| {
+                                model_key.as_deref() != Some(request_model.as_str())
+                            })
+                        }),
                     },
                 )
                 .await?;

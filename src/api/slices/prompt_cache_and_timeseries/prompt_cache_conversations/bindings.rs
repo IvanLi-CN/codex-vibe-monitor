@@ -1598,7 +1598,11 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
                 "all".to_string()
             },
             model_key: model_key.clone(),
-            request_model: request_model.clone(),
+            request_model: model_key.as_ref().and_then(|model_key| {
+                request_model
+                    .clone()
+                    .filter(|request_model| request_model != model_key)
+            }),
         };
         let current_generation = if let Some(model_key) = model_key.as_deref() {
             load_sticky_model_generation_executor(conn.as_mut(), sticky_key, model_key).await?
@@ -3274,7 +3278,12 @@ async fn save_prompt_cache_conversation_binding_for_key(
             })?;
             let _ =
                 ensure_upstream_account_binding_target(&state.pool, upstream_account_id).await?;
-            sqlx::query(
+            let mut conn = state.pool.acquire().await?;
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(conn.as_mut())
+                .await?;
+            let write_result: anyhow::Result<()> = async {
+                sqlx::query(
                 r#"
                 INSERT INTO prompt_cache_conversation_bindings (
                     prompt_cache_key,
@@ -3327,20 +3336,32 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(next_allow_switch_upstream)
             .bind(&next_fast_mode_rewrite_mode)
             .bind(&next_image_tool_rewrite_mode)
-            .bind(&next_codex_imagegen_rewrite_mode)
-            .bind(&next_available_models)
-            .bind(&next_forward_proxy_key)
-            .bind(&next_forward_proxy_keys_json)
-            .execute(&state.pool)
-            .await?;
-            let now_iso = format_utc_iso(Utc::now());
-            overwrite_sticky_routes_for_manual_binding(
-                &state.pool,
-                prompt_cache_key,
-                upstream_account_id,
-                &now_iso,
-            )
-            .await?;
+                .bind(&next_codex_imagegen_rewrite_mode)
+                .bind(&next_available_models)
+                .bind(&next_forward_proxy_key)
+                .bind(&next_forward_proxy_keys_json)
+                .execute(conn.as_mut())
+                .await?;
+                let now_iso = format_utc_iso(Utc::now());
+                overwrite_sticky_routes_for_manual_binding_executor(
+                    conn.as_mut(),
+                    prompt_cache_key,
+                    upstream_account_id,
+                    &now_iso,
+                )
+                .await?;
+                Ok(())
+            }
+            .await;
+            match write_result {
+                Ok(()) => {
+                    sqlx::query("COMMIT").execute(conn.as_mut()).await?;
+                }
+                Err(error) => {
+                    let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+                    return Err(error.into());
+                }
+            }
         }
         _ => {
             return Err(ApiError::bad_request(anyhow!(

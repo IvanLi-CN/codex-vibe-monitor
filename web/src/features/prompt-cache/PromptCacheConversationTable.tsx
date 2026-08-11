@@ -4131,6 +4131,15 @@ export function PromptCacheConversationHistoryDrawer({
       const nextBinding = await resetPromptCacheConversationAffinity(conversationKey);
       setBinding(nextBinding);
       setBindingKind(nextBinding.bindingKind);
+      applyBindingPolicyDraft(nextBinding, {
+        setAllowSwitchUpstreamDraft,
+        setFastModeDraft,
+        setImageToolDraft,
+        setCodexImagegenDraft,
+        setAvailableModelsMode,
+        setAvailableModelsDraft,
+        setForwardProxyKeysDraft,
+      });
       setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
       setBindingAccountId(
         nextBinding.upstreamAccountId != null

@@ -5773,6 +5773,132 @@ async fn prompt_cache_sticky_routes_are_isolated_by_normalized_model_key() {
 }
 
 #[tokio::test]
+async fn prompt_cache_manual_binding_is_idempotent_for_unchanged_model_routes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Manual", "manual-model-route").await;
+    let prompt_cache_key = "prompt-cache-manual-idempotent-model-route";
+    let initial_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize manual binding payload");
+
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(initial_payload),
+    )
+    .await
+    .expect("save initial manual binding");
+    let now_iso = format_utc_iso(Utc::now());
+    assert!(
+        upsert_sticky_route_for_model_if_current(
+            &state.pool,
+            prompt_cache_key,
+            Some("gpt-5.4"),
+            account_id,
+            None,
+            &now_iso,
+        )
+        .await
+        .expect("materialize exact model route")
+    );
+    let epoch_before = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load manual binding epoch");
+    let (_, model_generation_before) =
+        load_sticky_route_with_model_generation(&state.pool, prompt_cache_key, Some("gpt-5.4"))
+            .await
+            .expect("load exact model generation");
+
+    let repeat_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize repeated manual binding payload");
+
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(repeat_payload),
+    )
+    .await
+    .expect("repeat manual binding without changing routes");
+
+    assert_eq!(
+        load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+            .await
+            .expect("load epoch after idempotent binding"),
+        epoch_before,
+        "a no-op binding must not fence in-flight requests"
+    );
+    let (_, model_generation_after) =
+        load_sticky_route_with_model_generation(&state.pool, prompt_cache_key, Some("gpt-5.4"))
+            .await
+            .expect("load model generation after idempotent binding");
+    assert_eq!(model_generation_after, model_generation_before);
+}
+
+#[tokio::test]
+async fn prompt_cache_manual_binding_rolls_back_when_sticky_update_fails() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Atomic", "atomic-manual-route")
+            .await;
+    let prompt_cache_key = "prompt-cache-manual-binding-atomic";
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_prompt_cache_manual_sticky_insert
+        BEFORE INSERT ON pool_sticky_routes
+        WHEN NEW.sticky_key = 'prompt-cache-manual-binding-atomic'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced sticky write failure');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("install sticky write failure trigger");
+    let payload: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({
+        "bindingKind": "upstreamAccount",
+        "upstreamAccountId": account_id,
+    }))
+    .expect("deserialize atomic manual binding payload");
+
+    let error = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(payload),
+    )
+    .await
+    .expect_err("sticky failure must fail the account binding transaction");
+    assert!(matches!(error, ApiError::Internal(_)));
+    assert!(
+        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key)
+            .await
+            .expect("load binding after failed transaction")
+            .is_none(),
+        "the binding row must roll back with the Sticky write"
+    );
+    let sticky_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count sticky rows after failed transaction");
+    assert_eq!(sticky_count, 0);
+}
+
+#[tokio::test]
 async fn prompt_cache_routing_events_filter_by_all_or_normalized_model_scope() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -5787,7 +5913,7 @@ async fn prompt_cache_routing_events_filter_by_all_or_normalized_model_scope() {
         ),
         (
             "gpt51",
-            r#"{"kind":"model","modelKey":"gpt-5.1-codex-max","requestModel":"gpt-5.1-codex-max"}"#,
+            r#"{"kind":"model","modelKey":"gpt-5.1-codex-max"}"#,
         ),
     ] {
         sqlx::query(
@@ -5876,11 +6002,11 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
         r#"
         INSERT INTO pool_upstream_request_attempts (
             attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key,
-            routing_source, routing_selection_audit_json, upstream_account_id,
+            routing_source, request_model, routing_selection_audit_json, upstream_account_id,
             upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
             requester_ip, started_at, finished_at, status, phase, created_at
         ) VALUES (
-            ?1, ?2, ?3, '/v1/responses', ?4, ?5, 'freshAssignment', ?6, ?7,
+            ?1, ?2, ?3, '/v1/responses', ?4, ?5, 'freshAssignment', ?6, ?7, ?8,
             'route-selection-audit', 1, 1, 0, '203.0.113.15', ?3, ?3,
             'success', 'completed', ?3
         )
@@ -5891,6 +6017,7 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
     .bind(&occurred_at)
     .bind(INVOCATION_ROUTE_MODE_POOL)
     .bind(prompt_cache_key)
+    .bind("gpt-5.4")
     .bind(serde_json::to_string(&audit).expect("serialize selection audit"))
     .bind(selected_account_id)
     .execute(&state.pool)
@@ -5961,6 +6088,14 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
         Some("onlyEligibleCandidate")
     );
     assert_eq!(event.invoke_id.as_deref(), Some(invoke_id));
+    assert_eq!(
+        event
+            .routing_scope
+            .as_ref()
+            .and_then(|scope| scope.request_model.as_deref()),
+        None,
+        "requestModel duplicates the normalized model key and should be omitted"
+    );
 }
 
 #[tokio::test]
