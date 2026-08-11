@@ -16,9 +16,10 @@ pub(crate) fn intersect_available_models(
 pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
+    let has_editable_tags = tags.iter().any(|tag| !tag.protected);
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
-    let mut priority_tier = if tags.is_empty() {
+    let mut priority_tier = if !has_editable_tags {
         TagPriorityTier::Normal
     } else {
         TagPriorityTier::Primary
@@ -39,20 +40,22 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
     for tag in tags {
         source_tag_ids.push(tag.id);
         source_tag_names.push(tag.name.clone());
-        allow_cut_out &= tag.routing_rule.allow_cut_out;
-        allow_cut_in &= tag.routing_rule.allow_cut_in;
-        priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
-        if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
-            < fast_mode_rewrite_mode.merge_rank()
-        {
-            fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
-        }
-        concurrency_limit =
-            merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
-        if tag.routing_rule.upstream_429_retry_enabled {
-            upstream_429_retry_enabled = true;
-            upstream_429_max_retries =
-                upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
+        if !tag.protected {
+            allow_cut_out &= tag.routing_rule.allow_cut_out;
+            allow_cut_in &= tag.routing_rule.allow_cut_in;
+            priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
+            if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
+                < fast_mode_rewrite_mode.merge_rank()
+            {
+                fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
+            }
+            concurrency_limit =
+                merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
+            if tag.routing_rule.upstream_429_retry_enabled {
+                upstream_429_retry_enabled = true;
+                upstream_429_max_retries =
+                    upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
+            }
         }
         if tag.available_models_invalid {
             tag_available_models_defined = true;
@@ -77,7 +80,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         }
     }
 
-    let field_source = if tags.is_empty() { "root" } else { "tag" }.to_string();
+    let field_source = if has_editable_tags { "tag" } else { "root" }.to_string();
     let available_models_source = if tag_available_models_defined {
         "tag"
     } else {
@@ -309,15 +312,14 @@ pub(crate) fn apply_root_available_models(
     models_json: Option<&str>,
     mode: Option<&str>,
 ) {
-    let invalid_models_json =
-        models_json.is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
+    let (parsed_models, invalid_models_json) = parse_string_array_json_with_invalid(models_json);
     let mode = mode
         .map(|value| AvailableModelsMode::from_str(Some(value)))
         .unwrap_or(AvailableModelsMode::Denylist);
     rule.available_models = if invalid_models_json {
         Vec::new()
     } else {
-        parse_string_array_json(models_json)
+        parsed_models
     };
     rule.available_models_mode = if invalid_models_json {
         AvailableModelsMode::Allowlist
@@ -409,12 +411,12 @@ pub(crate) fn apply_routing_policy_override(
         );
     }
     if available_models_json.is_some() || available_models_mode.is_some() {
-        let invalid_models_json = available_models_json
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
+        let (parsed_models, invalid_models_json) =
+            parse_string_array_json_with_invalid(available_models_json);
         let available_models = if invalid_models_json {
             Vec::new()
         } else if available_models_json.is_some() {
-            parse_string_array_json(available_models_json)
+            parsed_models
         } else {
             rule.available_models.clone()
         };
@@ -671,6 +673,7 @@ pub(crate) fn apply_tag_layer_routing_policy(
     rule: &mut EffectiveRoutingRule,
     tag_rule: &EffectiveRoutingRule,
 ) {
+    let has_editable_tag_policy = tag_rule.field_sources.allow_cut_out == "tag";
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
     let inherited_image_tool_rewrite_mode_source =
         rule.field_sources.image_tool_rewrite_mode.clone();
@@ -690,17 +693,19 @@ pub(crate) fn apply_tag_layer_routing_policy(
         rule.status_change_reason_field_sources.clone();
     let inherited_timeouts = rule.timeouts.clone();
     let inherited_timeout_field_sources = rule.timeout_field_sources.clone();
-    rule.allow_cut_out = tag_rule.allow_cut_out;
-    rule.allow_cut_in = tag_rule.allow_cut_in;
-    rule.priority_tier = tag_rule.priority_tier;
-    rule.fast_mode_rewrite_mode = tag_rule.fast_mode_rewrite_mode;
-    rule.concurrency_limit = tag_rule.concurrency_limit;
-    rule.upstream_429_retry_enabled = tag_rule.upstream_429_retry_enabled;
-    rule.upstream_429_max_retries = if tag_rule.upstream_429_retry_enabled {
-        tag_rule.upstream_429_max_retries
-    } else {
-        0
-    };
+    if has_editable_tag_policy {
+        rule.allow_cut_out = tag_rule.allow_cut_out;
+        rule.allow_cut_in = tag_rule.allow_cut_in;
+        rule.priority_tier = tag_rule.priority_tier;
+        rule.fast_mode_rewrite_mode = tag_rule.fast_mode_rewrite_mode;
+        rule.concurrency_limit = tag_rule.concurrency_limit;
+        rule.upstream_429_retry_enabled = tag_rule.upstream_429_retry_enabled;
+        rule.upstream_429_max_retries = if tag_rule.upstream_429_retry_enabled {
+            tag_rule.upstream_429_max_retries
+        } else {
+            0
+        };
+    }
     if tag_rule.available_models_defined {
         rule.tag_available_models = Some(tag_rule.available_models.clone());
     }
@@ -724,7 +729,15 @@ pub(crate) fn apply_tag_layer_routing_policy(
     rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
-    rule.field_sources = tag_rule.field_sources.clone();
+    if has_editable_tag_policy {
+        rule.field_sources = tag_rule.field_sources.clone();
+    } else {
+        rule.field_sources.available_models = tag_rule.field_sources.available_models.clone();
+        rule.field_sources.available_models_mode =
+            tag_rule.field_sources.available_models_mode.clone();
+        rule.field_sources.system_denied_models =
+            tag_rule.field_sources.system_denied_models.clone();
+    }
     rule.status_change_reasons = inherited_status_change_reasons;
     rule.status_change_reason_field_sources = inherited_status_change_reason_field_sources;
     rule.timeouts = tag_rule.timeouts.clone();

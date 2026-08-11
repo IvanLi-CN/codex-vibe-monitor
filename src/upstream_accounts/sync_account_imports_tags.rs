@@ -74,6 +74,7 @@ pub(crate) async fn ensure_protected_system_tag(
     system_key: &str,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
         UPDATE pool_tags
@@ -90,7 +91,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -107,7 +108,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -122,7 +123,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     // Protected system tags are immutable signals. Keep any legacy model list,
@@ -143,8 +144,9 @@ pub(crate) async fn ensure_protected_system_tag(
     )
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

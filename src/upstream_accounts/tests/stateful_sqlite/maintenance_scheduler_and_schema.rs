@@ -1276,7 +1276,7 @@ pub(crate) async fn insert_test_tag(
                 name, system_key, protected, allow_cut_out, allow_cut_in, priority_tier,
                 fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
                 upstream_429_max_retries, available_models_json, created_at, updated_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             RETURNING id
             "#,
     )
@@ -4712,6 +4712,77 @@ fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_al
     assert!(rule.available_models.is_empty());
     assert!(!account_accepts_requested_model(Some("gpt-4o"), &rule));
     assert!(!account_accepts_requested_model(Some("o3"), &rule));
+}
+
+#[test]
+fn build_effective_routing_rule_ignores_editable_fields_from_protected_system_tags() {
+    let mut system_tag = test_account_tag_summary(1, "system", 3);
+    system_tag.protected = true;
+    system_tag.system_key = Some("unsupported_model:gpt-5.4".to_string());
+    system_tag.routing_rule.allow_cut_in = false;
+    system_tag.routing_rule.priority_tier = TagPriorityTier::Fallback;
+    system_tag.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
+    system_tag.routing_rule.upstream_429_retry_enabled = true;
+    system_tag.routing_rule.upstream_429_max_retries = 4;
+    system_tag.routing_rule.available_models = vec!["gpt-5.4-mini".to_string()];
+
+    let rule = build_effective_routing_rule(&[system_tag]);
+
+    assert!(rule.allow_cut_in);
+    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
+    assert_eq!(
+        rule.fast_mode_rewrite_mode,
+        TagFastModeRewriteMode::KeepOriginal
+    );
+    assert_eq!(rule.concurrency_limit, 0);
+    assert!(!rule.upstream_429_retry_enabled);
+    assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
+    assert_eq!(rule.system_denied_models, vec!["gpt-5.4".to_string()]);
+}
+
+#[test]
+fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
+    let mut root_rule = test_effective_routing_rule(0);
+    apply_root_available_models(&mut root_rule, Some(r#"[" "]"#), Some("denylist"));
+    assert!(root_rule.available_models_defined);
+    assert!(root_rule.available_models.is_empty());
+    assert_eq!(
+        root_rule.available_models_mode,
+        AvailableModelsMode::Allowlist
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &root_rule
+    ));
+
+    let mut lower_rule = test_effective_routing_rule(0);
+    apply_routing_policy_override(
+        &mut lower_rule,
+        "group",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(r#"[" "]"#),
+        Some("denylist"),
+    );
+    assert!(lower_rule.available_models_defined);
+    assert!(lower_rule.available_models.is_empty());
+    assert_eq!(
+        lower_rule.available_models_mode,
+        AvailableModelsMode::Allowlist
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &lower_rule
+    ));
 }
 
 #[test]

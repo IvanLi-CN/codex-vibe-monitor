@@ -635,6 +635,8 @@ pub(crate) fn build_pool_routing_settings_response(
 ) -> PoolRoutingSettingsResponse {
     let timeouts = resolve_pool_routing_timeouts_from_row(row, &state.config);
     let request_compression = resolve_pool_request_compression_settings_from_row(row);
+    let (available_models, available_models_invalid) =
+        parse_string_array_json_with_invalid(row.available_models_json.as_deref());
     PoolRoutingSettingsResponse {
         writes_enabled: true,
         api_key_configured: row
@@ -650,20 +652,12 @@ pub(crate) fn build_pool_routing_settings_response(
             .as_deref()
             .map(CodexImagegenRewriteMode::from_str)
             .unwrap_or(CodexImagegenRewriteMode::KeepOriginal),
-        available_models: if row
-            .available_models_json
-            .as_deref()
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
-        {
+        available_models: if available_models_invalid {
             Vec::new()
         } else {
-            parse_string_array_json(row.available_models_json.as_deref())
+            available_models
         },
-        available_models_mode: if row
-            .available_models_json
-            .as_deref()
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
-        {
+        available_models_mode: if available_models_invalid {
             AvailableModelsMode::Allowlist
         } else {
             AvailableModelsMode::from_str(row.available_models_mode.as_deref())
@@ -822,16 +816,29 @@ pub(crate) async fn save_pool_routing_settings(
         Some(api_key) => Some(mask_api_key(api_key)),
         None => current.masked_api_key.clone(),
     };
-    let current_maintenance = resolve_pool_routing_maintenance_settings(&current, config);
-    let maintenance_settings = update.maintenance_settings.unwrap_or(current_maintenance);
-    let primary_sync_interval_secs = i64::try_from(maintenance_settings.primary_sync_interval_secs)
-        .map_err(|err| internal_error_tuple(anyhow!(err)))?;
-    let secondary_sync_interval_secs =
-        i64::try_from(maintenance_settings.secondary_sync_interval_secs)
-            .map_err(|err| internal_error_tuple(anyhow!(err)))?;
-    let priority_available_account_cap =
-        i64::try_from(maintenance_settings.priority_available_account_cap)
-            .map_err(|err| internal_error_tuple(anyhow!(err)))?;
+    let (primary_sync_interval_secs, secondary_sync_interval_secs, priority_available_account_cap) =
+        if let Some(maintenance_settings) = update.maintenance_settings {
+            (
+                Some(
+                    i64::try_from(maintenance_settings.primary_sync_interval_secs)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+                Some(
+                    i64::try_from(maintenance_settings.secondary_sync_interval_secs)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+                Some(
+                    i64::try_from(maintenance_settings.priority_available_account_cap)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+            )
+        } else {
+            (
+                current.primary_sync_interval_secs,
+                current.secondary_sync_interval_secs,
+                current.priority_available_account_cap,
+            )
+        };
     let responses_first_byte_timeout_secs = update
         .timeout_updates
         .and_then(|value| value.responses_first_byte_timeout_secs)

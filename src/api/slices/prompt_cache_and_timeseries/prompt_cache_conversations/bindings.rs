@@ -496,14 +496,11 @@ pub(crate) async fn binding_response_from_row(
     } else {
         None
     };
-    let legacy_available_models = row
+    let (legacy_available_models, available_models_invalid) = row
         .available_models_json
         .as_deref()
-        .and_then(parse_available_models_json);
-    let available_models_invalid = row
-        .available_models_json
-        .as_deref()
-        .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
+        .map(parse_available_models_json_with_invalid)
+        .unwrap_or((None, false));
     let policy_field_sources =
         PromptCacheConversationPolicyFieldSources::from_row(&row, effective_policy.as_ref());
     let effective_available_models = effective_policy
@@ -2140,15 +2137,21 @@ pub(crate) fn normalize_available_models_patch(
 }
 
 pub(crate) fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
-    serde_json::from_str::<Vec<String>>(value)
-        .ok()
-        .map(|values| {
-            values
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-        })
+    parse_available_models_json_with_invalid(value).0
+}
+
+pub(crate) fn parse_available_models_json_with_invalid(value: &str) -> (Option<Vec<String>>, bool) {
+    let values = match serde_json::from_str::<Vec<String>>(value) {
+        Ok(values) => values,
+        Err(_) => return (None, true),
+    };
+    let invalid_entry = values.iter().any(|value| value.trim().is_empty());
+    let normalized = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    (Some(normalized), invalid_entry)
 }
 
 pub(crate) fn parse_forward_proxy_keys_json(value: Option<&str>) -> Vec<String> {
@@ -2179,11 +2182,12 @@ pub(crate) fn conversation_routing_override_from_row(
         available_models: row
             .available_models_json
             .as_deref()
-            .and_then(parse_available_models_json),
+            .map(parse_available_models_json_with_invalid)
+            .and_then(|(models, _)| models),
         available_models_invalid: row
             .available_models_json
             .as_deref()
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err()),
+            .is_some_and(|raw| parse_available_models_json_with_invalid(raw).1),
         available_models_mode: row
             .available_models_mode
             .as_deref()
@@ -3938,6 +3942,18 @@ mod tests {
         assert_eq!(
             info_types,
             vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE.to_string()]
+        );
+    }
+
+    #[test]
+    fn available_models_parser_fails_closed_on_blank_entries() {
+        assert_eq!(
+            parse_available_models_json_with_invalid(r#"[" "]"#),
+            (Some(Vec::new()), true)
+        );
+        assert_eq!(
+            parse_available_models_json_with_invalid("[]"),
+            (Some(Vec::new()), false)
         );
     }
 }
