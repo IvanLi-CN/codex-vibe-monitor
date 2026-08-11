@@ -333,6 +333,8 @@ Automatic candidate selection and sticky reuse must filter by the final model po
 - if exact match fails, dated aliases may fall back to the existing base-model alias rule
 - accounts denied for the requested model must be excluded from automatic and sticky migration candidates before retry/failover scoring
 
+Model policy summaries and mode controls may use the shared compact chip presentation used by the account-pool surfaces. This is a presentation detail only: the wire values remain `allowlist`/`denylist`, and chip styling must not change inheritance, filtering, or system-deny semantics.
+
 ## Owner-Facing UI Contract
 
 Status-change trigger reasons use the same flattened reason list on every owner-facing surface.

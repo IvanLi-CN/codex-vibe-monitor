@@ -44,6 +44,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - `upstream 429 retry` is rendered as a single `0..5` inline count selector; `0` maps to disabled without a separate toggle control
 - concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
 - available-model overrides may store an empty list to explicitly allow no models
+- model-policy summaries and mode controls use the shared compact chip presentation where the host surface provides it; this does not alter the allowlist/denylist wire contract
 - `systemDeniedModels` stays a read-only system result and has no account override control
 - timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
 - the group settings dialog is split into `Group info`, `Routing settings`, and `Proxy nodes` tabs so group metadata, routing policy, and proxy-node binding are edited in separate panels under one save action
