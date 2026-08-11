@@ -1297,9 +1297,16 @@ pub(crate) async fn insert_test_tag(
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
-    load_tag_detail(pool, inserted_id)
+    let mut detail = load_tag_detail(pool, inserted_id)
         .await?
-        .ok_or_else(|| anyhow!("tag not found after insert"))
+        .ok_or_else(|| anyhow!("tag not found after insert"))?;
+    sqlx::query("UPDATE pool_tags SET system_key = NULL, protected = 0 WHERE id = ?1")
+        .bind(inserted_id)
+        .execute(pool)
+        .await?;
+    detail.summary.system_key = None;
+    detail.summary.protected = false;
+    Ok(detail)
 }
 
 pub(crate) async fn insert_legacy_custom_tag(

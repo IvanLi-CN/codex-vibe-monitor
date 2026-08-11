@@ -16,7 +16,9 @@ pub(crate) fn intersect_available_models(
 pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
-    let has_editable_tags = tags.iter().any(|tag| !tag.protected);
+    let has_editable_tags = tags
+        .iter()
+        .any(|tag| !tag.protected && tag.system_key.is_none());
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
     let mut priority_tier = if !has_editable_tags {
@@ -40,7 +42,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
     for tag in tags {
         source_tag_ids.push(tag.id);
         source_tag_names.push(tag.name.clone());
-        if !tag.protected {
+        if !tag.protected && tag.system_key.is_none() {
             allow_cut_out &= tag.routing_rule.allow_cut_out;
             allow_cut_in &= tag.routing_rule.allow_cut_in;
             priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
