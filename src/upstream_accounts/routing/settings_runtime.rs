@@ -795,6 +795,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) available_models: Option<&'a [String]>,
     pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
+    pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -821,9 +822,16 @@ pub(crate) async fn save_pool_routing_settings(
         Some(api_key) => Some(mask_api_key(api_key)),
         None => current.masked_api_key.clone(),
     };
-    let primary_sync_interval_secs = current.primary_sync_interval_secs;
-    let secondary_sync_interval_secs = current.secondary_sync_interval_secs;
-    let priority_available_account_cap = current.priority_available_account_cap;
+    let current_maintenance = resolve_pool_routing_maintenance_settings(&current, config);
+    let maintenance_settings = update.maintenance_settings.unwrap_or(current_maintenance);
+    let primary_sync_interval_secs = i64::try_from(maintenance_settings.primary_sync_interval_secs)
+        .map_err(|err| internal_error_tuple(anyhow!(err)))?;
+    let secondary_sync_interval_secs =
+        i64::try_from(maintenance_settings.secondary_sync_interval_secs)
+            .map_err(|err| internal_error_tuple(anyhow!(err)))?;
+    let priority_available_account_cap =
+        i64::try_from(maintenance_settings.priority_available_account_cap)
+            .map_err(|err| internal_error_tuple(anyhow!(err)))?;
     let responses_first_byte_timeout_secs = update
         .timeout_updates
         .and_then(|value| value.responses_first_byte_timeout_secs)
@@ -879,6 +887,7 @@ pub(crate) async fn save_pool_routing_settings(
     let request_read_timeout_secs = current.request_read_timeout_secs;
     let now_iso = format_utc_iso(Utc::now());
 
+    let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
         r#"
         UPDATE pool_routing_settings
@@ -925,7 +934,7 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
     .bind(now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
 
@@ -940,7 +949,7 @@ pub(crate) async fn save_pool_routing_settings(
                 AvailableModelsMode::Allowlist => "allowlist",
                 AvailableModelsMode::Denylist => "denylist",
             })
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(internal_error_tuple)?;
         }
@@ -950,7 +959,7 @@ pub(crate) async fn save_pool_routing_settings(
             )
             .bind(POOL_SETTINGS_SINGLETON_ID)
             .bind(serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(internal_error_tuple)?;
         }
@@ -963,13 +972,14 @@ pub(crate) async fn save_pool_routing_settings(
                 AvailableModelsMode::Allowlist => "allowlist",
                 AvailableModelsMode::Denylist => "denylist",
             })
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(internal_error_tuple)?;
         }
         (None, None) => {}
     }
 
+    tx.commit().await.map_err(internal_error_tuple)?;
     load_pool_routing_settings(pool)
         .await
         .map_err(internal_error_tuple)

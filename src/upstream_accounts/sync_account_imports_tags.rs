@@ -124,6 +124,27 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(&now_iso)
     .execute(pool)
     .await?;
+
+    // Protected system tags are immutable signals. Keep any legacy model list,
+    // but discard editable routing fields left on a tag promoted by name.
+    sqlx::query(
+        r#"
+        UPDATE pool_tags
+        SET allow_cut_out = 1,
+            allow_cut_in = 1,
+            priority_tier = 'normal',
+            fast_mode_rewrite_mode = 'keep_original',
+            concurrency_limit = 0,
+            upstream_429_retry_enabled = 0,
+            upstream_429_max_retries = 0,
+            updated_at = ?2
+        WHERE system_key = ?1
+        "#,
+    )
+    .bind(system_key)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

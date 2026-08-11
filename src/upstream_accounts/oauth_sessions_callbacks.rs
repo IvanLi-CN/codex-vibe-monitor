@@ -117,6 +117,7 @@ pub(crate) async fn update_pool_routing_settings(
         || codex_imagegen_rewrite_mode.is_some()
         || available_models.is_some()
         || available_models_mode.is_some()
+        || payload.maintenance.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -130,6 +131,7 @@ pub(crate) async fn update_pool_routing_settings(
                 available_models: available_models.as_deref(),
                 available_models_mode,
                 timeout_updates: timeout_updates.as_ref(),
+                maintenance_settings: payload.maintenance.as_ref().map(|_| merged_maintenance),
             },
         )
         .await?;
@@ -144,11 +146,6 @@ pub(crate) async fn update_pool_routing_settings(
             )
             .await;
         }
-    }
-    if payload.maintenance.is_some() {
-        save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)
-            .await
-            .map_err(internal_error_tuple)?;
     }
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await

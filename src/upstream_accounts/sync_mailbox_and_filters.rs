@@ -1692,14 +1692,25 @@ pub(crate) fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
 }
 
 pub(crate) fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
+    parse_string_array_json_with_invalid(raw).0
+}
+
+pub(crate) fn parse_string_array_json_with_invalid(raw: Option<&str>) -> (Vec<String>, bool) {
     let Some(raw) = raw else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
-    serde_json::from_str::<Vec<String>>(raw)
-        .unwrap_or_default()
+    let parsed = match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(parsed) => parsed,
+        Err(_) => return (Vec::new(), true),
+    };
+    let invalid_entry = parsed
+        .iter()
+        .any(|value| normalize_optional_text(Some(value.clone())).is_none());
+    let normalized = parsed
         .into_iter()
         .filter_map(|value| normalize_optional_text(Some(value)))
-        .collect()
+        .collect();
+    (normalized, invalid_entry)
 }
 
 pub(crate) fn encode_string_array_json(values: &[String]) -> Result<String> {
@@ -1707,6 +1718,8 @@ pub(crate) fn encode_string_array_json(values: &[String]) -> Result<String> {
 }
 
 pub(crate) fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
+    let (available_models, available_models_invalid) =
+        parse_string_array_json_with_invalid(row.available_models_json.as_deref());
     AccountTagSummary {
         id: row.tag_id,
         name: row.name.clone(),
@@ -1723,8 +1736,9 @@ pub(crate) fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSum
                 decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
                 decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
             ),
-            available_models: parse_string_array_json(row.available_models_json.as_deref()),
+            available_models,
         },
+        available_models_invalid,
         system_key: row.system_key.clone(),
         protected: row.protected != 0,
     }

@@ -1395,6 +1395,7 @@ pub(crate) struct AccountTagSummary {
     pub(crate) id: i64,
     pub(crate) name: String,
     pub(crate) routing_rule: TagRoutingRule,
+    pub(crate) available_models_invalid: bool,
     pub(crate) system_key: Option<String>,
     pub(crate) protected: bool,
 }
