@@ -341,6 +341,8 @@ PR: include
 
 PR: include
 ![Desktop affinity reset confirmation with padded content and action groups](./assets/conversation-routing-desktop-reset-confirm-storybook.png)
+
+PR: include
 ![Mobile affinity reset confirmation with padded content and action groups](./assets/conversation-routing-mobile-reset-confirm-393x852-storybook.png)
 
 - source_type: storybook_canvas
