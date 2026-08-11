@@ -133,19 +133,45 @@ function parseComputedColorChannels(color: string) {
   );
 }
 
+function oklabRelativeLuminance(lightness: number, a: number, b: number) {
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const red = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const green = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const blue = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function imageEditInkChroma(color: string) {
+  const channels = parseComputedColorChannels(color);
+  if (color.startsWith("oklch(") && channels.length >= 2) {
+    return channels[1] ?? Number.NaN;
+  }
+  if (color.startsWith("oklab(") && channels.length >= 3) {
+    return Math.hypot(channels[1] ?? Number.NaN, channels[2] ?? Number.NaN);
+  }
+
+  throw new Error(`Unsupported computed color: ${color}`);
+}
+
 function relativeLuminance(color: string) {
   const channels = parseComputedColorChannels(color);
 
   if (color.startsWith("oklab(") && channels.length >= 3) {
     const [lightness, a, b] = channels;
-    const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-    const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-    const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
-    const red = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-    const green = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-    const blue = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    return oklabRelativeLuminance(lightness ?? Number.NaN, a ?? Number.NaN, b ?? Number.NaN);
+  }
 
-    return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  if (color.startsWith("oklch(") && channels.length >= 3) {
+    const [lightness, chroma, hue] = channels;
+    const hueRadians = ((hue ?? Number.NaN) * Math.PI) / 180;
+    return oklabRelativeLuminance(
+      lightness ?? Number.NaN,
+      (chroma ?? Number.NaN) * Math.cos(hueRadians),
+      (chroma ?? Number.NaN) * Math.sin(hueRadians),
+    );
   }
 
   if (color.startsWith("rgb(") && channels.length >= 3) {
@@ -4742,10 +4768,22 @@ async function assertImageEditEndpointRecentRow(canvasElement: HTMLElement) {
 
   const styles = getComputedStyle(imageEditBadge);
   const ratio = contrastRatio(styles.color, styles.backgroundColor);
+  const colorChannels = parseComputedColorChannels(styles.color);
   expect(
     ratio,
     `expected ${styles.color} on ${styles.backgroundColor} to meet the 4.5:1 contrast threshold`,
   ).toBeGreaterThanOrEqual(4.5);
+  const lightness = colorChannels[0] ?? Number.NaN;
+  expect(lightness, `expected ${styles.color} to avoid black or white ink`).toBeGreaterThanOrEqual(
+    0.4,
+  );
+  expect(lightness, `expected ${styles.color} to avoid black or white ink`).toBeLessThanOrEqual(
+    0.8,
+  );
+  expect(
+    imageEditInkChroma(styles.color),
+    `expected ${styles.color} to retain amber chroma`,
+  ).toBeGreaterThanOrEqual(0.1);
   expect(styles.borderColor).not.toBe(styles.backgroundColor);
 }
 

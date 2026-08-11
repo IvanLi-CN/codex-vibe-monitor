@@ -19,6 +19,10 @@ const lowOpacityFilledContentPatterns = [
 
 const tintedEndpointBadgeRule =
   /\[data-theme="vibe-dark"\]\s+\.invocation-endpoint-badge\[data-endpoint-kind="(?<kind>[^"]+)"\]\s*\{(?<declarations>[\s\S]*?)^\s*\}/gm;
+const imageEditEndpointBadgeRule =
+  /(?:\[data-theme="vibe-dark"\]\s+)?\.invocation-endpoint-badge\[data-endpoint-kind="image_edit"\]\s*\{(?<declarations>[\s\S]*?)^\s*\}/gm;
+const imageEditInkToken =
+  /--endpoint-ink-image-edit:\s*oklch\((?<lightness>\d+(?:\.\d+)?)%\s+(?<chroma>\d+(?:\.\d+)?)\s+(?<hue>\d+(?:\.\d+)?)\)/g;
 
 function walkSourceFiles(root: string): string[] {
   return readdirSync(root).flatMap((entry) => {
@@ -68,5 +72,31 @@ describe("semantic tone source contract", () => {
     });
 
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps image edit endpoint ink amber and away from neutral black or white", () => {
+    const css = readFileSync(join(sourceRoot, "index.css"), "utf8");
+    const declarations = Array.from(css.matchAll(imageEditEndpointBadgeRule)).map(
+      (match) => match.groups?.declarations ?? "",
+    );
+    const tokens = Array.from(css.matchAll(imageEditInkToken)).map((match) => ({
+      lightness: Number.parseFloat(match.groups?.lightness ?? "NaN"),
+      chroma: Number.parseFloat(match.groups?.chroma ?? "NaN"),
+      hue: Number.parseFloat(match.groups?.hue ?? "NaN"),
+    }));
+
+    expect(declarations).toHaveLength(2);
+    for (const declaration of declarations) {
+      expect(declaration).toMatch(/color:\s*var\(--endpoint-ink-image-edit\)/);
+      expect(declaration).not.toMatch(/--(?:tone-ink-accent|color-(?:base|neutral)-content)/);
+    }
+    expect(tokens).toHaveLength(2);
+    for (const token of tokens) {
+      expect(token.lightness).toBeGreaterThanOrEqual(40);
+      expect(token.lightness).toBeLessThanOrEqual(80);
+      expect(token.chroma).toBeGreaterThanOrEqual(0.1);
+      expect(token.hue).toBeGreaterThanOrEqual(55);
+      expect(token.hue).toBeLessThanOrEqual(95);
+    }
   });
 });

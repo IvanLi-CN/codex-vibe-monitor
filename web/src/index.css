@@ -46,6 +46,7 @@ body,
     oklch(var(--color-base-content)) 62%,
     oklch(var(--color-accent)) 38%
   );
+  --endpoint-ink-image-edit: oklch(46% 0.145 68);
   --tone-ink-info: color-mix(
     in oklab,
     oklch(var(--color-base-content)) 38%,
@@ -205,6 +206,7 @@ body,
     oklch(var(--color-base-content)) 62%,
     oklch(var(--color-accent)) 38%
   );
+  --endpoint-ink-image-edit: oklch(74% 0.149 84);
   --tone-ink-info: color-mix(
     in oklab,
     oklch(var(--color-base-content)) 56%,
@@ -1289,11 +1291,7 @@ body {
       oklch(var(--color-base-300)) 62%,
       oklch(var(--color-accent)) 38%
     );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 44%,
-      oklch(var(--color-accent-content)) 56%
-    );
+    color: var(--endpoint-ink-image-edit);
   }
 
   .invocation-endpoint-badge[data-endpoint-kind="image"] {
@@ -1428,7 +1426,7 @@ body {
       oklch(var(--color-base-300)) 52%,
       oklch(var(--color-accent)) 48%
     );
-    color: var(--tone-ink-accent);
+    color: var(--endpoint-ink-image-edit);
   }
 
   [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image"] {
