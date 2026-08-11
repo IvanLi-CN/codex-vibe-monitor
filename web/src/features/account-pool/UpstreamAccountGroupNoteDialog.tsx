@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -323,9 +324,9 @@ export function UpstreamAccountGroupNoteDialog({
           <DialogHeader className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <DialogTitle>{title}</DialogTitle>
-              <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2.5 py-1 text-xs font-semibold text-base-content/70">
+              <Chip size="default" tone="secondary" className="px-2.5 py-1 text-xs font-semibold">
                 {existing ? existingBadgeLabel : draftBadgeLabel}
-              </span>
+              </Chip>
             </div>
             <DialogDescription>
               {existing ? existingDescription : draftDescription}

@@ -2,16 +2,16 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { I18nProvider } from "../../i18n";
-import { InvocationPhaseBadge, InvocationPhaseSegments } from "./InvocationPhaseBadge";
+import { InvocationPhaseChip, InvocationPhaseSegments } from "./InvocationPhaseChip";
 
 function renderMarkup(element: ReactNode) {
   return renderToStaticMarkup(<I18nProvider>{element}</I18nProvider>);
 }
 
-describe("InvocationPhaseBadge", () => {
+describe("InvocationPhaseChip", () => {
   it("renders requesting badges with dynamic pulse motion and supports icon-only compact mode", () => {
     const html = renderMarkup(
-      <InvocationPhaseBadge
+      <InvocationPhaseChip
         phase="requesting"
         appearance="inline"
         motion="dynamic"
@@ -29,7 +29,7 @@ describe("InvocationPhaseBadge", () => {
   });
 
   it("renders responding badges with dynamic spin motion when labels stay visible", () => {
-    const html = renderMarkup(<InvocationPhaseBadge phase="responding" motion="dynamic" />);
+    const html = renderMarkup(<InvocationPhaseChip phase="responding" motion="dynamic" />);
 
     expect(html).toContain('data-phase="responding"');
     expect(html).toContain('data-phase-motion="dynamic"');

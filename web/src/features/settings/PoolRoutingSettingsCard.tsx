@@ -1,5 +1,4 @@
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -8,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
@@ -122,14 +122,14 @@ export function PoolRoutingSettingsCard({
     value,
     label: value.startsWith("gpt-image") ? `Image · ${value}` : value,
   }));
-  const statusBadgeText = !writesEnabled
+  const statusChipText = !writesEnabled
     ? t("settings.routing.readOnly")
     : busy
       ? t("settings.saving")
       : canSave
         ? t("settings.routing.unsaved")
         : t("settings.routing.saved");
-  const statusBadgeVariant = !writesEnabled ? "secondary" : canSave ? "warning" : "success";
+  const statusChipTone = !writesEnabled ? "secondary" : canSave ? "warning" : "success";
 
   return (
     <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
@@ -139,9 +139,9 @@ export function PoolRoutingSettingsCard({
             <CardTitle>{t("settings.routing.title")}</CardTitle>
             <CardDescription>{t("settings.routing.description")}</CardDescription>
           </div>
-          <Badge variant={statusBadgeVariant} className="shrink-0">
-            {statusBadgeText}
-          </Badge>
+          <Chip tone={statusChipTone} className="shrink-0">
+            {statusChipText}
+          </Chip>
         </div>
       </CardHeader>
 

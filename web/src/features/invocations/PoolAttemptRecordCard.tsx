@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import type { TranslationKey } from "../../i18n";
 import type {
   ApiPoolUpstreamRequestAttempt,
@@ -89,7 +89,7 @@ function resolvePoolAttemptPhase(attempt: ApiPoolUpstreamRequestAttempt) {
 }
 
 function poolAttemptPhaseMeta(phase: string | null | undefined): {
-  variant: "default" | "secondary" | "warning" | "info";
+  variant: "primary" | "secondary" | "warning" | "info";
   key: TranslationKey;
 } {
   switch (phase?.trim().toLowerCase()) {
@@ -100,7 +100,7 @@ function poolAttemptPhaseMeta(phase: string | null | undefined): {
       };
     case "sending_request":
       return {
-        variant: "default",
+        variant: "primary",
         key: "table.poolAttempts.phase.sendingRequest",
       };
     case "waiting_first_byte":
@@ -216,11 +216,11 @@ export function PoolAttemptRecordCard({
       data-attempt-id={attempt.attemptId}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+        <Chip tone={statusMeta.variant}>{t(statusMeta.key)}</Chip>
         {!isPoolAttemptTerminal(attempt) ? (
-          <Badge variant={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
+          <Chip tone={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
             {t(phaseMeta.key)}
-          </Badge>
+          </Chip>
         ) : null}
         <span className="font-mono text-xs text-base-content/70">#{attempt.attemptIndex}</span>
         <span className="font-mono text-xs text-info">{attempt.attemptId}</span>

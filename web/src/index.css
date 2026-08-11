@@ -66,6 +66,60 @@ body,
     oklch(var(--color-base-content)) 40%,
     oklch(var(--color-error)) 60%
   );
+  --chip-neutral-surface: oklch(96% 0.012 258);
+  --chip-neutral-border: oklch(76% 0.025 258);
+  --chip-neutral-ink: oklch(38% 0.025 258);
+  --chip-secondary-surface: oklch(95% 0.02 195);
+  --chip-secondary-border: oklch(70% 0.08 195);
+  --chip-secondary-ink: oklch(37% 0.08 195);
+  --chip-primary-surface: oklch(95% 0.03 232);
+  --chip-primary-border: oklch(70% 0.12 232);
+  --chip-primary-ink: oklch(36% 0.12 232);
+  --chip-accent-surface: oklch(95% 0.035 78);
+  --chip-accent-border: oklch(70% 0.12 78);
+  --chip-accent-ink: oklch(40% 0.13 78);
+  --chip-info-surface: oklch(95% 0.03 220);
+  --chip-info-border: oklch(70% 0.1 220);
+  --chip-info-ink: oklch(36% 0.1 220);
+  --chip-success-surface: oklch(95% 0.035 154);
+  --chip-success-border: oklch(68% 0.12 154);
+  --chip-success-ink: oklch(37% 0.12 154);
+  --chip-warning-surface: oklch(95% 0.04 75);
+  --chip-warning-border: oklch(68% 0.13 75);
+  --chip-warning-ink: oklch(39% 0.13 75);
+  --chip-error-surface: oklch(95% 0.035 25);
+  --chip-error-border: oklch(68% 0.12 25);
+  --chip-error-ink: oklch(38% 0.13 25);
+  --chip-sky-surface: oklch(96% 0.03 220);
+  --chip-sky-border: oklch(70% 0.11 220);
+  --chip-sky-ink: oklch(36% 0.11 220);
+  --chip-cyan-surface: oklch(96% 0.035 195);
+  --chip-cyan-border: oklch(70% 0.12 195);
+  --chip-cyan-ink: oklch(36% 0.11 195);
+  --chip-blue-surface: oklch(96% 0.03 250);
+  --chip-blue-border: oklch(70% 0.12 250);
+  --chip-blue-ink: oklch(35% 0.12 250);
+  --chip-indigo-surface: oklch(96% 0.035 275);
+  --chip-indigo-border: oklch(70% 0.12 275);
+  --chip-indigo-ink: oklch(36% 0.11 275);
+  --chip-violet-surface: oklch(96% 0.035 300);
+  --chip-violet-border: oklch(70% 0.12 300);
+  --chip-violet-ink: oklch(37% 0.11 300);
+  --chip-fuchsia-surface: oklch(96% 0.04 330);
+  --chip-fuchsia-border: oklch(70% 0.12 330);
+  --chip-fuchsia-ink: oklch(38% 0.12 330);
+  --chip-teal-surface: oklch(96% 0.035 175);
+  --chip-teal-border: oklch(68% 0.12 175);
+  --chip-teal-ink: oklch(36% 0.11 175);
+  --chip-emerald-surface: oklch(96% 0.035 155);
+  --chip-emerald-border: oklch(68% 0.12 155);
+  --chip-emerald-ink: oklch(36% 0.11 155);
+  --chip-amber-surface: oklch(96% 0.04 80);
+  --chip-amber-border: oklch(68% 0.13 80);
+  --chip-amber-ink: oklch(38% 0.13 80);
+  --chip-orange-surface: oklch(96% 0.04 50);
+  --chip-orange-border: oklch(68% 0.13 50);
+  --chip-orange-ink: oklch(38% 0.13 50);
   --radius-selector: 1.9rem;
   --radius-field: 0.75rem;
   --radius-box: 1rem;
@@ -225,6 +279,60 @@ body,
     oklch(var(--color-base-content)) 58%,
     oklch(var(--color-error)) 42%
   );
+  --chip-neutral-surface: oklch(31% 0.02 258);
+  --chip-neutral-border: oklch(52% 0.035 258);
+  --chip-neutral-ink: oklch(84% 0.018 258);
+  --chip-secondary-surface: oklch(31% 0.025 195);
+  --chip-secondary-border: oklch(54% 0.08 195);
+  --chip-secondary-ink: oklch(82% 0.08 195);
+  --chip-primary-surface: oklch(31% 0.03 232);
+  --chip-primary-border: oklch(54% 0.1 232);
+  --chip-primary-ink: oklch(82% 0.1 232);
+  --chip-accent-surface: oklch(32% 0.035 78);
+  --chip-accent-border: oklch(55% 0.1 78);
+  --chip-accent-ink: oklch(84% 0.11 78);
+  --chip-info-surface: oklch(31% 0.03 220);
+  --chip-info-border: oklch(54% 0.09 220);
+  --chip-info-ink: oklch(82% 0.09 220);
+  --chip-success-surface: oklch(31% 0.035 154);
+  --chip-success-border: oklch(53% 0.1 154);
+  --chip-success-ink: oklch(82% 0.11 154);
+  --chip-warning-surface: oklch(32% 0.04 75);
+  --chip-warning-border: oklch(55% 0.11 75);
+  --chip-warning-ink: oklch(84% 0.12 75);
+  --chip-error-surface: oklch(31% 0.035 25);
+  --chip-error-border: oklch(54% 0.1 25);
+  --chip-error-ink: oklch(82% 0.11 25);
+  --chip-sky-surface: oklch(31% 0.03 220);
+  --chip-sky-border: oklch(54% 0.1 220);
+  --chip-sky-ink: oklch(82% 0.11 220);
+  --chip-cyan-surface: oklch(31% 0.035 195);
+  --chip-cyan-border: oklch(54% 0.1 195);
+  --chip-cyan-ink: oklch(82% 0.11 195);
+  --chip-blue-surface: oklch(31% 0.03 250);
+  --chip-blue-border: oklch(54% 0.1 250);
+  --chip-blue-ink: oklch(82% 0.11 250);
+  --chip-indigo-surface: oklch(31% 0.035 275);
+  --chip-indigo-border: oklch(54% 0.1 275);
+  --chip-indigo-ink: oklch(82% 0.11 275);
+  --chip-violet-surface: oklch(31% 0.035 300);
+  --chip-violet-border: oklch(54% 0.1 300);
+  --chip-violet-ink: oklch(82% 0.11 300);
+  --chip-fuchsia-surface: oklch(31% 0.04 330);
+  --chip-fuchsia-border: oklch(54% 0.1 330);
+  --chip-fuchsia-ink: oklch(82% 0.12 330);
+  --chip-teal-surface: oklch(31% 0.035 175);
+  --chip-teal-border: oklch(53% 0.1 175);
+  --chip-teal-ink: oklch(82% 0.11 175);
+  --chip-emerald-surface: oklch(31% 0.035 155);
+  --chip-emerald-border: oklch(53% 0.1 155);
+  --chip-emerald-ink: oklch(82% 0.11 155);
+  --chip-amber-surface: oklch(32% 0.04 80);
+  --chip-amber-border: oklch(55% 0.11 80);
+  --chip-amber-ink: oklch(84% 0.12 80);
+  --chip-orange-surface: oklch(32% 0.04 50);
+  --chip-orange-border: oklch(55% 0.11 50);
+  --chip-orange-ink: oklch(84% 0.12 50);
   --radius-selector: 1.9rem;
   --radius-field: 0.75rem;
   --radius-box: 1rem;
@@ -535,6 +643,120 @@ body {
 }
 
 @layer components {
+  .chip {
+    color: var(--chip-ink);
+    background-color: var(--chip-surface);
+    border-color: var(--chip-border);
+  }
+
+  .chip-tone-neutral {
+    --chip-surface: var(--chip-neutral-surface);
+    --chip-border: var(--chip-neutral-border);
+    --chip-ink: var(--chip-neutral-ink);
+  }
+
+  .chip-tone-primary {
+    --chip-surface: var(--chip-primary-surface);
+    --chip-border: var(--chip-primary-border);
+    --chip-ink: var(--chip-primary-ink);
+  }
+
+  .chip-tone-secondary {
+    --chip-surface: var(--chip-secondary-surface);
+    --chip-border: var(--chip-secondary-border);
+    --chip-ink: var(--chip-secondary-ink);
+  }
+
+  .chip-tone-accent {
+    --chip-surface: var(--chip-accent-surface);
+    --chip-border: var(--chip-accent-border);
+    --chip-ink: var(--chip-accent-ink);
+  }
+
+  .chip-tone-info {
+    --chip-surface: var(--chip-info-surface);
+    --chip-border: var(--chip-info-border);
+    --chip-ink: var(--chip-info-ink);
+  }
+
+  .chip-tone-success {
+    --chip-surface: var(--chip-success-surface);
+    --chip-border: var(--chip-success-border);
+    --chip-ink: var(--chip-success-ink);
+  }
+
+  .chip-tone-warning {
+    --chip-surface: var(--chip-warning-surface);
+    --chip-border: var(--chip-warning-border);
+    --chip-ink: var(--chip-warning-ink);
+  }
+
+  .chip-tone-error {
+    --chip-surface: var(--chip-error-surface);
+    --chip-border: var(--chip-error-border);
+    --chip-ink: var(--chip-error-ink);
+  }
+
+  .chip-tone-sky {
+    --chip-surface: var(--chip-sky-surface);
+    --chip-border: var(--chip-sky-border);
+    --chip-ink: var(--chip-sky-ink);
+  }
+
+  .chip-tone-cyan {
+    --chip-surface: var(--chip-cyan-surface);
+    --chip-border: var(--chip-cyan-border);
+    --chip-ink: var(--chip-cyan-ink);
+  }
+
+  .chip-tone-blue {
+    --chip-surface: var(--chip-blue-surface);
+    --chip-border: var(--chip-blue-border);
+    --chip-ink: var(--chip-blue-ink);
+  }
+
+  .chip-tone-indigo {
+    --chip-surface: var(--chip-indigo-surface);
+    --chip-border: var(--chip-indigo-border);
+    --chip-ink: var(--chip-indigo-ink);
+  }
+
+  .chip-tone-violet {
+    --chip-surface: var(--chip-violet-surface);
+    --chip-border: var(--chip-violet-border);
+    --chip-ink: var(--chip-violet-ink);
+  }
+
+  .chip-tone-fuchsia {
+    --chip-surface: var(--chip-fuchsia-surface);
+    --chip-border: var(--chip-fuchsia-border);
+    --chip-ink: var(--chip-fuchsia-ink);
+  }
+
+  .chip-tone-teal {
+    --chip-surface: var(--chip-teal-surface);
+    --chip-border: var(--chip-teal-border);
+    --chip-ink: var(--chip-teal-ink);
+  }
+
+  .chip-tone-emerald {
+    --chip-surface: var(--chip-emerald-surface);
+    --chip-border: var(--chip-emerald-border);
+    --chip-ink: var(--chip-emerald-ink);
+  }
+
+  .chip-tone-amber {
+    --chip-surface: var(--chip-amber-surface);
+    --chip-border: var(--chip-amber-border);
+    --chip-ink: var(--chip-amber-ink);
+  }
+
+  .chip-tone-orange {
+    --chip-surface: var(--chip-orange-surface);
+    --chip-border: var(--chip-orange-border);
+    --chip-ink: var(--chip-orange-ink);
+  }
+
   .app-shell-boundary {
     width: 100%;
     max-width: var(--app-shell-max-width);
@@ -556,104 +778,6 @@ body {
 
   .app-link {
     @apply text-primary underline decoration-primary/60 underline-offset-4 transition-colors hover:text-primary/85;
-  }
-
-  .upstream-plan-badge {
-    font-weight: 600;
-    letter-spacing: 0.01em;
-  }
-
-  :root .upstream-plan-badge[data-plan="local"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="local"] {
-    border-color: rgba(96, 165, 250, 0.34);
-    background-color: rgba(239, 246, 255, 0.92);
-    color: #1d4ed8;
-    box-shadow: inset 0 0 0 1px rgba(191, 219, 254, 0.52);
-  }
-
-  :root .upstream-plan-badge[data-plan="team"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="team"] {
-    border-color: rgba(45, 212, 191, 0.34);
-    background-color: rgba(240, 253, 250, 0.92);
-    color: #0f766e;
-    box-shadow: inset 0 0 0 1px rgba(153, 246, 228, 0.45);
-  }
-
-  :root .upstream-plan-badge[data-plan="pro"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="pro"] {
-    border-color: rgba(129, 140, 248, 0.32);
-    background-color: rgba(238, 242, 255, 0.92);
-    color: #4338ca;
-    box-shadow: inset 0 0 0 1px rgba(199, 210, 254, 0.48);
-  }
-
-  :root .upstream-plan-badge[data-plan="enterprise"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="enterprise"] {
-    border-color: rgba(234, 179, 8, 0.34);
-    background-color: rgba(254, 252, 232, 0.94);
-    color: #a16207;
-    box-shadow: inset 0 0 0 1px rgba(253, 224, 71, 0.38);
-  }
-
-  :root .upstream-plan-badge[data-plan="free"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="free"] {
-    border-color: rgba(249, 115, 22, 0.3);
-    background-color: rgba(255, 247, 237, 0.94);
-    color: #c2410c;
-    box-shadow: inset 0 0 0 1px rgba(253, 186, 116, 0.36);
-  }
-
-  :root .upstream-plan-badge[data-plan="k12"],
-  [data-theme="vibe-light"] .upstream-plan-badge[data-plan="k12"] {
-    border-color: rgba(16, 185, 129, 0.3);
-    background-color: rgba(236, 253, 245, 0.94);
-    color: #047857;
-    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.36);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="local"] {
-    border-color: rgba(96, 165, 250, 0.38);
-    background-color: rgba(20, 34, 56, 0.8);
-    color: #bfdbfe;
-    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="team"] {
-    border-color: rgba(45, 212, 191, 0.36);
-    background-color: rgba(12, 43, 42, 0.78);
-    color: #99f6e4;
-    box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.22);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="pro"] {
-    border-color: rgba(129, 140, 248, 0.36);
-    background-color: rgba(34, 30, 68, 0.8);
-    color: #c7d2fe;
-    box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.22);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="enterprise"] {
-    border-color: rgba(250, 204, 21, 0.62);
-    background-color: rgba(92, 63, 8, 0.86);
-    color: #fef3c7;
-    font-weight: 700;
-    box-shadow:
-      inset 0 0 0 1px rgba(253, 230, 138, 0.24),
-      0 0 0 1px rgba(250, 204, 21, 0.08);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="free"] {
-    border-color: rgba(251, 146, 60, 0.34);
-    background-color: rgba(67, 34, 10, 0.8);
-    color: #fdba74;
-    box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.18);
-  }
-
-  [data-theme="vibe-dark"] .upstream-plan-badge[data-plan="k12"] {
-    border-color: rgba(16, 185, 129, 0.34);
-    background-color: rgba(14, 52, 43, 0.8);
-    color: #6ee7b7;
-    box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.18);
   }
 
   .dialog-overlay {
@@ -1199,320 +1323,6 @@ body {
     .policy-inline-radio-item {
       transition: none;
     }
-  }
-
-  .invocation-endpoint-badge {
-    background-image: none;
-    box-shadow: none;
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="responses"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 88%,
-      oklch(var(--color-primary)) 12%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 66%,
-      oklch(var(--color-primary)) 34%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 42%,
-      oklch(var(--color-primary)) 58%
-    );
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="chat"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 88%,
-      oklch(var(--color-secondary)) 12%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 64%,
-      oklch(var(--color-secondary)) 36%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 46%,
-      oklch(var(--color-secondary)) 54%
-    );
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="compact"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 89%,
-      oklch(var(--color-warning)) 11%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 62%,
-      oklch(var(--color-warning)) 38%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 50%,
-      oklch(var(--color-warning)) 50%
-    );
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="image_gen"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 88%,
-      oklch(var(--color-success)) 12%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 62%,
-      oklch(var(--color-success)) 38%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 44%,
-      oklch(var(--color-success)) 56%
-    );
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="image_edit"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 88%,
-      oklch(var(--color-accent)) 12%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 62%,
-      oklch(var(--color-accent)) 38%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 44%,
-      oklch(var(--color-accent-content)) 56%
-    );
-  }
-
-  .invocation-endpoint-badge[data-endpoint-kind="image"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-100)) 89%,
-      oklch(var(--color-info)) 11%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 64%,
-      oklch(var(--color-info)) 36%
-    );
-    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-info)) 54%);
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-sky {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #0ea5e9 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #e0f2fe 52%);
-    color: #0c4a6e;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-cyan {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #06b6d4 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #cffafe 52%);
-    color: #164e63;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-blue {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #3b82f6 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #dbeafe 52%);
-    color: #1e40af;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-violet {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #8b5cf6 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #ede9fe 52%);
-    color: #5b21b6;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-indigo {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #6366f1 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #e0e7ff 52%);
-    color: #3730a3;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-fuchsia {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #d946ef 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #fae8ff 52%);
-    color: #86198f;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-teal {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #14b8a6 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #ccfbf1 52%);
-    color: #115e59;
-  }
-
-  .dashboard-upstream-account-identity-chip--tone-emerald {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #22c55e 82%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #dcfce7 52%);
-    color: #166534;
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge {
-    background-image: none;
-    box-shadow: none;
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="responses"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 82%,
-      oklch(var(--color-primary)) 18%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 54%,
-      oklch(var(--color-primary)) 46%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 38%,
-      oklch(var(--color-primary)) 62%
-    );
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="chat"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 82%,
-      oklch(var(--color-secondary)) 18%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 52%,
-      oklch(var(--color-secondary)) 48%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 42%,
-      oklch(var(--color-secondary)) 58%
-    );
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image_gen"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 82%,
-      oklch(var(--color-success)) 18%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 54%,
-      oklch(var(--color-success)) 46%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 40%,
-      oklch(var(--color-success)) 60%
-    );
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image_edit"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 82%,
-      oklch(var(--color-accent)) 18%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 52%,
-      oklch(var(--color-accent)) 48%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 40%,
-      oklch(var(--color-accent-content)) 60%
-    );
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 82%,
-      oklch(var(--color-info)) 18%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 52%,
-      oklch(var(--color-info)) 48%
-    );
-    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-info)) 58%);
-  }
-
-  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="compact"] {
-    background-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-200)) 83%,
-      oklch(var(--color-warning)) 17%
-    );
-    border-color: color-mix(
-      in oklab,
-      oklch(var(--color-base-300)) 50%,
-      oklch(var(--color-warning)) 50%
-    );
-    color: color-mix(
-      in oklab,
-      oklch(var(--color-base-content)) 46%,
-      oklch(var(--color-warning)) 54%
-    );
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-sky {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #38bdf8 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #082f49 32%);
-    color: #7dd3fc;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-cyan {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #22d3ee 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #164e63 32%);
-    color: #67e8f9;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-blue {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #60a5fa 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #172554 32%);
-    color: #93c5fd;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-violet {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #a78bfa 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #2e1065 32%);
-    color: #c4b5fd;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-indigo {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #818cf8 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #1e1b4b 32%);
-    color: #a5b4fc;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-fuchsia {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #e879f9 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #4a044e 32%);
-    color: #f0abfc;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-teal {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #2dd4bf 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #134e4a 32%);
-    color: #5eead4;
-  }
-
-  [data-theme="vibe-dark"] .dashboard-upstream-account-identity-chip--tone-emerald {
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 36%, #4ade80 64%);
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 68%, #14532d 32%);
-    color: #86efac;
   }
 
   .field {

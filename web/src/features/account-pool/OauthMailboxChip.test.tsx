@@ -172,7 +172,7 @@ describe("OauthMailboxChip", () => {
       />,
     );
 
-    expect(getCopyButton().className).toContain("border-warning/35");
+    expect(getCopyButton().className).toContain("chip-tone-warning");
     expect(getTooltip()?.textContent).toContain(
       "Auto copy failed. Please copy the mailbox below manually.",
     );

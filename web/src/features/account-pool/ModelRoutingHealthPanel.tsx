@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -9,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
 import type { ModelRoutingState } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
@@ -107,9 +107,9 @@ export function ModelRoutingHealthPanel({
                 </div>
                 <dl className="contents">
                   <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.state")}>
-                    <Badge variant={isAvailable ? "success" : isCooling ? "warning" : "secondary"}>
+                    <Chip tone={isAvailable ? "success" : isCooling ? "warning" : "secondary"}>
                       {t(`accountPool.upstreamAccounts.modelRouting.states.${route.state}`)}
-                    </Badge>
+                    </Chip>
                   </DetailValue>
                   <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.priority")}>
                     {t(`accountPool.upstreamAccounts.modelRouting.priorities.${route.priority}`)}

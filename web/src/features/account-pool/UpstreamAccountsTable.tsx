@@ -7,20 +7,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import type { AccountTagSummary, UpstreamAccountSummary } from "../../lib/api";
 import { formatTokensShort } from "../../lib/numberFormatters";
-import { resolveActiveRoutingPolicyBadges } from "../../lib/tagRoutingRule";
-import {
-  shouldShowUpstreamPlanBadge,
-  upstreamPlanBadgeRecipe,
-} from "../../lib/upstreamAccountBadges";
+import { resolveActiveRoutingPolicyChips } from "../../lib/tagRoutingRule";
+import { shouldShowUpstreamPlanChip, upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
-import { MotherAccountBadge } from "./MotherAccountToggle";
+import { MotherAccountChip } from "./MotherAccountToggle";
 
 type ActionDetailLabelResolver =
   | ((item: UpstreamAccountSummary) => string | null)
@@ -197,33 +194,33 @@ export function kindLabel(
   return item.kind === "oauth_codex" ? labels.oauth : labels.apiKey;
 }
 
-export function renderNoRefreshTokenBadge(
+export function renderNoRefreshTokenChip(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
 ) {
   if (item.kind !== "oauth_codex" || item.hasRefreshToken !== false) return null;
   const label = labels.noRefreshToken ?? "无 RT";
-  return compactBadge(label, "warning", { title: label });
+  return compactChip(label, "warning", { title: label });
 }
 
-export function renderActiveRoutingPolicyBadges(
+export function renderActiveRoutingPolicyChips(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
 ) {
-  return resolveActiveRoutingPolicyBadges(item.effectiveRoutingRule, labels).map((badge) => (
-    <Badge
+  return resolveActiveRoutingPolicyChips(item.effectiveRoutingRule, labels).map((badge) => (
+    <Chip
       key={`policy:${badge.key}`}
-      variant={badge.variant}
+      tone={badge.variant}
       className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
       title={badge.title ?? badge.label}
     >
       {badge.label}
-    </Badge>
+    </Chip>
   ));
 }
 
-function shouldShowPlanBadge(planType?: string | null) {
-  return shouldShowUpstreamPlanBadge(planType);
+function shouldShowPlanChip(planType?: string | null) {
+  return shouldShowUpstreamPlanChip(planType);
 }
 
 export function accountEnableStatus(item: UpstreamAccountSummary) {
@@ -255,18 +252,18 @@ export function accountSyncState(item: UpstreamAccountSummary) {
   return (item.displayStatus ?? item.status) === "syncing" ? "syncing" : "idle";
 }
 
-export function enableBadgeVariant(status: string): "success" | "secondary" {
+export function enableChipTone(status: string): "success" | "secondary" {
   return status === "enabled" ? "success" : "secondary";
 }
 
-export function workBadgeVariant(status: string): "info" | "warning" | "secondary" {
+export function workChipTone(status: string): "info" | "warning" | "secondary" {
   if (status === "working") return "info";
   if (status === "degraded") return "warning";
   if (status === "rate_limited") return "warning";
   return "secondary";
 }
 
-export function resolveAvailabilityBadge(
+export function resolveAvailabilityChip(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
 ) {
@@ -282,7 +279,7 @@ export function resolveAvailabilityBadge(
   ) {
     return {
       label: labels.workStatus("degraded"),
-      variant: workBadgeVariant("degraded"),
+      variant: workChipTone("degraded"),
     };
   }
 
@@ -294,7 +291,7 @@ export function resolveAvailabilityBadge(
   ) {
     return {
       label: labels.workStatus("rate_limited"),
-      variant: workBadgeVariant("rate_limited"),
+      variant: workChipTone("rate_limited"),
     };
   }
 
@@ -309,41 +306,41 @@ export function resolveAvailabilityBadge(
         activeConversationCount > 0
           ? labels.workStatusCount(activeConversationCount)
           : labels.workStatus("working"),
-      variant: workBadgeVariant("working"),
+      variant: workChipTone("working"),
     };
   }
 
   if ((item.workStatus ?? "idle") === "idle") {
     return {
       label: labels.workStatus("idle"),
-      variant: workBadgeVariant("idle"),
+      variant: workChipTone("idle"),
     };
   }
 
   return null;
 }
 
-type RosterStatusBadgeVariant = "success" | "secondary" | "warning" | "error" | "info";
+type RosterStatusChipTone = "success" | "secondary" | "warning" | "error" | "info";
 
-export type RosterStatusBadge = {
+export type RosterStatusChip = {
   key: "enable" | "sync" | "health" | "work";
   label: string;
-  variant: RosterStatusBadgeVariant;
+  variant: RosterStatusChipTone;
   title?: string;
 };
 
-type RosterStatusBadgeContext = {
+type RosterStatusChipContext = {
   enableStatus: string;
   syncState: string;
   healthStatus: string;
-  availabilityBadge: ReturnType<typeof resolveAvailabilityBadge>;
-  healthBadgeTitle?: string;
+  availabilityChip: ReturnType<typeof resolveAvailabilityChip>;
+  healthChipTitle?: string;
 };
 
-function resolveRosterStatusBadgeContext(
+function resolveRosterStatusChipContext(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
-): RosterStatusBadgeContext {
+): RosterStatusChipContext {
   const enableStatus = accountEnableStatus(item);
   const syncState = accountSyncState(item);
   const healthStatus = accountHealthStatus(item);
@@ -353,140 +350,140 @@ function resolveRosterStatusBadgeContext(
     enableStatus,
     syncState,
     healthStatus,
-    availabilityBadge: resolveAvailabilityBadge(item, labels),
-    healthBadgeTitle:
+    availabilityChip: resolveAvailabilityChip(item, labels),
+    healthChipTitle:
       healthStatus !== "normal"
         ? (item.lastActionReasonMessage ?? item.lastError ?? latestActionTitle ?? undefined)
         : undefined,
   };
 }
 
-function createEnableStatusBadge(
+function createEnableStatusChip(
   status: string,
   labels: UpstreamAccountsTableProps["labels"],
   includeEnabled: boolean,
-): RosterStatusBadge | null {
+): RosterStatusChip | null {
   if (status === "enabled" && !includeEnabled) return null;
   return {
     key: "enable",
     label: labels.enableStatus(status),
-    variant: enableBadgeVariant(status),
+    variant: enableChipTone(status),
   };
 }
 
-function createSyncStatusBadge(
+function createSyncStatusChip(
   status: string,
   labels: UpstreamAccountsTableProps["labels"],
   includeIdle: boolean,
-): RosterStatusBadge | null {
+): RosterStatusChip | null {
   if (status === "idle" && !includeIdle) return null;
   return {
     key: "sync",
     label: labels.syncState(status),
-    variant: syncBadgeVariant(status),
+    variant: syncChipTone(status),
   };
 }
 
-function createHealthStatusBadge(
+function createHealthStatusChip(
   status: string,
   title: string | undefined,
   labels: UpstreamAccountsTableProps["labels"],
   includeNormal: boolean,
-): RosterStatusBadge | null {
+): RosterStatusChip | null {
   if (status === "normal" && !includeNormal) return null;
   return {
     key: "health",
     label: labels.healthStatus(status),
-    variant: healthBadgeVariant(status),
+    variant: healthChipTone(status),
     title,
   };
 }
 
-function createWorkStatusBadge(
-  availabilityBadge: ReturnType<typeof resolveAvailabilityBadge>,
+function createWorkStatusChip(
+  availabilityChip: ReturnType<typeof resolveAvailabilityChip>,
   labels: UpstreamAccountsTableProps["labels"],
   options: {
     includeIdle: boolean;
     includeUnavailable: boolean;
   },
-): RosterStatusBadge | null {
-  if (!availabilityBadge) return null;
-  if (availabilityBadge.label === labels.workStatus("idle") && !options.includeIdle) {
+): RosterStatusChip | null {
+  if (!availabilityChip) return null;
+  if (availabilityChip.label === labels.workStatus("idle") && !options.includeIdle) {
     return null;
   }
-  if (availabilityBadge.label === labels.workStatus("unavailable") && !options.includeUnavailable) {
+  if (availabilityChip.label === labels.workStatus("unavailable") && !options.includeUnavailable) {
     return null;
   }
   return {
     key: "work",
-    label: availabilityBadge.label,
-    variant: availabilityBadge.variant,
+    label: availabilityChip.label,
+    variant: availabilityChip.variant,
   };
 }
 
-export function resolveRosterSummaryStatusBadges(
+export function resolveRosterSummaryStatusChips(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
-): RosterStatusBadge[] {
-  const context = resolveRosterStatusBadgeContext(item, labels);
-  const badges: RosterStatusBadge[] = [];
+): RosterStatusChip[] {
+  const context = resolveRosterStatusChipContext(item, labels);
+  const badges: RosterStatusChip[] = [];
 
-  const enableBadge = createEnableStatusBadge(context.enableStatus, labels, true);
-  if (enableBadge) badges.push(enableBadge);
+  const enableChip = createEnableStatusChip(context.enableStatus, labels, true);
+  if (enableChip) badges.push(enableChip);
 
-  const syncBadge = createSyncStatusBadge(context.syncState, labels, false);
-  if (syncBadge) badges.push(syncBadge);
+  const syncChip = createSyncStatusChip(context.syncState, labels, false);
+  if (syncChip) badges.push(syncChip);
 
-  const healthBadge = createHealthStatusBadge(
+  const healthChip = createHealthStatusChip(
     context.healthStatus,
-    context.healthBadgeTitle,
+    context.healthChipTitle,
     labels,
     false,
   );
-  if (healthBadge) {
-    badges.push(healthBadge);
+  if (healthChip) {
+    badges.push(healthChip);
     return badges;
   }
 
-  if (syncBadge) return badges;
+  if (syncChip) return badges;
 
-  const workBadge = createWorkStatusBadge(context.availabilityBadge, labels, {
+  const workChip = createWorkStatusChip(context.availabilityChip, labels, {
     includeIdle: true,
     includeUnavailable: true,
   });
-  if (workBadge) badges.push(workBadge);
+  if (workChip) badges.push(workChip);
 
   return badges;
 }
 
-export function resolveRosterActionableStatusBadges(
+export function resolveRosterActionableStatusChips(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps["labels"],
-): RosterStatusBadge[] {
-  const context = resolveRosterStatusBadgeContext(item, labels);
+): RosterStatusChip[] {
+  const context = resolveRosterStatusChipContext(item, labels);
 
-  const disabledBadge = createEnableStatusBadge(context.enableStatus, labels, false);
-  if (disabledBadge) return [disabledBadge];
+  const disabledChip = createEnableStatusChip(context.enableStatus, labels, false);
+  if (disabledChip) return [disabledChip];
 
-  const syncBadge = createSyncStatusBadge(context.syncState, labels, false);
-  if (syncBadge) return [syncBadge];
+  const syncChip = createSyncStatusChip(context.syncState, labels, false);
+  if (syncChip) return [syncChip];
 
-  const healthBadge = createHealthStatusBadge(
+  const healthChip = createHealthStatusChip(
     context.healthStatus,
-    context.healthBadgeTitle,
+    context.healthChipTitle,
     labels,
     false,
   );
-  if (healthBadge) return [healthBadge];
+  if (healthChip) return [healthChip];
 
-  const workBadge = createWorkStatusBadge(context.availabilityBadge, labels, {
+  const workChip = createWorkStatusChip(context.availabilityChip, labels, {
     includeIdle: false,
     includeUnavailable: false,
   });
-  return workBadge ? [workBadge] : [];
+  return workChip ? [workChip] : [];
 }
 
-export function healthBadgeVariant(status: string): "warning" | "error" | "secondary" {
+export function healthChipTone(status: string): "warning" | "error" | "secondary" {
   if (status === "upstream_unavailable") return "warning";
   if (
     status === "needs_reauth" ||
@@ -499,13 +496,13 @@ export function healthBadgeVariant(status: string): "warning" | "error" | "secon
   return "secondary";
 }
 
-export function syncBadgeVariant(status: string): "warning" | "secondary" {
+export function syncChipTone(status: string): "warning" | "secondary" {
   return status === "syncing" ? "warning" : "secondary";
 }
 
-export function compactBadge(
+export function compactChip(
   content: ReactNode,
-  variant: "default" | "accent" | "secondary" | "success" | "warning" | "error" | "info",
+  variant: "primary" | "accent" | "secondary" | "success" | "warning" | "error" | "info",
   options?: {
     className?: string;
     dataPlan?: string;
@@ -513,8 +510,8 @@ export function compactBadge(
   },
 ) {
   return (
-    <Badge
-      variant={variant}
+    <Chip
+      tone={variant}
       className={cn(
         "shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4",
         options?.className,
@@ -523,7 +520,7 @@ export function compactBadge(
       title={options?.title}
     >
       {content}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -537,59 +534,49 @@ function splitVisibleAndHiddenTags(tags?: AccountTagSummary[] | null) {
   };
 }
 
-export function renderTagBadges(tags?: AccountTagSummary[] | null) {
+export function renderTagChips(tags?: AccountTagSummary[] | null) {
   const { visible } = splitVisibleAndHiddenTags(tags);
   return (
     <>
       {visible.map((tag) => {
         const isSystemUnsupportedModel = tag.systemKey?.startsWith("unsupported_model:") === true;
         return (
-          <Badge
+          <Chip
             key={tag.id}
-            variant={isSystemUnsupportedModel ? "warning" : "secondary"}
-            className={cn(
-              "min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4",
-              isSystemUnsupportedModel
-                ? "border-fuchsia-400/45 bg-fuchsia-500/15 text-fuchsia-700 dark:border-fuchsia-300/45 dark:bg-fuchsia-400/18 dark:text-fuchsia-100"
-                : "border-base-300/90 bg-base-200/90 text-base-content/92",
-            )}
+            tone={isSystemUnsupportedModel ? "warning" : "secondary"}
+            className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
             title={tag.name}
           >
             {tag.name}
-          </Badge>
+          </Chip>
         );
       })}
     </>
   );
 }
 
-export function renderAllTagBadges(tags?: AccountTagSummary[] | null) {
+export function renderAllTagChips(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? [];
   return (
     <>
       {safeTags.map((tag) => {
         const isSystemUnsupportedModel = tag.systemKey?.startsWith("unsupported_model:") === true;
         return (
-          <Badge
+          <Chip
             key={tag.id}
-            variant={isSystemUnsupportedModel ? "warning" : "secondary"}
-            className={cn(
-              "min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4",
-              isSystemUnsupportedModel
-                ? "border-fuchsia-400/45 bg-fuchsia-500/15 text-fuchsia-700 dark:border-fuchsia-300/45 dark:bg-fuchsia-400/18 dark:text-fuchsia-100"
-                : "border-base-300/90 bg-base-200/90 text-base-content/92",
-            )}
+            tone={isSystemUnsupportedModel ? "warning" : "secondary"}
+            className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
             title={tag.name}
           >
             {tag.name}
-          </Badge>
+          </Chip>
         );
       })}
     </>
   );
 }
 
-export function renderTagOverflowBadge(
+export function renderTagOverflowChip(
   labels: UpstreamAccountsTableProps["labels"],
   tags?: AccountTagSummary[] | null,
 ) {
@@ -606,7 +593,7 @@ export function renderTagOverflowBadge(
         "aria-label": labels.hiddenTagsA11y(overflowCount, hiddenNames),
       }}
     >
-      {compactBadge(`+${overflowCount}`, "secondary", { title: hiddenNames })}
+      {compactChip(`+${overflowCount}`, "secondary", { title: hiddenNames })}
     </Tooltip>
   );
 }
@@ -907,7 +894,7 @@ export function handleRowKeyDown(
   }
 }
 
-export function resolveCurrentForwardProxyBadgeLabel(
+export function resolveCurrentForwardProxyChipLabel(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableLabels,
 ) {
@@ -920,7 +907,7 @@ export function resolveCurrentForwardProxyBadgeLabel(
   return labels.forwardProxyUnconfigured ?? "Unconfigured proxy";
 }
 
-export function resolveCurrentForwardProxyBadgeVariant(item: UpstreamAccountSummary) {
+export function resolveCurrentForwardProxyChipTone(item: UpstreamAccountSummary) {
   if (item.currentForwardProxyState === "assigned") return "info" as const;
   if (item.currentForwardProxyState === "pending") return "warning" as const;
   return "secondary" as const;
@@ -1098,9 +1085,9 @@ export function UpstreamAccountsTable({
               resolveRoutingBlockCountdown(item.routingBlockUntil))
             : null;
           const latestActionTitle = buildLatestActionTitle(item, labels);
-          const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
-          const showPlanBadge = shouldShowPlanBadge(item.planType);
-          const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
+          const statusChips = resolveRosterSummaryStatusChips(item, labels);
+          const showPlanChip = shouldShowPlanChip(item.planType);
+          const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
 
           return (
             <article
@@ -1135,42 +1122,41 @@ export function UpstreamAccountsTable({
                       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
                         {item.isMother ? (
                           <div className="shrink-0">
-                            <MotherAccountBadge label={labels.mother} />
+                            <MotherAccountChip label={labels.mother} />
                           </div>
                         ) : null}
-                        {item.duplicateInfo ? compactBadge(labels.duplicate, "warning") : null}
-                        {statusBadges.map((badge) => (
-                          <Badge
+                        {item.duplicateInfo ? compactChip(labels.duplicate, "warning") : null}
+                        {statusChips.map((badge) => (
+                          <Chip
                             key={`${badge.key}:${badge.label}`}
-                            variant={badge.variant}
+                            tone={badge.variant}
                             className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
                             title={badge.title}
                           >
                             {badge.label}
-                          </Badge>
+                          </Chip>
                         ))}
-                        {renderNoRefreshTokenBadge(item, labels)}
-                        {renderActiveRoutingPolicyBadges(item, labels)}
-                        {compactBadge(kindLabel(item, labels), "secondary")}
+                        {renderNoRefreshTokenChip(item, labels)}
+                        {renderActiveRoutingPolicyChips(item, labels)}
+                        {compactChip(kindLabel(item, labels), "secondary")}
                         {item.compactSupport?.status === "unsupported" &&
                         labels.compactSupport?.(item)
-                          ? compactBadge(labels.compactSupport(item) ?? "", "warning", {
+                          ? compactChip(labels.compactSupport(item) ?? "", "warning", {
                               title: labels.compactSupportHint?.(item) ?? undefined,
                             })
                           : null}
-                        {showPlanBadge && item.planType && planBadge
-                          ? compactBadge(item.planType, planBadge.variant, {
-                              className: planBadge.className,
-                              dataPlan: planBadge.dataPlan,
+                        {showPlanChip && item.planType && planChip
+                          ? compactChip(item.planType, planChip.tone, {
+                              dataPlan: planChip.dataPlan,
                               title: item.planType,
                             })
-                          : showPlanBadge && item.planType
-                            ? compactBadge(item.planType, "accent", { title: item.planType })
+                          : showPlanChip && item.planType
+                            ? compactChip(item.planType, "accent", { title: item.planType })
                             : null}
-                        {compactBadge(
-                          resolveCurrentForwardProxyBadgeLabel(item, labels),
-                          resolveCurrentForwardProxyBadgeVariant(item),
-                          { title: resolveCurrentForwardProxyBadgeLabel(item, labels) },
+                        {compactChip(
+                          resolveCurrentForwardProxyChipLabel(item, labels),
+                          resolveCurrentForwardProxyChipTone(item),
+                          { title: resolveCurrentForwardProxyChipLabel(item, labels) },
                         )}
                       </div>
                     </div>
@@ -1184,8 +1170,8 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                   <div className="mt-3 flex min-w-0 flex-wrap items-center gap-1">
-                    {renderTagBadges(item.tags)}
-                    {renderTagOverflowBadge(labels, item.tags)}
+                    {renderTagChips(item.tags)}
+                    {renderTagOverflowChip(labels, item.tags)}
                   </div>
                   <div className="mt-4 grid gap-3">
                     <div className="rounded-xl border border-base-300/70 bg-base-100/68 px-3 py-3">
@@ -1342,15 +1328,15 @@ export function UpstreamAccountsTable({
                   resolveRoutingBlockCountdown(item.routingBlockUntil))
                 : null;
               const latestActionTitle = buildLatestActionTitle(item, labels);
-              const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
+              const statusChips = resolveRosterSummaryStatusChips(item, labels);
               const primaryWindowTitle =
                 [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(" · ") ||
                 undefined;
               const secondaryWindowTitle =
                 [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(" · ") ||
                 undefined;
-              const showPlanBadge = shouldShowPlanBadge(item.planType);
-              const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
+              const showPlanChip = shouldShowPlanChip(item.planType);
+              const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
               return (
                 // biome-ignore lint/a11y/useSemanticElements: the table row owns nested checkbox interaction, so wrapping it in a native button is not valid.
                 <tr
@@ -1389,49 +1375,48 @@ export function UpstreamAccountsTable({
                         <div className="flex min-w-0 flex-wrap items-center gap-1">
                           {item.isMother ? (
                             <div className="shrink-0">
-                              <MotherAccountBadge label={labels.mother} />
+                              <MotherAccountChip label={labels.mother} />
                             </div>
                           ) : null}
-                          {item.duplicateInfo ? compactBadge(labels.duplicate, "warning") : null}
-                          {statusBadges.map((badge) => (
-                            <Badge
+                          {item.duplicateInfo ? compactChip(labels.duplicate, "warning") : null}
+                          {statusChips.map((badge) => (
+                            <Chip
                               key={`${badge.key}:${badge.label}`}
-                              variant={badge.variant}
+                              tone={badge.variant}
                               className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
                               title={badge.title}
                             >
                               {badge.label}
-                            </Badge>
+                            </Chip>
                           ))}
-                          {renderNoRefreshTokenBadge(item, labels)}
-                          {renderActiveRoutingPolicyBadges(item, labels)}
-                          {compactBadge(kindLabel(item, labels), "secondary")}
+                          {renderNoRefreshTokenChip(item, labels)}
+                          {renderActiveRoutingPolicyChips(item, labels)}
+                          {compactChip(kindLabel(item, labels), "secondary")}
                           {item.compactSupport?.status === "unsupported" &&
                           labels.compactSupport?.(item)
-                            ? compactBadge(labels.compactSupport(item) ?? "", "warning", {
+                            ? compactChip(labels.compactSupport(item) ?? "", "warning", {
                                 title: labels.compactSupportHint?.(item) ?? undefined,
                               })
                             : null}
-                          {showPlanBadge && item.planType && planBadge
-                            ? compactBadge(item.planType, planBadge.variant, {
-                                className: planBadge.className,
-                                dataPlan: planBadge.dataPlan,
+                          {showPlanChip && item.planType && planChip
+                            ? compactChip(item.planType, planChip.tone, {
+                                dataPlan: planChip.dataPlan,
                                 title: item.planType,
                               })
-                            : showPlanBadge && item.planType
-                              ? compactBadge(item.planType, "accent", { title: item.planType })
+                            : showPlanChip && item.planType
+                              ? compactChip(item.planType, "accent", { title: item.planType })
                               : null}
-                          {compactBadge(
-                            resolveCurrentForwardProxyBadgeLabel(item, labels),
-                            resolveCurrentForwardProxyBadgeVariant(item),
-                            { title: resolveCurrentForwardProxyBadgeLabel(item, labels) },
+                          {compactChip(
+                            resolveCurrentForwardProxyChipLabel(item, labels),
+                            resolveCurrentForwardProxyChipTone(item),
+                            { title: resolveCurrentForwardProxyChipLabel(item, labels) },
                           )}
                         </div>
                         <div className="flex min-w-0 flex-wrap items-center gap-1">
                           <div className="flex min-w-0 flex-wrap items-center gap-1">
-                            {renderTagBadges(item.tags)}
+                            {renderTagChips(item.tags)}
                           </div>
-                          {renderTagOverflowBadge(labels, item.tags)}
+                          {renderTagOverflowChip(labels, item.tags)}
                         </div>
                       </div>
                     </div>

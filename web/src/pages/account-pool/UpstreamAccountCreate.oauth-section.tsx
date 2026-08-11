@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
@@ -11,7 +11,7 @@ import { MotherAccountToggle } from "../../features/account-pool/MotherAccountTo
 import { OauthMailboxChip } from "../../features/account-pool/OauthMailboxChip";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { AppIcon } from "../../features/shared/AppIcon";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import {
   DuplicateWarningPopover,
@@ -87,7 +87,7 @@ export function UpstreamAccountCreateOauthSection() {
     t,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
-  const oauthResolutionPlanBadge = upstreamPlanBadgeRecipe(
+  const oauthResolutionPlanChip = upstreamPlanChipRecipe(
     oauthEmailResolution?.detail.planType ?? null,
   );
   const oauthNeedsIdentityConfirmation = session?.status === "needs_identity_confirmation";
@@ -230,13 +230,13 @@ export function UpstreamAccountCreateOauthSection() {
                 tone={oauthMailboxTone}
                 onCopy={() => void handleCopySingleMailbox()}
               />
-              <Badge
-                variant={activeOauthMailboxSession.source === "attached" ? "secondary" : "success"}
+              <Chip
+                tone={activeOauthMailboxSession.source === "attached" ? "secondary" : "success"}
               >
                 {activeOauthMailboxSession.source === "attached"
                   ? t("accountPool.upstreamAccounts.oauth.mailboxAttached")
                   : t("accountPool.upstreamAccounts.oauth.mailboxGenerated")}
-              </Badge>
+              </Chip>
             </div>
           ) : null}
         </div>
@@ -338,21 +338,21 @@ export function UpstreamAccountCreateOauthSection() {
               <p className="flex items-center gap-2 text-sm font-semibold text-base-content">
                 {t("accountPool.upstreamAccounts.oauth.codeCardTitle")}
                 {oauthMailboxCodeStatusBadge === "checking" ? (
-                  <Badge
-                    variant="secondary"
-                    className="h-5 gap-1 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                  <Chip
+                    tone="secondary"
+                    className="h-5 gap-1 px-1.5 py-0 text-[10px] font-medium leading-none"
                   >
                     <Spinner size="sm" className="h-2.5 w-2.5" />
                     {t("accountPool.upstreamAccounts.oauth.mailboxCheckingBadge")}
-                  </Badge>
+                  </Chip>
                 ) : null}
                 {oauthMailboxCodeStatusBadge === "failed" ? (
-                  <Badge
-                    variant="error"
-                    className="h-5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                  <Chip
+                    tone="error"
+                    className="h-5 px-1.5 py-0 text-[10px] font-medium leading-none"
                   >
                     {t("accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge")}
-                  </Badge>
+                  </Chip>
                 ) : null}
               </p>
               <p className="mt-1 text-xs text-base-content/65">
@@ -405,14 +405,14 @@ export function UpstreamAccountCreateOauthSection() {
             </Button>
           </div>
           <div className="mt-4 flex items-center gap-3">
-            <Badge
-              variant={displayedOauthMailboxStatus?.invited ? "success" : "secondary"}
-              className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-sm leading-none"
+            <Chip
+              tone={displayedOauthMailboxStatus?.invited ? "success" : "secondary"}
+              className="shrink-0 whitespace-nowrap px-2.5 py-1 text-sm leading-none"
             >
               {displayedOauthMailboxStatus?.invited
                 ? t("accountPool.upstreamAccounts.oauth.invitedState")
                 : t("accountPool.upstreamAccounts.oauth.notInvitedState")}
-            </Badge>
+            </Chip>
             <span className="min-w-0 flex-1 truncate text-sm text-base-content/70">
               {displayedOauthMailboxStatus?.invite?.copyValue ?? "—"}
             </span>
@@ -532,10 +532,10 @@ export function UpstreamAccountCreateOauthSection() {
               <p className="font-medium">
                 {t("accountPool.upstreamAccounts.oauth.emailChoiceTitle")}
               </p>
-              {oauthResolutionPlanBadge ? (
-                <Badge variant={oauthResolutionPlanBadge.variant}>
+              {oauthResolutionPlanChip ? (
+                <Chip tone={oauthResolutionPlanChip.tone}>
                   {oauthEmailResolution.detail.planType}
-                </Badge>
+                </Chip>
               ) : null}
             </div>
             <p className="text-sm text-warning/90">

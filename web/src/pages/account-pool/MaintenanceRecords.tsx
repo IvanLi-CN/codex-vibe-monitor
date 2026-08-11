@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Tooltip } from "../../components/ui/tooltip";
@@ -16,7 +16,7 @@ import {
 } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
-type BadgeVariant = "secondary" | "success" | "info" | "warning" | "error";
+type ChipTone = "secondary" | "success" | "info" | "warning" | "error";
 
 const pageSizeOptions = [20, 50, 100].map((value) => ({
   value: String(value),
@@ -195,7 +195,7 @@ export default function MaintenanceRecordsPage() {
     const translated = t(key);
     return translated === key ? result : translated;
   };
-  const actionVariant = (action?: string | null): BadgeVariant => {
+  const actionVariant = (action?: string | null): ChipTone => {
     if (!action) return "secondary";
     if (action.includes("succeeded") || action.includes("recovered")) return "success";
     if (action.includes("deferred") || action.includes("cooldown") || action.includes("blocked")) {
@@ -207,7 +207,7 @@ export default function MaintenanceRecordsPage() {
     if (action.includes("updated")) return "info";
     return "secondary";
   };
-  const resultVariant = (result?: string | null): Exclude<BadgeVariant, "info"> => {
+  const resultVariant = (result?: string | null): Exclude<ChipTone, "info"> => {
     switch (result) {
       case "success":
         return "success";
@@ -456,8 +456,8 @@ export default function MaintenanceRecordsPage() {
                       </div>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Badge variant={actionVariant(event.action)}>{eventActionLabel}</Badge>
-                      <Badge variant={resultVariant(event.result)}>{eventResultLabel}</Badge>
+                      <Chip tone={actionVariant(event.action)}>{eventActionLabel}</Chip>
+                      <Chip tone={resultVariant(event.result)}>{eventResultLabel}</Chip>
                     </div>
                     <dl className="mt-4 grid grid-cols-1 gap-3 text-sm">
                       <div className="rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2.5">
@@ -569,13 +569,13 @@ export default function MaintenanceRecordsPage() {
                               className="max-w-full whitespace-nowrap align-baseline"
                               triggerProps={{ className: "max-w-full whitespace-nowrap" }}
                             >
-                              <Badge
+                              <Chip
                                 data-maintenance-event-badge="true"
-                                variant={actionVariant(event.action)}
+                                tone={actionVariant(event.action)}
                                 className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
                               >
                                 {eventActionLabel}
-                              </Badge>
+                              </Chip>
                             </Tooltip>
                           </td>
                           <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
@@ -586,13 +586,13 @@ export default function MaintenanceRecordsPage() {
                               className="max-w-full whitespace-nowrap align-baseline"
                               triggerProps={{ className: "max-w-full whitespace-nowrap" }}
                             >
-                              <Badge
+                              <Chip
                                 data-maintenance-event-badge="true"
-                                variant={resultVariant(event.result)}
+                                tone={resultVariant(event.result)}
                                 className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
                               >
                                 {eventResultLabel}
-                              </Badge>
+                              </Chip>
                             </Tooltip>
                           </td>
                         </tr>

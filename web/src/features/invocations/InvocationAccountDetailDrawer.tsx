@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -10,12 +9,13 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { useTranslation } from "../../i18n";
 import type { UpstreamAccountDetail, UpstreamAccountDuplicateInfo } from "../../lib/api";
 import { fetchUpstreamAccountDetail } from "../../lib/api";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
-import { MotherAccountBadge } from "../account-pool/MotherAccountToggle";
+import { MotherAccountChip } from "../account-pool/MotherAccountToggle";
 import { UpstreamAccountUsageCard } from "../account-pool/UpstreamAccountUsageCard";
 import { AppIcon } from "../shared/AppIcon";
 
@@ -174,14 +174,14 @@ export function InvocationAccountDetailDrawer({
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               {statusLabel ? (
-                <Badge variant={statusVariant(detail?.status ?? "")}>{statusLabel}</Badge>
+                <Chip tone={statusVariant(detail?.status ?? "")}>{statusLabel}</Chip>
               ) : null}
               {kindLabel ? (
-                <Badge variant={kindVariant(detail?.kind ?? "oauth_codex")}>{kindLabel}</Badge>
+                <Chip tone={kindVariant(detail?.kind ?? "oauth_codex")}>{kindLabel}</Chip>
               ) : null}
-              {detail?.planType ? <Badge variant="secondary">{detail.planType}</Badge> : null}
+              {detail?.planType ? <Chip tone="secondary">{detail.planType}</Chip> : null}
               {detail?.duplicateInfo ? (
-                <Badge variant="warning">{t("accountPool.upstreamAccounts.duplicate.badge")}</Badge>
+                <Chip tone="warning">{t("accountPool.upstreamAccounts.duplicate.badge")}</Chip>
               ) : null}
             </div>
             <div className="section-heading">
@@ -193,7 +193,7 @@ export function InvocationAccountDetailDrawer({
                   {title}
                 </h2>
                 {detail?.isMother ? (
-                  <MotherAccountBadge label={t("accountPool.upstreamAccounts.mother.badge")} />
+                  <MotherAccountChip label={t("accountPool.upstreamAccounts.mother.badge")} />
                 ) : null}
               </div>
               <p className="section-description">

@@ -13,6 +13,7 @@
 - `web/src/index.css` 中的 `:root` 与 `[data-theme='vibe-dark']` 定义了主题 token，项目统一使用语义 token，而不是直接在页面里硬编码品牌色。
 - 基础语义色由 `base-100 / base-200 / base-300 / base-content` 底色族，加上 `primary / secondary / accent / neutral / info / success / warning / error` 这一组强调语义组成。
 - `*-content` token 的职责是“filled semantic foreground”，只服务于实底或高填充语义容器；低透明语义底与 neutral surface 内的语义正文改走 shared `tone-ink-*` contract。
+- 文本 chip 统一由 `web/src/components/ui/chip.tsx` 提供；8 个 semantic tone 与 10 个 categorical tone 在 `web/src/index.css` 中分别拥有 light/dark 显式、不透明的 surface/border/ink 三元组。colored ink 必须有明确色相，不得解析成黑、白或近中性正文色。
 - 页面背景不是纯色平铺，而是由渐变、orb 和细网格叠加构成；应用级 surface 再通过半透明面板与阴影抬起。
 - 通用表面层级优先复用这些类：`surface-panel`、`surface-card`、`surface-subtle`、`surface-inset`、`field-surface`、`menu-surface`、`dialog-surface`、`dialog-chrome-surface`、`drawer-shell`、`sbdocs .sbdocs-preview`。
 - `surface-card` 是普通 Card 的默认外观；`surface-subtle` 用于 card 内部的状态行、列表项和 chip 组；`surface-inset` 用于配置组、设置页内部区块和需要表现嵌入层级的低对比容器。

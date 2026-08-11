@@ -1,16 +1,16 @@
+import { Chip } from "../../components/ui/chip";
 import type { useTranslation } from "../../i18n";
 import type { FastIndicatorState } from "../../lib/invocation";
 import { cn } from "../../lib/utils";
 import {
   formatReasoningEffort,
   getReasoningEffortTone,
-  REASONING_EFFORT_TONE_CLASSNAMES,
   type ReasoningEffortTone,
 } from "../shared/reasoningEffort";
 import {
   FALLBACK_CELL,
   renderFastIndicator,
-  renderInvocationModelBadge,
+  renderInvocationModelChip,
 } from "./invocation-details-shared";
 
 const REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES: Record<ReasoningEffortTone, string> = {
@@ -49,7 +49,7 @@ export interface InvocationModelContextClusterProps {
   modelTestId?: string;
 }
 
-export function InvocationReasoningEffortBadge({
+export function InvocationReasoningEffortChip({
   value,
   testId,
 }: {
@@ -70,18 +70,27 @@ export function InvocationReasoningEffortBadge({
   }
 
   const tone = getReasoningEffortTone(displayValue);
+  const chipTone =
+    tone === "minimal" || tone === "low"
+      ? "info"
+      : tone === "medium"
+        ? "primary"
+        : tone === "high" || tone === "xhigh"
+          ? "warning"
+          : tone === "max" || tone === "ultra"
+            ? "error"
+            : "neutral";
   return (
-    <span
+    <Chip
+      size="compact"
+      tone={chipTone}
       data-testid={testId}
       data-reasoning-effort-tone={tone}
-      className={cn(
-        "inline-flex min-h-5 max-w-[5rem] shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-semibold leading-none tracking-[0.01em]",
-        REASONING_EFFORT_TONE_CLASSNAMES[tone],
-      )}
+      className="max-w-[5rem] px-2 text-xs font-semibold tracking-[0.01em]"
       title={displayValue}
     >
       <span className="truncate whitespace-nowrap">{displayValue}</span>
-    </span>
+    </Chip>
   );
 }
 
@@ -115,7 +124,7 @@ export function InvocationModelContextCluster({
     displayReasoningEffort === FALLBACK_CELL
       ? "none"
       : getReasoningEffortTone(displayReasoningEffort);
-  const model = renderInvocationModelBadge(modelValue, {
+  const model = renderInvocationModelChip(modelValue, {
     t,
     hasMismatch: modelHasMismatch,
     className: "max-w-full",
@@ -192,7 +201,7 @@ export function InvocationModelContextCluster({
         {model}
       </span>
       <span className="shrink-0 text-base-content/28">·</span>
-      <InvocationReasoningEffortBadge
+      <InvocationReasoningEffortChip
         value={displayReasoningEffort}
         testId={testId ? `${testId}-reasoning-effort` : undefined}
       />

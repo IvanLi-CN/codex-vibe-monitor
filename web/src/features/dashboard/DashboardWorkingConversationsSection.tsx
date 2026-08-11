@@ -13,9 +13,9 @@ import {
 import { createPortal } from "react-dom";
 import { InvocationErrorSummary } from "../../components/InvocationErrorSummary";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { BubblePopoverContent } from "../../components/ui/bubble-popover";
 import { Button } from "../../components/ui/button";
+import { type CategoricalChipTone, Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -71,25 +71,25 @@ import {
 } from "../../lib/invocation";
 import {
   compactUpstreamPlanLabel,
-  shouldShowUpstreamPlanBadge,
-  upstreamPlanBadgeRecipe,
-} from "../../lib/upstreamAccountBadges";
+  shouldShowUpstreamPlanChip,
+  upstreamPlanChipRecipe,
+} from "../../lib/upstreamAccountChips";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
 import {
   InvocationModelContextCluster,
-  InvocationReasoningEffortBadge,
+  InvocationReasoningEffortChip,
 } from "../invocations/InvocationModelContextCluster";
-import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
+import { InvocationPhaseChip, InvocationPhaseSegments } from "../invocations/InvocationPhaseChip";
 import {
   buildInvocationDetailViewModel,
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   renderEndpointSummary,
   renderFastIndicator,
-  renderInvocationModelBadge,
+  renderInvocationModelChip,
 } from "../invocations/invocation-details-shared";
-import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
+import { renderInvocationTransportChip } from "../invocations/invocation-transport-chip";
 import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
@@ -205,19 +205,13 @@ const DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS = [
 ];
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_SHOW_DELAY_MS = 300;
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS = 600;
-const MANUAL_BINDING_BADGE_CLASS_NAME =
-  "inline-flex min-w-0 max-w-full items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium leading-4";
-const MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME =
-  "inline-flex min-w-0 max-w-[20rem] shrink appearance-none rounded-full border-0 bg-transparent p-0 text-left transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
-const MANUAL_BINDING_BADGE_TEXT_CLASS_NAME =
-  "block min-w-0 max-w-[20rem] truncate whitespace-nowrap";
 const ROUTE_BIND_RECENT_TARGET_GAP_PX = 8;
 const ROUTE_BIND_RECENT_TARGET_MAX_ROWS = 2;
 
-type DashboardManualBindingBadgeMeta = {
+type DashboardManualBindingChipMeta = {
   displayValue: string;
   accessibleLabel: string;
-  toneClassName: string;
+  tone: "info" | "secondary";
 };
 
 type DashboardConversationBulkBindTargetKind = "group" | "upstreamAccount";
@@ -260,10 +254,10 @@ function hasMultiSelectModifier(
   return event.button === 0 && (event.metaKey || event.ctrlKey);
 }
 
-function resolveDashboardManualBindingBadgeMeta(
+function resolveDashboardManualBindingChipMeta(
   binding: DashboardWorkingConversationCardModel["manualBinding"],
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
-): DashboardManualBindingBadgeMeta | null {
+): DashboardManualBindingChipMeta | null {
   if (!binding) return null;
   if (binding.bindingKind === "group") {
     const groupName = binding.groupName?.trim();
@@ -273,7 +267,7 @@ function resolveDashboardManualBindingBadgeMeta(
       accessibleLabel: t("live.conversations.drawer.binding.currentGroup", {
         group: groupName,
       }),
-      toneClassName: "border-info/35 bg-info/15 text-info",
+      tone: "info",
     };
   }
 
@@ -286,7 +280,7 @@ function resolveDashboardManualBindingBadgeMeta(
     accessibleLabel: t("live.conversations.drawer.binding.currentAccount", {
       account: upstreamAccountLabel,
     }),
-    toneClassName: "border-secondary/45 bg-secondary/14 text-secondary",
+    tone: "secondary",
   };
 }
 
@@ -355,7 +349,7 @@ function formatDashboardConversationBulkFailureMessage(
 }
 
 type StatusMeta = {
-  badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
+  chipTone: "primary" | "secondary" | "success" | "warning" | "error" | "info";
   icon:
     | "loading"
     | "timer-refresh-outline"
@@ -380,75 +374,71 @@ const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 const INVOCATION_SURFACE_CLASS_NAME = "working-conversation-slot-surface";
 const DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX = 16;
 const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
-  "min-h-5 border-transparent bg-base-200/82 px-2 py-0.5 text-[9px] font-semibold leading-none text-base-content/76 shadow-none";
+  "max-w-full px-2 font-semibold shadow-none";
 
-const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
-  "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
-
-const ACCOUNT_HEADER_BADGE_CLASS_NAME =
-  "inline-flex h-6 shrink-0 items-center rounded-full border px-2.5 text-[11px] font-semibold leading-none";
+const ACCOUNT_HEADER_BADGE_CLASS_NAME = "font-semibold";
 const ACCOUNT_CARD_STACKED_HEADER_BREAKPOINT_PX = 620;
 const ACCOUNT_CARD_HERO_SINGLE_COLUMN_BREAKPOINT_PX = 300;
 const ACCOUNT_CARD_HERO_TWO_COLUMN_BREAKPOINT_PX = 760;
 const ACCOUNT_CARD_RECENT_STACK_BREAKPOINT_PX = 520;
 const ACCOUNT_CARD_RECENT_DETAILS_SPLIT_BREAKPOINT_PX = 640;
 
-const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
-  "dashboard-upstream-account-identity-chip--tone-sky",
-  "dashboard-upstream-account-identity-chip--tone-cyan",
-  "dashboard-upstream-account-identity-chip--tone-blue",
-  "dashboard-upstream-account-identity-chip--tone-violet",
-  "dashboard-upstream-account-identity-chip--tone-indigo",
-  "dashboard-upstream-account-identity-chip--tone-fuchsia",
-  "dashboard-upstream-account-identity-chip--tone-teal",
-  "dashboard-upstream-account-identity-chip--tone-emerald",
-] as const;
+const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES: CategoricalChipTone[] = [
+  "sky",
+  "cyan",
+  "blue",
+  "violet",
+  "indigo",
+  "fuchsia",
+  "teal",
+  "emerald",
+];
 
-function resolveConversationIdentityToneClassName(seed: string) {
+function resolveConversationIdentityTone(seed: string): CategoricalChipTone {
   const hash = hashDashboardWorkingConversationKey(seed);
   const hashValue = Number.parseInt(hash, 16) >>> 0;
   const mixedHash = (hashValue ^ (hashValue >>> 7) ^ (hashValue >>> 13) ^ (hashValue >>> 21)) >>> 0;
-  const toneIndex = mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
-  return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES[toneIndex];
+  const toneIndex = mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES.length;
+  return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES[toneIndex];
 }
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
   running: {
-    badgeVariant: "default",
+    chipTone: "primary",
     icon: "loading",
     labelKey: "table.status.running",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
   },
   pending: {
-    badgeVariant: "warning",
+    chipTone: "warning",
     icon: "timer-refresh-outline",
     labelKey: "table.status.pending",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
   },
   success: {
-    badgeVariant: "success",
+    chipTone: "success",
     icon: "check-circle-outline",
     labelKey: "table.status.success",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
   },
   warning: {
-    badgeVariant: "warning",
+    chipTone: "warning",
     icon: "alert-outline",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
   },
   error: {
-    badgeVariant: "error",
+    chipTone: "error",
     icon: "alert-circle-outline",
     labelKey: "table.status.failed",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
   },
   neutral: {
-    badgeVariant: "secondary",
+    chipTone: "secondary",
     icon: "information-outline",
     labelKey: "table.status.unknown",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
@@ -511,7 +501,7 @@ function CompactLatencyPills({
   );
 }
 
-function DashboardImageToolIconBadge({
+function DashboardImageToolIconChip({
   endpointDisplay,
   imageIntentDisplay,
   t,
@@ -527,8 +517,8 @@ function DashboardImageToolIconBadge({
   }
 
   if (
-    !imageIntentDisplay.showsBadge ||
-    imageIntentDisplay.badgeVariant == null ||
+    !imageIntentDisplay.showsChip ||
+    imageIntentDisplay.chipTone == null ||
     imageIntentDisplay.badgeLabelKey == null
   ) {
     return null;
@@ -537,8 +527,8 @@ function DashboardImageToolIconBadge({
   const label = t(imageIntentDisplay.badgeLabelKey);
 
   return (
-    <Badge
-      variant={imageIntentDisplay.badgeVariant}
+    <Chip
+      tone={imageIntentDisplay.chipTone}
       className={cn(
         "h-5 w-5 justify-center overflow-hidden px-0 py-0 text-[11px] leading-none shadow-none",
         className,
@@ -550,7 +540,7 @@ function DashboardImageToolIconBadge({
       role="img"
     >
       <AppIcon name="image-outline" className="h-3.5 w-3.5" aria-hidden />
-    </Badge>
+    </Chip>
   );
 }
 
@@ -565,7 +555,7 @@ function renderUpstreamAccountRecentModelDisplay(
     hasMismatch && requestModelValue !== FALLBACK_CELL && responseModelValue !== FALLBACK_CELL;
 
   if (!shouldRenderMismatch) {
-    return renderInvocationModelBadge(modelValue, {
+    return renderInvocationModelChip(modelValue, {
       t,
       hasMismatch: false,
       className: "max-w-full",
@@ -605,25 +595,22 @@ function renderUpstreamAccountRecentModelDisplay(
   );
 }
 
-function CompactAccountPlanBadge({ planType }: { planType: string | null }) {
-  if (!shouldShowUpstreamPlanBadge(planType)) return null;
+function CompactAccountPlanChip({ planType }: { planType: string | null }) {
+  if (!shouldShowUpstreamPlanChip(planType)) return null;
   const label = compactUpstreamPlanLabel(planType);
   if (!label) return null;
-  const recipe = upstreamPlanBadgeRecipe(planType);
+  const recipe = upstreamPlanChipRecipe(planType);
 
   return (
-    <Badge
-      variant={recipe?.variant ?? "secondary"}
+    <Chip
+      tone={recipe?.tone ?? "secondary"}
       data-testid="dashboard-working-conversation-account-plan"
       data-plan={recipe?.dataPlan}
-      className={cn(
-        "h-4 shrink-0 px-1.5 py-0 text-[7.5px] font-semibold leading-none",
-        recipe?.className,
-      )}
+      className="h-4 shrink-0 px-1.5 py-0 text-[7.5px] font-semibold leading-none"
       title={planType ?? undefined}
     >
       {label}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -633,7 +620,7 @@ function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: strin
   if (normalized === "warning_success") {
     return {
       ...base,
-      badgeVariant: "warning",
+      chipTone: "warning",
       icon: "alert-outline",
       labelKey: "table.status.warningSuccess",
     };
@@ -641,7 +628,7 @@ function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: strin
   if (normalized === "interrupted") {
     return {
       ...base,
-      badgeVariant: "error",
+      chipTone: "error",
       icon: "alert-circle-outline",
       labelKey: "table.status.interrupted",
     };
@@ -649,7 +636,7 @@ function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: strin
   if (normalized.startsWith("http_4")) {
     return {
       ...base,
-      badgeVariant: "warning",
+      chipTone: "warning",
       icon: "alert-outline",
       label: formatStatusLabel(status) ?? status,
     };
@@ -657,7 +644,7 @@ function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: strin
   if (normalized.startsWith("http_5")) {
     return {
       ...base,
-      badgeVariant: "error",
+      chipTone: "error",
       icon: "alert-circle-outline",
       label: formatStatusLabel(status) ?? status,
     };
@@ -665,12 +652,12 @@ function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: strin
   return base;
 }
 
-function statusInlineToneClassName(variant: StatusMeta["badgeVariant"]) {
+function statusInlineToneClassName(variant: StatusMeta["chipTone"]) {
   if (variant === "success") return "text-success";
   if (variant === "warning") return "text-warning";
   if (variant === "error") return "text-error";
   if (variant === "info") return "text-info";
-  if (variant === "default") return "text-primary";
+  if (variant === "primary") return "text-primary";
   return "text-base-content/62";
 }
 
@@ -693,7 +680,7 @@ function InlineInvocationStatus({
   showLabel?: boolean;
   detail?: string | null;
 }) {
-  const toneClassName = statusInlineToneClassName(meta.badgeVariant);
+  const toneClassName = statusInlineToneClassName(meta.chipTone);
   const assistiveLabel = buildStatusAssistiveLabel(label, detail);
   if (!showLabel) {
     return (
@@ -749,7 +736,7 @@ function formatAccountPercentValue(value: number | null | undefined, localeTag: 
   }).format(value);
 }
 
-type InvocationSummaryTone = "default" | "warning" | "error";
+type InvocationSummaryTone = "primary" | "warning" | "error";
 
 type InvocationSummaryField = {
   label: "Hit" | "Token" | "$";
@@ -759,23 +746,23 @@ type InvocationSummaryField = {
 };
 
 const INVOCATION_SUMMARY_TONE_CLASSNAMES: Record<InvocationSummaryTone, string> = {
-  default: "text-base-content/74",
+  primary: "text-base-content/74",
   warning: "text-warning",
   error: "text-error",
 };
 
 function resolveInvocationHitTone(hitRate: number | null | undefined): InvocationSummaryTone {
-  if (hitRate == null || !Number.isFinite(hitRate)) return "default";
+  if (hitRate == null || !Number.isFinite(hitRate)) return "primary";
   if (hitRate < 0.5) return "error";
   if (hitRate < 0.9) return "warning";
-  return "default";
+  return "primary";
 }
 
 function resolveInvocationCostTone(cost: number | null | undefined): InvocationSummaryTone {
-  if (cost == null || !Number.isFinite(cost)) return "default";
+  if (cost == null || !Number.isFinite(cost)) return "primary";
   if (cost > 0.5) return "error";
   if (cost > 0.1) return "warning";
-  return "default";
+  return "primary";
 }
 
 function formatCompactInvocationCostValue(costValue: string) {
@@ -807,7 +794,7 @@ function buildInvocationSummaryFields({
     {
       label: "Token",
       text: `Token ${totalTokensValue}`,
-      tone: "default",
+      tone: "primary",
       testId: `${testIdPrefix}-token`,
     },
     {
@@ -1110,7 +1097,7 @@ type AccountQuickPolicyDraft = {
 
 type AccountQuickPolicyTone = "neutral" | "success" | "warning" | "primary";
 
-type AccountAttentionBadge = {
+type AccountAttentionChip = {
   key: string;
   label: string;
   tone: "warning" | "error" | "info";
@@ -1206,24 +1193,14 @@ function booleanBlockPolicyTone(isBlocked: boolean): AccountQuickPolicyTone {
   return isBlocked ? "warning" : "neutral";
 }
 
-const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<AccountQuickPolicyTone, string> = {
-  neutral: "border-base-300/80 bg-base-100/75 text-base-content/60",
-  success:
-    "border-success/40 bg-success/15 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
-  warning:
-    "border-warning/50 bg-warning/15 text-base-content shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
-  primary:
-    "border-primary/50 bg-primary/15 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
-};
-
 function normalizeStatusToken(value: string | null | undefined) {
   return value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
 }
 
-function resolveAccountAttentionBadges(
+function resolveAccountAttentionChips(
   account: UpstreamAccountActivityAccount,
   locale: "zh" | "en",
-): AccountAttentionBadge[] {
+): AccountAttentionChip[] {
   const labels = {
     disabled: locale === "zh" ? "禁用" : "Disabled",
     syncing: locale === "zh" ? "同步中" : "Syncing",
@@ -1236,9 +1213,9 @@ function resolveAccountAttentionBadges(
     unavailable: locale === "zh" ? "不可用" : "Unavailable",
   };
   const detail = account.lastActionReasonMessage || account.lastError || undefined;
-  const badges: AccountAttentionBadge[] = [];
+  const badges: AccountAttentionChip[] = [];
   const seen = new Set<string>();
-  const add = (badge: AccountAttentionBadge) => {
+  const add = (badge: AccountAttentionChip) => {
     if (seen.has(badge.key)) return;
     seen.add(badge.key);
     badges.push(badge);
@@ -1319,7 +1296,7 @@ function resolveAccountAttentionBadges(
   return badges;
 }
 
-function AccountAttentionBadges({
+function AccountAttentionChips({
   account,
   locale,
   clickable,
@@ -1330,16 +1307,10 @@ function AccountAttentionBadges({
   clickable: boolean;
   onClick?: () => void;
 }) {
-  const badges = resolveAccountAttentionBadges(account, locale);
+  const badges = resolveAccountAttentionChips(account, locale);
   if (badges.length === 0) return null;
   const title = badges.map((badge) => badge.label).join(" · ");
   const openLabel = locale === "zh" ? "打开账号健康事件" : "Open health events";
-  const badgeToneClassName = (tone: AccountAttentionBadge["tone"]) =>
-    tone === "error"
-      ? "border-error/38 bg-error/10 text-error"
-      : tone === "warning"
-        ? "border-warning/45 bg-warning/12 text-base-content"
-        : "border-info/35 bg-info/12 text-info";
   return (
     <div
       data-testid="dashboard-upstream-account-attention-badges"
@@ -1350,36 +1321,42 @@ function AccountAttentionBadges({
     >
       {badges.map((badge) =>
         clickable ? (
-          <button
+          <Chip
+            asChild
+            size="header"
+            tone={badge.tone}
             key={badge.key}
-            type="button"
             data-testid="dashboard-upstream-account-attention-badge"
             title={badge.title ?? badge.label}
             aria-label={`${badge.label} · ${openLabel}`}
             className={cn(
               ACCOUNT_HEADER_BADGE_CLASS_NAME,
-              "appearance-none px-2.5 transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary hover:opacity-80",
-              badgeToneClassName(badge.tone),
+              "appearance-none transition-opacity duration-200 hover:opacity-80",
             )}
-            onClick={(event) => {
-              event.stopPropagation();
-              onClick?.();
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-            }}
           >
-            {badge.label}
-          </button>
+            <button
+              type="button"
+              className="appearance-none"
+              onClick={(event) => {
+                event.stopPropagation();
+                onClick?.();
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {badge.label}
+            </button>
+          </Chip>
         ) : (
-          <span
+          <Chip
+            size="header"
+            tone={badge.tone}
             key={badge.key}
             data-testid="dashboard-upstream-account-attention-badge"
             title={badge.title ?? badge.label}
-            className={cn(ACCOUNT_HEADER_BADGE_CLASS_NAME, badgeToneClassName(badge.tone))}
+            className={ACCOUNT_HEADER_BADGE_CLASS_NAME}
           >
             {badge.label}
-          </span>
+          </Chip>
         ),
       )}
     </div>
@@ -1412,94 +1389,108 @@ function AccountQuickPolicyChips({
   const fastModeTone = fastModePolicyTone(draft.fastModeRewriteMode);
   const cutOutTone = booleanBlockPolicyTone(cutOutActive);
   const cutInTone = booleanBlockPolicyTone(cutInActive);
-  const chipBase =
-    "inline-flex h-6 shrink-0 items-center justify-center rounded-full border px-2.5 text-[11px] font-semibold leading-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-55";
   return (
     <div
       data-testid="dashboard-upstream-account-policy-badges"
       data-saving={isSaving ? "true" : "false"}
       className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden"
     >
-      <button
-        type="button"
-        data-testid="dashboard-upstream-account-policy-badge"
-        data-policy-key="priority-new-conversations"
-        data-policy-tone={priorityTone}
-        disabled={disabled}
-        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[priorityTone])}
-        title={
-          locale === "zh"
-            ? "点击切换 普通 / 兜底 / 主力 / 禁新"
-            : "Cycle normal / fallback / primary / no new"
-        }
-        aria-label={locale === "zh" ? "切换账号优先级" : "Cycle account priority"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onCyclePriority();
-        }}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
+      <Chip
+        asChild
+        size="header"
+        tone={priorityTone}
+        className="shrink-0 font-semibold transition-opacity"
       >
-        {priorityPolicyLabel(draft, locale)}
-      </button>
-      <button
-        type="button"
-        data-testid="dashboard-upstream-account-policy-badge"
-        data-policy-key="fast-mode-rewrite"
-        data-policy-tone={fastModeTone}
-        disabled={disabled}
-        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone])}
-        title={fastModePolicyCycleTitle(fastModeLabel, locale)}
-        aria-label={fastModePolicyAriaLabel(fastModeLabel, locale)}
-        onClick={(event) => {
-          event.stopPropagation();
-          onCycleFastMode();
-        }}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
+        <button
+          type="button"
+          data-testid="dashboard-upstream-account-policy-badge"
+          data-policy-key="priority-new-conversations"
+          data-policy-tone={priorityTone}
+          disabled={disabled}
+          title={
+            locale === "zh"
+              ? "点击切换 普通 / 兜底 / 主力 / 禁新"
+              : "Cycle normal / fallback / primary / no new"
+          }
+          aria-label={locale === "zh" ? "切换账号优先级" : "Cycle account priority"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onCyclePriority();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {priorityPolicyLabel(draft, locale)}
+        </button>
+      </Chip>
+      <Chip
+        asChild
+        size="header"
+        tone={fastModeTone}
+        className="shrink-0 font-semibold transition-opacity"
       >
-        {fastModeLabel}
-      </button>
-      <button
-        type="button"
-        data-testid="dashboard-upstream-account-policy-badge"
-        data-policy-key="allow-cut-out"
-        data-policy-tone={cutOutTone}
-        disabled={disabled}
-        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutOutTone])}
-        title={locale === "zh" ? "点击切换账号级禁出" : "Toggle account-level cut out"}
-        aria-label={locale === "zh" ? "切换禁出" : "Toggle cut out"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleCutOut();
-        }}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
+        <button
+          type="button"
+          data-testid="dashboard-upstream-account-policy-badge"
+          data-policy-key="fast-mode-rewrite"
+          data-policy-tone={fastModeTone}
+          disabled={disabled}
+          title={fastModePolicyCycleTitle(fastModeLabel, locale)}
+          aria-label={fastModePolicyAriaLabel(fastModeLabel, locale)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onCycleFastMode();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {fastModeLabel}
+        </button>
+      </Chip>
+      <Chip
+        asChild
+        size="header"
+        tone={cutOutTone}
+        className="shrink-0 font-semibold transition-opacity"
       >
-        {locale === "zh" ? "禁出" : "No out"}
-      </button>
-      <button
-        type="button"
-        data-testid="dashboard-upstream-account-policy-badge"
-        data-policy-key="allow-cut-in"
-        data-policy-tone={cutInTone}
-        disabled={disabled}
-        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutInTone])}
-        title={locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"}
-        aria-label={locale === "zh" ? "切换禁入" : "Toggle cut in"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleCutIn();
-        }}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
+        <button
+          type="button"
+          data-testid="dashboard-upstream-account-policy-badge"
+          data-policy-key="allow-cut-out"
+          data-policy-tone={cutOutTone}
+          disabled={disabled}
+          title={locale === "zh" ? "点击切换账号级禁出" : "Toggle account-level cut out"}
+          aria-label={locale === "zh" ? "切换禁出" : "Toggle cut out"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCutOut();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {locale === "zh" ? "禁出" : "No out"}
+        </button>
+      </Chip>
+      <Chip
+        asChild
+        size="header"
+        tone={cutInTone}
+        className="shrink-0 font-semibold transition-opacity"
       >
-        {locale === "zh" ? "禁入" : "No in"}
-      </button>
+        <button
+          type="button"
+          data-testid="dashboard-upstream-account-policy-badge"
+          data-policy-key="allow-cut-in"
+          data-policy-tone={cutInTone}
+          disabled={disabled}
+          title={locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"}
+          aria-label={locale === "zh" ? "切换禁入" : "Toggle cut in"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCutIn();
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {locale === "zh" ? "禁入" : "No in"}
+        </button>
+      </Chip>
     </div>
   );
 }
@@ -2097,8 +2088,8 @@ function AccountRecentInvocationRow({
         `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
       )
     : "";
-  const conversationIdentityToneClassName = displayPromptCacheKey
-    ? resolveConversationIdentityToneClassName(displayPromptCacheKey)
+  const conversationIdentityTone = displayPromptCacheKey
+    ? resolveConversationIdentityTone(displayPromptCacheKey)
     : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
@@ -2201,23 +2192,24 @@ function AccountRecentInvocationRow({
           >
             {displayConversationSequenceId ? (
               <>
-                <button
-                  type="button"
+                <Chip
+                  asChild
+                  size="compact"
+                  tone={conversationIdentityTone ?? "secondary"}
                   data-testid="dashboard-upstream-account-recent-identity-chip"
-                  className={cn(
-                    UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
-                    "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                    conversationIdentityToneClassName,
-                  )}
+                  className="max-w-[4.8rem] cursor-pointer px-1.5 font-mono text-[10px] font-semibold tracking-[0.04em] transition-opacity duration-200 hover:opacity-80"
                   aria-label={conversationActionLabel ?? undefined}
                   title={conversationActionLabel ?? displayConversationSequenceId}
-                  onClick={handleIdentityChipClick}
-                  onKeyDown={handleIdentityChipKeyDown}
                 >
-                  <span className="truncate whitespace-nowrap">
+                  <button
+                    type="button"
+                    className="min-w-0 max-w-full truncate whitespace-nowrap appearance-none"
+                    onClick={handleIdentityChipClick}
+                    onKeyDown={handleIdentityChipKeyDown}
+                  >
                     {displayConversationSequenceId}
-                  </span>
-                </button>
+                  </button>
+                </Chip>
                 <AppIcon
                   name="chevron-right"
                   className="h-3 w-3 shrink-0 text-base-content/45"
@@ -2233,7 +2225,7 @@ function AccountRecentInvocationRow({
             </span>
           </div>
           {invocation.livePhase ? (
-            <InvocationPhaseBadge
+            <InvocationPhaseChip
               phase={invocation.livePhase}
               appearance="inline"
               motion="dynamic"
@@ -2247,16 +2239,13 @@ function AccountRecentInvocationRow({
               detail={viewModel.collapsedErrorSummary}
             />
           )}
-          {renderInvocationTransportBadge(
-            invocation.record,
-            "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
-          )}
+          {renderInvocationTransportChip(invocation.record, "min-h-5 px-2 py-0.5 text-[9.5px]")}
           {renderEndpointSummary(
             viewModel.endpointDisplay,
             t,
             UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
           )}
-          <DashboardImageToolIconBadge
+          <DashboardImageToolIconChip
             endpointDisplay={viewModel.endpointDisplay}
             imageIntentDisplay={viewModel.imageIntentDisplay}
             t={t}
@@ -2306,7 +2295,7 @@ function AccountRecentInvocationRow({
                 {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
                   <>
                     <span className="text-base-content/28">·</span>
-                    <InvocationReasoningEffortBadge
+                    <InvocationReasoningEffortChip
                       value={viewModel.reasoningEffortValue}
                       testId="dashboard-working-conversation-reasoning-effort"
                     />
@@ -2399,12 +2388,9 @@ function PlaceholderSlot() {
           {t("dashboard.workingConversations.previousPlaceholder")}
         </div>
         <div className="flex-1" />
-        <Badge
-          variant="secondary"
-          className="h-5 border-transparent bg-base-100/10 px-2 py-0 text-[9px] text-base-content/58 shadow-none"
-        >
+        <Chip tone="secondary" className="h-5 px-2 py-0 text-[9px] shadow-none">
           {t("dashboard.workingConversations.placeholderBadge")}
-        </Badge>
+        </Chip>
       </div>
       <p
         className="mt-1.5 text-[8.5px] leading-[1.35] text-base-content/56"
@@ -2655,7 +2641,7 @@ function InvocationSlot({
         >
           <div className="flex min-w-0 shrink items-center justify-end gap-1">
             {invocation.livePhase ? (
-              <InvocationPhaseBadge
+              <InvocationPhaseChip
                 phase={invocation.livePhase}
                 appearance="inline"
                 motion="dynamic"
@@ -2669,18 +2655,15 @@ function InvocationSlot({
                 detail={viewModel.collapsedErrorSummary}
               />
             )}
-            {renderInvocationTransportBadge(
-              invocation.record,
-              "h-5 border-primary/45 bg-primary/10 px-1.5 text-[9.5px]",
-            )}
+            {renderInvocationTransportChip(invocation.record, "h-5 px-1.5 text-[9.5px]")}
             <div className="flex h-5 shrink items-center">
               <div className="flex items-center gap-1">
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
-                  "h-5 rounded-full border-transparent bg-base-100/10 px-1 py-0 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
+                  "h-5 px-1 py-0 text-[9px] font-semibold leading-none shadow-none",
                 )}
-                <DashboardImageToolIconBadge
+                <DashboardImageToolIconChip
                   endpointDisplay={viewModel.endpointDisplay}
                   imageIntentDisplay={viewModel.imageIntentDisplay}
                   t={t}
@@ -2769,7 +2752,7 @@ function InvocationSlot({
                     </span>
                   </span>
                 )}
-                <CompactAccountPlanBadge planType={viewModel.accountPlanType} />
+                <CompactAccountPlanChip planType={viewModel.accountPlanType} />
               </div>
               <div
                 data-testid="dashboard-working-conversation-account-meta"
@@ -2792,7 +2775,7 @@ function InvocationSlot({
                       data-testid="dashboard-working-conversation-model-name"
                       className="min-w-0"
                     >
-                      {renderInvocationModelBadge(viewModel.modelValue, {
+                      {renderInvocationModelChip(viewModel.modelValue, {
                         t,
                         hasMismatch: viewModel.modelHasMismatch,
                         className: "max-w-full",
@@ -2802,7 +2785,7 @@ function InvocationSlot({
                       })}
                     </span>
                     <span className="shrink-0 text-base-content/28">·</span>
-                    <InvocationReasoningEffortBadge
+                    <InvocationReasoningEffortChip
                       value={viewModel.reasoningEffortValue}
                       testId="dashboard-working-conversation-reasoning-effort"
                     />
@@ -3607,23 +3590,20 @@ function DashboardUpstreamAccountActivityCard({
             >
               <span className="truncate">{account.displayName}</span>
             </button>
-            <AccountAttentionBadges
+            <AccountAttentionChips
               account={account}
               locale={locale}
               clickable={account.upstreamAccountId != null}
               onClick={handleOpenHealthEventsTab}
             />
-            {shouldShowUpstreamPlanBadge(account.planType) ? (
-              <Badge
-                variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
-                data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
-                className={cn(
-                  ACCOUNT_HEADER_BADGE_CLASS_NAME,
-                  upstreamPlanBadgeRecipe(account.planType)?.className,
-                )}
+            {shouldShowUpstreamPlanChip(account.planType) ? (
+              <Chip
+                tone={upstreamPlanChipRecipe(account.planType)?.tone ?? "secondary"}
+                data-plan={upstreamPlanChipRecipe(account.planType)?.dataPlan}
+                className={ACCOUNT_HEADER_BADGE_CLASS_NAME}
               >
                 {compactUpstreamPlanLabel(account.planType)}
-              </Badge>
+              </Chip>
             ) : null}
             <AccountQuickPolicyChips
               draft={policyDraft}
@@ -4109,7 +4089,7 @@ export function DashboardWorkingConversationsSection({
     DashboardBulkRouteBindRecentTarget[]
   >(() => readDashboardBulkRouteBindRecentTargets());
   const routeBindRecentTargetsMeasureRef = useRef<HTMLDivElement | null>(null);
-  const routeBindRecentChipMeasureRefs = useRef(new Map<string, HTMLButtonElement>());
+  const routeBindRecentChipMeasureRefs = useRef(new Map<string, HTMLElement>());
   const [routeBindRecentVisibleCount, setRouteBindRecentVisibleCount] = useState(
     DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_MAX,
   );
@@ -4291,17 +4271,17 @@ export function DashboardWorkingConversationsSection({
   useEffect(() => {
     persistDashboardWorkspaceSort(DASHBOARD_UPSTREAM_ACCOUNT_SORT_STORAGE_KEY, upstreamAccountSort);
   }, [upstreamAccountSort]);
-  const countBadgeValue = totalMatched ?? cards.length;
-  const accountCountBadgeValue = upstreamAccounts.length;
-  const countBadgeLabel =
+  const countChipValue = totalMatched ?? cards.length;
+  const accountCountChipValue = upstreamAccounts.length;
+  const countChipLabel =
     activeView === "conversations"
       ? t("dashboard.workingConversations.countBadge", {
-          count: countBadgeValue,
+          count: countChipValue,
         })
       : showUpstreamAccountActivityLoading && upstreamAccounts.length === 0
         ? t("dashboard.upstreamAccounts.countLoading")
         : t("dashboard.upstreamAccounts.countBadge", {
-            count: accountCountBadgeValue,
+            count: accountCountChipValue,
           });
   const shouldReserveUpstreamAccountRefreshChip = activeView === "upstreamAccounts";
   const shouldShowUpstreamAccountRefreshChip =
@@ -5285,9 +5265,13 @@ export function DashboardWorkingConversationsSection({
                           <p className="text-sm font-semibold text-base-content">
                             {fastModePopoverTitle}
                           </p>
-                          <span className="rounded-full border border-base-300/70 bg-base-200/58 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-base-content/72">
+                          <Chip
+                            size="compact"
+                            tone="secondary"
+                            className="px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.14em]"
+                          >
                             {selectedConversationCount}
-                          </span>
+                          </Chip>
                         </div>
                         <p className="text-xs font-medium text-base-content/72">
                           {selectionSummaryLabel}
@@ -5523,12 +5507,9 @@ export function DashboardWorkingConversationsSection({
                   }
                 />
               ) : null}
-              <Badge
-                variant="default"
-                className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
-              >
-                {countBadgeLabel}
-              </Badge>
+              <Chip tone="primary" className="w-fit px-3 py-1 font-mono text-xs font-semibold">
+                {countChipLabel}
+              </Chip>
             </div>
             {activeView === "conversations" ? (
               <Button
@@ -5778,12 +5759,12 @@ export function DashboardWorkingConversationsSection({
                             ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
                             : FALLBACK_CELL;
                         const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
-                        const manualBindingBadgeMeta = resolveDashboardManualBindingBadgeMeta(
+                        const manualBindingChipMeta = resolveDashboardManualBindingChipMeta(
                           card.manualBinding,
                           t,
                         );
-                        const manualBindingActionLabel = manualBindingBadgeMeta
-                          ? `${t("dashboard.workingConversations.openConversationSettings")} · ${manualBindingBadgeMeta.accessibleLabel}`
+                        const manualBindingActionLabel = manualBindingChipMeta
+                          ? `${t("dashboard.workingConversations.openConversationSettings")} · ${manualBindingChipMeta.accessibleLabel}`
                           : null;
 
                         return (
@@ -5878,54 +5859,53 @@ export function DashboardWorkingConversationsSection({
                                       {displaySequenceId}
                                     </div>
                                   )}
-                                  {manualBindingBadgeMeta ? (
+                                  {manualBindingChipMeta ? (
                                     onOpenConversation && !selectionModeEnabled ? (
-                                      <button
-                                        type="button"
+                                      <Chip
+                                        asChild
+                                        size="compact"
+                                        tone={manualBindingChipMeta.tone}
                                         data-testid="dashboard-working-conversation-manual-binding-badge"
-                                        className={MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME}
+                                        className="min-w-0 max-w-[20rem] shrink cursor-pointer px-2 text-[10.5px] leading-4 transition-opacity duration-200 hover:opacity-80"
                                         aria-label={manualBindingActionLabel ?? undefined}
                                         title={manualBindingActionLabel ?? undefined}
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          onOpenConversation({
-                                            conversationSequenceId: card.conversationSequenceId,
-                                            promptCacheKey: card.promptCacheKey,
-                                            tab: "settings",
-                                          });
-                                        }}
                                       >
-                                        <span
-                                          className={cn(
-                                            MANUAL_BINDING_BADGE_CLASS_NAME,
-                                            manualBindingBadgeMeta.toneClassName,
-                                          )}
+                                        <button
+                                          type="button"
+                                          className="min-w-0 max-w-[20rem] truncate whitespace-nowrap appearance-none text-left"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            onOpenConversation({
+                                              conversationSequenceId: card.conversationSequenceId,
+                                              promptCacheKey: card.promptCacheKey,
+                                              tab: "settings",
+                                            });
+                                          }}
                                         >
-                                          <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
-                                            {manualBindingBadgeMeta.displayValue}
+                                          <span className="block min-w-0 max-w-[20rem] truncate whitespace-nowrap">
+                                            {manualBindingChipMeta.displayValue}
                                           </span>
-                                        </span>
-                                      </button>
+                                        </button>
+                                      </Chip>
                                     ) : (
-                                      <span
+                                      <Chip
+                                        size="compact"
+                                        tone={manualBindingChipMeta.tone}
                                         data-testid="dashboard-working-conversation-manual-binding-badge"
-                                        className={cn(
-                                          MANUAL_BINDING_BADGE_CLASS_NAME,
-                                          manualBindingBadgeMeta.toneClassName,
-                                        )}
-                                        title={manualBindingBadgeMeta.accessibleLabel}
+                                        className="min-w-0 max-w-full px-2 text-[10.5px] leading-4"
+                                        title={manualBindingChipMeta.accessibleLabel}
                                       >
-                                        <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
-                                          {manualBindingBadgeMeta.displayValue}
+                                        <span className="min-w-0 max-w-[20rem] truncate whitespace-nowrap">
+                                          {manualBindingChipMeta.displayValue}
                                         </span>
-                                      </span>
+                                      </Chip>
                                     )
                                   ) : null}
                                 </div>
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">{sortAnchorLabel}</span>
                                   {card.currentInvocation.livePhase ? (
-                                    <InvocationPhaseBadge
+                                    <InvocationPhaseChip
                                       phase={card.currentInvocation.livePhase}
                                       appearance="inline"
                                       motion="dynamic"
@@ -6092,32 +6072,35 @@ export function DashboardWorkingConversationsSection({
                   data-testid="dashboard-working-conversations-route-bind-recents-grid"
                 >
                   {visibleRouteBindRecentChipItems.map((item) => (
-                    <button
+                    <Chip
+                      asChild
+                      size="compact"
+                      tone={
+                        item.active
+                          ? "primary"
+                          : item.target.kind === "group"
+                            ? "info"
+                            : "secondary"
+                      }
                       key={item.key}
-                      type="button"
                       title={item.title}
                       aria-pressed={item.active}
                       data-testid="dashboard-working-conversations-route-bind-recent-chip"
                       data-kind={item.target.kind}
-                      className={cn(
-                        "dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
-                        item.target.kind === "group"
-                          ? item.active
-                            ? "border-info/45 bg-info/12 tone-ink-info font-semibold ring-1 ring-inset ring-info/18"
-                            : "border-info/30 bg-info/8 tone-ink-info hover:border-info/42 hover:bg-info/12"
-                          : item.active
-                            ? "border-secondary/45 bg-secondary/12 tone-ink-secondary font-semibold ring-1 ring-inset ring-secondary/18"
-                            : "border-secondary/30 bg-secondary/8 tone-ink-secondary hover:border-secondary/42 hover:bg-secondary/12",
-                      )}
-                      onClick={() => applyRouteBindRecentTargetSelection(item.target)}
                     >
-                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
-                        {item.typeLabel}
-                      </span>
-                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
-                        {item.displayLabel}
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 text-left text-[10px] font-medium"
+                        onClick={() => applyRouteBindRecentTargetSelection(item.target)}
+                      >
+                        <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
+                          {item.typeLabel}
+                        </span>
+                        <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
+                          {item.displayLabel}
+                        </span>
+                      </button>
+                    </Chip>
                   ))}
                 </div>
                 <div
@@ -6126,7 +6109,16 @@ export function DashboardWorkingConversationsSection({
                   className="pointer-events-none invisible absolute left-0 top-0 -z-10 flex w-full flex-wrap gap-2"
                 >
                   {routeBindRecentChipItems.map((item) => (
-                    <button
+                    <Chip
+                      asChild
+                      size="compact"
+                      tone={
+                        item.active
+                          ? "primary"
+                          : item.target.kind === "group"
+                            ? "info"
+                            : "secondary"
+                      }
                       key={`measure:${item.key}`}
                       ref={(node) => {
                         if (node) {
@@ -6135,17 +6127,20 @@ export function DashboardWorkingConversationsSection({
                           routeBindRecentChipMeasureRefs.current.delete(item.key);
                         }
                       }}
-                      type="button"
                       tabIndex={-1}
-                      className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium"
                     >
-                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
-                        {item.typeLabel}
-                      </span>
-                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
-                        {item.displayLabel}
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 px-2 text-left text-[10px] font-medium"
+                      >
+                        <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
+                          {item.typeLabel}
+                        </span>
+                        <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
+                          {item.displayLabel}
+                        </span>
+                      </button>
+                    </Chip>
                   ))}
                 </div>
               </div>

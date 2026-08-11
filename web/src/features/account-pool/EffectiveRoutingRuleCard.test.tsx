@@ -235,7 +235,7 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
-    const blockedValues = Array.from(document.querySelectorAll('[class*="bg-warning"]')).map(
+    const blockedValues = Array.from(document.querySelectorAll(".chip-tone-warning")).map(
       (node) => node.textContent,
     );
     expect(blockedValues).toContain("No new");
@@ -243,7 +243,7 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(blockedValues).toContain("Cut-in blocked");
     expect(blockedValues).toContain("No new");
 
-    const forceAddBadge = Array.from(document.querySelectorAll('[class*="bg-primary"]')).find(
+    const forceAddBadge = Array.from(document.querySelectorAll(".chip-tone-primary")).find(
       (node) => node.textContent === "Force add",
     );
     expect(forceAddBadge).toBeTruthy();

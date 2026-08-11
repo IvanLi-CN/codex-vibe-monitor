@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -958,11 +958,11 @@ export function GroupAccountRoutingRuleEditor({
           {draft.availableModels.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {draft.availableModels.map((model) => (
-                <Badge key={model} variant="secondary" className="gap-1 pr-1">
+                <Chip key={model} tone="secondary" className="gap-1 pr-1">
                   <span>{labels.availableModelsCustomLabel(model)}</span>
                   <button
                     type="button"
-                    className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content"
+                    className="rounded-full p-0.5 text-current/70 transition hover:bg-base-300/70 hover:text-current"
                     aria-label={`${labels.availableModelsRemove} ${model}`}
                     onClick={() =>
                       setDraft((current) => ({
@@ -974,7 +974,7 @@ export function GroupAccountRoutingRuleEditor({
                   >
                     <AppIcon name="close" className="h-3 w-3" aria-hidden />
                   </button>
-                </Badge>
+                </Chip>
               ))}
             </div>
           ) : null}

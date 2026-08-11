@@ -4,7 +4,6 @@ import type {
   NameType,
   ValueType,
 } from "recharts/types/component/DefaultTooltipContent";
-import { Badge } from "../../components/ui/badge";
 import {
   Card,
   CardContent,
@@ -12,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
 
@@ -85,7 +85,7 @@ export function UpstreamAccountUsageCard({
             <CardTitle className="text-base">{title}</CardTitle>
             <CardDescription>{description}</CardDescription>
           </div>
-          {noteLabel ? <Badge variant="secondary">{noteLabel}</Badge> : null}
+          {noteLabel ? <Chip tone="secondary">{noteLabel}</Chip> : null}
         </div>
       </CardHeader>
       <CardContent className="grid gap-4 lg:grid-cols-[auto,minmax(0,1fr)] lg:items-center">
