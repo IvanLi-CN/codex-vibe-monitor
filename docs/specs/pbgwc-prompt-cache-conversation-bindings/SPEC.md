@@ -74,6 +74,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
 - `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
 - Routing events carry an explicit scope: `{ kind: "all" }` for conversation-wide changes or `{ kind: "model", modelKey, requestModel }` for a normalized request-model bucket. `requestModel` is shown only when it differs from `modelKey`.
+- A failed automatic clear records its public cause in the same all-model or normalized-model generation bucket that was cleared. Only the next fresh assignment in that same bucket may report `freshAssignmentAfterFailure`; a successful replacement consumes the stored cause.
 - A conversation-level operation that changes multiple Sticky buckets records one event with expandable per-bucket before/after transitions rather than fallback-only duplicate events.
 - Sticky keepalive renewals to the same target, no-diff PATCH requests, and pure reads do not emit event records.
 - Sticky model keys trim whitespace, fold case, and collapse a dated `-YYYY-MM-DD` alias into its base model. Exact model buckets win over the all-model fallback; a first successful request for a model materializes its exact bucket.
@@ -139,7 +140,7 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `routing_scope_json TEXT NULL`
 - `sticky_transitions_json TEXT NULL`
 
-`pool_sticky_routes` remains the all-model fallback. `pool_sticky_model_routes` stores exact model buckets with `(sticky_key, model_key)` as its primary key; `pool_sticky_model_route_generations` stores their independent generations. Existing `pool_sticky_routes` rows migrate as all-model fallbacks.
+`pool_sticky_routes` remains the all-model fallback. `pool_sticky_model_routes` stores exact model buckets with `(sticky_key, model_key)` as its primary key; `pool_sticky_model_route_generations` stores their independent generations plus nullable `last_clear_cause_attempt_public_id` and `last_clear_cause_http_status`. Existing `pool_sticky_routes` rows migrate as all-model fallbacks.
 
 - `invoke_id TEXT NULL`
 
@@ -166,7 +167,7 @@ The row is deleted only when there is no binding target, all four timeout overri
   - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
 - `POST /api/stats/prompt-cache-conversation-bindings/reset-affinity/{encodedPromptCacheKey}` clears all conversation affinity state after the confirmation in the 路由 tab.
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite&routingScope=all|model&routingModel=<model>`
-  - Returns `{ items, total, page, pageSize, routingModelFacets }`. `routingModelFacets` derives from all retained events, not just the active page or filter. Routing-model filters are single-select and reset to unrestricted when the category changes away from routing.
+  - Returns `{ items, total, page, pageSize, routingModelFacets }`. `routingModelFacets` derives from all retained events, not just the active page or filter. Routing-model filters are single-select and reset to unrestricted when the category changes away from routing. Returning to unrestricted replaces the model-filtered HTTP subset with the unfiltered live-topic head.
   - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext?, routingScope?, stickyTransitions[] }`.
   - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, selectedScore?, comparedScore?, excludedCandidates[] }`. Each score snapshot preserves the routing-time comparator inputs (`eligibility`, route-binding-failure penalty, model-route penalty plus code, priority rank, capacity lane, dispatch state, reset proximity, scarcity score, effective load, and last-selected timestamp). Missing context or score data on existing rows is rendered as historical reason unavailable and is never reconstructed from current account state.
   - A routing attempt link includes both the public attempt ID and its invoke ID when available. Records uses that pair as an exact target and does not apply the default date window, so the linked attempt and its immutable selection audit are the first result and expanded detail.
@@ -304,7 +305,9 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a normalized model has an exact Sticky bucket and the conversation fallback points elsewhere, the exact bucket wins. A first successful fallback-routed request materializes its own exact bucket for later requests.
 - Given concurrent successful routes for distinct model buckets, both may commit. Given concurrent successes for one model bucket, only the first valid generation write commits.
 - Given a manual account change or full reset completes while an earlier model request is in flight, the earlier request cannot restore its obsolete model bucket.
+- Given an automatic clear for `gpt-5.4` is followed by a first assignment for a different normalized model, the latter event is `firstSuccessfulAssignment` and has no cause reference from `gpt-5.4`.
 - Given a conversation has multiple model buckets, account capacity, active-Sticky conversation counts, and account detail aggregation count that conversation at most once per account.
+- Given the Events tab switches from a concrete routing model back to unrestricted while SSE is available, its visible rows are the unfiltered live-topic head and do not retain model-filtered HTTP rows.
 - Given the bulk clear confirmation dialog renders inside a `data-theme='vibe-dark'` subtree or another non-root themed surface, when the dialog opens, then its chrome and destructive callout surfaces use the active dark-theme semantic colors instead of inheriting light-theme mixed values.
 - Given selected conversations with mixed existing binding kinds, when the operator applies bulk FAST mode, then each selected key stores the requested FAST rewrite mode and keeps its previous binding kind.
 - Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.

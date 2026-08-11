@@ -28,6 +28,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - [x] Automatic Sticky affinity is isolated by normalized conversation + model buckets with per-model generations and conversation-level epoch fencing.
 - [x] Legacy Sticky rows migrate as all-model fallbacks; binding responses expose the fallback and all materialized model routes.
 - [x] Manual account binding atomically rewrites the fallback and materialized model buckets, while full affinity reset clears every affinity row and owner lock.
+- [x] Automatic clear causes persist and are consumed at the matching all-model or normalized-model generation scope, so one model's failed route cannot annotate another model's fresh assignment.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer uses `概览 / 调用 / 路由 / 设置 / 事件记录`, with route controls consolidated in 路由.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
@@ -65,6 +66,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - `prompt_cache_conversation_operation_events` stores append-only detail events per `promptCacheKey`, including action, origin, categorized `infoTypes[]`, optional binding/sticky snapshots, and optional `invokeId`.
 - `routing_scope_json` records `{kind:"all"}` or `{kind:"model",modelKey,requestModel}`; legacy routing rows are backfilled as all-model scope. Conversation-level multi-bucket changes additionally persist `sticky_transitions_json` for expandable before/after detail.
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}` returns paged newest-first records, stable full-history model facets, and supports `infoType`, `routingScope`, and normalized `routingModel` filters.
+- The Events tab keys its local source by both event category and routing-model scope, so changing back to unrestricted replaces a filtered HTTP subset with the live unfiltered head.
 - Detail-drawer PATCH writes emit `detailDrawer` records, Dashboard bulk workflows emit `dashboardBulk` records, and automatic group-to-account promotions emit `systemAuto` records.
 - Manual binding and full reset operations collapse their multi-bucket Sticky changes into one conversation-level event; policy-field PATCHes stay collapsed into one `conversationPolicyUpdated` summary event whose categories derive from the actual changed fields.
 - Runtime Sticky writes now use the persisted affinity generation as an optimistic concurrency token. Target creation, replacement, and conditional automatic removal advance it under the SQLite writer lock; automatic removal also requires the original failed account. The first successful concurrent completion wins and later completions are audited without overwriting the target.
@@ -120,6 +122,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - `cd web && bun run test -- --run PromptCacheConversationTable.test.tsx api.test.ts`
 - `cd web && bun run test -- DashboardWorkingConversationsSection.test.tsx`
 - `cargo test ensure_schema_creates_prompt_cache_conversation_operation_events_table -- --nocapture`
+- `cargo test model_scoped_sticky_clear_cause_does_not_cross_models -- --nocapture`
 - `cargo test prompt_cache_conversation_operation_events_list_filters_by_info_type -- --nocapture`
 - `cargo test bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_preserves_binding_kind -- --nocapture`
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
@@ -128,6 +131,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - `cargo test subscriptions -- --nocapture`
 - `cd web && bun run test -- src/features/prompt-cache/PromptCacheConversationTable.test.tsx src/hooks/useConversationDetailTopics.test.tsx`
 - `cd web && bun run test-storybook -- PromptCacheConversationTable.stories.tsx`
+- `cd web && bun run test -- PromptCacheConversationTable.test.tsx`
 - `cd web && bun run test -- src/demo/event-handlers.test.ts src/demo/handlers.test.ts src/demo/runtime.test.ts`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
