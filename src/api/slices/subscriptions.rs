@@ -213,6 +213,10 @@ impl SerializedTopicFrame {
 pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) active_subscriber_count: u64,
     pub(crate) builder_count: u64,
+    #[serde(skip)]
+    pub(crate) generic_fallback_build_count: u64,
+    #[serde(skip)]
+    pub(crate) live_path_db_read_count: u64,
     pub(crate) materialization_count: u64,
     pub(crate) serialization_count: u64,
     pub(crate) payload_clone_count: u64,
@@ -221,6 +225,8 @@ pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) cursor_advanced: u64,
     pub(crate) lagged_count: u64,
     pub(crate) skipped_count: u64,
+    #[serde(skip)]
+    pub(crate) reconnect_churn_count: u64,
     pub(crate) business_payload_count: u64,
     pub(crate) json_overlay_count: u64,
 }
@@ -232,12 +238,20 @@ pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
     pub(crate) summary: DashboardTopicTopologyCounterSnapshot,
     pub(crate) network_timeseries: DashboardTopicTopologyCounterSnapshot,
     pub(crate) network_recent: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) working_conversations: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) parallel_work: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) timeseries: DashboardTopicTopologyCounterSnapshot,
 }
 
 #[derive(Debug, Default)]
 struct DashboardTopicTopologyCounters {
     active_subscriber_count: AtomicU64,
     builder_count: AtomicU64,
+    generic_fallback_build_count: AtomicU64,
+    live_path_db_read_count: AtomicU64,
     materialization_count: AtomicU64,
     serialization_count: AtomicU64,
     payload_clone_count: AtomicU64,
@@ -246,6 +260,7 @@ struct DashboardTopicTopologyCounters {
     cursor_advanced: AtomicU64,
     lagged_count: AtomicU64,
     skipped_count: AtomicU64,
+    reconnect_churn_count: AtomicU64,
     business_payload_count: AtomicU64,
     json_overlay_count: AtomicU64,
 }
@@ -255,6 +270,8 @@ impl DashboardTopicTopologyCounters {
         DashboardTopicTopologyCounterSnapshot {
             active_subscriber_count: self.active_subscriber_count.load(Ordering::Relaxed),
             builder_count: self.builder_count.load(Ordering::Relaxed),
+            generic_fallback_build_count: self.generic_fallback_build_count.load(Ordering::Relaxed),
+            live_path_db_read_count: self.live_path_db_read_count.load(Ordering::Relaxed),
             materialization_count: self.materialization_count.load(Ordering::Relaxed),
             serialization_count: self.serialization_count.load(Ordering::Relaxed),
             payload_clone_count: self.payload_clone_count.load(Ordering::Relaxed),
@@ -263,6 +280,7 @@ impl DashboardTopicTopologyCounters {
             cursor_advanced: self.cursor_advanced.load(Ordering::Relaxed),
             lagged_count: self.lagged_count.load(Ordering::Relaxed),
             skipped_count: self.skipped_count.load(Ordering::Relaxed),
+            reconnect_churn_count: self.reconnect_churn_count.load(Ordering::Relaxed),
             business_payload_count: self.business_payload_count.load(Ordering::Relaxed),
             json_overlay_count: self.json_overlay_count.load(Ordering::Relaxed),
         }
@@ -271,6 +289,9 @@ impl DashboardTopicTopologyCounters {
     #[cfg(test)]
     fn reset(&self) {
         self.builder_count.store(0, Ordering::Relaxed);
+        self.generic_fallback_build_count
+            .store(0, Ordering::Relaxed);
+        self.live_path_db_read_count.store(0, Ordering::Relaxed);
         self.materialization_count.store(0, Ordering::Relaxed);
         self.serialization_count.store(0, Ordering::Relaxed);
         self.payload_clone_count.store(0, Ordering::Relaxed);
@@ -279,6 +300,7 @@ impl DashboardTopicTopologyCounters {
         self.cursor_advanced.store(0, Ordering::Relaxed);
         self.lagged_count.store(0, Ordering::Relaxed);
         self.skipped_count.store(0, Ordering::Relaxed);
+        self.reconnect_churn_count.store(0, Ordering::Relaxed);
         self.business_payload_count.store(0, Ordering::Relaxed);
         self.json_overlay_count.store(0, Ordering::Relaxed);
     }
@@ -290,6 +312,9 @@ struct DashboardDeliveryTopologyCounters {
     summary: DashboardTopicTopologyCounters,
     network_timeseries: DashboardTopicTopologyCounters,
     network_recent: DashboardTopicTopologyCounters,
+    working_conversations: DashboardTopicTopologyCounters,
+    parallel_work: DashboardTopicTopologyCounters,
+    timeseries: DashboardTopicTopologyCounters,
 }
 
 impl DashboardDeliveryTopologyCounters {
@@ -299,6 +324,9 @@ impl DashboardDeliveryTopologyCounters {
             "stats.summary.current" => Some(&self.summary),
             "dashboard.network-timeseries.window" => Some(&self.network_timeseries),
             "dashboard.network-recent.current" => Some(&self.network_recent),
+            "dashboard.working-conversations.current" => Some(&self.working_conversations),
+            "stats.parallel-work.current" => Some(&self.parallel_work),
+            "stats.timeseries.open-window" => Some(&self.timeseries),
             _ => None,
         }
     }
@@ -311,10 +339,18 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
-    fn record_builder(&self, topic_name: &str) {
+    fn record_materialization(&self, topic_name: &str, generic_fallback: bool) {
         if let Some(topic) = self.for_topic(topic_name) {
             topic.builder_count.fetch_add(1, Ordering::Relaxed);
             topic.materialization_count.fetch_add(1, Ordering::Relaxed);
+            if generic_fallback {
+                topic
+                    .generic_fallback_build_count
+                    .fetch_add(1, Ordering::Relaxed);
+                topic
+                    .live_path_db_read_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -355,6 +391,12 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
+    fn record_reconnect_churn(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.reconnect_churn_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn record_business_payload(&self, topic_name: &str) {
         if let Some(topic) = self.for_topic(topic_name) {
             topic.business_payload_count.fetch_add(1, Ordering::Relaxed);
@@ -373,6 +415,9 @@ impl DashboardDeliveryTopologyCounters {
             summary: self.summary.snapshot(),
             network_timeseries: self.network_timeseries.snapshot(),
             network_recent: self.network_recent.snapshot(),
+            working_conversations: self.working_conversations.snapshot(),
+            parallel_work: self.parallel_work.snapshot(),
+            timeseries: self.timeseries.snapshot(),
         }
     }
 
@@ -383,6 +428,9 @@ impl DashboardDeliveryTopologyCounters {
             snapshot.summary,
             snapshot.network_timeseries,
             snapshot.network_recent,
+            snapshot.working_conversations,
+            snapshot.parallel_work,
+            snapshot.timeseries,
         ]
         .into_iter()
         .any(|topic| {
@@ -390,6 +438,9 @@ impl DashboardDeliveryTopologyCounters {
                 || topic.skipped_count > 0
                 || topic.payload_clone_count > 0
                 || topic.json_overlay_count > 0
+                || topic.generic_fallback_build_count > 0
+                || topic.live_path_db_read_count > 0
+                || topic.reconnect_churn_count > 0
         })
     }
 
@@ -399,6 +450,9 @@ impl DashboardDeliveryTopologyCounters {
         self.summary.reset();
         self.network_timeseries.reset();
         self.network_recent.reset();
+        self.working_conversations.reset();
+        self.parallel_work.reset();
+        self.timeseries.reset();
     }
 }
 
@@ -1437,6 +1491,19 @@ impl SubscriptionHub {
         self.serialization_count.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    async fn dashboard_topic_uses_typed_materializer(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        self.state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .is_some_and(|cached| cached.dashboard_materializer.is_some())
+    }
+
     pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         self.dashboard_topology_counters.snapshot()
     }
@@ -1936,6 +2003,10 @@ impl SubscriptionHub {
                 .await?;
             let topic_key = topic.cache_key()?;
             let resume_cursor = resume_by_topic_key.get(&topic_key);
+            if resume_cursor.is_some() {
+                self.dashboard_topology_counters
+                    .record_reconnect_churn(topic.name());
+            }
             let continuity_reset = resume_cursor
                 .zip(cached.continuity_reset_cursor)
                 .is_some_and(|(resume, reset_cursor)| resume.cursor < reset_cursor);
@@ -2271,8 +2342,11 @@ impl SubscriptionHub {
         } else {
             (topic.build_cached_payload(state.clone()).await?, None)
         };
-        self.dashboard_topology_counters
-            .record_builder(topic.name());
+        self.dashboard_topology_counters.record_materialization(
+            topic.name(),
+            matches!(&built_payload, BuiltSubscriptionTopicPayload::Json(_))
+                && topic.is_unmigrated_dashboard_hot_projection(),
+        );
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -2720,7 +2794,7 @@ impl SubscriptionHub {
 
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
-                .record_builder(pending.topic_name);
+                .record_materialization(pending.topic_name, false);
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
@@ -6077,6 +6151,9 @@ pub(crate) async fn topic_sse_stream(
                     | "stats.summary.current"
                     | "dashboard.network-timeseries.window"
                     | "dashboard.network-recent.current"
+                    | "dashboard.working-conversations.current"
+                    | "stats.parallel-work.current"
+                    | "stats.timeseries.open-window"
             )
         })
         .map(str::to_string)
@@ -6217,6 +6294,24 @@ impl SubscriptionTopic {
 
     fn uses_conversation_overview_refresh(&self) -> bool {
         matches!(self, Self::InvocationHistoryOverview { .. })
+    }
+
+    fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
+        match self {
+            Self::DashboardWorkingConversationsCurrent { .. } => true,
+            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. } => {
+                range != "yesterday"
+            }
+            _ => false,
+        }
+    }
+
+    fn is_closed_dashboard_hot_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. }
+                if range == "yesterday"
+        )
     }
 
     fn uses_dashboard_network_live_snapshot(&self) -> bool {
@@ -6700,7 +6795,7 @@ impl SubscriptionTopic {
     fn is_affected_by_runtime_mutation(&self, mutation: &RuntimeMutation) -> bool {
         match mutation {
             RuntimeMutation::Invocation(mutation) => {
-                if self.is_closed_summary_topic() {
+                if self.is_closed_summary_topic() || self.is_closed_dashboard_hot_snapshot() {
                     return false;
                 }
                 match self {
@@ -8581,6 +8676,35 @@ mod tests {
                 topic: "dashboard.network-recent.current".to_string(),
                 params: BTreeMap::new(),
             },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.working-conversations.current".to_string(),
+                params: BTreeMap::from([
+                    ("pageSize".to_string(), "20".to_string()),
+                    ("recentInvocationLimit".to_string(), "16".to_string()),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.parallel-work.current".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "1d".to_string()),
+                    ("bucket".to_string(), "1m".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.timeseries.open-window".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "1d".to_string()),
+                    ("bucket".to_string(), "1m".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
         ]
     }
 
@@ -8688,6 +8812,9 @@ mod tests {
             "stats.summary.current",
             "dashboard.network-timeseries.window",
             "dashboard.network-recent.current",
+            "dashboard.working-conversations.current",
+            "stats.parallel-work.current",
+            "stats.timeseries.open-window",
         ];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut stream = response.into_body().into_data_stream();
@@ -8792,6 +8919,24 @@ mod tests {
                 topic.name(),
             );
         }
+        for topic in &topics {
+            let expected_typed_materializer = matches!(
+                topic.name(),
+                "dashboard.activity.current"
+                    | "stats.summary.current"
+                    | "dashboard.network-timeseries.window"
+                    | "dashboard.network-recent.current"
+            );
+            assert_eq!(
+                state
+                    .subscription_hub
+                    .dashboard_topic_uses_typed_materializer(topic)
+                    .await,
+                expected_typed_materializer,
+                "typed materializer seam must report the current implementation for {}",
+                topic.name(),
+            );
+        }
         {
             let guard = state.subscription_hub.state.lock().await;
             assert_eq!(
@@ -8825,6 +8970,22 @@ mod tests {
         state
             .proxy_runtime_invocations
             .upsert(dashboard_runtime_topology_live_record(&occurred_at));
+        let current_capture = state
+            .proxy_runtime_invocations
+            .capture_memory_snapshot()
+            .expect("capture deterministic Dashboard current slice");
+        assert!(current_capture.changed);
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardCurrentSlice {
+                    slice: Box::new(DashboardCurrentProjectionSlice::from(
+                        &current_capture.snapshot,
+                    )),
+                },
+            )
+            .await;
         let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
         terminal.id = 748_003;
         terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
@@ -8866,21 +9027,123 @@ mod tests {
             4096,
             Utc::now() - ChronoDuration::seconds(1),
         );
-        crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
-            state.as_ref(),
-        );
-        crate::api::slices::error_distribution_and_sse::schedule_dashboard_network_projection(
-            state.as_ref(),
-        );
+        let network_capture = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture deterministic Dashboard network slice");
+        assert!(network_capture.changed);
         state
             .subscription_hub
-            .refresh_topic(
+            .handle_internal_broadcast(
                 state.clone(),
-                topics.last().expect("network recent topic").clone(),
-                true,
+                BroadcastPayload::DashboardNetworkSlice {
+                    slice: Box::new(network_capture.slice),
+                },
             )
+            .await;
+        let mut fallback = terminal.clone();
+        fallback.id = 748_004;
+        fallback.invoke_id = "dashboard-runtime-topology-fallback".to_string();
+        // Parallel-work only reports completed buckets, so place the live mutation in the
+        // previous minute while still applying it after both subscriptions are established.
+        fallback.occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        fallback.created_at = fallback.occurred_at.clone();
+        fallback.prompt_cache_key = Some("dashboard-runtime-topology-fallback".to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(fallback.id)
+        .bind(fallback.invoke_id.as_str())
+        .bind(fallback.occurred_at.as_str())
+        .bind(fallback.source.as_str())
+        .bind("success")
+        .bind(42_i64)
+        .bind(0.25_f64)
+        .bind(
+            json!({
+                "promptCacheKey": fallback.prompt_cache_key.as_deref(),
+                "upstreamAccountId": fallback.upstream_account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist generic fallback benchmark invocation");
+        state
+            .subscription_hub
+            .handle_runtime_mutation_batch(
+                state.clone(),
+                (1..=10_000)
+                    .map(|sequence| SequencedRuntimeMutation {
+                        sequence,
+                        mutation: RuntimeMutation::invocation(
+                            &fallback,
+                            RuntimeMutationKind::RuntimeUpsert,
+                        ),
+                    })
+                    .collect(),
+            )
+            .await;
+        let delivery_before_reconnect = state.subscription_hub.dashboard_topology_counters();
+        for topic in [
+            delivery_before_reconnect.activity,
+            delivery_before_reconnect.summary,
+            delivery_before_reconnect.network_timeseries,
+            delivery_before_reconnect.network_recent,
+            delivery_before_reconnect.working_conversations,
+            delivery_before_reconnect.parallel_work,
+            delivery_before_reconnect.timeseries,
+        ] {
+            assert_eq!(
+                topic.active_subscriber_count, 2,
+                "the live Dashboard topology must retain two subscribers before reconnect"
+            );
+            assert_eq!(
+                topic.reconnect_churn_count, 0,
+                "runtime mutations must not create reconnect churn"
+            );
+        }
+        let resume = {
+            let guard = state.subscription_hub.state.lock().await;
+            topics
+                .iter()
+                .map(|topic| {
+                    let topic_key = topic.cache_key().expect("Dashboard topic key");
+                    let cached = guard
+                        .topics
+                        .get(&topic_key)
+                        .expect("cached Dashboard topic");
+                    SubscriptionResumeCursor {
+                        topic_key,
+                        cursor: cached.cursor,
+                        schema_epoch: cached.schema_epoch.clone(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let resumed = state
+            .subscription_hub
+            .prepare_connection(state.clone(), descriptors, resume)
             .await
-            .expect("emit one deterministic network recent frame");
+            .expect("reconnect Dashboard topology with cursors");
+        assert!(resumed.initial.is_empty());
+        assert!(
+            resumed
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.disposition == TopicInitDisposition::ResumeCaughtUp),
+            "same-cursor reconnect must not rebuild the Dashboard bundle"
+        );
         let (first_frames, second_frames) = tokio::join!(
             collect_dashboard_runtime_topology_sse_events(first_response),
             collect_dashboard_runtime_topology_sse_events(second_response),
@@ -8903,6 +9166,9 @@ mod tests {
             "stats.summary.current",
             "dashboard.network-timeseries.window",
             "dashboard.network-recent.current",
+            "dashboard.working-conversations.current",
+            "stats.parallel-work.current",
+            "stats.timeseries.open-window",
         ] {
             let first_owner_frames = first_observations
                 .get(topic)
@@ -8976,6 +9242,9 @@ mod tests {
             delivery.summary,
             delivery.network_timeseries,
             delivery.network_recent,
+            delivery.working_conversations,
+            delivery.parallel_work,
+            delivery.timeseries,
         ] {
             assert_eq!(
                 topic.business_payload_count, 0,
@@ -8989,13 +9258,13 @@ mod tests {
                 topic.materialization_count >= 1,
                 "each active Dashboard topic should materialize an immutable frame"
             );
-            assert_eq!(topic.active_subscriber_count, 2);
             assert_eq!(topic.builder_count, topic.materialization_count);
             assert!(topic.frame_bytes_count > 0);
             assert_eq!(topic.cursor_advanced, topic.serialization_count);
             assert!(topic.frame_reused > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
+            assert_eq!(topic.reconnect_churn_count, 1);
         }
         for topic in [delivery.activity, delivery.summary] {
             assert_eq!(
@@ -9017,6 +9286,103 @@ mod tests {
                 "network topic materialization must borrow its typed base"
             );
         }
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+        ] {
+            assert_eq!(topic.generic_fallback_build_count, 0);
+            assert_eq!(topic.live_path_db_read_count, 0);
+        }
+        for topic in [
+            delivery.working_conversations,
+            delivery.parallel_work,
+            delivery.timeseries,
+        ] {
+            assert_eq!(topic.generic_fallback_build_count, 1);
+            assert_eq!(topic.live_path_db_read_count, 1);
+            assert_eq!(topic.builder_count, 1);
+            assert_eq!(topic.materialization_count, 1);
+            assert_eq!(topic.serialization_count, 1);
+            assert_eq!(topic.cursor_advanced, 1);
+        }
+        assert!(
+            state
+                .subscription_hub
+                .dashboard_delivery_has_degraded_signal(),
+            "generic fallback topics must not be classified as healthy"
+        );
+    }
+
+    #[test]
+    fn dashboard_delivery_reconnect_churn_is_degraded() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_reconnect_churn("dashboard.working-conversations.current");
+
+        assert!(counters.has_degraded_signal());
+    }
+
+    #[test]
+    fn hot_fallback_metrics_exclude_closed_dashboard_snapshots() {
+        let closed_activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let closed_summary = SubscriptionTopic::SummaryCurrent {
+            window: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let closed_parallel = SubscriptionTopic::ParallelWorkCurrent {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let closed_timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let open_parallel = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let open_timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let mutation = RuntimeMutation::invocation(
+            &dashboard_runtime_topology_live_record("2026-08-11 12:00:00"),
+            RuntimeMutationKind::RuntimeUpsert,
+        );
+
+        for topic in [
+            &closed_activity,
+            &closed_summary,
+            &closed_parallel,
+            &closed_timeseries,
+        ] {
+            assert!(!topic.is_unmigrated_dashboard_hot_projection());
+        }
+        assert!(open_parallel.is_unmigrated_dashboard_hot_projection());
+        assert!(open_timeseries.is_unmigrated_dashboard_hot_projection());
+        assert!(!closed_parallel.is_affected_by_runtime_mutation(&mutation));
+        assert!(!closed_timeseries.is_affected_by_runtime_mutation(&mutation));
+        assert!(open_parallel.is_affected_by_runtime_mutation(&mutation));
+        assert!(open_timeseries.is_affected_by_runtime_mutation(&mutation));
     }
 
     #[tokio::test]
