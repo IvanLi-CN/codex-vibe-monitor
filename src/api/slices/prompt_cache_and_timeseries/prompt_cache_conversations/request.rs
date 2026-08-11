@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::anyhow;
+use sqlx::Executor;
 
 pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
@@ -336,11 +337,14 @@ pub(crate) fn build_prompt_cache_conversation_cursor(
     )
 }
 
-pub(crate) async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_snapshot_row_id_ceiling<'e, E>(
+    executor: E,
     snapshot_at: DateTime<Utc>,
     source_scope: InvocationSourceScope,
-) -> Result<Option<i64>> {
+) -> Result<Option<i64>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let snapshot_created_at_upper_bound = format_utc_iso_precise(snapshot_at);
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT MAX(id) AS max_id \
@@ -355,26 +359,31 @@ pub(crate) async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
 
     let (max_id,) = query
         .build_query_as::<(Option<i64>,)>()
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await?;
     Ok(max_id)
 }
 
-pub(crate) async fn resolve_prompt_cache_conversation_snapshot_filter(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn resolve_prompt_cache_conversation_snapshot_filter<'e, E>(
+    executor: E,
     snapshot_at: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
-) -> Result<PromptCacheConversationSnapshotFilter> {
+) -> Result<PromptCacheConversationSnapshotFilter>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let snapshot_upper_bound = db_occurred_at_lower_bound(snapshot_at + ChronoDuration::seconds(1));
     let snapshot_created_at_upper_bound = Some(format_utc_iso_precise(snapshot_at));
     let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
         Some(value) => value,
-        None => {
-            query_prompt_cache_conversation_snapshot_row_id_ceiling(pool, snapshot_at, source_scope)
-                .await?
-                .unwrap_or(0)
-        }
+        None => query_prompt_cache_conversation_snapshot_row_id_ceiling(
+            executor,
+            snapshot_at,
+            source_scope,
+        )
+        .await?
+        .unwrap_or(0),
     });
     Ok(PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound,

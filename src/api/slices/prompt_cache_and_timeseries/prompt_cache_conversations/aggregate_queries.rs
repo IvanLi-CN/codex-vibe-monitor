@@ -1,4 +1,5 @@
 use super::*;
+use sqlx::Executor;
 use sqlx::FromRow;
 
 const PROMPT_CACHE_KEY_JSON_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
@@ -213,13 +214,16 @@ pub(crate) async fn query_in_progress_prompt_cache_conversation_count(
     Ok(count)
 }
 
-pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot<'e, E>(
+    executor: E,
     range_start_bound: &str,
     _snapshot: &PromptCacheConversationSnapshotFilter,
     source_scope: InvocationSourceScope,
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
         InvocationSourceScope::All => {
             "SELECT COUNT(*) AS count \
@@ -259,17 +263,20 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
         blocked_binding_filter,
     );
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
     Ok(count)
 }
 
-pub(crate) async fn query_existing_working_prompt_cache_conversation_keys(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_existing_working_prompt_cache_conversation_keys<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
     prompt_cache_keys: &HashSet<String>,
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if prompt_cache_keys.is_empty() {
         return Ok(HashSet::new());
     }
@@ -328,7 +335,7 @@ pub(crate) async fn query_existing_working_prompt_cache_conversation_keys(
 
     Ok(query
         .build_query_as::<PromptCacheKeyRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?
         .into_iter()
         .map(|row| row.prompt_cache_key)
@@ -476,8 +483,8 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page<'e, E>(
+    executor: E,
     range_start_bound: &str,
     _snapshot: &PromptCacheConversationSnapshotFilter,
     _snapshot_hour_start_epoch: i64,
@@ -486,7 +493,10 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
     cursor: Option<&(String, String, String, Option<i64>)>,
     limit: i64,
-) -> Result<Vec<PromptCacheConversationAggregateRow>> {
+) -> Result<Vec<PromptCacheConversationAggregateRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new("SELECT prompt_cache_key, ");
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(
@@ -574,9 +584,220 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
 
     query
         .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_working_conversation_aggregate_for_key<'e, E>(
+    executor: E,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheConversationAggregateRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT prompt_cache_key, ");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(
+            "proxy_request_count AS request_count, \
+             proxy_total_tokens AS total_tokens, \
+             proxy_total_cost AS total_cost, \
+             COALESCE(proxy_created_at, created_at) AS created_at, \
+             COALESCE(proxy_last_activity_at, last_activity_at) AS last_activity_at, \
+             COALESCE(proxy_created_at, created_at) AS cursor_created_at, \
+             proxy_sort_anchor_at AS sort_anchor_at, \
+             proxy_last_terminal_at AS last_terminal_at, \
+             proxy_last_in_flight_at AS last_in_flight_at \
+         FROM prompt_cache_working_set_live \
+         WHERE source_scope_proxy_only = 1 \
+           AND proxy_sort_anchor_at IS NOT NULL",
+        );
+    } else {
+        query.push(
+            "request_count, \
+             total_tokens, \
+             total_cost, \
+             created_at, \
+             last_activity_at, \
+             created_at AS cursor_created_at, \
+             sort_anchor_at, \
+             last_terminal_at, \
+             last_in_flight_at \
+         FROM prompt_cache_working_set_live \
+         WHERE source_scope_all = 1",
+        );
+    }
+    match source_scope {
+        InvocationSourceScope::All => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "last_activity_at",
+            "last_terminal_at",
+            "last_in_flight_at",
+        ),
+        InvocationSourceScope::ProxyOnly => append_working_set_freshness_filter(
+            &mut query,
+            range_start_bound,
+            "proxy_last_activity_at",
+            "proxy_last_terminal_at",
+            "proxy_last_in_flight_at",
+        ),
+    }
+    append_working_set_blocked_binding_filter(
+        &mut query,
+        source_scope,
+        "prompt_cache_key",
+        match source_scope {
+            InvocationSourceScope::All => "last_terminal_at",
+            InvocationSourceScope::ProxyOnly => "proxy_last_terminal_at",
+        },
+        blocked_binding_filter,
+    );
+    query
+        .push(" AND prompt_cache_key = ")
+        .push_bind(prompt_cache_key)
+        .push(" LIMIT 1");
+
+    query
+        .build_query_as::<PromptCacheConversationAggregateRow>()
+        .fetch_optional(executor)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_working_conversation_lifecycle_aggregate_for_key(
+    connection: &mut SqliteConnection,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    prompt_cache_key: &str,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+    snapshot_filter: &PromptCacheConversationSnapshotFilter,
+    snapshot_hour_start_epoch: i64,
+    snapshot_hour_start_bound: &str,
+) -> Result<Option<PromptCacheConversationAggregateRow>> {
+    // P2 can lag a terminal P1 write. This is intentionally a one-key reconstruction: it
+    // combines durable lifecycle rollups with the exact tail instead of reopening the working
+    // window when a compact terminal mutation no longer has a runtime-store preview.
+    let selected_keys = vec![prompt_cache_key.to_string()];
+    let mut aggregate = query_prompt_cache_conversation_lifecycle_aggregates_on_connection(
+        connection,
+        source_scope,
+        &selected_keys,
+        Some(snapshot_filter),
+        Some(snapshot_hour_start_epoch),
+        Some(snapshot_hour_start_bound),
+    )
+    .await?
+    .remove(prompt_cache_key);
+    let Some(mut aggregate) = aggregate.take() else {
+        return Ok(None);
+    };
+
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT \
+             MAX(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') THEN occurred_at END) AS last_terminal_at, \
+             MAX(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') THEN occurred_at END) AS last_in_flight_at \
+         FROM codex_invocations \
+         WHERE ",
+    );
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        "created_at",
+        Some(snapshot_filter),
+    );
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" = ")
+        .push_bind(prompt_cache_key);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    let (last_terminal_at, last_in_flight_at) = query
+        .build_query_as::<(Option<String>, Option<String>)>()
+        .fetch_one(&mut *connection)
+        .await?;
+    let is_fresh = last_in_flight_at.is_some()
+        || last_terminal_at
+            .as_deref()
+            .is_some_and(|value| value >= range_start_bound)
+        || (last_in_flight_at.is_none()
+            && last_terminal_at.is_none()
+            && aggregate.last_activity_at.as_str() >= range_start_bound);
+    if !is_fresh {
+        return Ok(None);
+    }
+    aggregate.cursor_created_at = Some(aggregate.created_at.clone());
+    aggregate.sort_anchor_at = Some(
+        resolve_working_conversation_sort_anchor(
+            last_terminal_at.as_deref(),
+            last_in_flight_at.as_deref(),
+            aggregate.created_at.as_str(),
+        )
+        .to_string(),
+    );
+    aggregate.last_terminal_at = last_terminal_at;
+    aggregate.last_in_flight_at = last_in_flight_at;
+    if let Some(blocked_binding_filter) = blocked_binding_filter
+        && blocked_binding_filter.is_active()
+    {
+        let Some(last_terminal_at) = aggregate.last_terminal_at.as_deref() else {
+            return Ok(None);
+        };
+        let mut filter_query = QueryBuilder::<Sqlite>::new(
+            "SELECT EXISTS(SELECT 1 FROM codex_invocations AS blocked_invocation WHERE ",
+        );
+        push_snapshot_invocation_visibility_clause(
+            &mut filter_query,
+            "blocked_invocation.occurred_at",
+            "blocked_invocation.id",
+            "blocked_invocation.created_at",
+            Some(snapshot_filter),
+        );
+        filter_query
+            .push(" AND ")
+            .push(KEY_EXPR.replace("payload", "blocked_invocation.payload"))
+            .push(" = ")
+            .push_bind(prompt_cache_key)
+            .push(" AND blocked_invocation.occurred_at = ")
+            .push_bind(last_terminal_at)
+            .push(" AND ")
+            .push(BLOCKED_BINDING_JSON_EXISTS_SQL.replace("payload", "blocked_invocation.payload"));
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            filter_query
+                .push(" AND blocked_invocation.source = ")
+                .push_bind(SOURCE_PROXY);
+        }
+        if let Some(upstream_account_id) = blocked_binding_filter.upstream_account_id {
+            filter_query
+                .push(" AND CAST(json_extract(blocked_invocation.payload, '$.blockedBinding.upstreamAccountId') AS INTEGER) = ")
+                .push_bind(upstream_account_id);
+        }
+        if let Some(constraint_source) = blocked_binding_filter.constraint_source {
+            let raw = match constraint_source {
+                BlockedBindingConstraintSource::UpstreamAccountBinding => "upstreamAccountBinding",
+                BlockedBindingConstraintSource::EncryptedSessionOwner => "encryptedSessionOwner",
+            };
+            filter_query
+                .push(" AND CAST(json_extract(blocked_invocation.payload, '$.blockedBinding.constraintSource') AS TEXT) = ")
+                .push_bind(raw);
+        }
+        filter_query.push(")");
+        let (matches_filter,) = filter_query
+            .build_query_as::<(i64,)>()
+            .fetch_one(&mut *connection)
+            .await?;
+        if matches_filter == 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(aggregate))
 }
 
 pub(crate) fn merge_prompt_cache_lifecycle_aggregate_row(
@@ -822,11 +1043,36 @@ pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(
     }
 
     let mut tx = pool.begin().await?;
-    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+    let aggregates = query_prompt_cache_conversation_lifecycle_aggregates_on_connection(
+        tx.as_mut(),
+        source_scope,
+        selected_keys,
+        snapshot_filter,
+        snapshot_hour_start_epoch,
+        snapshot_hour_start_bound,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(aggregates)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates_on_connection(
+    connection: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+    snapshot_filter: Option<&PromptCacheConversationSnapshotFilter>,
+    snapshot_hour_start_epoch: Option<i64>,
+    snapshot_hour_start_bound: Option<&str>,
+) -> Result<HashMap<String, PromptCacheConversationAggregateRow>> {
+    if selected_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(connection).await?;
     let mut aggregates = HashMap::<String, PromptCacheConversationAggregateRow>::new();
     if snapshot_filter.is_none() {
         for row in query_prompt_cache_lifecycle_rollup_aggregates_tx(
-            tx.as_mut(),
+            connection,
             source_scope,
             selected_keys,
             snapshot_hour_start_epoch,
@@ -839,7 +1085,7 @@ pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(
         (snapshot_hour_start_epoch, snapshot_hour_start_bound)
     {
         for row in query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
-            tx.as_mut(),
+            connection,
             source_scope,
             selected_keys,
             rollup_live_cursor,
@@ -852,7 +1098,7 @@ pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(
         }
     }
     for row in query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
-        tx.as_mut(),
+        connection,
         source_scope,
         selected_keys,
         rollup_live_cursor,
@@ -869,6 +1115,5 @@ pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(
     {
         merge_prompt_cache_lifecycle_aggregate_row(&mut aggregates, row);
     }
-    tx.commit().await?;
     Ok(aggregates)
 }

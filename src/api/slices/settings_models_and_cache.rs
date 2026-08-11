@@ -965,7 +965,7 @@ pub(crate) enum PromptCacheConversationImplicitFilterKind {
     CappedTo50,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationResponse {
     pub(crate) prompt_cache_key: String,
