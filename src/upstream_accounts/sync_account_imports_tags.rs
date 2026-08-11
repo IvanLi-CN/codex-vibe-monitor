@@ -2289,7 +2289,7 @@ pub(crate) async fn persist_tag_update(
     rule: &TagRoutingRule,
 ) -> Result<TagDetail> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
+    let affected = sqlx::query(
         r#"
         UPDATE pool_tags
         SET name = ?2,
@@ -2303,6 +2303,8 @@ pub(crate) async fn persist_tag_update(
             available_models_json = ?10,
             updated_at = ?11
         WHERE id = ?1
+          AND protected = 0
+          AND system_key IS NULL
         "#,
     )
     .bind(tag_id)
@@ -2321,7 +2323,11 @@ pub(crate) async fn persist_tag_update(
     .bind(encode_string_array_json(&rule.available_models)?)
     .bind(&now_iso)
     .execute(pool)
-    .await?;
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        return Err(anyhow!("system tag cannot be edited"));
+    }
     load_tag_detail(pool, tag_id)
         .await?
         .ok_or_else(|| anyhow!("tag not found after update"))
@@ -2375,21 +2381,41 @@ pub(crate) async fn delete_tag_by_id(
             "tag is still associated with accounts or pending OAuth sessions".to_string(),
         ));
     }
-    let affected = sqlx::query("DELETE FROM pool_tags WHERE id = ?1")
-        .bind(tag_id)
-        .execute(pool)
-        .await
-        .map_err(internal_error_tuple)?
-        .rows_affected();
+    let affected =
+        sqlx::query("DELETE FROM pool_tags WHERE id = ?1 AND protected = 0 AND system_key IS NULL")
+            .bind(tag_id)
+            .execute(pool)
+            .await
+            .map_err(internal_error_tuple)?
+            .rows_affected();
     if affected == 0 {
-        return Err((StatusCode::NOT_FOUND, "tag not found".to_string()));
+        let still_exists =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM pool_tags WHERE id = ?1 LIMIT 1")
+                .bind(tag_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(internal_error_tuple)?
+                .is_some();
+        return Err(if still_exists {
+            (
+                StatusCode::CONFLICT,
+                "system tag cannot be deleted".to_string(),
+            )
+        } else {
+            (StatusCode::NOT_FOUND, "tag not found".to_string())
+        });
     }
     Ok(())
 }
 
 pub(crate) fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
     let message = err.to_string();
-    if message.contains("UNIQUE constraint failed") {
+    if message.contains("system tag cannot be edited") {
+        (
+            StatusCode::CONFLICT,
+            "system tag cannot be edited".to_string(),
+        )
+    } else if message.contains("UNIQUE constraint failed") {
         (StatusCode::CONFLICT, "tag name already exists".to_string())
     } else {
         internal_error_tuple(err)
