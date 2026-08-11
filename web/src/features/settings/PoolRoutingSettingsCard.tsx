@@ -319,7 +319,7 @@ export function PoolRoutingSettingsCard({
                   step="1"
                   value={field.value}
                   disabled={!writesEnabled || busy}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-sm font-mono"
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
                   onChange={(event) => onTimeoutChange(field.key, event.target.value)}
                 />
               </label>
