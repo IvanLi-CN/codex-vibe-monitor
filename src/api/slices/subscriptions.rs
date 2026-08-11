@@ -10818,6 +10818,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeseries_topic_base_preserves_pending_terminal_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-timeseries-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build terminal-consistent timeseries base")
+            .dashboard_materializer()
+            .expect("typed timeseries materializer");
+        let initial_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(None, None, None)
+                .expect("serialize materialized timeseries base"),
+        )
+        .expect("timeseries payload JSON");
+
+        assert_eq!(
+            initial_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the typed baseline must include the terminal delta before SQLite persistence",
+        );
+
+        let replayed_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(
+                    None,
+                    None,
+                    Some(&DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: vec![delta],
+                    }),
+                )
+                .expect("skip the terminal delta already folded into the base"),
+        )
+        .expect("timeseries replay payload JSON");
+        assert_eq!(
+            replayed_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the sequence watermark must reject the pending terminal replay",
+        );
+    }
+
+    #[tokio::test]
     async fn summary_materializer_skips_terminal_delta_already_folded_into_base() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),

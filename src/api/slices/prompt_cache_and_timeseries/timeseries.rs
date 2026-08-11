@@ -420,6 +420,50 @@ impl TimeseriesTopicMaterializedBase {
         state: &AppState,
         params: &TimeseriesQuery,
     ) -> Result<Self, ApiError> {
+        // Hold the terminal writer behind a SQLite write reservation while capturing both the
+        // durable baseline and the in-memory terminal watermark. A row ID is not a version: a
+        // terminal write can replace an older running row without advancing the row cursor.
+        let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let reconcile_guard = reconcile_gate.lock().await;
+        let barrier = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        drop(reconcile_guard);
+
+        let build_result = Self::build_from_stable_persistence(state, params).await;
+        let (pending_terminal_deltas, terminal_sequence) = {
+            let cache = state.dashboard_activity_snapshot_cache.lock().await;
+            (
+                cache
+                    .read_model
+                    .pending_terminal_deltas
+                    .iter()
+                    .filter(|delta| delta.persisted_row_id.is_none())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                cache.read_model.next_terminal_sequence,
+            )
+        };
+        if build_result.is_ok() {
+            barrier.commit().await?;
+        } else {
+            barrier.rollback().await?;
+        }
+
+        let mut base = build_result?;
+        base.apply_terminal_slice(Some(&DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas: pending_terminal_deltas,
+        }));
+        // All durable terminal records in the baseline and every pending record replayed above
+        // are covered by this watermark. Future terminal slices may therefore safely reconcile
+        // an older persisted row exactly once.
+        base.terminal_sequence = base.terminal_sequence.max(terminal_sequence);
+        Ok(base)
+    }
+
+    async fn build_from_stable_persistence(
+        state: &AppState,
+        params: &TimeseriesQuery,
+    ) -> Result<Self, ApiError> {
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
         let source_scope = resolve_default_source_scope(&state.pool).await?;
         let range_window = resolve_range_window(&params.range, reporting_tz)?;
@@ -628,10 +672,7 @@ impl TimeseriesTopicMaterializedBase {
             return;
         }
         self.terminal_sequence = terminal_sequence;
-        if persisted_row_id.is_some_and(|row_id| row_id <= self.snapshot_id)
-            || (self.source_scope == InvocationSourceScope::ProxyOnly
-                && delta.source != SOURCE_PROXY)
-        {
+        if self.source_scope == InvocationSourceScope::ProxyOnly && delta.source != SOURCE_PROXY {
             return;
         }
         if let Some(row_id) = persisted_row_id {
@@ -1600,6 +1641,62 @@ mod minute_projection_tests {
         assert_eq!(point["firstResponseByteTotalP95Ms"], 101.5);
         assert_eq!(point["firstTokenP95Ms"], 95.5);
         assert_eq!(payload["snapshotId"], 2);
+    }
+
+    #[test]
+    fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
+        let now = Utc::now();
+        let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
+        let mut base = TimeseriesTopicMaterializedBase {
+            range_start: now - ChronoDuration::seconds(10),
+            range_end: now + ChronoDuration::seconds(60),
+            range_spec: "1m".to_string(),
+            bucket_selection: TimeseriesBucketSelection {
+                bucket_seconds: 60,
+                effective_bucket: "1m".to_string(),
+                available_buckets: vec!["1m".to_string()],
+                bucket_limited_to_daily: false,
+            },
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::All,
+            upstream_account_id: None,
+            snapshot_id: 17,
+            terminal_sequence: 0,
+            aggregates: BTreeMap::new(),
+        };
+        let delta = TimeseriesTerminalDelta {
+            occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: Some(3),
+            cache_input_tokens: Some(1),
+            cost: Some(0.25),
+            t_total_ms: Some(20.0),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(10.0),
+            first_token_ms: Some(11.0),
+        };
+
+        // A terminal write can replace a running row without changing its SQLite ID.
+        base.apply_terminal_delta(1, Some(17), &delta);
+        base.apply_terminal_delta(1, Some(17), &delta);
+
+        assert_eq!(
+            base.aggregates
+                .values()
+                .map(|aggregate| aggregate.total_count)
+                .sum::<i64>(),
+            1,
+            "the sequence watermark must admit one terminal replacement and reject its replay",
+        );
+        assert_eq!(base.snapshot_id, 17);
     }
 
     #[test]
