@@ -251,27 +251,33 @@ export function PoolRoutingSettingsCard({
               {t("settings.routing.models.description")}
             </div>
           </div>
-          <PolicyInlineOptionGroup<AvailableModelsMode>
-            ariaLabel={t("settings.routing.models.mode")}
-            value={draft.availableModelsMode}
-            disabled={!writesEnabled || busy}
-            options={[
-              { value: "allowlist", label: t("settings.routing.models.allowlist") },
-              { value: "denylist", label: t("settings.routing.models.denylist") },
-            ]}
-            onChange={onAvailableModelsModeChange}
-          />
-          <MultiSelectFilterCombobox
-            options={availableModelComboboxOptions}
-            value={draft.availableModels}
-            onValueChange={onAvailableModelsChange}
-            disabled={!writesEnabled || busy}
-            placeholder={t("settings.routing.models.empty")}
-            searchPlaceholder={t("settings.routing.models.search")}
-            emptyLabel={t("settings.routing.models.empty")}
-            clearLabel={t("settings.routing.models.clear")}
-            ariaLabel={t("settings.routing.models.title")}
-          />
+          <div className="flex flex-col gap-3 min-[769px]:flex-row min-[769px]:items-center">
+            <div className="w-full min-[769px]:w-[10.5rem] min-[769px]:shrink-0">
+              <PolicyInlineOptionGroup<AvailableModelsMode>
+                ariaLabel={t("settings.routing.models.mode")}
+                value={draft.availableModelsMode}
+                disabled={!writesEnabled || busy}
+                options={[
+                  { value: "allowlist", label: t("settings.routing.models.allowlist") },
+                  { value: "denylist", label: t("settings.routing.models.denylist") },
+                ]}
+                onChange={onAvailableModelsModeChange}
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <MultiSelectFilterCombobox
+                options={availableModelComboboxOptions}
+                value={draft.availableModels}
+                onValueChange={onAvailableModelsChange}
+                disabled={!writesEnabled || busy}
+                placeholder={t("settings.routing.models.empty")}
+                searchPlaceholder={t("settings.routing.models.search")}
+                emptyLabel={t("settings.routing.models.empty")}
+                clearLabel={t("settings.routing.models.clear")}
+                ariaLabel={t("settings.routing.models.title")}
+              />
+            </div>
+          </div>
         </div>
 
         <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
