@@ -199,7 +199,7 @@ Validation covers:
 - visual evidence captured from the dedicated Storybook model-policy canvas with no overflow or occlusion:
   - desktop light (`desktop1280`, element-level component capture): [`model-policy-desktop.png`](./assets/model-policy-desktop.png)
   - compact mobile dark (`mobile393`, `393x852`, element-level component capture): [`model-policy-mobile.png`](./assets/model-policy-mobile.png)
-  - desktop and compact mobile use one in-place mode button beside/above the multi-select; no sliding segmented indicator is rendered
+  - desktop keeps the mode toggle beside the multi-select; compact mobile stacks them for touch-safe width
   - both captures passed `trim_whitespace.py --margin-policy require_margin --evidence-surface component`
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`

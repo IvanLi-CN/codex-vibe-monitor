@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
-import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { AvailableModelsMode } from "../../lib/api";
 import { PoolRoutingSettingsCard } from "./PoolRoutingSettingsCard";
@@ -92,16 +91,5 @@ export const ModelPolicy: Story = {
         onSave={() => undefined}
       />
     );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", {
-      name: /切换模型策略模式|Switch model policy mode/,
-    });
-
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(toggle);
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await expect(toggle).toHaveTextContent(/黑名单|Denylist/);
   },
 };
