@@ -6471,12 +6471,15 @@ async fn prompt_cache_conversation_operation_events_list_filters_by_info_type() 
     )
     .await
     .expect("list all prompt cache operation events");
-    assert!(all_events.total >= 3);
+    assert!(all_events.total >= 2);
+    let manual_binding_event = all_events
+        .items
+        .iter()
+        .find(|event| event.action == "manualBindingUpdated")
+        .expect("manual binding event should be recorded");
     assert!(
-        all_events
-            .items
-            .iter()
-            .any(|event| event.action == "manualBindingUpdated")
+        !manual_binding_event.sticky_transitions.is_empty(),
+        "manual binding should retain its combined routing transitions"
     );
     let policy_event = all_events
         .items

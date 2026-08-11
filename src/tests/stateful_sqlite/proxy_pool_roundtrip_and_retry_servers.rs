@@ -2003,11 +2003,26 @@ pub(crate) async fn load_test_sticky_route_account_id(
     pool: &SqlitePool,
     sticky_key: &str,
 ) -> Option<i64> {
-    sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
-        .bind(sticky_key)
-        .fetch_optional(pool)
-        .await
-        .expect("load test sticky route")
+    sqlx::query_scalar(
+        r#"
+        SELECT account_id
+        FROM (
+            SELECT account_id, updated_at, 0 AS is_model_route
+            FROM pool_sticky_routes
+            WHERE sticky_key = ?1
+            UNION ALL
+            SELECT account_id, updated_at, 1 AS is_model_route
+            FROM pool_sticky_model_routes
+            WHERE sticky_key = ?1
+        )
+        ORDER BY is_model_route DESC, updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(pool)
+    .await
+    .expect("load test sticky route")
 }
 
 pub(crate) async fn wait_for_pool_attempt_row_count(pool: &SqlitePool, min_count: i64) {
