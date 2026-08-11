@@ -2397,8 +2397,86 @@ describe("PromptCacheConversationTable", () => {
     await act(async () => {
       routeAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await flushInteractive();
 
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("does not offer account detail navigation for invalid routing account IDs", async () => {
+    const onOpenUpstreamAccount = vi.fn();
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-routing-invalid-account",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      stickyRoutes: [
+        {
+          modelKey: "gpt-5.4",
+          upstreamAccountId: 0,
+          upstreamAccountName: "Zero Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+        {
+          modelKey: "gpt-5.3",
+          upstreamAccountId: -3,
+          upstreamAccountName: "Negative Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+        {
+          modelKey: "gpt-5.2",
+          upstreamAccountId: 42.5,
+          upstreamAccountName: "Fractional Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+      ],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    renderInteractive(
+      {
+        rangeStart: "2026-03-02T00:00:00Z",
+        rangeEnd: "2026-03-03T00:00:00Z",
+        selectionMode: "count",
+        selectedLimit: 50,
+        selectedActivityHours: null,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation({
+            promptCacheKey: "pck-routing-invalid-account",
+            requestCount: 1,
+            totalTokens: 100,
+            totalCost: 0.01,
+            createdAt: "2026-03-02T10:00:00Z",
+            lastActivityAt: "2026-03-02T12:30:00Z",
+            last24hRequests: [],
+          }),
+        ],
+      },
+      { onOpenUpstreamAccount },
+    );
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+
+    expect(findButtonByAriaLabel("查看 Zero Account 的账号详情")).toBeNull();
+    expect(findButtonByAriaLabel("查看 Negative Account 的账号详情")).toBeNull();
+    expect(findButtonByAriaLabel("查看 Fractional Account 的账号详情")).toBeNull();
+    expect(document.body.textContent).toContain("Zero Account");
+    expect(document.body.textContent).toContain("Negative Account");
+    expect(document.body.textContent).toContain("Fractional Account");
+    expect(onOpenUpstreamAccount).not.toHaveBeenCalled();
   });
 
   it("preserves binding drafts across remote changes until the operator chooses a resolution", async () => {

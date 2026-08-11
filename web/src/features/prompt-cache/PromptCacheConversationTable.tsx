@@ -3424,8 +3424,9 @@ export function PromptCacheConversationHistoryDrawer({
                 {(binding.stickyRoutes ?? []).map((route) => {
                   const routeAccountId =
                     typeof route.upstreamAccountId === "number" &&
-                    Number.isFinite(route.upstreamAccountId)
-                      ? Math.trunc(route.upstreamAccountId)
+                    Number.isSafeInteger(route.upstreamAccountId) &&
+                    route.upstreamAccountId > 0
+                      ? route.upstreamAccountId
                       : null;
                   const routeAccountLabel =
                     route.upstreamAccountName ?? `#${route.upstreamAccountId}`;
@@ -4650,6 +4651,13 @@ export function PromptCacheConversationTable({
       resolveUpstreamAccountLabel(account, fallbackAccountLabel),
     );
   };
+  const openAccountDrawerFromHistory = useCallback(
+    (accountId: number, accountLabel: string) => {
+      setHistoryDrawerPromptCacheKey(null);
+      onOpenUpstreamAccount?.(accountId, accountLabel);
+    },
+    [onOpenUpstreamAccount],
+  );
   const openHistoryDrawer = (promptCacheKey: string) => {
     setHistoryDrawerPromptCacheKey(promptCacheKey);
   };
@@ -4963,7 +4971,7 @@ export function PromptCacheConversationTable({
         conversationKey={historyDrawerPromptCacheKey}
         onClose={closeHistoryDrawer}
         t={t}
-        onOpenUpstreamAccount={onOpenUpstreamAccount}
+        onOpenUpstreamAccount={openAccountDrawerFromHistory}
         historyQueryForConversationKey={historyQueryForConversationKey}
       />
     </div>
