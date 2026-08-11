@@ -4485,14 +4485,26 @@ export function PromptCacheConversationHistoryDrawer({
           if (!bindingSaving) setAffinityResetConfirmOpen(nextOpen);
         }}
       >
-        <DialogContent role="alertdialog" container={drawerBodyElement}>
-          <DialogHeader>
-            <DialogTitle>{t("live.conversations.drawer.routing.resetConfirm.title")}</DialogTitle>
-            <DialogDescription>
-              {t("live.conversations.drawer.routing.resetConfirm.description")}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        <DialogContent
+          role="alertdialog"
+          container={drawerBodyElement}
+          className="overflow-hidden p-0"
+        >
+          <div
+            data-testid="prompt-cache-affinity-reset-dialog-header"
+            className="px-5 pb-4 pt-5 desktop:px-6 desktop:pb-5 desktop:pt-6"
+          >
+            <DialogHeader className="gap-2">
+              <DialogTitle>{t("live.conversations.drawer.routing.resetConfirm.title")}</DialogTitle>
+              <DialogDescription>
+                {t("live.conversations.drawer.routing.resetConfirm.description")}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <DialogFooter
+            data-testid="prompt-cache-affinity-reset-dialog-footer"
+            className="border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4"
+          >
             <Button
               type="button"
               variant="ghost"

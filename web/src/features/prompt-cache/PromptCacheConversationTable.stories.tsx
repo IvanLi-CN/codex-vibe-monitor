@@ -2244,6 +2244,26 @@ async function openDrawerRouting(canvasElement: HTMLElement) {
   return documentScope;
 }
 
+async function openAffinityResetConfirmation(canvasElement: HTMLElement) {
+  const documentScope = await openDrawerRouting(canvasElement);
+  await userEvent.click(
+    documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
+  );
+  const resetConfirmation = await documentScope.findByRole("alertdialog", {
+    name: /清空绑定并重选|Clear binding and reselect/i,
+  });
+
+  await expect(resetConfirmation).toBeInTheDocument();
+  await expect(
+    within(resetConfirmation).getByTestId("prompt-cache-affinity-reset-dialog-header"),
+  ).toHaveClass("px-5", "pt-5", "pb-4");
+  await expect(
+    within(resetConfirmation).getByTestId("prompt-cache-affinity-reset-dialog-footer"),
+  ).toHaveClass("border-t", "px-5", "pt-4");
+
+  return { documentScope, resetConfirmation };
+}
+
 export const DrawerRouting: Story = {
   tags: ["test"],
   args: {
@@ -2265,14 +2285,7 @@ export const DrawerRouting: Story = {
     },
   },
   play: async ({ canvasElement, args }) => {
-    const documentScope = await openDrawerRouting(canvasElement);
-    await userEvent.click(
-      documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
-    );
-    const resetConfirmation = await documentScope.findByRole("alertdialog", {
-      name: /清空绑定并重选|Clear binding and reselect/i,
-    });
-    await expect(resetConfirmation).toBeInTheDocument();
+    const { documentScope, resetConfirmation } = await openAffinityResetConfirmation(canvasElement);
     await userEvent.click(within(resetConfirmation).getByRole("button", { name: /取消|Cancel/i }));
     await waitFor(() => {
       expect(documentScope.queryByRole("alertdialog")).toBeNull();
@@ -2288,6 +2301,42 @@ export const DrawerRouting: Story = {
     );
     await expect(args.onOpenUpstreamAccount).toHaveBeenCalledTimes(1);
     await expect(args.onOpenUpstreamAccount).toHaveBeenCalledWith(22, "mia.7rmmq@support.example");
+  },
+};
+
+export const DrawerRoutingResetConfirm: Story = {
+  ...DrawerRouting,
+  tags: ["test"],
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Affinity reset confirmation with a dedicated padded content group and safe-area action footer.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await openAffinityResetConfirmation(canvasElement);
+  },
+};
+
+export const DrawerRoutingResetConfirmMobile: Story = {
+  ...DrawerRoutingResetConfirm,
+  tags: ["test"],
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "mobile393", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "The affinity reset confirmation at the stable 393 x 852 mobile viewport, including sheet-edge and safe-area spacing.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await openAffinityResetConfirmation(canvasElement);
   },
 };
 

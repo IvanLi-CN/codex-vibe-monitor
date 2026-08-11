@@ -28,6 +28,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - [x] Automatic Sticky affinity is isolated by normalized conversation + model buckets with per-model generations and conversation-level epoch fencing.
 - [x] Legacy Sticky rows migrate as all-model fallbacks; binding responses expose the fallback and all materialized model routes.
 - [x] Manual account binding atomically rewrites the fallback and materialized model buckets, while full affinity reset clears every affinity row and owner lock.
+- [x] The affinity-reset confirmation uses a padded content group and a separate safe-area action footer, with dedicated desktop and `393x852` Storybook states.
 - [x] Automatic clear causes persist and are consumed at the matching all-model or normalized-model generation scope, so one model's failed route cannot annotate another model's fresh assignment.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer uses `概览 / 调用 / 路由 / 设置 / 事件记录`, with route controls consolidated in 路由.

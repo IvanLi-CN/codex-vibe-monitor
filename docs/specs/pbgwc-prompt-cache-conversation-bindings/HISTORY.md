@@ -8,6 +8,7 @@
 - 2026-08-11: Kept automatic clear causality inside its all-model or normalized-model generation bucket, so a failed route for one model cannot make another model's first assignment appear failure-driven. The Events tab also replaces a model-filtered HTTP subset when returning to unrestricted SSE rows.
 - 2026-08-11: Made each current-route upstream-account value an account-detail entry point when its account ID is known, while preserving non-interactive fallback text for historical or incomplete route data.
 - 2026-08-11: Made current routing use wrapped field/value rows on narrow viewports, preserving model, account, and timestamps without horizontal overflow.
+- 2026-08-11: Gave the conversation affinity-reset confirmation its own padded content group and separated safe-area action footer. The shared dialog shell deliberately stays edge-to-edge for mobile sheets; this destructive flow now owns the spacing that its title, explanation, and actions require.
 
 - 2026-08-06: Owner approved the shared invocation card evidence. The desktop, narrow, and expanded narrow `ui_demo` snapshots are now persisted as stable Spec assets; this Spec remains owner-facing only while the invocation observability Spec publishes the selected images in the PR body.
 
