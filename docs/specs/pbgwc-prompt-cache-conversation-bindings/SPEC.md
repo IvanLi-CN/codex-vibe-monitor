@@ -324,7 +324,6 @@ PR: include
 ![Desktop routing tab with fallback and model buckets](./assets/conversation-routing-desktop-storybook.png)
 ![Desktop model-filtered routing events](./assets/conversation-routing-events-desktop-storybook.png)
 ![Mobile routing tab with five fitted tabs](./assets/conversation-routing-mobile-393x852-storybook.png)
-![Mobile confirmed affinity reset](./assets/conversation-routing-mobile-reset-confirm-393x852-storybook.png)
 
 - source_type: storybook_canvas
 - target_program: mock-only
@@ -337,6 +336,24 @@ PR: include
 - submission_gate: approved
 - story_id_or_title: `Monitoring/PromptCacheConversationTable / DrawerRouting`, `DrawerRoutingMobile`, `DrawerOperations`
 - state: manual route binding, encrypted owner constraint, all-model fallback, and normalized model route are visible; a routing-only filter selects `gpt-5.4` and shows model-scope plus original-model audit context; the 393px tab strip fits all five tabs and the confirmed reset explains its conversation-wide scope.
+
+### Affinity Reset Confirmation (Storybook)
+
+PR: include
+![Desktop affinity reset confirmation with padded content and action groups](./assets/conversation-routing-desktop-reset-confirm-storybook.png)
+![Mobile affinity reset confirmation with padded content and action groups](./assets/conversation-routing-mobile-reset-confirm-393x852-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewports: `desktop1280`, `393x852`
+- viewport_strategy: Storybook viewport presets
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: fixture-only conversation and account identifiers
+- submission_gate: approved
+- story_id_or_title: `Monitoring/PromptCacheConversationTable / DrawerRoutingResetConfirm`, `DrawerRoutingResetConfirmMobile`
+- state: the conversation-wide reset is open; the title and explanation have a dedicated padded content group, while destructive and cancel actions sit in a separated safe-area footer.
 
 ### Sticky Causality (UI Demo)
 
