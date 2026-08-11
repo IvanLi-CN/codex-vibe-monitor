@@ -72,6 +72,7 @@ import {
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversationOperationEvents,
   fetchUpstreamAccounts,
+  resetPromptCacheConversationAffinity,
   updatePromptCacheConversationBinding,
 } from "../../lib/api";
 import { chartBaseTokens, chartStatusTokens, metricAccent } from "../../lib/chartTheme";
@@ -125,8 +126,14 @@ type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history"
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
-export type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings" | "operations";
+export type PromptCacheConversationDrawerTab =
+  | "overview"
+  | "calls"
+  | "routing"
+  | "settings"
+  | "operations";
 type PromptCacheConversationOperationFilter = "all" | PromptCacheConversationOperationInfoType;
+type PromptCacheConversationRoutingModelFilter = "any" | "all" | string;
 type OptionalBooleanDraft = "inherit" | "true" | "false";
 type RewriteModeDraft = PromptCacheConversationRewriteMode;
 type ConversationInlinePolicyField =
@@ -2208,6 +2215,7 @@ export function PromptCacheConversationHistoryDrawer({
     Partial<Record<ConversationInlinePolicyField, string | null>>
   >({});
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
+  const [affinityResetConfirmOpen, setAffinityResetConfirmOpen] = useState(false);
   const [bindingRemoteConflict, setBindingRemoteConflict] =
     useState<PromptCacheConversationBindingResponse | null>(null);
   const [bindingOwnerConfirmAllowsRemoteOverwrite, setBindingOwnerConfirmAllowsRemoteOverwrite] =
@@ -2223,6 +2231,9 @@ export function PromptCacheConversationHistoryDrawer({
   const [operationsError, setOperationsError] = useState<string | null>(null);
   const [operationsFilter, setOperationsFilter] =
     useState<PromptCacheConversationOperationFilter>("all");
+  const [operationsRoutingModel, setOperationsRoutingModel] =
+    useState<PromptCacheConversationRoutingModelFilter>("any");
+  const [operationsRoutingModelFacets, setOperationsRoutingModelFacets] = useState<string[]>([]);
   const conversationDetailScope = useMemo(
     () =>
       resolveConversationDetailScope(
@@ -2248,6 +2259,7 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     if (!open) {
       setBindingOwnerConfirmOpen(false);
+      setAffinityResetConfirmOpen(false);
     }
   }, [open]);
 
@@ -2413,7 +2425,15 @@ export function PromptCacheConversationHistoryDrawer({
 
   useEffect(() => {
     const response = operationsTopic.data;
-    if (!response || isSseUnavailable || !open || activeTab !== "operations") return;
+    if (
+      !response ||
+      isSseUnavailable ||
+      !open ||
+      activeTab !== "operations" ||
+      operationsRoutingModel !== "any"
+    ) {
+      return;
+    }
     operationsRequestSeqRef.current += 1;
     operationsLoadControllerRef.current?.abort();
     const topicKey = operationsTopic.descriptorKey ?? operationsFilter;
@@ -2429,6 +2449,7 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationEvents(nextItems);
     setOperationsTotal(response.total);
     setOperationsPage((current) => Math.max(current, response.page));
+    setOperationsRoutingModelFacets(response.routingModelFacets ?? []);
     setOperationsLoading(false);
     setOperationsError(null);
   }, [
@@ -2436,6 +2457,7 @@ export function PromptCacheConversationHistoryDrawer({
     isSseUnavailable,
     open,
     operationsFilter,
+    operationsRoutingModel,
     operationsTopic.data,
     operationsTopic.descriptorKey,
   ]);
@@ -2628,6 +2650,14 @@ export function PromptCacheConversationHistoryDrawer({
           page: append ? operationsPageRef.current + 1 : 1,
           pageSize: PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE,
           infoType: operationsFilter === "all" ? undefined : operationsFilter,
+          routingScope:
+            operationsFilter === "routing" && operationsRoutingModel === "all" ? "all" : undefined,
+          routingModel:
+            operationsFilter === "routing" &&
+            operationsRoutingModel !== "any" &&
+            operationsRoutingModel !== "all"
+              ? operationsRoutingModel
+              : undefined,
           signal: controller.signal,
         });
         if (controller.signal.aborted || requestSeq !== operationsRequestSeqRef.current) return;
@@ -2642,6 +2672,7 @@ export function PromptCacheConversationHistoryDrawer({
         setOperationEvents(nextItems);
         setOperationsTotal(response.total);
         setOperationsPage(response.page);
+        setOperationsRoutingModelFacets(response.routingModelFacets ?? []);
       } catch (err) {
         if (
           controller.signal.aborted ||
@@ -2658,7 +2689,7 @@ export function PromptCacheConversationHistoryDrawer({
         }
       }
     },
-    [activeTab, conversationKey, open, operationsFilter],
+    [activeTab, conversationKey, open, operationsFilter, operationsRoutingModel],
   );
 
   useEffect(() => {
@@ -2713,10 +2744,12 @@ export function PromptCacheConversationHistoryDrawer({
       setOperationsLoadingMore(false);
       setOperationsError(null);
       setOperationsFilter("all");
+      setOperationsRoutingModel("any");
+      setOperationsRoutingModelFacets([]);
       return;
     }
 
-    if (activeTab !== "settings") {
+    if (activeTab !== "routing" && activeTab !== "settings") {
       return;
     }
 
@@ -2808,7 +2841,13 @@ export function PromptCacheConversationHistoryDrawer({
       isSseUnavailable &&
       bindingTopicSseUnavailableCapturedRef.current &&
       nextBinding === staleBindingTopicPayloadRef.current;
-    if (!nextBinding || isCachedFallbackPayload || !open || activeTab !== "settings") return;
+    if (
+      !nextBinding ||
+      isCachedFallbackPayload ||
+      !open ||
+      (activeTab !== "routing" && activeTab !== "settings")
+    )
+      return;
     bindingHydrationSeqRef.current += 1;
     if (bindingDraftDirtyRef.current) {
       setBindingRemoteConflict(nextBinding);
@@ -2837,6 +2876,12 @@ export function PromptCacheConversationHistoryDrawer({
     setBindingError(null);
   }, [activeTab, bindingAccounts, bindingGroups, bindingTopic.data, isSseUnavailable, open]);
 
+  useEffect(() => {
+    if (operationsFilter !== "routing") {
+      setOperationsRoutingModel("any");
+    }
+  }, [operationsFilter]);
+
   useEffect(
     () => () => {
       activeLoadControllerRef.current?.abort();
@@ -2851,7 +2896,7 @@ export function PromptCacheConversationHistoryDrawer({
     if (!open || !conversationKey || activeTab !== "operations") {
       return;
     }
-    if (operationsTopic.data && !isSseUnavailable) {
+    if (operationsTopic.data && !isSseUnavailable && operationsRoutingModel === "any") {
       return;
     }
     operationsRequestSeqRef.current += 1;
@@ -2864,7 +2909,9 @@ export function PromptCacheConversationHistoryDrawer({
     setOperationsTotal(0);
     setOperationsPage(1);
     setOperationsError(null);
-    if (isSseUnavailable) {
+    // The live topic represents the unfiltered event head. Scope/model filters
+    // need a paged HTTP read even while SSE is healthy.
+    if (isSseUnavailable || operationsRoutingModel !== "any") {
       void loadOperationEvents();
     }
   }, [
@@ -2874,6 +2921,7 @@ export function PromptCacheConversationHistoryDrawer({
     loadOperationEvents,
     open,
     operationsFilter,
+    operationsRoutingModel,
     operationsTopic.data,
     operationsTopic.descriptorKey,
   ]);
@@ -3199,7 +3247,7 @@ export function PromptCacheConversationHistoryDrawer({
     },
   ];
   const tabListLabel = t("live.conversations.drawer.tabs.label");
-  const bindingPanel = (
+  const routingPanel = (
     <div className="space-y-4 text-sm">
       <section className="rounded-xl border border-base-content/10 bg-base-200/50 p-4">
         <div className="flex items-start justify-between gap-3">
@@ -3330,6 +3378,99 @@ export function PromptCacheConversationHistoryDrawer({
           </Alert>
         ) : null}
       </section>
+      <section className="rounded-xl border border-base-content/10 bg-base-100/80 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="font-semibold text-base-content">
+              {t("live.conversations.drawer.routing.currentTitle")}
+            </p>
+            <p className="text-xs text-base-content/68">
+              {t("live.conversations.drawer.routing.currentDescription")}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={bindingLoading || bindingSaving}
+            onClick={() => setAffinityResetConfirmOpen(true)}
+          >
+            {t("live.conversations.drawer.routing.reset")}
+          </Button>
+        </div>
+        {binding?.stickyRoutes?.length ? (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[38rem] text-left text-xs">
+              <thead className="text-base-content/55">
+                <tr className="border-b border-base-content/10">
+                  <th className="px-2 py-2 font-medium">
+                    {t("live.conversations.drawer.routing.model")}
+                  </th>
+                  <th className="px-2 py-2 font-medium">
+                    {t("live.conversations.drawer.routing.account")}
+                  </th>
+                  <th className="px-2 py-2 font-medium">
+                    {t("live.conversations.drawer.routing.created")}
+                  </th>
+                  <th className="px-2 py-2 font-medium">
+                    {t("live.conversations.drawer.routing.updated")}
+                  </th>
+                  <th className="px-2 py-2 font-medium">
+                    {t("live.conversations.drawer.routing.lastUsed")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {(binding.stickyRoutes ?? []).map((route) => (
+                  <tr
+                    key={`${route.modelKey ?? "all"}-${route.upstreamAccountId}`}
+                    className="border-b border-base-content/5 last:border-0"
+                  >
+                    <td className="px-2 py-2 font-mono text-base-content">
+                      {route.modelKey ?? t("live.conversations.drawer.routing.allModels")}
+                    </td>
+                    <td className="px-2 py-2 text-base-content/80">
+                      {route.upstreamAccountName ?? `#${route.upstreamAccountId}`}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                      {formatConversationOperationOccurredAt(route.createdAt)}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                      {formatConversationOperationOccurredAt(route.updatedAt)}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
+                      {formatConversationOperationOccurredAt(route.lastSeenAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-base-content/60">
+            {t("live.conversations.drawer.routing.empty")}
+          </p>
+        )}
+      </section>
+    </div>
+  );
+  const settingsPanel = (
+    <div className="space-y-4 text-sm">
+      {bindingRemoteConflict ? (
+        <Alert variant="warning">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>{t("live.conversations.drawer.binding.remoteConflict")}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => handleSelectTab("routing")}
+            >
+              {t("live.conversations.drawer.tabs.routing")}
+            </Button>
+          </div>
+        </Alert>
+      ) : null}
       {conversationEffectiveRoutingRule ? (
         <EffectiveRoutingRuleCard
           rule={conversationEffectiveRoutingRule}
@@ -3635,12 +3776,39 @@ export function PromptCacheConversationHistoryDrawer({
               type="button"
               size="sm"
               variant={operationsFilter === option.value ? "default" : "secondary"}
-              onClick={() => setOperationsFilter(option.value)}
+              onClick={() => {
+                setOperationsFilter(option.value);
+                if (option.value !== "routing") setOperationsRoutingModel("any");
+              }}
             >
               {t(option.labelKey)}
             </Button>
           ))}
         </div>
+        {operationsFilter === "routing" ? (
+          <div className="mt-3 max-w-full sm:max-w-sm">
+            <SelectField
+              value={operationsRoutingModel}
+              size="sm"
+              aria-label={t("live.conversations.drawer.operations.modelFilter.label")}
+              options={[
+                {
+                  value: "any",
+                  label: t("live.conversations.drawer.operations.modelFilter.any"),
+                },
+                {
+                  value: "all",
+                  label: t("live.conversations.drawer.operations.modelFilter.allModels"),
+                },
+                ...operationsRoutingModelFacets.map((modelKey) => ({
+                  value: modelKey,
+                  label: modelKey,
+                })),
+              ]}
+              onValueChange={setOperationsRoutingModel}
+            />
+          </div>
+        ) : null}
       </section>
       {operationsError ? (
         <Alert variant="error">
@@ -3671,7 +3839,25 @@ export function PromptCacheConversationHistoryDrawer({
                 <Chip tone={conversationOperationOriginChipTone(event.origin)}>
                   {conversationOperationOriginLabel(event.origin, t)}
                 </Chip>
+                {event.routingScope ? (
+                  <Chip tone="secondary">
+                    {event.routingScope.kind === "all"
+                      ? t("live.conversations.drawer.operations.modelScope.all")
+                      : t("live.conversations.drawer.operations.modelScope.model", {
+                          model: event.routingScope.modelKey ?? FALLBACK_CELL,
+                        })}
+                  </Chip>
+                ) : null}
               </div>
+              {event.routingScope?.kind === "model" &&
+              event.routingScope.requestModel &&
+              event.routingScope.requestModel !== event.routingScope.modelKey ? (
+                <p className="font-mono text-[11px] text-base-content/55">
+                  {t("live.conversations.drawer.operations.requestModel", {
+                    model: event.routingScope.requestModel,
+                  })}
+                </p>
+              ) : null}
               <p className="break-words text-sm font-semibold text-base-content">
                 {conversationOperationActionLabel(event.action, event.headline, t)}
               </p>
@@ -3704,6 +3890,21 @@ export function PromptCacheConversationHistoryDrawer({
                 to: conversationOperationStickySnapshotLabel(event.stickyAfter, t),
               })}
             </p>
+          ) : null}
+          {(event.stickyTransitions?.length ?? 0) > 0 ? (
+            <div className="space-y-1 rounded border border-base-content/10 bg-base-200/35 p-2 text-xs text-base-content/72">
+              {(event.stickyTransitions ?? []).map((transition) => (
+                <p key={`${event.id}-${transition.modelKey ?? "all"}`}>
+                  {t("live.conversations.drawer.operations.modelTransition", {
+                    model:
+                      transition.modelKey ??
+                      t("live.conversations.drawer.operations.modelScope.all"),
+                    from: conversationOperationStickySnapshotLabel(transition.before, t),
+                    to: conversationOperationStickySnapshotLabel(transition.after, t),
+                  })}
+                </p>
+              ))}
+            </div>
           ) : null}
           {event.infoTypes.includes("routing") && conversationOperationShowsRoutingReason(event) ? (
             <div className="space-y-1 text-xs text-base-content/70">
@@ -3922,6 +4123,32 @@ export function PromptCacheConversationHistoryDrawer({
     drawerBodyElement?.scrollTo({ top: 0, behavior: "smooth" });
   }, [drawerBodyElement, liveRecords]);
 
+  const resetAffinity = useCallback(async () => {
+    if (!conversationKey || bindingSaving) return;
+    setBindingSaving(true);
+    setBindingError(null);
+    try {
+      const nextBinding = await resetPromptCacheConversationAffinity(conversationKey);
+      setBinding(nextBinding);
+      setBindingKind(nextBinding.bindingKind);
+      setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
+      setBindingAccountId(
+        nextBinding.upstreamAccountId != null
+          ? String(nextBinding.upstreamAccountId)
+          : bindingAccounts[0]
+            ? String(bindingAccounts[0].id)
+            : "",
+      );
+      bindingDraftDirtyRef.current = false;
+      setBindingRemoteConflict(null);
+      setAffinityResetConfirmOpen(false);
+    } catch (err) {
+      setBindingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBindingSaving(false);
+    }
+  }, [bindingAccounts, bindingGroups, bindingSaving, conversationKey]);
+
   return (
     <>
       <AccountDetailDrawerShell
@@ -3930,7 +4157,7 @@ export function PromptCacheConversationHistoryDrawer({
         labelledBy={titleId}
         closeLabel={t("live.conversations.drawer.close")}
         onClose={onClose}
-        closeDisabled={bindingOwnerConfirmOpen}
+        closeDisabled={bindingOwnerConfirmOpen || affinityResetConfirmOpen}
         onBodyElementChange={setDrawerBodyElement}
         shellClassName="drawer-shell--detail-wide"
         header={
@@ -3965,10 +4192,11 @@ export function PromptCacheConversationHistoryDrawer({
               size="compact"
               role="tablist"
               aria-label={tabListLabel}
-              className="w-fit max-w-full overflow-x-auto"
+              className="grid w-full grid-cols-5 gap-1 rounded-xl p-1 sm:inline-flex sm:w-fit"
             >
               <SegmentedControlItem
                 active={activeTab === "overview"}
+                className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "overview"}
                 aria-controls={`${titleId}-panel-overview`}
@@ -3979,6 +4207,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "calls"}
+                className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "calls"}
                 aria-controls={`${titleId}-panel-calls`}
@@ -3988,7 +4217,19 @@ export function PromptCacheConversationHistoryDrawer({
                 {t("live.conversations.drawer.tabs.calls")}
               </SegmentedControlItem>
               <SegmentedControlItem
+                active={activeTab === "routing"}
+                className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
+                role="tab"
+                aria-selected={activeTab === "routing"}
+                aria-controls={`${titleId}-panel-routing`}
+                id={`${titleId}-tab-routing`}
+                onClick={() => handleSelectTab("routing")}
+              >
+                {t("live.conversations.drawer.tabs.routing")}
+              </SegmentedControlItem>
+              <SegmentedControlItem
                 active={activeTab === "settings"}
+                className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "settings"}
                 aria-controls={`${titleId}-panel-settings`}
@@ -3999,6 +4240,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "operations"}
+                className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "operations"}
                 aria-controls={`${titleId}-panel-operations`}
@@ -4060,13 +4302,22 @@ export function PromptCacheConversationHistoryDrawer({
             ) : null}
           </div>
         ) : null}
+        {activeTab === "routing" ? (
+          <div
+            id={`${titleId}-panel-routing`}
+            role="tabpanel"
+            aria-labelledby={`${titleId}-tab-routing`}
+          >
+            {routingPanel}
+          </div>
+        ) : null}
         {activeTab === "settings" ? (
           <div
             id={`${titleId}-panel-settings`}
             role="tabpanel"
             aria-labelledby={`${titleId}-tab-settings`}
           >
-            {bindingPanel}
+            {settingsPanel}
           </div>
         ) : null}
         {activeTab === "operations" ? (
@@ -4132,6 +4383,41 @@ export function PromptCacheConversationHistoryDrawer({
               {bindingSaving
                 ? t("live.conversations.drawer.binding.saving")
                 : t("live.conversations.drawer.binding.ownerConfirm.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={open && affinityResetConfirmOpen}
+        onOpenChange={(nextOpen) => {
+          if (!bindingSaving) setAffinityResetConfirmOpen(nextOpen);
+        }}
+      >
+        <DialogContent role="alertdialog" container={drawerBodyElement}>
+          <DialogHeader>
+            <DialogTitle>{t("live.conversations.drawer.routing.resetConfirm.title")}</DialogTitle>
+            <DialogDescription>
+              {t("live.conversations.drawer.routing.resetConfirm.description")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={bindingSaving}
+              onClick={() => setAffinityResetConfirmOpen(false)}
+            >
+              {t("live.conversations.drawer.routing.resetConfirm.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={bindingSaving}
+              onClick={() => void resetAffinity()}
+            >
+              {bindingSaving
+                ? t("live.conversations.drawer.binding.saving")
+                : t("live.conversations.drawer.routing.resetConfirm.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -354,7 +354,7 @@ describe("PromptCacheConversationTable", () => {
   }
 
   async function clickDrawerTab(label: string) {
-    if (label === "设置" && detailTopicMocks.current.binding.data == null) {
+    if ((label === "设置" || label === "路由") && detailTopicMocks.current.binding.data == null) {
       detailTopicMocks.current.isSseUnavailable = true;
     }
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -1971,7 +1971,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("当前：分组 prod");
@@ -2030,7 +2030,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-fallback",
@@ -2114,7 +2114,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     await vi.waitFor(() =>
       expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
@@ -2203,7 +2203,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -2319,7 +2319,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -2472,7 +2472,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(
@@ -2583,7 +2583,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {
@@ -2603,7 +2603,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("当前：分组 prod");
   });
 
-  it("renders the wide drawer shell and conversation-scoped routing form in the settings tab", async () => {
+  it("renders the wide drawer shell with routing and settings controls separated", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-policy-layout",
       bindingKind: "none",
@@ -2692,12 +2692,13 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const drawerShell = document.querySelector(".drawer-shell");
     expect(drawerShell?.className).toContain("drawer-shell--detail-wide");
     expect(drawerShell?.parentElement?.className).toContain("drawer-frame");
     expect(document.body.textContent).toContain("路由绑定");
+    await clickDrawerTab("设置");
     expect(document.body.textContent).toContain("当前对话覆盖");
     expect(document.body.textContent).toContain("切出");
     expect(document.body.textContent).toContain("FAST 模式");
@@ -3614,7 +3615,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(document.body.textContent).toContain("binding load failed");
     const saveButton = findButtonByAriaLabel("保存");
@@ -3665,7 +3666,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("对话调用总览");
     expect(document.body.textContent).not.toContain("路由绑定");
 
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
     expect(document.body.textContent).toContain("路由绑定");
 
     const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
@@ -3852,7 +3853,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -3996,7 +3997,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -4006,7 +4007,7 @@ describe("PromptCacheConversationTable", () => {
     await user.click(kindSelect!);
     await user.click(findSelectOption("清空")!);
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {

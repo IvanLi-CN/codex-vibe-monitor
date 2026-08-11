@@ -2,10 +2,11 @@ use super::*;
 use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
-    load_sticky_affinity_generation, load_sticky_route,
+    load_sticky_affinity_generation, load_sticky_route, load_sticky_route_with_model_generation,
     record_pool_route_success_with_affinity_generation,
     record_pool_route_success_with_affinity_generation_and_broadcast,
     record_pool_route_success_with_affinity_generation_for_attempt, upsert_sticky_route,
+    upsert_sticky_route_for_model_if_current,
 };
 use serde_json::json;
 use tokio::time::{Duration, sleep};
@@ -5142,6 +5143,8 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -5233,23 +5236,30 @@ async fn bulk_prompt_cache_conversation_bindings_bind_to_upstream_account_across
                 page: Some(1),
                 page_size: Some(20),
                 info_type: None,
+                routing_scope: None,
+                routing_model: None,
             }),
         )
         .await
         .expect("list bulk bind operation events");
+        let binding_event = event_response
+            .items
+            .iter()
+            .find(|event| event.action == "manualBindingUpdated" && event.origin == "dashboardBulk")
+            .expect("bulk binding should record its routing transition on the binding event");
         assert!(
-            event_response
-                .items
+            binding_event
+                .sticky_transitions
                 .iter()
-                .any(|event| event.action == "manualBindingUpdated"
-                    && event.origin == "dashboardBulk")
+                .any(|transition| transition.model_key.is_none() && transition.after.is_some())
         );
         assert!(
-            event_response
+            !event_response
                 .items
                 .iter()
                 .any(|event| event.action == "stickyTargetChanged"
-                    && event.origin == "dashboardBulk")
+                    && event.origin == "dashboardBulk"),
+            "one conversation-level manual operation should not produce a second fallback-only event"
         );
     }
 }
@@ -5354,6 +5364,8 @@ async fn bulk_prompt_cache_conversation_bindings_bind_none_clears_only_manual_bi
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -5416,6 +5428,16 @@ async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_remove
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, account_id)
         .await
         .expect("seed encrypted session owner");
+    upsert_sticky_route_for_model_if_current(
+        &state.pool,
+        prompt_cache_key,
+        Some("gpt-5.4-2026-05-01"),
+        account_id,
+        None,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed a model-specific sticky route before bulk clear");
 
     let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
         "promptCacheKeys": [prompt_cache_key],
@@ -5461,6 +5483,14 @@ async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_remove
             .expect("count sticky rows after bulk clear");
     assert_eq!(sticky_count, 0);
 
+    let sticky_model_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_sticky_model_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count model sticky rows after bulk clear");
+    assert_eq!(sticky_model_count, 0);
+
     let owner_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM prompt_cache_encrypted_session_owners WHERE prompt_cache_key = ?1",
     )
@@ -5493,21 +5523,37 @@ async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_remove
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
     .expect("list bulk clear operation events");
+    let reset_event = event_response
+        .items
+        .iter()
+        .find(|event| event.action == "affinityReset" && event.origin == "dashboardBulk")
+        .expect("full reset should emit one dashboard bulk event");
+    assert_eq!(
+        reset_event
+            .routing_scope
+            .as_ref()
+            .map(|scope| scope.kind.as_str()),
+        Some("all")
+    );
+    assert_eq!(reset_event.sticky_transitions.len(), 2);
     assert!(
-        event_response
-            .items
+        reset_event
+            .sticky_transitions
             .iter()
-            .any(|event| event.action == "affinityReset" && event.origin == "dashboardBulk")
+            .any(|transition| transition.model_key.as_deref() == Some("gpt-5.4"))
     );
     assert!(
-        event_response
+        !event_response
             .items
             .iter()
-            .any(|event| event.action == "stickyTargetCleared" && event.origin == "dashboardBulk")
+            .any(|event| event.action == "stickyTargetCleared" && event.origin == "dashboardBulk"),
+        "a full reset records all bucket changes in its single aggregate event"
     );
 }
 
@@ -5619,6 +5665,8 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -5668,6 +5716,132 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         }),
         "same-account keepalive should not emit extra sticky change noise"
     );
+}
+
+#[tokio::test]
+async fn prompt_cache_sticky_routes_are_isolated_by_normalized_model_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let fallback_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Fallback", "model-fallback").await;
+    let model_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Model", "model-specific").await;
+    let prompt_cache_key = "prompt-cache-model-isolation-key";
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_sticky_route(&state.pool, prompt_cache_key, fallback_account_id, &now_iso)
+        .await
+        .expect("seed all-model fallback");
+    assert!(
+        upsert_sticky_route_for_model_if_current(
+            &state.pool,
+            prompt_cache_key,
+            Some(" GPT-5.4-2026-05-01 "),
+            model_account_id,
+            None,
+            &now_iso,
+        )
+        .await
+        .expect("write normalized model route"),
+        "the first model-specific success should materialize its exact bucket"
+    );
+
+    let (dated_alias_route, _) =
+        load_sticky_route_with_model_generation(&state.pool, prompt_cache_key, Some("gpt-5.4"))
+            .await
+            .expect("load normalized alias route");
+    assert_eq!(
+        dated_alias_route.map(|route| route.account_id),
+        Some(model_account_id),
+        "a dated alias and its base model must share one Sticky bucket"
+    );
+
+    let (other_model_route, _) = load_sticky_route_with_model_generation(
+        &state.pool,
+        prompt_cache_key,
+        Some("gpt-5.1-codex-max"),
+    )
+    .await
+    .expect("load fallback route for unrelated model");
+    assert_eq!(
+        other_model_route.map(|route| route.account_id),
+        Some(fallback_account_id),
+        "an unrelated model must not inherit another model's exact Sticky route"
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_routing_events_filter_by_all_or_normalized_model_scope() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-routing-event-model-filter";
+    for (action, scope) in [
+        ("legacyAll", r#"{"kind":"all"}"#),
+        (
+            "gpt54",
+            r#"{"kind":"model","modelKey":"gpt-5.4","requestModel":"gpt-5.4-2026-05-01"}"#,
+        ),
+        (
+            "gpt51",
+            r#"{"kind":"model","modelKey":"gpt-5.1-codex-max","requestModel":"gpt-5.1-codex-max"}"#,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_conversation_operation_events (
+                prompt_cache_key, action, origin, info_types_json, occurred_at, headline,
+                routing_scope_json
+            ) VALUES (?1, ?2, 'systemAuto', '["routing"]', datetime('now'), ?2, ?3)
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .bind(action)
+        .bind(scope)
+        .execute(&state.pool)
+        .await
+        .expect("seed scoped routing event");
+    }
+
+    let Json(model_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("routing".to_string()),
+            routing_scope: Some("model".to_string()),
+            routing_model: Some(" GPT-5.4-2026-05-01 ".to_string()),
+        }),
+    )
+    .await
+    .expect("filter routing events by normalized model");
+    assert_eq!(model_events.total, 1);
+    assert_eq!(model_events.items[0].action, "gpt54");
+    assert_eq!(
+        model_events.routing_model_facets,
+        vec!["gpt-5.1-codex-max".to_string(), "gpt-5.4".to_string()],
+        "facets are derived from all retained events rather than the active filter"
+    );
+
+    let Json(all_scope_events) = list_prompt_cache_conversation_operation_events(
+        State(state),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("routing".to_string()),
+            routing_scope: Some("all".to_string()),
+            routing_model: None,
+        }),
+    )
+    .await
+    .expect("filter routing events by all-model scope");
+    assert_eq!(all_scope_events.total, 1);
+    assert_eq!(all_scope_events.items[0].action, "legacyAll");
 }
 
 #[tokio::test]
@@ -5767,6 +5941,8 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -5856,6 +6032,8 @@ async fn runtime_sticky_first_concurrent_success_locks_target_and_audits_late_co
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6076,6 +6254,8 @@ async fn generic_sticky_route_success_does_not_emit_prompt_cache_conversation_ev
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6202,6 +6382,8 @@ async fn bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_pres
             page: Some(1),
             page_size: Some(20),
             info_type: Some("requestRewrite".to_string()),
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6217,6 +6399,8 @@ async fn bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_pres
             page: Some(1),
             page_size: Some(20),
             info_type: Some("requestRewrite".to_string()),
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6281,6 +6465,8 @@ async fn prompt_cache_conversation_operation_events_list_filters_by_info_type() 
             page: Some(1),
             page_size: Some(20),
             info_type: None,
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6324,6 +6510,8 @@ async fn prompt_cache_conversation_operation_events_list_filters_by_info_type() 
             page: Some(1),
             page_size: Some(20),
             info_type: Some("requestRewrite".to_string()),
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
@@ -6341,6 +6529,8 @@ async fn prompt_cache_conversation_operation_events_list_filters_by_info_type() 
             page: Some(1),
             page_size: Some(20),
             info_type: Some("forwardProxy".to_string()),
+            routing_scope: None,
+            routing_model: None,
         }),
     )
     .await
