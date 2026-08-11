@@ -25,7 +25,7 @@ import {
   MultiSelectFilterCombobox,
   type MultiSelectFilterOption,
 } from "../account-pool/MultiSelectFilterCombobox";
-import { PolicyInlineOptionGroup } from "../account-pool/PolicyInlineOptionGroup";
+import { AppIcon } from "../shared/AppIcon";
 
 type RoutingTimeoutFieldKey =
   | "responsesFirstByteTimeoutSecs"
@@ -122,6 +122,20 @@ export function PoolRoutingSettingsCard({
     value,
     label: value.startsWith("gpt-image") ? `Image · ${value}` : value,
   }));
+  const availableModelsModeLabel =
+    draft.availableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const nextAvailableModelsMode =
+    draft.availableModelsMode === "allowlist" ? "denylist" : "allowlist";
+  const nextAvailableModelsModeLabel =
+    nextAvailableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const availableModelsModeToggleLabel = t("settings.routing.models.toggle", {
+    current: availableModelsModeLabel,
+    next: nextAvailableModelsModeLabel,
+  });
   const statusChipText = !writesEnabled
     ? t("settings.routing.readOnly")
     : busy
@@ -253,16 +267,20 @@ export function PoolRoutingSettingsCard({
           </div>
           <div className="flex flex-col gap-3 min-[769px]:flex-row min-[769px]:items-center">
             <div className="w-full min-[769px]:w-[10.5rem] min-[769px]:shrink-0">
-              <PolicyInlineOptionGroup<AvailableModelsMode>
-                ariaLabel={t("settings.routing.models.mode")}
-                value={draft.availableModelsMode}
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={draft.availableModelsMode === "allowlist"}
+                aria-label={availableModelsModeToggleLabel}
+                title={availableModelsModeToggleLabel}
                 disabled={!writesEnabled || busy}
-                options={[
-                  { value: "allowlist", label: t("settings.routing.models.allowlist") },
-                  { value: "denylist", label: t("settings.routing.models.denylist") },
-                ]}
-                onChange={onAvailableModelsModeChange}
-              />
+                data-mode={draft.availableModelsMode}
+                onClick={() => onAvailableModelsModeChange(nextAvailableModelsMode)}
+                className="h-10 w-full justify-between rounded-lg px-3 text-sm font-semibold"
+              >
+                <span>{availableModelsModeLabel}</span>
+                <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
+              </Button>
             </div>
             <div className="min-w-0 flex-1">
               <MultiSelectFilterCombobox
@@ -301,7 +319,7 @@ export function PoolRoutingSettingsCard({
                   step="1"
                   value={field.value}
                   disabled={!writesEnabled || busy}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-sm font-mono"
                   onChange={(event) => onTimeoutChange(field.key, event.target.value)}
                 />
               </label>
