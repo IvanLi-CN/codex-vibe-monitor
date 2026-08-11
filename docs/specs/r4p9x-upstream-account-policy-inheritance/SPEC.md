@@ -100,6 +100,8 @@ Effective account policy is computed in this order:
 
 Each explicit lower-level model rule replaces both the inherited mode and list. Missing or `null` lower-level fields inherit. An allowlist with an empty list rejects every model; a denylist with an empty list adds no restriction. Legacy records with a defined `availableModels` list are interpreted as allowlists, including legacy clients that submit only the list.
 
+Clearing a lower-level model rule is atomic: a legacy client that sends only `availableModels: null` clears both the stored list and mode. Read-only legacy tag model constraints, when present, remain allowlists and never become an editable tag policy; they retain their constraint source while inheriting the four editable levels.
+
 Request compression has one scope restriction:
 
 - root settings may define the default algorithm and the global compression level preset

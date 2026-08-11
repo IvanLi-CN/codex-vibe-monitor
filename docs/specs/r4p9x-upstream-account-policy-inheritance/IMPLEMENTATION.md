@@ -88,6 +88,8 @@ The API-key account detail Overview renders six independent capability cards in 
 
 Model filtering persists `available_models_mode` beside each root, group, account, and conversation model list. Root storage defaults to `denylist` and `[]`; nullable lower layers preserve inheritance. Runtime selection branches on the effective mode, applies the last explicit rule in root -> group -> account -> conversation order, and then rejects immutable `systemDeniedModels`. Direct image endpoints therefore report `modelNotAllowed` before image capability checks when a model is filtered, while Codex `image_gen` keeps its independent capability/rewrite requirement.
 
+Compatibility details are enforced at every write boundary: list-only legacy writes become allowlists, list-only `null` clears remove the mode and list together, explicit empty allowlists remain valid reject-all rules, and read-only legacy tag model constraints retain allowlist semantics with a tag source instead of inheriting the root denylist mode.
+
 The settings contract exposes regular proxy candidates including `gpt-5.4-mini` and a separate image candidate list containing `gpt-image-2`. The new regular candidate is not added to the default enabled preset list, and image candidates do not change the `/v1/models` hijack switch.
 
 Account and group routing policy writes distinguish missing, `null`, and value for nullable policy fields.
