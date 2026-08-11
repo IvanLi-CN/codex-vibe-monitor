@@ -457,6 +457,10 @@ pub(crate) async fn binding_response_from_row(
         .available_models_json
         .as_deref()
         .and_then(parse_available_models_json);
+    let available_models_invalid = row
+        .available_models_json
+        .as_deref()
+        .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
     let policy_field_sources =
         PromptCacheConversationPolicyFieldSources::from_row(&row, effective_policy.as_ref());
     let effective_available_models = effective_policy
@@ -578,25 +582,30 @@ pub(crate) async fn binding_response_from_row(
                     .as_ref()
                     .map(|rule| rule.codex_imagegen_rewrite_mode)
             }),
-        available_models: row
-            .available_models_json
-            .as_deref()
-            .and_then(parse_available_models_json)
-            .or(effective_available_models),
-        available_models_mode: row
-            .available_models_mode
-            .as_deref()
-            .map(|value| AvailableModelsMode::from_str(Some(value)))
-            .or_else(|| {
-                legacy_available_models
-                    .as_ref()
-                    .map(|_| AvailableModelsMode::Allowlist)
-            })
-            .or_else(|| {
-                effective_policy
-                    .as_ref()
-                    .map(|rule| rule.available_models_mode)
-            }),
+        available_models: if available_models_invalid {
+            Some(Vec::new())
+        } else {
+            legacy_available_models
+                .clone()
+                .or(effective_available_models)
+        },
+        available_models_mode: if available_models_invalid {
+            Some(AvailableModelsMode::Allowlist)
+        } else {
+            row.available_models_mode
+                .as_deref()
+                .map(|value| AvailableModelsMode::from_str(Some(value)))
+                .or_else(|| {
+                    legacy_available_models
+                        .as_ref()
+                        .map(|_| AvailableModelsMode::Allowlist)
+                })
+                .or_else(|| {
+                    effective_policy
+                        .as_ref()
+                        .map(|rule| rule.available_models_mode)
+                })
+        },
         forward_proxy_key,
         forward_proxy_keys,
         policy_field_sources,
@@ -661,11 +670,7 @@ impl PromptCacheConversationPolicyFieldSources {
                 effective_policy.map(|rule| rule.available_models_source()),
             ),
             available_models_mode: if row.available_models_mode.is_some()
-                || row
-                    .available_models_json
-                    .as_deref()
-                    .and_then(parse_available_models_json)
-                    .is_some()
+                || row.available_models_json.is_some()
             {
                 "conversation".to_string()
             } else {
