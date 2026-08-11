@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.59.0",
+  "base_stable_version": "2.58.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-11T17:28:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.59.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "68e9f66c6888dfe2a401487729bb74efec7a8df5",
+  "pr_number": 780,
+  "pr_title": "feat(prompt-cache): isolate sticky affinity by model",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.59.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.59.0",
+  "target_sha": "4925d23051af87bc164e43191ab571a35b054610",
+  "type_label": "type:minor"
+}
