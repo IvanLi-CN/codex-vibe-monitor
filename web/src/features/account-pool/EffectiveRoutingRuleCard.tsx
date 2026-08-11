@@ -634,7 +634,11 @@ function availableModelsSourceDeniesAll(
   return (
     mode === "allowlist" &&
     defined !== false &&
-    (source === "group" || source === "tag" || source === "account" || source === "conversation")
+    (source === "root" ||
+      source === "group" ||
+      source === "tag" ||
+      source === "account" ||
+      source === "conversation")
   );
 }
 

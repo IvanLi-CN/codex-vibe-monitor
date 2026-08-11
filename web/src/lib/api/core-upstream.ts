@@ -943,6 +943,9 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
 
 function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const availableModelsDefined =
+    payload.availableModelsDefined === true ||
+    (payload.availableModelsDefined == null && Array.isArray(payload.availableModels));
   const concurrencyLimit = normalizeFiniteNumber(payload.concurrencyLimit);
   const upstream429MaxRetries = normalizeUpstreamAccountGroupMaxRetries(
     payload.upstream429MaxRetries,
@@ -969,12 +972,13 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     availableModels: normalizeStringArray(payload.availableModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
-    availableModelsDefined:
-      payload.availableModelsDefined === true || Array.isArray(payload.availableModels),
+    availableModelsDefined,
     availableModelsMode:
       payload.availableModelsMode === "allowlist" || payload.availableModelsMode === "denylist"
         ? payload.availableModelsMode
-        : "allowlist",
+        : availableModelsDefined
+          ? "allowlist"
+          : undefined,
   };
 }
 

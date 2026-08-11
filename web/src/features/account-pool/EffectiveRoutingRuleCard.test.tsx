@@ -215,6 +215,26 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain("Inherited / unrestricted");
   });
 
+  it("shows deny-all copy for an empty root allowlist", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: [],
+          availableModelsMode: "allowlist",
+          availableModelsDefined: true,
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "root",
+          },
+        })}
+        labels={labels}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("No models allowed");
+    expect(document.body.textContent).not.toContain("Inherited / unrestricted");
+  });
+
   it("renders rule values as semantic badges without the blocking summary strip", () => {
     render(
       <EffectiveRoutingRuleCard

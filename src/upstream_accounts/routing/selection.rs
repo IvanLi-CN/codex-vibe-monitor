@@ -1870,6 +1870,7 @@ mod tests {
             available_models: Vec::new(),
             available_models_mode: AvailableModelsMode::Allowlist,
             available_models_defined: false,
+            tag_available_models: None,
             status_change_reasons: default_status_change_reasons(),
             status_change_reason_field_sources: default_status_change_reason_field_sources("root"),
             system_denied_models: Vec::new(),

@@ -1413,7 +1413,10 @@ impl AvailableModelsMode {
     pub(crate) fn from_str(value: Option<&str>) -> Self {
         match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
             Some("allowlist") => Self::Allowlist,
-            _ => Self::Denylist,
+            Some("denylist") => Self::Denylist,
+            // A persisted list predates this field, so malformed values must
+            // retain the restrictive legacy allowlist interpretation.
+            _ => Self::Allowlist,
         }
     }
 }
@@ -1532,6 +1535,8 @@ pub(crate) struct EffectiveRoutingRule {
     pub(crate) available_models: Vec<String>,
     pub(crate) available_models_mode: AvailableModelsMode,
     pub(crate) available_models_defined: bool,
+    #[serde(skip)]
+    pub(crate) tag_available_models: Option<Vec<String>>,
     pub(crate) status_change_reasons: StatusChangeReasonSettings,
     pub(crate) status_change_reason_field_sources: StatusChangeReasonFieldSources,
     pub(crate) system_denied_models: Vec<String>,

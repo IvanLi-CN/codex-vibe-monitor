@@ -104,6 +104,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         available_models: available_models.unwrap_or_default(),
         available_models_mode: AvailableModelsMode::Allowlist,
         available_models_defined: tag_available_models_defined,
+        tag_available_models: None,
         status_change_reasons,
         status_change_reason_field_sources,
         system_denied_models: system_denied_models.into_iter().collect(),
@@ -305,7 +306,9 @@ pub(crate) fn apply_root_available_models(
     models_json: Option<&str>,
     mode: Option<&str>,
 ) {
-    let mode = AvailableModelsMode::from_str(mode);
+    let mode = mode
+        .map(|value| AvailableModelsMode::from_str(Some(value)))
+        .unwrap_or(AvailableModelsMode::Denylist);
     rule.available_models = parse_string_array_json(models_json);
     rule.available_models_mode = mode;
     rule.available_models_defined = matches!(mode, AvailableModelsMode::Allowlist)
@@ -672,8 +675,14 @@ pub(crate) fn apply_tag_layer_routing_policy(
     } else {
         0
     };
-    rule.available_models =
-        if tag_rule.available_models_defined && inherited_available_models_defined {
+    if tag_rule.available_models_defined {
+        rule.tag_available_models = Some(tag_rule.available_models.clone());
+    }
+    if tag_rule.available_models_defined
+        && !(inherited_available_models_mode == AvailableModelsMode::Denylist
+            && inherited_available_models_defined)
+    {
+        rule.available_models = if inherited_available_models_defined {
             intersect_available_models(
                 inherited_available_models.clone(),
                 &tag_rule.available_models,
@@ -681,8 +690,11 @@ pub(crate) fn apply_tag_layer_routing_policy(
         } else {
             tag_rule.available_models.clone()
         };
-    rule.available_models_defined =
-        inherited_available_models_defined || tag_rule.available_models_defined;
+        rule.available_models_defined = true;
+    } else {
+        rule.available_models = inherited_available_models.clone();
+        rule.available_models_defined = inherited_available_models_defined;
+    }
     rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
@@ -704,9 +716,16 @@ pub(crate) fn apply_tag_layer_routing_policy(
         rule.available_models_defined = inherited_available_models_defined;
         rule.field_sources.available_models = inherited_available_models_source;
         rule.field_sources.available_models_mode = inherited_available_models_mode_source;
-    } else if tag_rule.available_models_defined {
+    } else if tag_rule.available_models_defined
+        && !(inherited_available_models_mode == AvailableModelsMode::Denylist
+            && inherited_available_models_defined)
+    {
         rule.available_models_mode = tag_rule.available_models_mode;
         rule.field_sources.available_models_mode = "tag".to_string();
+    } else if tag_rule.available_models_defined {
+        rule.field_sources.available_models = inherited_available_models_source;
+        rule.available_models_mode = inherited_available_models_mode;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
         rule.field_sources.available_models_mode = inherited_available_models_mode_source;

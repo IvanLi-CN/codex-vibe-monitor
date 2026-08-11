@@ -1352,7 +1352,15 @@ pub(crate) async fn update_upstream_account_group(
         .bind(optional_bool_to_i64(&routing_rule.upstream_429_retry_enabled))
         .bind(if matches!(routing_rule.upstream_429_max_retries, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
-        .bind(if matches!(routing_rule.available_models, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(
+            if matches!(routing_rule.available_models, OptionalField::Missing)
+                && !matches!(routing_rule.available_models_mode, OptionalField::Null)
+            {
+                1_i64
+            } else {
+                0_i64
+            },
+        )
         .bind(available_models_json)
         .bind(if matches!(status_change_upstream_http_401, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_bool_to_i64(&status_change_upstream_http_401))

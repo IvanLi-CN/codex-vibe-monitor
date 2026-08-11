@@ -453,6 +453,10 @@ pub(crate) async fn binding_response_from_row(
     } else {
         None
     };
+    let legacy_available_models = row
+        .available_models_json
+        .as_deref()
+        .and_then(parse_available_models_json);
     let policy_field_sources =
         PromptCacheConversationPolicyFieldSources::from_row(&row, effective_policy.as_ref());
     let effective_available_models = effective_policy
@@ -584,6 +588,11 @@ pub(crate) async fn binding_response_from_row(
             .as_deref()
             .map(|value| AvailableModelsMode::from_str(Some(value)))
             .or_else(|| {
+                legacy_available_models
+                    .as_ref()
+                    .map(|_| AvailableModelsMode::Allowlist)
+            })
+            .or_else(|| {
                 effective_policy
                     .as_ref()
                     .map(|rule| rule.available_models_mode)
@@ -651,10 +660,20 @@ impl PromptCacheConversationPolicyFieldSources {
                 row.available_models_json.as_ref(),
                 effective_policy.map(|rule| rule.available_models_source()),
             ),
-            available_models_mode: source_for_optional_or_effective(
-                row.available_models_mode.as_ref(),
-                effective_policy.map(|rule| rule.available_models_mode_source()),
-            ),
+            available_models_mode: if row.available_models_mode.is_some()
+                || row
+                    .available_models_json
+                    .as_deref()
+                    .and_then(parse_available_models_json)
+                    .is_some()
+            {
+                "conversation".to_string()
+            } else {
+                effective_policy
+                    .map(|rule| rule.available_models_mode_source())
+                    .unwrap_or("account")
+                    .to_string()
+            },
             forward_proxy_key: source_for_optional(
                 row.forward_proxy_key
                     .as_ref()
@@ -865,6 +884,12 @@ fn prompt_cache_conversation_policy_changed_fields(
                 .and_then(|row| row.available_models_json.as_deref())
                 .and_then(parse_available_models_json),
     );
+    push_if_changed(
+        &mut changed_fields,
+        "availableModelsMode",
+        before.and_then(|row| row.available_models_mode.as_deref())
+            != after.and_then(|row| row.available_models_mode.as_deref()),
+    );
 
     let before_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(before);
     let after_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(after);
@@ -914,6 +939,7 @@ fn prompt_cache_conversation_policy_info_types(changed_fields: &[String]) -> Vec
                 | "imageToolRewriteMode"
                 | "codexImagegenRewriteMode"
                 | "availableModels"
+                | "availableModelsMode"
         )
     });
     if has_request_rewrite {
@@ -3398,4 +3424,20 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
         total_failed,
         items,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_mode_changes_are_request_rewrite_events() {
+        let info_types =
+            prompt_cache_conversation_policy_info_types(&["availableModelsMode".to_string()]);
+
+        assert_eq!(
+            info_types,
+            vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE.to_string()]
+        );
+    }
 }

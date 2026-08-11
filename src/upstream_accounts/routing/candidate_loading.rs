@@ -35,6 +35,13 @@ pub(crate) fn account_accepts_requested_model(
     ) {
         return false;
     }
+    if let Some(tag_available_models) = rule.tag_available_models.as_deref()
+        && !tag_available_models
+            .iter()
+            .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
+    {
+        return false;
+    }
     !rule
         .system_denied_models
         .iter()
@@ -252,17 +259,17 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
                 apply_root_request_compression_defaults(&mut rule, &root_request_compression);
             }
         }
-        if let Some(tags) = tags_by_account.get(&account_id)
-            && !tags.is_empty()
-        {
-            let tag_rule = build_effective_routing_rule(tags);
-            apply_tag_layer_routing_policy(&mut rule, &tag_rule);
-        }
         if let Some(account_policy) = account_policy_overrides.get(&account_id) {
             apply_account_routing_policy_override(&mut rule, account_policy);
             if !request_compression_override_enabled {
                 apply_root_request_compression_defaults(&mut rule, &root_request_compression);
             }
+        }
+        if let Some(tags) = tags_by_account.get(&account_id)
+            && !tags.is_empty()
+        {
+            let tag_rule = build_effective_routing_rule(tags);
+            apply_tag_layer_routing_policy(&mut rule, &tag_rule);
         }
         rules.insert(account_id, rule);
     }

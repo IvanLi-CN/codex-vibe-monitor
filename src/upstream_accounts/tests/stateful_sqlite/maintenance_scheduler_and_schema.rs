@@ -308,6 +308,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         available_models: vec![],
         available_models_mode: AvailableModelsMode::Allowlist,
         available_models_defined: false,
+        tag_available_models: None,
         status_change_reasons: default_status_change_reasons(),
         status_change_reason_field_sources: default_status_change_reason_field_sources("root"),
         system_denied_models: vec![],
@@ -4790,6 +4791,45 @@ fn apply_tag_layer_routing_policy_keeps_group_tag_disjoint_models_as_deny_all() 
         &inherited
     ));
     assert_eq!(inherited.field_sources.available_models, "tag");
+}
+
+#[test]
+fn apply_tag_layer_routing_policy_keeps_inherited_denylist_and_adds_tag_constraint() {
+    let mut inherited = test_effective_routing_rule(0);
+    inherited.available_models = vec!["gpt-5.4".to_string()];
+    inherited.available_models_mode = AvailableModelsMode::Denylist;
+    inherited.available_models_defined = true;
+    inherited.field_sources.available_models = "group".to_string();
+    inherited.field_sources.available_models_mode = "group".to_string();
+
+    let mut tag = test_account_tag_summary(1, "tag", 0);
+    tag.routing_rule.available_models = vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()];
+    let tag_rule = build_effective_routing_rule(&[tag]);
+
+    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+    assert_eq!(
+        inherited.available_models_mode,
+        AvailableModelsMode::Denylist
+    );
+    assert_eq!(inherited.available_models, vec!["gpt-5.4".to_string()]);
+    assert_eq!(
+        inherited.tag_available_models,
+        Some(vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()])
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &inherited
+    ));
+    assert!(account_accepts_requested_model(Some("gpt-4.1"), &inherited));
+}
+
+#[test]
+fn malformed_available_models_mode_keeps_legacy_allowlist_semantics() {
+    assert_eq!(
+        AvailableModelsMode::from_str(Some("unexpected")),
+        AvailableModelsMode::Allowlist
+    );
 }
 
 #[test]

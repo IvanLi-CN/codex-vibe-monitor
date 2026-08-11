@@ -221,9 +221,9 @@ function buildDraft(
     upstream429RetryEnabled: rule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(rule?.upstream429MaxRetries),
     availableModels: normalizeModelIds(rule?.availableModels ?? []),
-    availableModelsMode: options?.changedFieldsOnly
-      ? (rule?.availableModelsMode ?? AVAILABLE_MODE_INHERIT_VALUE)
-      : (rule?.availableModelsMode ?? "denylist"),
+    availableModelsMode:
+      rule?.availableModelsMode ??
+      (rule?.availableModelsDefined === true ? "allowlist" : AVAILABLE_MODE_INHERIT_VALUE),
     availableModelInput: "",
     availableModelsTouched: false,
     statusChangeReasons: resolveStatusChangeReasons(rule?.statusChangeReasons),
