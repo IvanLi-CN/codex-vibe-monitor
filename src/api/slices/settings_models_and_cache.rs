@@ -1013,7 +1013,7 @@ pub(crate) struct PromptCacheConversationManualBindingResponse {
     pub(crate) upstream_account_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) id: i64,
@@ -1069,7 +1069,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) t_total_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationUpstreamAccountResponse {
     pub(crate) upstream_account_id: Option<i64>,
@@ -1081,7 +1081,7 @@ pub(crate) struct PromptCacheConversationUpstreamAccountResponse {
     pub(crate) last_activity_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationRequestPointResponse {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
