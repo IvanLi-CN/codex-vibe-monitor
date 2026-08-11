@@ -25,7 +25,15 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - [x] Manual group binding bypasses sticky source cut-out policy while preserving target cut-in and target account eligibility.
 - [x] Automatic sticky escape for non-explicit routes after account-global consecutive transport/decode-shaped `upstream_stream_error` failures, while preserving explicit upstream-account operator overrides and group-only reselection semantics.
 - [x] Upstream account binding writes the corresponding sticky route immediately.
+- [x] Automatic Sticky affinity is isolated by normalized conversation + model buckets with per-model generations and conversation-level epoch fencing.
+- [x] Legacy Sticky rows migrate as all-model fallbacks; binding responses expose the fallback and all materialized model routes.
+- [x] Manual account binding atomically rewrites the fallback and materialized model buckets, while full affinity reset clears every affinity row and owner lock.
+- [x] The affinity-reset confirmation uses a padded content group and a separate safe-area action footer, with dedicated desktop and `393x852` Storybook states.
+- [x] Automatic clear causes persist and are consumed at the matching all-model or normalized-model generation scope, so one model's failed route cannot annotate another model's fresh assignment.
 - [x] Prompt Cache conversation detail drawer controls.
+- [x] Prompt Cache conversation detail drawer uses `概览 / 调用 / 路由 / 设置 / 事件记录`, with route controls consolidated in 路由.
+- [x] Current-route upstream-account values open the shared account-detail view when an account ID is available.
+- [x] Current routing uses a desktop table and an overflow-free mobile field/value layout, with Storybook width assertions at `393x852`.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
 - [x] Prompt Cache conversation detail drawer sibling `事件记录` tab with categorized badges, lightweight filters, and paged per-conversation event loading.
 - [x] Prompt Cache conversation detail drawer reuses the account-detail wide shell width class and the shared effective-routing form skeleton, while hiding account-only routing rows on the conversation surface.
@@ -59,11 +67,14 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 ## Conversation Operations Update
 
 - `prompt_cache_conversation_operation_events` stores append-only detail events per `promptCacheKey`, including action, origin, categorized `infoTypes[]`, optional binding/sticky snapshots, and optional `invokeId`.
-- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}` returns paged newest-first records and supports one lightweight `infoType` filter (`routing`, `forwardProxy`, `requestRewrite`).
+- `routing_scope_json` records `{kind:"all"}` or `{kind:"model",modelKey,requestModel}`; legacy routing rows are backfilled as all-model scope. Conversation-level multi-bucket changes additionally persist `sticky_transitions_json` for expandable before/after detail.
+- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}` returns paged newest-first records, stable full-history model facets, and supports `infoType`, `routingScope`, and normalized `routingModel` filters.
+- The Events tab keys its local source by both event category and routing-model scope, so changing back to unrestricted replaces a filtered HTTP subset with the live unfiltered head.
 - Detail-drawer PATCH writes emit `detailDrawer` records, Dashboard bulk workflows emit `dashboardBulk` records, and automatic group-to-account promotions emit `systemAuto` records.
-- Binding changes and sticky-target changes remain separate records; policy-field PATCHes stay collapsed into one `conversationPolicyUpdated` summary event whose categories derive from the actual changed fields.
+- Manual binding and full reset operations collapse their multi-bucket Sticky changes into one conversation-level event; policy-field PATCHes stay collapsed into one `conversationPolicyUpdated` summary event whose categories derive from the actual changed fields.
 - Runtime Sticky writes now use the persisted affinity generation as an optimistic concurrency token. Target creation, replacement, and conditional automatic removal advance it under the SQLite writer lock; automatic removal also requires the original failed account. The first successful concurrent completion wins and later completions are audited without overwriting the target.
 - New automatic routing events persist a structured, safe `routingContext` with reason code, routing source, HTTP status, and public cause/trigger attempt IDs. Existing rows remain unchanged and are identified by the UI as historical events without a recorded reason.
+- Automatic routing writes use the exact normalized model bucket first, then the all-model fallback. Request writes capture both the conversation epoch and model generation; model buckets fence independently while manual switch/reset advances the conversation epoch.
 - Fresh assignment now persists a `routing_selection_audit_json` snapshot on the request attempt before dispatch. The snapshot includes the selected and runner-up comparator values, including the numeric model-route penalties and their safe state codes. It is copied into the resulting Sticky operation event and rendered both in the Events tab and Records attempt card, so the selected account, decisive comparator, and normalized excluded-candidate reasons describe the decision at routing time rather than current account state.
 - Automatic event links now carry the public attempt ID plus its invoke ID when available. The event also exposes a compact invoke-ID link with the full corresponding-invocation meaning in its accessible label and hover title, so operators do not have to infer that a routing-decision link opens Records. Attempt-only cause links first resolve the attempt to its invocation, then expand that invocation and focus the matching attempt. Records resolves compound targets directly, clears the default date bounds for exact targets, and expands the matching invocation detail instead of showing a broad search result. Historical events without the persisted score snapshot explicitly say that the comparison cannot be verified.
 
@@ -114,6 +125,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - `cd web && bun run test -- --run PromptCacheConversationTable.test.tsx api.test.ts`
 - `cd web && bun run test -- DashboardWorkingConversationsSection.test.tsx`
 - `cargo test ensure_schema_creates_prompt_cache_conversation_operation_events_table -- --nocapture`
+- `cargo test model_scoped_sticky_clear_cause_does_not_cross_models -- --nocapture`
 - `cargo test prompt_cache_conversation_operation_events_list_filters_by_info_type -- --nocapture`
 - `cargo test bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_preserves_binding_kind -- --nocapture`
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
@@ -122,6 +134,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - `cargo test subscriptions -- --nocapture`
 - `cd web && bun run test -- src/features/prompt-cache/PromptCacheConversationTable.test.tsx src/hooks/useConversationDetailTopics.test.tsx`
 - `cd web && bun run test-storybook -- PromptCacheConversationTable.stories.tsx`
+- `cd web && bun run test -- PromptCacheConversationTable.test.tsx`
 - `cd web && bun run test -- src/demo/event-handlers.test.ts src/demo/handlers.test.ts src/demo/runtime.test.ts`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
@@ -138,7 +151,8 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also shows a multi-node conversation proxy list and the visual evidence at `./assets/conversation-settings-multi-proxy-story.png`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also captures the widened detail drawer and account-style conversation routing form at `./assets/conversation-settings-wide-drawer-story.png`, including hidden account-only rows, expanded conversation-owned policy/timeouts, and the separate route-binding block.
-- Storybook `DrawerOperations` mock evidence now shows the affinity-reset recovery sequence itself: `affinityReset`, `stickyTargetCleared`, and exactly one later `systemAuto stickyTargetChanged` event with `invokeId`, so the visual contract proves stale in-flight success does not resurrect sticky after reset.
+- Storybook `DrawerOperations` mock evidence preserves the legacy affinity-reset recovery sequence, including historical all-model `stickyTargetCleared` rows. New full resets instead emit one all-model `affinityReset` event with per-bucket `stickyTransitions`, while the epoch fence prevents stale in-flight success from resurrecting any route.
+- Storybook `DrawerRouting`, `DrawerRoutingMobile`, `DrawerRoutingResetConfirm`, `DrawerRoutingResetConfirmMobile`, and `DrawerOperations` evidence at `./assets/conversation-routing-*-storybook.png` covers the complete route view, all-model fallback plus normalized buckets, five fitted mobile tabs, a padded full-reset confirmation at desktop and `393x852`, and concrete model-filtered routing events.
 - Storybook `DrawerOperations` mock evidence also shows the explicit corresponding-invocation Records link beside the routing-decision link, with the compound `attemptId` plus `invokeId` target.
 - Storybook `build-storybook` now succeeds after the Storybook-local Vite plugin merge deduplicates repeated React plugins, so the `DrawerOperations` evidence path remains usable for future UI reviews.
 - Web demo `/#/live` evidence: `./assets/conversation-detail-realtime-desktop.png` and `./assets/conversation-detail-realtime-mobile-393x852.png` show the Calls topic hydrated with a responding row and terminal rows at desktop and exact mobile viewport sizes.

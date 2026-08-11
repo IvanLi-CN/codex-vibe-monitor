@@ -9,10 +9,16 @@ const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
 const BLOCKED_BINDING_UPSTREAM_ACCOUNT_ID_PARAM = "blockedBindingUpstreamAccountId";
 const BLOCKED_BINDING_CONSTRAINT_SOURCE_PARAM = "blockedBindingConstraintSource";
 
-export type PromptCacheConversationRouteTab = "overview" | "calls" | "settings" | "operations";
+export type PromptCacheConversationRouteTab =
+  | "overview"
+  | "calls"
+  | "routing"
+  | "settings"
+  | "operations";
 
 function parsePromptCacheConversationTab(raw: string | null): PromptCacheConversationRouteTab {
   if (raw === "calls") return "calls";
+  if (raw === "routing") return "routing";
   if (raw === "settings") return "settings";
   if (raw === "operations") return "operations";
   return "overview";

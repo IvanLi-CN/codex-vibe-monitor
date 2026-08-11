@@ -945,8 +945,12 @@ pub(crate) async fn load_account_routing_candidates(
             ) AS credits_balance,
             account.last_selected_at,
             (
-                SELECT COUNT(*)
-                FROM pool_sticky_routes route
+                SELECT COUNT(DISTINCT route.sticky_key)
+                FROM (
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_routes
+                    UNION ALL
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
+                ) route
                 WHERE route.account_id = account.id
                   AND route.last_seen_at >=
         "#,
@@ -1062,8 +1066,12 @@ pub(crate) async fn load_account_routing_candidate(
             ) AS credits_balance,
             account.last_selected_at,
             (
-                SELECT COUNT(*)
-                FROM pool_sticky_routes route
+                SELECT COUNT(DISTINCT route.sticky_key)
+                FROM (
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_routes
+                    UNION ALL
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
+                ) route
                 WHERE route.account_id = account.id
                   AND route.last_seen_at >= ?2
             ) AS active_sticky_conversations

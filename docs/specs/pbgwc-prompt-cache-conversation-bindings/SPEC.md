@@ -14,6 +14,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Expose the binding on the Prompt Cache conversation detail drawer.
 - Add a Dashboard-scoped bulk workflow for route binding, affinity reset, and FAST mode rewrites across multiple Prompt Cache conversations.
 - Add a categorized event record surface on the Prompt Cache conversation detail drawer so manual and automatic routing changes stay traceable per conversation.
+- Isolate automatic Sticky affinity by the pair of `promptCacheKey` and normalized request model while retaining conversation-level manual controls.
 - Add conversation-card selection affordances on the Dashboard grid, including temporary modifier-key selection without entering persistent selection mode.
 - Apply the binding when the proxy can observe the same `promptCacheKey` before account-pool selection.
 - Keep group binding and upstream account binding mutually exclusive at both API and UI layers.
@@ -46,7 +47,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - When the bulk route-bind dialog opens and binding targets are loaded, it restores the newest still-valid MRU target by switching both kind and target selection together. Invalid or stale MRU entries are silently dropped from localStorage before the dialog renders recent chips.
 - The Dashboard bulk route-bind dialog renders up to five recent MRU targets below the `绑定到 / kind / target` row using variable-width group/account chips under one unified order. The visible strip stays within two rows; when all recent targets cannot fit, the dialog omits the extra tail items instead of introducing any alternate selector or placeholder chip. Picking any recent target only refills the current selection and never submits the bulk bind action by itself.
 - The Dashboard bulk clear confirmation dialog resolves its header/footer chrome and destructive callout surfaces from the active themed ancestor so dark-theme or nested-theme renders cannot inherit light-theme mixed surfaces from `:root`.
-- The separate `clearAndResetAffinity` API action removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
+- The separate `clearAndResetAffinity` API action removes the manual conversation binding, all-model fallback, every model-specific Sticky route, and `prompt_cache_encrypted_session_owners` row for each selected key so the next request reselects an upstream account from normal routing.
 - Bulk FAST mode writes one of the four concrete rewrite modes per selected key and preserves the key's current binding kind.
 - Conversation timeout overrides reuse only the existing request-path timeout fields:
   - `responsesFirstByteTimeoutSecs`
@@ -63,7 +64,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - After a concrete FAST mode, hosted image-tool, or Codex imagegen choice saves, its field editor remains expanded so the operator retains the editing context.
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
-- Prompt Cache conversation detail adds a sibling `事件记录` tab alongside `概览 / 调用 / 设置`.
+- Prompt Cache conversation detail tabs are ordered `概览 / 调用 / 路由 / 设置 / 事件记录`. The 路由 tab owns manual binding, encrypted-owner, fallback, and model-bucket views; 设置 retains policy, rewrite, proxy, and timeout editors.
+- Each current-route upstream-account value with a valid account ID opens that account's shared detail view. Values without an ID remain non-interactive text.
+- At narrow viewports, current routing renders each route as wrapped field/value rows instead of a horizontally scrollable table. The route region and conversation drawer must not overflow horizontally.
 - Owner-facing copy uses `事件记录` because the stream contains manual writes plus automatic runtime/system events; internal compatibility keeps `promptCacheConversationTab=operations` and `prompt_cache_conversation_operation_events`.
 - The events tab keeps one event stream and one lightweight filter row; it does not split into nested subtabs.
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
@@ -72,9 +75,14 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - New automatic routing contexts contain only a safe reason code, selection source, HTTP status, public attempt references, and an optional immutable fresh-selection audit. The audit records the selected account, eligible-candidate count, decisive comparator, and a bounded list of safely normalized exclusions; raw upstream messages remain available only through existing attempt detail access.
 - `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
 - `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
-- Binding/sticky events remain split: if one action changes both the manual binding target and sticky target, the timeline records separate events.
+- Routing events carry an explicit scope: `{ kind: "all" }` for conversation-wide changes or `{ kind: "model", modelKey, requestModel }` for a normalized request-model bucket. `requestModel` is shown only when it differs from `modelKey`.
+- A failed automatic clear records its public cause in the same all-model or normalized-model generation bucket that was cleared. Only the next fresh assignment in that same bucket may report `freshAssignmentAfterFailure`; a successful replacement consumes the stored cause.
+- A conversation-level operation that changes multiple Sticky buckets records one event with expandable per-bucket before/after transitions rather than fallback-only duplicate events.
 - Sticky keepalive renewals to the same target, no-diff PATCH requests, and pure reads do not emit event records.
-- A request captures the Sticky affinity generation at route selection. Any actual Sticky target create, replacement, or removal atomically advances that generation. The first successful fresh/failover completion for a generation establishes the target; later completions remain normal request outcomes but cannot overwrite or clear it.
+- Sticky model keys trim whitespace, fold case, and collapse a dated `-YYYY-MM-DD` alias into its base model. Exact model buckets win over the all-model fallback; a first successful request for a model materializes its exact bucket.
+- Automatic Sticky create, replacement, and removal fence writes with both a conversation epoch and per-model generation. Different model buckets may establish independently, while concurrent writes in one bucket remain first-success-wins. Manual account changes and full affinity resets advance the conversation epoch so old requests cannot restore stale routes.
+- Manual account binding rewrites the all-model fallback and every materialized model bucket atomically. Manual group binding remains a conversation-wide candidate constraint. Clearing the manual binding preserves Sticky state; full affinity reset clears manual binding, encrypted owner, fallback, and every model bucket.
+- The destructive affinity-reset confirmation keeps its title and explanation inside a padded content group and its actions inside a separated safe-area footer on both the mobile sheet and desktop dialog.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Runtime routing treats an observed conversation proxy override as a hard bound forward-proxy scope. The current node remains sticky for the prompt cache key, and runtime switches within the explicit list only after the existing consecutive network-failure threshold. If every node in that list is unavailable, routing fails through the existing proxy/account readiness path rather than silently choosing another proxy or falling back to the account/group scope.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
@@ -132,12 +140,18 @@ The row is deleted only when there is no binding target, all four timeout overri
 - `sticky_before_json TEXT NULL`
 - `sticky_after_json TEXT NULL`
 - `routing_context_json TEXT NULL`
+- `routing_scope_json TEXT NULL`
+- `sticky_transitions_json TEXT NULL`
+
+`pool_sticky_routes` remains the all-model fallback. `pool_sticky_model_routes` stores exact model buckets with `(sticky_key, model_key)` as its primary key; `pool_sticky_model_route_generations` stores their independent generations plus nullable `last_clear_cause_attempt_public_id` and `last_clear_cause_http_status`. Existing `pool_sticky_routes` rows migrate as all-model fallbacks.
+
 - `invoke_id TEXT NULL`
 
 ### HTTP API
 
 - `GET /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
-  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, forwardProxyKeys, policyFieldSources, updatedAt }`.
+  - Returns `{ promptCacheKey, bindingKind, groupName, upstreamAccountId, upstreamAccountName, stickyRoutes, timeouts, timeoutFieldSources, allowSwitchUpstream, fastModeRewriteMode, imageToolRewriteMode, availableModels, forwardProxyKey, forwardProxyKeys, policyFieldSources, updatedAt }`.
+  - `stickyRoutes[]` includes the all-model fallback (`modelKey: null`) and every materialized normalized-model route with account, created, updated, and last-used timestamps.
   - `bindingKind` is `none`, `group`, or `upstreamAccount`.
   - `policyFieldSources` uses the same source vocabulary as effective routing rules and marks each conversation policy field as `conversation` when set locally or inherited from `account`/upstream policy otherwise.
 - `PATCH /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
@@ -154,9 +168,10 @@ The row is deleted only when there is no binding target, all four timeout overri
     - `{ "action": "setFastModeRewriteMode", "fastModeRewriteMode": "fill_missing" }`
   - `bind` accepts `bindingKind: "none"` to clear only the manual binding target; invalid, missing, or stale targets are rejected before any per-key writes begin.
   - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
-- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
-  - Returns `{ items, total, page, pageSize }`.
-  - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext? }`.
+- `POST /api/stats/prompt-cache-conversation-bindings/reset-affinity/{encodedPromptCacheKey}` clears all conversation affinity state after the confirmation in the 路由 tab.
+- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite&routingScope=all|model&routingModel=<model>`
+  - Returns `{ items, total, page, pageSize, routingModelFacets }`. `routingModelFacets` derives from all retained events, not just the active page or filter. Routing-model filters are single-select and reset to unrestricted when the category changes away from routing. Returning to unrestricted replaces the model-filtered HTTP subset with the unfiltered live-topic head.
+  - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId, routingContext?, routingScope?, stickyTransitions[] }`.
   - `routingContext` contains `{ reasonCode, routingSource?, routingSelectionAudit?, httpStatus?, triggerAttemptId?, causingAttemptId?, causingHttpStatus? }`. `routingSelectionAudit` is present only for a new fresh assignment and contains `{ selectedAccountId, selectedAccountName, eligibleCandidateCount, winnerReasonCode, comparedAccountId?, comparedAccountName?, selectedScore?, comparedScore?, excludedCandidates[] }`. Each score snapshot preserves the routing-time comparator inputs (`eligibility`, route-binding-failure penalty, model-route penalty plus code, priority rank, capacity lane, dispatch state, reset proximity, scarcity score, effective load, and last-selected timestamp). Missing context or score data on existing rows is rendered as historical reason unavailable and is never reconstructed from current account state.
   - A routing attempt link includes both the public attempt ID and its invoke ID when available. Records uses that pair as an exact target and does not apply the default date window, so the linked attempt and its immutable selection audit are the first result and expanded detail.
   - Results are ordered by `occurredAt DESC, id DESC`.
@@ -205,11 +220,11 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - FAST mode, image tool, and available-model conversation overrides are applied to the effective routing rule before candidate compatibility checks.
 - A conversation proxy override replaces the selected account/group/node-shunt forward-proxy dispatch scope with a prompt-cache-key scoped hard binding list. Account-level proxy lists still override group lists when no conversation proxy override is set.
 - A conversation “切出” override allows routing to move the conversation away from the original/sticky upstream account. It is not a cut-in override and does not force another account to accept otherwise invalid traffic.
-- Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
+- Saving an upstream account binding atomically updates the all-model fallback plus every materialized model route for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
 - Every successful detail save, bulk binding action, affinity reset, automatic sticky mutation, and group promotion publishes a scope-specific conversation-configuration change after commit.
 - Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
-- Bulk bind reuses the single-key save path per selected `promptCacheKey`; successful upstream-account bulk binds also align each selected key's sticky route to the chosen account.
-- Bulk clear-and-reset affinity removes the manual binding row, sticky route, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
+- Bulk bind reuses the single-key save path per selected `promptCacheKey`; successful upstream-account bulk binds also align each selected key's fallback and materialized model routes to the chosen account.
+- Bulk clear-and-reset affinity removes the manual binding row, all Sticky buckets, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
 - Bulk FAST mode writes only the conversation-level FAST rewrite field for each selected key and leaves the current manual binding target, or `bindingKind='none'`, intact.
 - Single-conversation detail PATCH writes `origin='detailDrawer'`.
 - Dashboard bulk bind, manual binding clear, clear/reset affinity, and FAST mode writes `origin='dashboardBulk'`.
@@ -239,7 +254,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a key bound to account `123` and account `123` is unavailable due to health, quota, concurrency, route-key, or forward-proxy readiness, routing fails without falling back to a different account.
 - Given a key bound to a group, target accounts in that group still honor normal cut-in policy.
 - Given a key bound to a group and the current sticky account reaches the configured consecutive transport/decode-shaped `upstream_stream_error` threshold, routing may reselect another eligible account in that same group.
-- Given an upstream account binding is saved, the key's sticky route is updated to the bound account.
+- Given an upstream account binding is saved, the key's all-model fallback and every materialized model route are updated to the bound account.
 - Given a cleared binding, requests use normal account-pool routing behavior, including any sticky route that already exists for that key.
 - Given a timeout-only row with `bindingKind='none'`, requests still use the conversation timeout overrides while leaving target selection unconstrained.
 - Given a policy-only row with `bindingKind='none'`, requests still use the conversation runtime policy overrides while leaving target selection unconstrained.
@@ -252,13 +267,14 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
+- Given a current Sticky routing target has a valid upstream account ID, selecting its account value opens the shared upstream-account detail view.
 - Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
 - Given the conversation detail drawer is open on the Settings tab, the operator can see effective values plus source badges for 切出, FAST mode, image tool, available models, and one proxy node, then override or clear each field independently.
-- Given `?promptCacheConversationTab=operations`, both the overlay drawer and compact detail page open directly to the events tab without breaking the existing `overview / calls / settings` deep links.
+- Given `?promptCacheConversationTab=routing`, both the overlay drawer and compact detail page open directly to the routing tab; existing `overview / calls / settings / operations` deep links remain compatible.
 - Given the events tab is open, the default filter shows all event records; selecting one category shows only events whose `infoTypes[]` contain that category.
-- Given a manual bind changes from `none/group/account` to another target, a `manualBindingUpdated` event is recorded; if sticky target also changes, a separate `stickyTargetChanged` event is recorded.
+- Given a manual bind changes from `none/group/account` to another target, one `manualBindingUpdated` event records every affected Sticky bucket in `stickyTransitions`.
 - Given bulk `{ "action": "bind", "bindingKind": "none" }` succeeds, a `bindingCleared` event is recorded with `origin='dashboardBulk'`; sticky route and encrypted owner lock rows are not removed.
-- Given bulk `clearAndResetAffinity` succeeds, an `affinityReset` event is recorded with `origin='dashboardBulk'`; if the conversation had a sticky target, a separate `stickyTargetCleared` event is recorded.
+- Given bulk `clearAndResetAffinity` succeeds, one `affinityReset` event is recorded with `origin='dashboardBulk'`, all-model scope, and a `stickyTransitions` entry for every cleared fallback or model bucket.
 - Given only `forwardProxyKey(s)` change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['forwardProxy']`.
 - Given only FAST mode, image tool, or available models change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['requestRewrite']`.
 - Given one PATCH changes both proxy and rewrite fields, the same `conversationPolicyUpdated` event records multiple info-type badges.
@@ -280,20 +296,66 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given an external binding change arrives while Settings has a dirty draft, the inputs remain unchanged until the operator adopts the latest binding or explicitly saves the draft as last-write-wins.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
-- Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
+- Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' fallback plus materialized model routes align to that account.
 - Given the bulk route-bind dialog opens and localStorage contains a newest valid account or group MRU target, when binding targets finish loading, then the dialog restores that target's kind and selected value before the operator clicks `应用绑定`.
 - Given the bulk route-bind dialog opens and localStorage contains stale MRU targets, when those groups or accounts are no longer selectable, then the dialog drops only the stale entries, keeps the remaining valid MRU order, and falls back to the existing default target-selection behavior without throwing.
 - Given recent route-bind chips are rendered, when the operator clicks a group or upstream-account chip, then the dialog switches to that chip's kind and target but does not submit any bulk bind API request until the operator explicitly clicks `应用绑定`.
 - Given the bulk route-bind dialog renders on a compact-width viewport, when recent MRU targets are available, then the dialog still uses recent chips in the main strip and omits any chips that cannot fit within the two-row budget; selecting any visible recent chip still only refills the current kind and target.
 - Given more than five valid MRU targets exist in localStorage, when the dialog renders its recent chips, then only the five newest unified MRU targets are shown and persisted.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator uses the route-bind dialog footer bulk clear binding shortcut, then only the manual binding is removed and sticky / owner affinity remains available to routing.
-- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator uses the floating bulk bar clear-and-reselect action, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
-- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when a client calls bulk `clearAndResetAffinity`, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given a selected conversation has a manual binding, fallback/model Sticky routes, and encrypted owner lock, when the operator uses the floating bulk bar clear-and-reselect action, then all affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given a selected conversation has a manual binding, fallback/model Sticky routes, and encrypted owner lock, when a client calls bulk `clearAndResetAffinity`, then all affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given `gpt-5.4` and `gpt-5.4-2026-05-01` route for the same conversation, they share one `gpt-5.4` Sticky bucket; a different normalized model may retain a different account.
+- Given a normalized model has an exact Sticky bucket and the conversation fallback points elsewhere, the exact bucket wins. A first successful fallback-routed request materializes its own exact bucket for later requests.
+- Given concurrent successful routes for distinct model buckets, both may commit. Given concurrent successes for one model bucket, only the first valid generation write commits.
+- Given a manual account change or full reset completes while an earlier model request is in flight, the earlier request cannot restore its obsolete model bucket.
+- Given an automatic clear for `gpt-5.4` is followed by a first assignment for a different normalized model, the latter event is `firstSuccessfulAssignment` and has no cause reference from `gpt-5.4`.
+- Given a conversation has multiple model buckets, account capacity, active-Sticky conversation counts, and account detail aggregation count that conversation at most once per account.
+- Given the Events tab switches from a concrete routing model back to unrestricted while SSE is available, its visible rows are the unfiltered live-topic head and do not retain model-filtered HTTP rows.
 - Given the bulk clear confirmation dialog renders inside a `data-theme='vibe-dark'` subtree or another non-root themed surface, when the dialog opens, then its chrome and destructive callout surfaces use the active dark-theme semantic colors instead of inheriting light-theme mixed values.
 - Given selected conversations with mixed existing binding kinds, when the operator applies bulk FAST mode, then each selected key stores the requested FAST rewrite mode and keeps its previous binding kind.
 - Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.
 
 ## Visual Evidence
+
+### Model-Scoped Routing (Storybook)
+
+PR: include
+![Desktop routing tab with fallback and model buckets](./assets/conversation-routing-desktop-storybook.png)
+![Desktop model-filtered routing events](./assets/conversation-routing-events-desktop-storybook.png)
+![Mobile routing tab with five fitted tabs](./assets/conversation-routing-mobile-393x852-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: Storybook canvas iframe
+- requested_viewports: `desktop1280`, `393x852`
+- viewport_strategy: Storybook desktop preset plus explicit responsive browser viewport
+- margin_policy: trim_only
+- evidence_surface: page
+- sensitive_exclusion: fixture-only conversation and account identifiers
+- submission_gate: approved
+- story_id_or_title: `Monitoring/PromptCacheConversationTable / DrawerRouting`, `DrawerRoutingMobile`, `DrawerOperations`
+- state: manual route binding, encrypted owner constraint, all-model fallback, and normalized model route are visible; a routing-only filter selects `gpt-5.4` and shows model-scope plus original-model audit context; the 393px tab strip fits all five tabs and the confirmed reset explains its conversation-wide scope.
+
+### Affinity Reset Confirmation (Storybook)
+
+PR: include
+![Desktop affinity reset confirmation with padded content and action groups](./assets/conversation-routing-desktop-reset-confirm-storybook.png)
+
+PR: include
+![Mobile affinity reset confirmation with padded content and action groups](./assets/conversation-routing-mobile-reset-confirm-393x852-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewports: `desktop1280`, `393x852`
+- viewport_strategy: Storybook viewport presets
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: fixture-only conversation and account identifiers
+- submission_gate: approved
+- story_id_or_title: `Monitoring/PromptCacheConversationTable / DrawerRoutingResetConfirm`, `DrawerRoutingResetConfirmMobile`
+- state: the conversation-wide reset is open; the title and explanation have a dedicated padded content group, while destructive and cancel actions sit in a separated safe-area footer.
 
 ### Sticky Causality (UI Demo)
 
@@ -533,8 +595,8 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: `Monitoring/PromptCacheConversationTable/DrawerOperations`
-- state: events tab open with the default `全部` filter, showing `affinityReset`, `stickyTargetCleared`, and one later `systemAuto stickyTargetChanged` event with `invokeId`
-- evidence_note: verifies the sibling `事件记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and the bug-fix sequence itself: clearing affinity removes the old sticky target, no stale revival event appears in between, and only the later fresh reassignment emits `Sticky 目标已切换` from `systemAuto`.
+- state: events tab shows the historical affinity-reset recovery sequence and a later `systemAuto stickyTargetChanged` event with `invokeId`; legacy `stickyTargetCleared` remains readable as an all-model historical event.
+- evidence_note: verifies compatibility for pre-model-scope event data. New reset events instead aggregate all cleared buckets into `affinityReset.stickyTransitions`.
 
 - source_type: storybook_canvas
   story_id_or_title: `Monitoring/PromptCacheConversationTable / Drawer Binding And Timeouts`

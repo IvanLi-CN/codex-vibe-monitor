@@ -704,11 +704,29 @@ pub(crate) async fn load_account_active_conversation_count_map(
         SELECT
             account_id,
             COUNT(*) AS active_conversation_count
-        FROM pool_sticky_routes
-        WHERE last_seen_at >=
+        FROM (
+            SELECT DISTINCT account_id, sticky_key
+            FROM (
+                SELECT account_id, sticky_key
+                FROM pool_sticky_routes
+                WHERE last_seen_at >=
         "#,
     );
-    query.push_bind(&active_cutoff).push(" AND account_id IN (");
+    query.push_bind(&active_cutoff).push(
+        r#"
+                UNION ALL
+                SELECT account_id, sticky_key
+                FROM pool_sticky_model_routes
+                WHERE last_seen_at >=
+        "#,
+    );
+    query.push_bind(&active_cutoff).push(
+        r#"
+            )
+        )
+        WHERE account_id IN (
+        "#,
+    );
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {

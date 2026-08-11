@@ -27,6 +27,8 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
   fetchPromptCacheConversationOperationEvents: vi.fn(),
   fetchUpstreamAccounts: vi.fn(),
+  resetPromptCacheConversationAffinity:
+    vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
   updatePromptCacheConversationBinding: vi.fn(),
 }));
 
@@ -69,6 +71,7 @@ vi.mock("../../lib/api", async () => {
     fetchPromptCacheConversationOperationEvents:
       apiMocks.fetchPromptCacheConversationOperationEvents,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
+    resetPromptCacheConversationAffinity: apiMocks.resetPromptCacheConversationAffinity,
     updatePromptCacheConversationBinding: apiMocks.updatePromptCacheConversationBinding,
   };
 });
@@ -223,6 +226,7 @@ describe("PromptCacheConversationTable", () => {
     apiMocks.fetchPromptCacheConversationBinding.mockReset();
     apiMocks.fetchPromptCacheConversationOperationEvents.mockReset();
     apiMocks.fetchUpstreamAccounts.mockReset();
+    apiMocks.resetPromptCacheConversationAffinity.mockReset();
     apiMocks.updatePromptCacheConversationBinding.mockReset();
     detailTopicMocks.current = {
       calls: { data: null as unknown, lastKind: null },
@@ -265,6 +269,14 @@ describe("PromptCacheConversationTable", () => {
       pageSize: 20,
     });
     apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-history",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: null,
+    });
+    apiMocks.resetPromptCacheConversationAffinity.mockResolvedValue({
       promptCacheKey: "pck-history",
       bindingKind: "none",
       groupName: null,
@@ -354,7 +366,7 @@ describe("PromptCacheConversationTable", () => {
   }
 
   async function clickDrawerTab(label: string) {
-    if (label === "设置" && detailTopicMocks.current.binding.data == null) {
+    if ((label === "设置" || label === "路由") && detailTopicMocks.current.binding.data == null) {
       detailTopicMocks.current.isSseUnavailable = true;
     }
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -1971,7 +1983,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(apiMocks.fetchPromptCacheConversationBinding).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("当前：分组 prod");
@@ -2030,7 +2042,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
       "pck-binding-fallback",
@@ -2114,7 +2126,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     await vi.waitFor(() =>
       expect(apiMocks.fetchPromptCacheConversationBinding).toHaveBeenCalledWith(
@@ -2203,7 +2215,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -2245,6 +2257,226 @@ describe("PromptCacheConversationTable", () => {
       upstreamAccountId: 77,
     });
     expect(document.body.textContent).toContain("当前：账号 Pool Beta");
+  });
+
+  it("resets policy drafts after clearing binding and affinity", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-reset-affinity",
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+      allowSwitchUpstream: false,
+      fastModeRewriteMode: "force_add",
+      imageToolRewriteMode: "force_remove",
+      codexImagegenRewriteMode: "fill_missing",
+      availableModels: ["gpt-5.4"],
+      forwardProxyKeys: ["__direct__"],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.resetPromptCacheConversationAffinity.mockResolvedValue({
+      promptCacheKey: "pck-reset-affinity",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: null,
+      imageToolRewriteMode: null,
+      codexImagegenRewriteMode: null,
+      availableModels: null,
+      forwardProxyKeys: null,
+      updatedAt: "2026-03-02T12:01:00Z",
+    });
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-reset-affinity",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+        }),
+      ],
+    });
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+    await act(async () => {
+      findButtonByAriaLabel("清空绑定并重选")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    const dialog = document.body.querySelector('[role="alertdialog"]');
+    const confirm = Array.from(dialog?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("清空并重选"),
+    );
+    await act(async () => {
+      confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() =>
+      expect(apiMocks.resetPromptCacheConversationAffinity).toHaveBeenCalledWith(
+        "pck-reset-affinity",
+      ),
+    );
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    expect(findButtonByAriaLabel("清除对话覆盖: 切出")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: FAST 模式")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 图片工具")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 可用模型")).toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 代理")).toBeNull();
+  });
+
+  it("opens account detail from a current routing target", async () => {
+    const onOpenUpstreamAccount = vi.fn();
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-routing-account",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      stickyRoutes: [
+        {
+          modelKey: "gpt-5.4",
+          upstreamAccountId: 42,
+          upstreamAccountName: "Pool Alpha",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+      ],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    renderInteractive(
+      {
+        rangeStart: "2026-03-02T00:00:00Z",
+        rangeEnd: "2026-03-03T00:00:00Z",
+        selectionMode: "count",
+        selectedLimit: 50,
+        selectedActivityHours: null,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation({
+            promptCacheKey: "pck-routing-account",
+            requestCount: 1,
+            totalTokens: 100,
+            totalCost: 0.01,
+            createdAt: "2026-03-02T10:00:00Z",
+            lastActivityAt: "2026-03-02T12:30:00Z",
+            last24hRequests: [],
+          }),
+        ],
+      },
+      { onOpenUpstreamAccount },
+    );
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+
+    const routeAccountButton = findButtonByAriaLabel("查看 Pool Alpha 的账号详情");
+    expect(routeAccountButton).not.toBeNull();
+    await act(async () => {
+      routeAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("does not offer account detail navigation for invalid routing account IDs", async () => {
+    const onOpenUpstreamAccount = vi.fn();
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-routing-invalid-account",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      stickyRoutes: [
+        {
+          modelKey: "gpt-5.4",
+          upstreamAccountId: 0,
+          upstreamAccountName: "Zero Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+        {
+          modelKey: "gpt-5.3",
+          upstreamAccountId: -3,
+          upstreamAccountName: "Negative Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+        {
+          modelKey: "gpt-5.2",
+          upstreamAccountId: 42.5,
+          upstreamAccountName: "Fractional Account",
+          createdAt: "2026-03-02T10:00:00Z",
+          updatedAt: "2026-03-02T11:00:00Z",
+          lastSeenAt: "2026-03-02T12:00:00Z",
+        },
+      ],
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    renderInteractive(
+      {
+        rangeStart: "2026-03-02T00:00:00Z",
+        rangeEnd: "2026-03-03T00:00:00Z",
+        selectionMode: "count",
+        selectedLimit: 50,
+        selectedActivityHours: null,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation({
+            promptCacheKey: "pck-routing-invalid-account",
+            requestCount: 1,
+            totalTokens: 100,
+            totalCost: 0.01,
+            createdAt: "2026-03-02T10:00:00Z",
+            lastActivityAt: "2026-03-02T12:30:00Z",
+            last24hRequests: [],
+          }),
+        ],
+      },
+      { onOpenUpstreamAccount },
+    );
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+
+    expect(findButtonByAriaLabel("查看 Zero Account 的账号详情")).toBeNull();
+    expect(findButtonByAriaLabel("查看 Negative Account 的账号详情")).toBeNull();
+    expect(findButtonByAriaLabel("查看 Fractional Account 的账号详情")).toBeNull();
+    expect(document.body.textContent).toContain("Zero Account");
+    expect(document.body.textContent).toContain("Negative Account");
+    expect(document.body.textContent).toContain("Fractional Account");
+    expect(onOpenUpstreamAccount).not.toHaveBeenCalled();
   });
 
   it("preserves binding drafts across remote changes until the operator chooses a resolution", async () => {
@@ -2319,7 +2551,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -2472,7 +2704,7 @@ describe("PromptCacheConversationTable", () => {
       );
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(
@@ -2583,7 +2815,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {
@@ -2603,7 +2835,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("当前：分组 prod");
   });
 
-  it("renders the wide drawer shell and conversation-scoped routing form in the settings tab", async () => {
+  it("renders the wide drawer shell with routing and settings controls separated", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-policy-layout",
       bindingKind: "none",
@@ -2692,12 +2924,13 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const drawerShell = document.querySelector(".drawer-shell");
     expect(drawerShell?.className).toContain("drawer-shell--detail-wide");
     expect(drawerShell?.parentElement?.className).toContain("drawer-frame");
     expect(document.body.textContent).toContain("路由绑定");
+    await clickDrawerTab("设置");
     expect(document.body.textContent).toContain("当前对话覆盖");
     expect(document.body.textContent).toContain("切出");
     expect(document.body.textContent).toContain("FAST 模式");
@@ -2938,6 +3171,112 @@ describe("PromptCacheConversationTable", () => {
     );
     expect(document.body.textContent).toContain("手工绑定已更新");
     expect(document.body.textContent).not.toContain("策略更新");
+  });
+
+  it("restores the SSE event head after clearing a routing model filter", async () => {
+    detailTopicMocks.current.operations.data = {
+      items: [
+        {
+          id: 31,
+          promptCacheKey: "pck-routing-filter-reset",
+          action: "sseRoutingHead",
+          origin: "systemAuto",
+          infoTypes: ["routing"],
+          occurredAt: "2026-03-02T12:03:00Z",
+          headline: "SSE routing head",
+          changedFields: [],
+          bindingBefore: null,
+          bindingAfter: null,
+          stickyBefore: null,
+          stickyAfter: null,
+          invokeId: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      routingModelFacets: ["gpt-5.4"],
+    };
+    apiMocks.fetchPromptCacheConversationOperationEvents.mockResolvedValue({
+      items: [
+        {
+          id: 24,
+          promptCacheKey: "pck-routing-filter-reset",
+          action: "gpt54RoutingEvent",
+          origin: "systemAuto",
+          infoTypes: ["routing"],
+          occurredAt: "2026-03-02T12:02:00Z",
+          headline: "GPT 5.4 only event",
+          changedFields: [],
+          bindingBefore: null,
+          bindingAfter: null,
+          stickyBefore: null,
+          stickyAfter: null,
+          invokeId: null,
+          routingScope: { kind: "model", modelKey: "gpt-5.4" },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      routingModelFacets: ["gpt-5.4"],
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 50,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-routing-filter-reset",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("事件记录");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("路由相关"),
+    );
+    await user.click(routingFilterButton!);
+    await flushInteractive();
+
+    const modelSelect = document.querySelector(
+      '[role="combobox"][aria-label="路由模型"]',
+    ) as HTMLElement | null;
+    expect(modelSelect).not.toBeNull();
+    await user.click(modelSelect!);
+    await user.click(findSelectOption("gpt-5.4")!);
+    await flushInteractive();
+    expect(document.body.textContent).toContain("GPT 5.4 only event");
+    expect(document.body.textContent).not.toContain("SSE routing head");
+
+    await user.click(modelSelect!);
+    await user.click(findSelectOption("不限模型范围")!);
+    await flushInteractive();
+    expect(document.body.textContent).toContain("SSE routing head");
+    expect(document.body.textContent).not.toContain("GPT 5.4 only event");
   });
 
   it("saves and clears conversation routing policy overrides from the settings tab", async () => {
@@ -3614,7 +3953,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     expect(document.body.textContent).toContain("binding load failed");
     const saveButton = findButtonByAriaLabel("保存");
@@ -3665,7 +4004,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("对话调用总览");
     expect(document.body.textContent).not.toContain("路由绑定");
 
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
     expect(document.body.textContent).toContain("路由绑定");
 
     const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
@@ -3852,7 +4191,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -3996,7 +4335,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const kindSelect = document.querySelector(
@@ -4006,7 +4345,7 @@ describe("PromptCacheConversationTable", () => {
     await user.click(kindSelect!);
     await user.click(findSelectOption("清空")!);
     await flushInteractive();
-    await clickDrawerTab("设置");
+    await clickDrawerTab("路由");
 
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {
