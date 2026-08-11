@@ -583,6 +583,8 @@ pub(crate) async fn load_pool_routing_settings(
             request_compression_algorithm,
             request_compression_level_preset,
             codex_imagegen_rewrite_mode,
+            available_models_json,
+            available_models_mode,
             default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
             request_read_timeout_secs
@@ -648,6 +650,8 @@ pub(crate) fn build_pool_routing_settings_response(
             .as_deref()
             .map(CodexImagegenRewriteMode::from_str)
             .unwrap_or(CodexImagegenRewriteMode::KeepOriginal),
+        available_models: parse_string_array_json(row.available_models_json.as_deref()),
+        available_models_mode: AvailableModelsMode::from_str(row.available_models_mode.as_deref()),
         timeouts: pool_routing_timeouts_response(timeouts),
     }
 }
@@ -772,6 +776,8 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) request_compression_algorithm: Option<RequestCompressionAlgorithm>,
     pub(crate) request_compression_level_preset: Option<RequestCompressionLevelPreset>,
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
+    pub(crate) available_models: Option<&'a [String]>,
+    pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
 }
 
@@ -839,6 +845,19 @@ pub(crate) async fn save_pool_routing_settings(
         .codex_imagegen_rewrite_mode
         .map(|value| value.as_str().to_string())
         .or(current.codex_imagegen_rewrite_mode.clone());
+    let available_models_json = update
+        .available_models
+        .map(|models| serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+        .or(current.available_models_json.clone())
+        .unwrap_or_else(|| "[]".to_string());
+    let available_models_mode = update
+        .available_models_mode
+        .map(|value| match value {
+            AvailableModelsMode::Allowlist => "allowlist".to_string(),
+            AvailableModelsMode::Denylist => "denylist".to_string(),
+        })
+        .or(current.available_models_mode.clone())
+        .unwrap_or_else(|| "denylist".to_string());
     let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
     let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
     let request_read_timeout_secs = current.request_read_timeout_secs;
@@ -860,10 +879,12 @@ pub(crate) async fn save_pool_routing_settings(
             request_compression_algorithm = ?12,
             request_compression_level_preset = ?13,
             codex_imagegen_rewrite_mode = ?14,
-            default_first_byte_timeout_secs = ?15,
-            upstream_handshake_timeout_secs = ?16,
-            request_read_timeout_secs = ?17,
-            updated_at = ?18
+            available_models_json = ?15,
+            available_models_mode = ?16,
+            default_first_byte_timeout_secs = ?17,
+            upstream_handshake_timeout_secs = ?18,
+            request_read_timeout_secs = ?19,
+            updated_at = ?20
         WHERE id = ?1
         "#,
     )
@@ -881,6 +902,8 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(request_compression_algorithm)
     .bind(request_compression_level_preset)
     .bind(codex_imagegen_rewrite_mode)
+    .bind(available_models_json)
+    .bind(available_models_mode)
     .bind(default_first_byte_timeout_secs)
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)

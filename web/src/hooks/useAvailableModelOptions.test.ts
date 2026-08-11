@@ -89,6 +89,20 @@ describe("extractAvailableModelOptions", () => {
     ]);
   });
 
+  it("appends independent image model candidates without changing preset order", () => {
+    const settings = createSettingsPayload({
+      proxy: {
+        ...createSettingsPayload().proxy,
+        imageModels: ["gpt-image-2", "gpt-5.4-mini", "gpt-image-2"],
+      },
+    });
+
+    expect(extractAvailableModelOptions(settings).slice(-2)).toEqual([
+      "gpt-image-2",
+      "gpt-5.4-mini",
+    ]);
+  });
+
   it("returns an empty list before settings load", () => {
     expect(extractAvailableModelOptions(null)).toEqual([]);
   });

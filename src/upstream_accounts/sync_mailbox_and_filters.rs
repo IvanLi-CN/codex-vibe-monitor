@@ -1462,6 +1462,7 @@ pub(crate) fn normalize_group_account_routing_rule(
         upstream_429_retry_enabled,
         upstream_429_max_retries,
         available_models: normalize_available_models(available_models, "availableModels")?,
+        available_models_mode: available_models_defined.then_some(AvailableModelsMode::Allowlist),
         available_models_defined,
         status_change_reasons: default_status_change_reasons(),
         timeouts: None,
@@ -1838,6 +1839,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
+    policy_available_models_mode: Option<&str>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -1881,7 +1883,11 @@ pub(crate) fn group_routing_rule_from_columns(
                 .unwrap_or(legacy_upstream_429_max_retries),
         ),
         available_models: parse_string_array_json(policy_available_models_json),
-        available_models_defined: policy_available_models_json.is_some(),
+        available_models_mode: policy_available_models_mode
+            .map(|value| AvailableModelsMode::from_str(Some(value)))
+            .or_else(|| policy_available_models_json.map(|_| AvailableModelsMode::Allowlist)),
+        available_models_defined: policy_available_models_json.is_some()
+            || policy_available_models_mode.is_some(),
         status_change_reasons: status_change_reasons_from_columns(
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
@@ -1925,6 +1931,8 @@ pub(crate) async fn load_group_routing_rule(
         policy_upstream_429_retry_enabled: Option<i64>,
         policy_upstream_429_max_retries: Option<i64>,
         policy_available_models_json: Option<String>,
+        #[sqlx(default)]
+        policy_available_models_mode: Option<String>,
         policy_status_change_upstream_http_401: Option<i64>,
         policy_status_change_upstream_http_402: Option<i64>,
         policy_status_change_upstream_http_403: Option<i64>,
@@ -1959,6 +1967,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -1987,7 +1996,7 @@ pub(crate) async fn load_group_routing_rule(
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None,
+            None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -2011,6 +2020,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
         row.policy_status_change_upstream_http_401,
         row.policy_status_change_upstream_http_402,
         row.policy_status_change_upstream_http_403,

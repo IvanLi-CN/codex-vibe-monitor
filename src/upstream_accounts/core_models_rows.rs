@@ -119,6 +119,8 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     pub(crate) policy_available_models_json: Option<String>,
     #[sqlx(default)]
+    pub(crate) policy_available_models_mode: Option<String>,
+    #[sqlx(default)]
     pub(crate) policy_status_change_upstream_http_401: Option<i64>,
     #[sqlx(default)]
     pub(crate) policy_status_change_upstream_http_402: Option<i64>,
@@ -193,6 +195,10 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) request_compression_algorithm: Option<String>,
     pub(crate) request_compression_level_preset: Option<String>,
     pub(crate) codex_imagegen_rewrite_mode: Option<String>,
+    #[sqlx(default)]
+    pub(crate) available_models_json: Option<String>,
+    #[sqlx(default)]
+    pub(crate) available_models_mode: Option<String>,
     pub(crate) default_first_byte_timeout_secs: Option<i64>,
     pub(crate) upstream_handshake_timeout_secs: Option<i64>,
     pub(crate) request_read_timeout_secs: Option<i64>,
@@ -581,6 +587,8 @@ pub(crate) struct UpstreamAccountGroupListRow {
     pub(crate) policy_upstream_429_retry_enabled: Option<i64>,
     pub(crate) policy_upstream_429_max_retries: Option<i64>,
     pub(crate) policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    pub(crate) policy_available_models_mode: Option<String>,
     #[sqlx(default)]
     pub(crate) policy_status_change_upstream_http_401: Option<i64>,
     #[sqlx(default)]

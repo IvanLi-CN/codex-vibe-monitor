@@ -1402,6 +1402,22 @@ pub(crate) struct AccountTagSummary {
 pub(crate) type StatusChangeReasonSettings = BTreeMap<String, bool>;
 pub(crate) type StatusChangeReasonFieldSources = BTreeMap<String, String>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AvailableModelsMode {
+    Allowlist,
+    Denylist,
+}
+
+impl AvailableModelsMode {
+    pub(crate) fn from_str(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("allowlist") => Self::Allowlist,
+            _ => Self::Denylist,
+        }
+    }
+}
+
 pub(crate) fn canonical_status_change_reason_code(reason_code: &str) -> Option<&'static str> {
     match reason_code.trim() {
         UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401 => {
@@ -1471,6 +1487,7 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
     pub(crate) concurrency_limit: String,
     pub(crate) upstream_429_retry: String,
     pub(crate) available_models: String,
+    pub(crate) available_models_mode: String,
     pub(crate) system_denied_models: String,
 }
 
@@ -1513,7 +1530,7 @@ pub(crate) struct EffectiveRoutingRule {
     pub(crate) upstream_429_retry_enabled: bool,
     pub(crate) upstream_429_max_retries: u8,
     pub(crate) available_models: Vec<String>,
-    #[serde(skip)]
+    pub(crate) available_models_mode: AvailableModelsMode,
     pub(crate) available_models_defined: bool,
     pub(crate) status_change_reasons: StatusChangeReasonSettings,
     pub(crate) status_change_reason_field_sources: StatusChangeReasonFieldSources,
@@ -1559,6 +1576,10 @@ impl EffectiveRoutingRule {
         &self.field_sources.available_models
     }
 
+    pub(crate) fn available_models_mode_source(&self) -> &str {
+        &self.field_sources.available_models_mode
+    }
+
     pub(crate) fn status_change_reason_enabled(&self, reason_code: &str) -> bool {
         canonical_status_change_reason_code(reason_code)
             .and_then(|reason_code| self.status_change_reasons.get(reason_code))
@@ -1574,6 +1595,7 @@ pub(crate) struct ConversationRoutingOverride {
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
+    pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) forward_proxy_scope_key: String,
@@ -1586,6 +1608,7 @@ impl ConversationRoutingOverride {
             || self.image_tool_rewrite_mode.is_some()
             || self.codex_imagegen_rewrite_mode.is_some()
             || self.available_models.is_some()
+            || self.available_models_mode.is_some()
             || self.forward_proxy_key.is_some()
             || !self.forward_proxy_keys.is_empty()
     }
@@ -1621,6 +1644,8 @@ pub(crate) struct GroupAccountRoutingRule {
     pub(crate) upstream_429_max_retries: u8,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) available_models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) available_models_defined: bool,
     pub(crate) status_change_reasons: StatusChangeReasonSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1924,6 +1949,8 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) request_compression_level_preset: RequestCompressionLevelPreset,
     pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
+    pub(crate) available_models: Vec<String>,
+    pub(crate) available_models_mode: AvailableModelsMode,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
 }
 
@@ -1948,6 +1975,10 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) request_compression_level_preset: Option<String>,
     #[serde(default)]
     pub(crate) codex_imagegen_rewrite_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) available_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) available_models_mode: Option<String>,
     #[serde(default)]
     pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
 }
@@ -2851,6 +2882,8 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     pub(crate) upstream_429_max_retries: OptionalField<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) available_models: OptionalField<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) available_models_mode: OptionalField<String>,
     #[serde(default)]
     pub(crate) status_change_reasons: Option<UpdateStatusChangeReasonSettingsRequest>,
     #[serde(default)]

@@ -27,18 +27,92 @@ pub(crate) fn account_accepts_requested_model(
     else {
         return true;
     };
-    if rule.available_models_defined
-        && !rule
-            .available_models
-            .iter()
-            .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
-    {
+    if !model_policy_accepts_requested_model(
+        requested_model,
+        rule.available_models_mode,
+        rule.available_models_defined,
+        &rule.available_models,
+    ) {
         return false;
     }
     !rule
         .system_denied_models
         .iter()
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
+}
+
+fn model_policy_accepts_requested_model(
+    requested_model: &str,
+    mode: AvailableModelsMode,
+    defined: bool,
+    models: &[String],
+) -> bool {
+    let matches_model_rule = models
+        .iter()
+        .any(|candidate| requested_model_matches_constraint(requested_model, candidate));
+    match mode {
+        AvailableModelsMode::Allowlist => !defined || matches_model_rule,
+        AvailableModelsMode::Denylist => !matches_model_rule,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn models(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn allowlist_requires_an_exact_or_dated_alias_match() {
+        let allowed = models(&["gpt-5.4"]);
+        assert!(model_policy_accepts_requested_model(
+            "GPT-5.4-2026-03-05",
+            AvailableModelsMode::Allowlist,
+            true,
+            &allowed,
+        ));
+        assert!(!model_policy_accepts_requested_model(
+            "gpt-5.4-pro",
+            AvailableModelsMode::Allowlist,
+            true,
+            &allowed,
+        ));
+    }
+
+    #[test]
+    fn denylist_rejects_matches_but_empty_denylist_is_unrestricted() {
+        let denied = models(&["gpt-5.4"]);
+        assert!(!model_policy_accepts_requested_model(
+            "gpt-5.4",
+            AvailableModelsMode::Denylist,
+            true,
+            &denied,
+        ));
+        assert!(model_policy_accepts_requested_model(
+            "custom-image-model",
+            AvailableModelsMode::Denylist,
+            true,
+            &Vec::new(),
+        ));
+    }
+
+    #[test]
+    fn empty_allowlist_rejects_every_model_only_when_defined() {
+        assert!(!model_policy_accepts_requested_model(
+            "custom-model",
+            AvailableModelsMode::Allowlist,
+            true,
+            &Vec::new(),
+        ));
+        assert!(model_policy_accepts_requested_model(
+            "custom-model",
+            AvailableModelsMode::Allowlist,
+            false,
+            &Vec::new(),
+        ));
+    }
 }
 
 pub(crate) fn apply_conversation_routing_override(
@@ -60,10 +134,16 @@ pub(crate) fn apply_conversation_routing_override(
         rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
         rule.field_sources.codex_imagegen_rewrite_mode = "conversation".to_string();
     }
-    if let Some(available_models) = override_policy.available_models.as_ref() {
+    if override_policy.available_models.is_some() || override_policy.available_models_mode.is_some()
+    {
+        let available_models = override_policy.available_models.clone().unwrap_or_default();
         rule.available_models = available_models.clone();
         rule.available_models_defined = true;
         rule.field_sources.available_models = "conversation".to_string();
+        rule.available_models_mode = override_policy
+            .available_models_mode
+            .unwrap_or(AvailableModelsMode::Allowlist);
+        rule.field_sources.available_models_mode = "conversation".to_string();
     }
 }
 
@@ -156,6 +236,11 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         let mut rule = build_effective_routing_rule(&[]);
         apply_root_request_compression_defaults(&mut rule, &root_request_compression);
         apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
+        apply_root_available_models(
+            &mut rule,
+            root_settings.available_models_json.as_deref(),
+            root_settings.available_models_mode.as_deref(),
+        );
         let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
         let request_compression_override_enabled =
             account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
@@ -217,6 +302,11 @@ pub(crate) async fn load_effective_routing_rule_for_group(
         .unwrap_or(CodexImagegenRewriteMode::KeepOriginal);
     apply_root_request_compression_defaults(&mut rule, &root_request_compression);
     apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
+    apply_root_available_models(
+        &mut rule,
+        root_settings.available_models_json.as_deref(),
+        root_settings.available_models_mode.as_deref(),
+    );
     let Some(group_name) = group_name
         .map(str::trim)
         .filter(|value| !value.is_empty())

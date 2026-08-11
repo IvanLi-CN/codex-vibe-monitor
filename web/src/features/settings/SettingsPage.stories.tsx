@@ -87,6 +87,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
   ],
+  imageModels: ["gpt-image-2"],
   enabledModels: [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -149,6 +150,8 @@ type StoryRoutingOverrides = Partial<
 > & {
   maintenance?: Partial<NonNullable<PoolRoutingSettings["maintenance"]>>;
   timeouts?: Partial<NonNullable<PoolRoutingSettings["timeouts"]>>;
+  availableModels?: string[];
+  availableModelsMode?: "allowlist" | "denylist";
 };
 
 function createMockExternalApiKeys(): ExternalApiKeySummary[] {
@@ -304,6 +307,8 @@ function createStoryRoutingSettings(overrides?: StoryRoutingOverrides): PoolRout
     },
     requestCompressionAlgorithm: overrides?.requestCompressionAlgorithm ?? "identity",
     requestCompressionLevelPreset: overrides?.requestCompressionLevelPreset ?? "balanced",
+    availableModels: overrides?.availableModels ?? ["gpt-5.4-mini", "gpt-image-2"],
+    availableModelsMode: overrides?.availableModelsMode ?? "allowlist",
     timeouts: {
       responsesFirstByteTimeoutSecs: overrides?.timeouts?.responsesFirstByteTimeoutSecs ?? 120,
       compactFirstByteTimeoutSecs: overrides?.timeouts?.compactFirstByteTimeoutSecs ?? 300,

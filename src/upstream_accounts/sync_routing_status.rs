@@ -102,6 +102,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             upstream_429_max_retries,
         ),
         available_models: available_models.unwrap_or_default(),
+        available_models_mode: AvailableModelsMode::Allowlist,
         available_models_defined: tag_available_models_defined,
         status_change_reasons,
         status_change_reason_field_sources,
@@ -119,6 +120,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             concurrency_limit: field_source.clone(),
             upstream_429_retry: field_source.clone(),
             available_models: available_models_source,
+            available_models_mode: "root".to_string(),
             system_denied_models: system_denied_models_source,
         },
         timeouts: RoutingTimeoutSettings::default(),
@@ -150,6 +152,8 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_available_models_mode: Option<String>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -185,6 +189,8 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_available_models_mode: Option<String>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -294,6 +300,20 @@ pub(crate) fn apply_root_codex_imagegen_rewrite_mode(
     rule.field_sources.codex_imagegen_rewrite_mode = "root".to_string();
 }
 
+pub(crate) fn apply_root_available_models(
+    rule: &mut EffectiveRoutingRule,
+    models_json: Option<&str>,
+    mode: Option<&str>,
+) {
+    let mode = AvailableModelsMode::from_str(mode);
+    rule.available_models = parse_string_array_json(models_json);
+    rule.available_models_mode = mode;
+    rule.available_models_defined = matches!(mode, AvailableModelsMode::Allowlist)
+        || models_json.is_some_and(|value| value.trim() != "[]" && !value.trim().is_empty());
+    rule.field_sources.available_models = "root".to_string();
+    rule.field_sources.available_models_mode = "root".to_string();
+}
+
 pub(crate) fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
@@ -309,6 +329,7 @@ pub(crate) fn apply_routing_policy_override(
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
     available_models_json: Option<&str>,
+    available_models_mode: Option<&str>,
 ) {
     if let Some(allow_cut_out) = allow_cut_out {
         rule.field_sources.allow_cut_out = source.to_string();
@@ -370,11 +391,16 @@ pub(crate) fn apply_routing_policy_override(
                 .unwrap_or_default(),
         );
     }
-    if let Some(available_models_json) = available_models_json {
-        let available_models = parse_string_array_json(Some(available_models_json));
+    if available_models_json.is_some() || available_models_mode.is_some() {
+        let available_models = parse_string_array_json(available_models_json);
+        let mode = available_models_mode
+            .map(|value| AvailableModelsMode::from_str(Some(value)))
+            .unwrap_or(AvailableModelsMode::Allowlist);
         rule.field_sources.available_models = source.to_string();
         rule.available_models = available_models;
         rule.available_models_defined = true;
+        rule.available_models_mode = mode;
+        rule.field_sources.available_models_mode = source.to_string();
     }
 }
 
@@ -403,6 +429,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -462,6 +489,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -515,6 +543,7 @@ pub(crate) fn apply_group_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
     );
     if row.policy_concurrency_limit.is_none() && row.concurrency_limit > 0 {
         rule.field_sources.concurrency_limit = "group".to_string();
@@ -623,8 +652,10 @@ pub(crate) fn apply_tag_layer_routing_policy(
     let inherited_request_compression_algorithm_source =
         rule.field_sources.request_compression_algorithm.clone();
     let inherited_available_models = rule.available_models.clone();
+    let inherited_available_models_mode = rule.available_models_mode;
     let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
+    let inherited_available_models_mode_source = rule.field_sources.available_models_mode.clone();
     let inherited_status_change_reasons = rule.status_change_reasons.clone();
     let inherited_status_change_reason_field_sources =
         rule.status_change_reason_field_sources.clone();
@@ -669,10 +700,13 @@ pub(crate) fn apply_tag_layer_routing_policy(
         inherited_request_compression_algorithm_source;
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
+        rule.available_models_mode = inherited_available_models_mode;
         rule.available_models_defined = inherited_available_models_defined;
         rule.field_sources.available_models = inherited_available_models_source;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
     }
     if tag_rule
         .timeouts
@@ -728,6 +762,7 @@ pub(crate) fn apply_account_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
     );
     apply_status_change_reason_override(
         rule,

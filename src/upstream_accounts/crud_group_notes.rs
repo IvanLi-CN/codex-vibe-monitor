@@ -1211,7 +1211,7 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_request_compression_algorithm(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
-        let available_models_json = match &routing_rule.available_models {
+        let mut available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,
             OptionalField::Value(value) => Some(
                 encode_string_array_json(&normalize_available_models(
@@ -1221,6 +1221,26 @@ pub(crate) async fn update_upstream_account_group(
                 .map_err(internal_error_tuple)?,
             ),
         };
+        let available_models_mode = match &routing_rule.available_models_mode {
+            OptionalField::Missing => match &routing_rule.available_models {
+                OptionalField::Value(_) => Some("allowlist".to_string()),
+                OptionalField::Missing | OptionalField::Null => None,
+            },
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                let normalized = value.trim().to_ascii_lowercase();
+                if normalized != "allowlist" && normalized != "denylist" {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "availableModelsMode must be allowlist or denylist".to_string(),
+                    ));
+                }
+                Some(normalized)
+            }
+        };
+        if matches!(routing_rule.available_models_mode, OptionalField::Null) {
+            available_models_json = None;
+        }
         let timeout_patch = routing_rule.timeouts.clone().unwrap_or_default();
         let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
             &timeout_patch.responses_first_byte_timeout_secs,
@@ -1371,6 +1391,21 @@ pub(crate) async fn update_upstream_account_group(
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
+        if !matches!(routing_rule.available_models_mode, OptionalField::Missing)
+            || matches!(
+                routing_rule.available_models,
+                OptionalField::Value(_) | OptionalField::Null
+            )
+        {
+            sqlx::query(
+                "UPDATE pool_upstream_account_group_notes SET policy_available_models_mode = ?2 WHERE group_name = ?1",
+            )
+            .bind(&group_name)
+            .bind(available_models_mode)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        }
     }
     tx.commit().await.map_err(internal_error_tuple)?;
 

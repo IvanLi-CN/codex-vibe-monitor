@@ -2443,6 +2443,7 @@ pub(crate) struct ProxyModelSettingsResponse {
     pub(crate) encrypted_session_owner_routing_enabled: bool,
     pub(crate) default_hijack_enabled: bool,
     pub(crate) models: Vec<String>,
+    pub(crate) image_models: Vec<String>,
     pub(crate) enabled_models: Vec<String>,
 }
 
@@ -2460,6 +2461,10 @@ impl ProxyModelSettingsResponse {
             encrypted_session_owner_routing_enabled: value.encrypted_session_owner_routing_enabled,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
+            image_models: PROXY_IMAGE_MODEL_IDS
                 .iter()
                 .map(|model| (*model).to_string())
                 .collect(),
@@ -2531,6 +2536,7 @@ pub(crate) struct SystemStatusCacheState {
 pub(crate) fn default_enabled_preset_models() -> Vec<String> {
     PROXY_PRESET_MODEL_IDS
         .iter()
+        .filter(|model| **model != "gpt-5.4-mini")
         .map(|model| (*model).to_string())
         .collect()
 }

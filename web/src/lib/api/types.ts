@@ -13,6 +13,7 @@ export type {
   ApiInvocationWorkflowResponseBody,
   ApiInvocationWorkflowTimelineEntry,
   ApiPoolUpstreamRequestAttempt,
+  AvailableModelsMode,
   BlockedBindingConstraintSource,
   BlockedBindingDiagnostic,
   BlockedBindingRecoveryAction,

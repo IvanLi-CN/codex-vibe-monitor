@@ -4,13 +4,16 @@ Spec ID: r4p9x
 
 ## Goal
 
-Upstream account routing policy is resolved through three layers:
+Upstream account routing policy is resolved through four editable layers:
 
-1. Group policy
-2. Read-only system tag signals
+1. Root defaults
+2. Group policy
 3. Account policy
+4. Conversation policy
 
-Only group and account policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
+Read-only system tag signals are applied after the selected model rule and cannot be overridden.
+
+Only root, group, account, and conversation model policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
 
 ## Policy Surface
 
@@ -25,6 +28,7 @@ The editable inherited policy covers:
 - concurrency limit
 - upstream 429 retry count (`0..5`)
 - available models
+- available models mode (`allowlist` or `denylist`)
 - status-change trigger reasons for:
   - `upstream_http_401`
   - `upstream_http_402`
@@ -69,6 +73,7 @@ Root defaults preserve existing behavior:
 - upstream request compression algorithm: identity
 - upstream request compression level preset: balanced
 - available models: unrestricted
+- available models mode: denylist
 - every status-change reason toggle: enabled
 - request-path timeouts continue to use the existing global pool defaults
 
@@ -87,10 +92,13 @@ Accounts also track read-only system signals alongside editable policy:
 
 Effective account policy is computed in this order:
 
-1. Start with root defaults.
-2. Apply group policy.
-3. Merge system tag signals.
-4. Apply account policy.
+1. Start with root defaults (`denylist + []`).
+2. Apply the group model rule when explicitly stored.
+3. Apply the account model rule when explicitly stored.
+4. Apply the conversation model rule when explicitly stored.
+5. Apply `systemDeniedModels` as a final, non-overridable deny set.
+
+Each explicit lower-level model rule replaces both the inherited mode and list. Missing or `null` lower-level fields inherit. An allowlist with an empty list rejects every model; a denylist with an empty list adds no restriction. Legacy records with a defined `availableModels` list are interpreted as allowlists, including legacy clients that submit only the list.
 
 Request compression has one scope restriction:
 
@@ -151,12 +159,15 @@ System tags are not an editable routing authoring surface. Their current contrac
 - `unsupported_transport:websocket` remains a read-only transport signal for display and filtering
 - future system tags may add internal signals, but they must remain operator read-only
 
-`availableModels` follows only group/account inheritance semantics:
+`availableModels` follows root -> group -> account -> conversation inheritance semantics:
 
 - missing or `null` means inherit the upstream layer
 - there is no tag-level allowlist editing
 - account policy may replace the inherited group/root model set with its own list
-- an explicit empty account or group list means no models are allowed
+- an explicit empty allowlist means no models are allowed
+- an explicit empty denylist means no models are denied
+
+The regular model candidate catalog includes `gpt-5.4-mini` without enabling it by default. Image candidates are independent from `/v1/models` hijacking and currently recommend `gpt-image-2`; historical image IDs, private aliases, and custom IDs remain valid policy values.
 
 ## Image Tool Routing
 

@@ -3588,6 +3588,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                       availableModelsNoneAllowed: t(
                         "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed",
                       ),
+                      availableModelsAllowed: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowed",
+                      ),
+                      availableModelsDenied: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied",
+                      ),
+                      availableModelsMode: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsMode",
+                      ),
+                      availableModelsAllowlist: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist",
+                      ),
+                      availableModelsDenylist: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist",
+                      ),
                       systemDeniedModelsEmpty: t(
                         "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty",
                       ),

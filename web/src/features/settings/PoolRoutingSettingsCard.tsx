@@ -12,6 +12,7 @@ import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
 import type {
+  AvailableModelsMode,
   CodexImagegenRewriteMode,
   RequestCompressionAlgorithm,
   RequestCompressionLevelPreset,
@@ -20,6 +21,11 @@ import {
   requestCompressionAlgorithmLabel,
   requestCompressionLevelPresetLabel,
 } from "../../lib/requestCompression";
+import {
+  MultiSelectFilterCombobox,
+  type MultiSelectFilterOption,
+} from "../account-pool/MultiSelectFilterCombobox";
+import { PolicyInlineOptionGroup } from "../account-pool/PolicyInlineOptionGroup";
 
 type RoutingTimeoutFieldKey =
   | "responsesFirstByteTimeoutSecs"
@@ -33,6 +39,8 @@ type PoolRoutingSettingsCardProps = {
     requestCompressionAlgorithm: RequestCompressionAlgorithm;
     requestCompressionLevelPreset: RequestCompressionLevelPreset;
     codexImagegenRewriteMode: CodexImagegenRewriteMode;
+    availableModels: string[];
+    availableModelsMode: AvailableModelsMode;
     responsesFirstByteTimeoutSecs: string;
     compactFirstByteTimeoutSecs: string;
     imageFirstByteTimeoutSecs: string;
@@ -46,6 +54,9 @@ type PoolRoutingSettingsCardProps = {
   onAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
   onLevelPresetChange: (value: RequestCompressionLevelPreset) => void;
   onCodexImagegenRewriteModeChange: (value: CodexImagegenRewriteMode) => void;
+  availableModelOptions: string[];
+  onAvailableModelsChange: (value: string[]) => void;
+  onAvailableModelsModeChange: (value: AvailableModelsMode) => void;
   onTimeoutChange: (key: RoutingTimeoutFieldKey, value: string) => void;
   onSave: () => void;
 };
@@ -59,6 +70,9 @@ export function PoolRoutingSettingsCard({
   onAlgorithmChange,
   onLevelPresetChange,
   onCodexImagegenRewriteModeChange,
+  availableModelOptions,
+  onAvailableModelsChange,
+  onAvailableModelsModeChange,
   onTimeoutChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
@@ -102,6 +116,12 @@ export function PoolRoutingSettingsCard({
       value: draft.compactStreamTimeoutSecs,
     },
   ];
+  const availableModelComboboxOptions: MultiSelectFilterOption[] = Array.from(
+    new Set([...availableModelOptions, ...draft.availableModels]),
+  ).map((value) => ({
+    value,
+    label: value.startsWith("gpt-image") ? `Image · ${value}` : value,
+  }));
   const statusBadgeText = !writesEnabled
     ? t("settings.routing.readOnly")
     : busy
@@ -221,6 +241,36 @@ export function PoolRoutingSettingsCard({
             onValueChange={(value) =>
               onCodexImagegenRewriteModeChange(value as CodexImagegenRewriteMode)
             }
+          />
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+          <div className="space-y-1">
+            <div className="font-medium leading-snug">{t("settings.routing.models.title")}</div>
+            <div className="text-sm leading-snug text-base-content/70">
+              {t("settings.routing.models.description")}
+            </div>
+          </div>
+          <PolicyInlineOptionGroup<AvailableModelsMode>
+            ariaLabel={t("settings.routing.models.mode")}
+            value={draft.availableModelsMode}
+            disabled={!writesEnabled || busy}
+            options={[
+              { value: "allowlist", label: t("settings.routing.models.allowlist") },
+              { value: "denylist", label: t("settings.routing.models.denylist") },
+            ]}
+            onChange={onAvailableModelsModeChange}
+          />
+          <MultiSelectFilterCombobox
+            options={availableModelComboboxOptions}
+            value={draft.availableModels}
+            onValueChange={onAvailableModelsChange}
+            disabled={!writesEnabled || busy}
+            placeholder={t("settings.routing.models.empty")}
+            searchPlaceholder={t("settings.routing.models.search")}
+            emptyLabel={t("settings.routing.models.empty")}
+            clearLabel={t("settings.routing.models.clear")}
+            ariaLabel={t("settings.routing.models.title")}
           />
         </div>
 

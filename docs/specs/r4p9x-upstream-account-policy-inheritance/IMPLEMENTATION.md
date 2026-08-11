@@ -86,6 +86,10 @@ The API-key account detail Overview renders six independent capability cards in 
 
 ## API and Resolution
 
+Model filtering persists `available_models_mode` beside each root, group, account, and conversation model list. Root storage defaults to `denylist` and `[]`; nullable lower layers preserve inheritance. Runtime selection branches on the effective mode, applies the last explicit rule in root -> group -> account -> conversation order, and then rejects immutable `systemDeniedModels`. Direct image endpoints therefore report `modelNotAllowed` before image capability checks when a model is filtered, while Codex `image_gen` keeps its independent capability/rewrite requirement.
+
+The settings contract exposes regular proxy candidates including `gpt-5.4-mini` and a separate image candidate list containing `gpt-image-2`. The new regular candidate is not added to the default enabled preset list, and image candidates do not change the `/v1/models` hijack switch.
+
 Account and group routing policy writes distinguish missing, `null`, and value for nullable policy fields.
 
 - missing preserves the stored override
@@ -186,6 +190,12 @@ Validation covers:
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
 - frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
+- model-policy regressions proving exact and dated allowlist matches, denylist exclusion, empty-list semantics, legacy list-only compatibility, and immutable system-deny behavior
+- candidate settings coverage proving `gpt-5.4-mini` is discoverable without changing the default enabled preset set, while `gpt-image-2` is exposed as an independent image candidate
+- validation commands completed: `cargo fmt --check`, `cargo check`, targeted Rust model-policy tests, `cd web && bun run test`, `cd web && bun run build`, and `cd web && bun run build-storybook`
+- visual evidence captured from Storybook canvas in light mode with no overflow or occlusion:
+  - desktop: [`model-policy-desktop.png`](./assets/model-policy-desktop.png)
+  - compact mobile (`393x852`): [`model-policy-mobile.png`](./assets/model-policy-mobile.png)
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`

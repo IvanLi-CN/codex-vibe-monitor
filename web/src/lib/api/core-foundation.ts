@@ -1566,6 +1566,7 @@ export interface ProxySettings {
   encryptedSessionOwnerRoutingEnabled: boolean;
   defaultHijackEnabled: boolean;
   models: string[];
+  imageModels?: string[];
   enabledModels: string[];
 }
 
@@ -1846,6 +1847,7 @@ export interface PromptCacheConversationBindingResponse {
   imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
   availableModels?: string[] | null;
+  availableModelsMode?: "allowlist" | "denylist" | null;
   forwardProxyKey?: string | null;
   forwardProxyKeys?: string[];
   policyFieldSources?: {
@@ -1854,6 +1856,7 @@ export interface PromptCacheConversationBindingResponse {
     imageToolRewriteMode: EffectiveRoutingRuleSource;
     codexImagegenRewriteMode?: EffectiveRoutingRuleSource;
     availableModels: EffectiveRoutingRuleSource;
+    availableModelsMode?: EffectiveRoutingRuleSource;
     forwardProxyKey: EffectiveRoutingRuleSource;
   };
   updatedAt: string | null;
@@ -1940,6 +1943,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
+      availableModelsMode?: "allowlist" | "denylist" | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
     }
@@ -1952,6 +1956,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
+      availableModelsMode?: "allowlist" | "denylist" | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
     }
@@ -1964,6 +1969,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
       codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
+      availableModelsMode?: "allowlist" | "denylist" | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
     };
@@ -2636,6 +2642,7 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled === true,
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
+    imageModels: normalizeStringArray(payload.imageModels),
     enabledModels: models.filter((model) => enabledModelSet.has(model)),
   };
 }
@@ -3319,7 +3326,7 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
         ? Math.trunc(maintenanceRaw.priorityAvailableAccountCap)
         : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
   };
-  return {
+  const normalized: PoolRoutingSettings = {
     writesEnabled: typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
     maskedApiKey: typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
@@ -3347,6 +3354,15 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
         : "keep_original",
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
   };
+  if (Array.isArray(payload.availableModels)) {
+    normalized.availableModels = payload.availableModels.filter(
+      (value): value is string => typeof value === "string",
+    );
+  }
+  if (payload.availableModelsMode === "allowlist" || payload.availableModelsMode === "denylist") {
+    normalized.availableModelsMode = payload.availableModelsMode;
+  }
+  return normalized;
 }
 
 function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSettings {
@@ -3441,6 +3457,12 @@ function normalizePromptCacheConversationBindingResponse(
           .map((value) => value.trim())
           .filter(Boolean)
       : null,
+    availableModelsMode:
+      raw.availableModelsMode === "allowlist" || raw.availableModelsMode === "denylist"
+        ? raw.availableModelsMode
+        : Array.isArray(raw.availableModels)
+          ? "allowlist"
+          : null,
     forwardProxyKey,
     forwardProxyKeys:
       forwardProxyKeys.length > 0 ? forwardProxyKeys : forwardProxyKey ? [forwardProxyKey] : [],
@@ -3450,6 +3472,7 @@ function normalizePromptCacheConversationBindingResponse(
       imageToolRewriteMode: normalizePolicySource(rawPolicySources.imageToolRewriteMode),
       codexImagegenRewriteMode: normalizePolicySource(rawPolicySources.codexImagegenRewriteMode),
       availableModels: normalizePolicySource(rawPolicySources.availableModels),
+      availableModelsMode: normalizePolicySource(rawPolicySources.availableModelsMode),
       forwardProxyKey: normalizePolicySource(rawPolicySources.forwardProxyKey),
     },
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
