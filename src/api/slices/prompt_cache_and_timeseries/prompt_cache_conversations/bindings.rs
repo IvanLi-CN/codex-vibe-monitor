@@ -2628,6 +2628,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
         PatchField::Missing if matches!(&available_models, PatchField::Value(_)) => {
             PatchField::Value("allowlist".to_string())
         }
+        PatchField::Missing if matches!(&available_models, PatchField::Null) => PatchField::Null,
         PatchField::Missing => PatchField::Missing,
         PatchField::Null => PatchField::Null,
         PatchField::Value(value) => {

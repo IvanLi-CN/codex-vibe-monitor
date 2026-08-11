@@ -704,6 +704,9 @@ pub(crate) fn apply_tag_layer_routing_policy(
         rule.available_models_defined = inherited_available_models_defined;
         rule.field_sources.available_models = inherited_available_models_source;
         rule.field_sources.available_models_mode = inherited_available_models_mode_source;
+    } else if tag_rule.available_models_defined {
+        rule.available_models_mode = tag_rule.available_models_mode;
+        rule.field_sources.available_models_mode = "tag".to_string();
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
         rule.field_sources.available_models_mode = inherited_available_models_mode_source;
