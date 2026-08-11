@@ -2331,8 +2331,9 @@ pub(crate) async fn delete_tag_by_id(
     pool: &Pool<Sqlite>,
     tag_id: i64,
 ) -> Result<(), (StatusCode, String)> {
-    let is_protected =
-        sqlx::query_scalar::<_, i64>("SELECT protected FROM pool_tags WHERE id = ?1")
+    let is_protected = sqlx::query_scalar::<_, i64>(
+            "SELECT CASE WHEN protected != 0 OR system_key IS NOT NULL THEN 1 ELSE 0 END FROM pool_tags WHERE id = ?1",
+        )
             .bind(tag_id)
             .fetch_optional(pool)
             .await

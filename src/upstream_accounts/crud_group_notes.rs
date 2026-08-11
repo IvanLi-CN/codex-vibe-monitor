@@ -994,7 +994,7 @@ pub(crate) async fn update_tag(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
-    if existing.protected != 0 {
+    if existing.protected != 0 || existing.system_key.is_some() {
         return Err((
             StatusCode::CONFLICT,
             "system tag cannot be edited".to_string(),
