@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.60.0",
+  "base_stable_version": "2.59.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-11T20:50:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.60.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c867f7b17c85dacd5d13b590500ebf95073d66ef",
+  "pr_number": 781,
+  "pr_title": "feat: add layered model filter modes",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.60.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.60.0",
+  "target_sha": "4ccf6e89dae6cb1a256257f0b5315065788a5300",
+  "type_label": "type:minor"
+}
