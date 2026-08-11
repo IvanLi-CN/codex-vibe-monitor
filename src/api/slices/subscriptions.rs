@@ -761,6 +761,10 @@ enum DashboardTopicMaterializer {
     NetworkRecent {
         base: Arc<DashboardRecentNetworkWindowResponse>,
     },
+    Timeseries {
+        base: Arc<StdMutex<TimeseriesTopicMaterializedBase>>,
+        runtime: Arc<RuntimeProjectionHub>,
+    },
 }
 
 impl DashboardTopicMaterializer {
@@ -814,6 +818,14 @@ impl DashboardTopicMaterializer {
                 network_revision: Some(slice.revision),
                 terminal_revision: None,
             }),
+            Self::Timeseries { .. } if current.is_some() || terminal.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: None,
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
             _ => None,
         }
     }
@@ -856,6 +868,10 @@ impl DashboardTopicMaterializer {
                     (_, base_start, current_start) => base_start != current_start,
                 }
             }
+            Self::Timeseries { base, .. } => base
+                .lock()
+                .expect("timeseries materializer state lock")
+                .requires_window_rebase(),
             Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
         }
     }
@@ -938,6 +954,11 @@ impl DashboardTopicMaterializer {
             Self::NetworkRecent { base } => {
                 serde_json::to_vec(&DashboardNetworkRecentPayload { base, network })
                     .map_err(ApiError::from)
+            }
+            Self::Timeseries { base, runtime } => {
+                let mut base = base.lock().expect("timeseries materializer state lock");
+                base.apply_terminal_slice(terminal);
+                base.serialize(&runtime.snapshot())
             }
         }
     }
@@ -1724,6 +1745,7 @@ impl SubscriptionHub {
         let owns_dashboard_live = topics.iter().any(|topic| {
             topic.uses_dashboard_activity_live_overlay()
                 || topic.uses_summary_live_overlay()
+                || topic.uses_timeseries_live_projection()
                 || topic.uses_dashboard_network_live_snapshot()
         });
         let topic_keys = topics
@@ -1795,6 +1817,7 @@ impl SubscriptionHub {
                 cached.topic.name() == topic_name
                     && (cached.topic.uses_dashboard_activity_live_overlay()
                         || cached.topic.uses_summary_live_overlay()
+                        || cached.topic.uses_timeseries_live_projection()
                         || cached.topic.uses_dashboard_network_live_snapshot())
             });
         guard.dashboard_live_subscriber_count = guard
@@ -2888,6 +2911,7 @@ impl SubscriptionHub {
             // the DB-backed topic builder.
             if work.topic.uses_summary_live_overlay()
                 || work.topic.uses_dashboard_activity_live_overlay()
+                || work.topic.uses_timeseries_live_projection()
                 || work.topic.uses_dashboard_network_live_snapshot()
             {
                 continue;
@@ -6175,6 +6199,7 @@ pub(crate) async fn topic_sse_stream(
     if selected_topics.iter().any(|topic| {
         topic.uses_dashboard_activity_live_overlay()
             || topic.uses_summary_live_overlay()
+            || topic.uses_timeseries_live_projection()
             || topic.uses_dashboard_network_live_snapshot()
     }) {
         ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
@@ -6288,6 +6313,10 @@ impl SubscriptionTopic {
         )
     }
 
+    fn uses_timeseries_live_projection(&self) -> bool {
+        matches!(self, Self::TimeseriesOpenWindow { range, .. } if range != "yesterday")
+    }
+
     fn uses_summary_topic_refresh(&self) -> bool {
         self.uses_summary_live_overlay()
     }
@@ -6299,9 +6328,7 @@ impl SubscriptionTopic {
     fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
         match self {
             Self::DashboardWorkingConversationsCurrent { .. } => true,
-            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. } => {
-                range != "yesterday"
-            }
+            Self::ParallelWorkCurrent { range, .. } => range != "yesterday",
             _ => false,
         }
     }
@@ -6963,6 +6990,31 @@ impl SubscriptionTopic {
                             reporting_tz,
                             source_scope,
                             upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::TimeseriesOpenWindow {
+                    range,
+                    time_zone,
+                    bucket,
+                    settlement_hour,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    let base = TimeseriesTopicMaterializedBase::build(
+                        state.as_ref(),
+                        &TimeseriesQuery {
+                            range: range.clone(),
+                            bucket: bucket.clone(),
+                            settlement_hour: *settlement_hour,
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Timeseries {
+                            base: Arc::new(StdMutex::new(base)),
+                            runtime: state.proxy_runtime_invocations.clone(),
                         },
                     ));
                 }
@@ -8926,6 +8978,7 @@ mod tests {
                     | "stats.summary.current"
                     | "dashboard.network-timeseries.window"
                     | "dashboard.network-recent.current"
+                    | "stats.timeseries.open-window"
             );
             assert_eq!(
                 state
@@ -9286,20 +9339,25 @@ mod tests {
                 "network topic materialization must borrow its typed base"
             );
         }
+        assert_eq!(
+            delivery.timeseries.serialization_count, delivery.timeseries.materialization_count,
+            "each materialized timeseries revision should serialize exactly once"
+        );
+        assert_eq!(
+            delivery.timeseries.payload_clone_count, 0,
+            "timeseries topic materialization must retain typed aggregates"
+        );
         for topic in [
             delivery.activity,
             delivery.summary,
             delivery.network_timeseries,
             delivery.network_recent,
+            delivery.timeseries,
         ] {
             assert_eq!(topic.generic_fallback_build_count, 0);
             assert_eq!(topic.live_path_db_read_count, 0);
         }
-        for topic in [
-            delivery.working_conversations,
-            delivery.parallel_work,
-            delivery.timeseries,
-        ] {
+        for topic in [delivery.working_conversations, delivery.parallel_work] {
             assert_eq!(topic.generic_fallback_build_count, 1);
             assert_eq!(topic.live_path_db_read_count, 1);
             assert_eq!(topic.builder_count, 1);
@@ -9378,7 +9436,7 @@ mod tests {
             assert!(!topic.is_unmigrated_dashboard_hot_projection());
         }
         assert!(open_parallel.is_unmigrated_dashboard_hot_projection());
-        assert!(open_timeseries.is_unmigrated_dashboard_hot_projection());
+        assert!(!open_timeseries.is_unmigrated_dashboard_hot_projection());
         assert!(!closed_parallel.is_affected_by_runtime_mutation(&mutation));
         assert!(!closed_timeseries.is_affected_by_runtime_mutation(&mutation));
         assert!(open_parallel.is_affected_by_runtime_mutation(&mutation));
@@ -10179,6 +10237,13 @@ mod tests {
             limit: None,
             upstream_account_id: None,
         };
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
         let activity_materializer = activity
             .build_cached_payload(state.clone())
             .await
@@ -10186,11 +10251,17 @@ mod tests {
             .dashboard_materializer()
             .expect("activity typed materializer");
         let summary_materializer = summary
-            .build_cached_payload(state)
+            .build_cached_payload(state.clone())
             .await
             .expect("build summary base")
             .dashboard_materializer()
             .expect("summary typed materializer");
+        let timeseries_materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build timeseries base")
+            .dashboard_materializer()
+            .expect("timeseries typed materializer");
 
         assert!(
             !activity_materializer.requires_terminal_window_rebase(),
@@ -10199,6 +10270,10 @@ mod tests {
         assert!(
             !summary_materializer.requires_terminal_window_rebase(),
             "a freshly built duration base must wait for the reconcile boundary",
+        );
+        assert!(
+            !timeseries_materializer.requires_terminal_window_rebase(),
+            "a freshly built timeseries base must wait for the reconcile boundary",
         );
 
         let DashboardTopicMaterializer::Activity { base, .. } = &activity_materializer else {
@@ -10213,9 +10288,20 @@ mod tests {
         base.lock()
             .expect("summary materializer state lock")
             .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        let DashboardTopicMaterializer::Timeseries { base, .. } = &timeseries_materializer else {
+            panic!("expected timeseries materializer");
+        };
+        base.lock()
+            .expect("timeseries materializer state lock")
+            .set_range_start_for_test(
+                Utc::now()
+                    - ChronoDuration::days(1)
+                    - ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64),
+            );
 
         assert!(activity_materializer.requires_terminal_window_rebase());
         assert!(summary_materializer.requires_terminal_window_rebase());
+        assert!(timeseries_materializer.requires_terminal_window_rebase());
     }
 
     #[tokio::test]
@@ -10729,6 +10815,82 @@ mod tests {
         let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
         assert_eq!(payload["totalCount"], json!(1));
         assert_eq!(payload["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn timeseries_topic_base_preserves_pending_terminal_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-timeseries-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build terminal-consistent timeseries base")
+            .dashboard_materializer()
+            .expect("typed timeseries materializer");
+        let initial_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(None, None, None)
+                .expect("serialize materialized timeseries base"),
+        )
+        .expect("timeseries payload JSON");
+
+        assert_eq!(
+            initial_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the typed baseline must include the terminal delta before SQLite persistence",
+        );
+
+        let replayed_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(
+                    None,
+                    None,
+                    Some(&DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: vec![delta],
+                    }),
+                )
+                .expect("skip the terminal delta already folded into the base"),
+        )
+        .expect("timeseries replay payload JSON");
+        assert_eq!(
+            replayed_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the sequence watermark must reject the pending terminal replay",
+        );
     }
 
     #[tokio::test]

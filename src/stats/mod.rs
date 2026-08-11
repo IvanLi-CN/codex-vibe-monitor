@@ -281,6 +281,8 @@ pub(crate) struct BucketAggregate {
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sum_ms: f64,
     pub(crate) total_latency_sample_count: i64,
+    #[serde(default, skip_serializing)]
+    pub(crate) total_latency_values: Vec<f64>,
     pub(crate) first_byte_ttfb_sum_ms: f64,
     pub(crate) first_byte_ttfb_values: Vec<f64>,
     pub(crate) first_byte_histogram: ApproxHistogramCounts,
@@ -310,6 +312,7 @@ impl BucketAggregate {
         };
         self.total_latency_sample_count += 1;
         self.total_latency_sum_ms += value;
+        self.total_latency_values.push(value);
     }
 
     pub(crate) fn total_latency_avg_ms(&self) -> Option<f64> {
