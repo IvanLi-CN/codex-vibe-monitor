@@ -32,6 +32,7 @@ The shared conversation Calls view uses `InvocationCardList` (the compatibility 
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer uses `概览 / 调用 / 路由 / 设置 / 事件记录`, with route controls consolidated in 路由.
 - [x] Current-route upstream-account values open the shared account-detail view when an account ID is available.
+- [x] Current routing uses a desktop table and an overflow-free mobile field/value layout, with Storybook width assertions at `393x852`.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
 - [x] Prompt Cache conversation detail drawer sibling `事件记录` tab with categorized badges, lightweight filters, and paged per-conversation event loading.
 - [x] Prompt Cache conversation detail drawer reuses the account-detail wide shell width class and the shared effective-routing form skeleton, while hiding account-only routing rows on the conversation surface.

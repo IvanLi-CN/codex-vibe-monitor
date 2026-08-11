@@ -2258,8 +2258,17 @@ export const DrawerRouting: Story = {
     });
     await expect(await documentScope.findByText(/当前路由|Current routing/i)).toBeInTheDocument();
     await expect(documentScope.getAllByText(/全部模型|All models/i).length).toBeGreaterThan(0);
-    await expect(await documentScope.findByText(/gpt-5\.4/)).toBeInTheDocument();
+    await expect(await documentScope.findAllByText(/gpt-5\.4/)).toHaveLength(2);
     await expect(documentScope.getAllByText("mia.7rmmq@support.example").length).toBeGreaterThan(0);
+
+    await userEvent.click(
+      documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
+    );
+    const resetConfirmation = await documentScope.findByRole("alertdialog", {
+      name: /清空绑定并重选|Clear binding and reselect/i,
+    });
+    await expect(resetConfirmation).toBeInTheDocument();
+    await userEvent.click(within(resetConfirmation).getByRole("button", { name: /取消|Cancel/i }));
 
     await userEvent.click(
       documentScope.getByRole("button", {
@@ -2267,15 +2276,6 @@ export const DrawerRouting: Story = {
       }),
     );
     await expect(args.onOpenUpstreamAccount).toHaveBeenCalledWith(22, "mia.7rmmq@support.example");
-
-    await userEvent.click(
-      documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
-    );
-    await expect(
-      await documentScope.findByRole("alertdialog", {
-        name: /清空绑定并重选|Clear binding and reselect/i,
-      }),
-    ).toBeInTheDocument();
   },
 };
 
@@ -2292,6 +2292,16 @@ export const DrawerRoutingMobile: Story = {
           "The same current-routing and reset-confirmation state at the stable 393 x 852 mobile viewport.",
       },
     },
+  },
+  play: async (context) => {
+    await DrawerRouting.play?.(context);
+    const documentScope = within(context.canvasElement.ownerDocument.body);
+    const currentRouting = await documentScope.findByTestId("prompt-cache-current-routing");
+    const mobileRouting = await documentScope.findByTestId("prompt-cache-current-routing-mobile");
+
+    await expect(mobileRouting).toBeVisible();
+    await expect(currentRouting.scrollWidth).toBeLessThanOrEqual(currentRouting.clientWidth);
+    await expect(mobileRouting.scrollWidth).toBeLessThanOrEqual(mobileRouting.clientWidth);
   },
 };
 

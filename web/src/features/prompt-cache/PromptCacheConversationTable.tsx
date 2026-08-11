@@ -104,6 +104,10 @@ interface PromptCacheConversationTableProps {
   historyQueryForConversationKey?: (conversationKey: string) => Partial<InvocationRecordsQuery>;
 }
 
+type PromptCacheConversationStickyRoute = NonNullable<
+  PromptCacheConversationBindingResponse["stickyRoutes"]
+>[number];
+
 type ConversationHistoryQueryBuilder = NonNullable<
   PromptCacheConversationTableProps["historyQueryForConversationKey"]
 >;
@@ -3247,6 +3251,35 @@ export function PromptCacheConversationHistoryDrawer({
     },
   ];
   const tabListLabel = t("live.conversations.drawer.tabs.label");
+  const routingStickyRoutes = binding?.stickyRoutes ?? [];
+  const renderRoutingAccount = (route: PromptCacheConversationStickyRoute) => {
+    const routeAccountId =
+      typeof route.upstreamAccountId === "number" &&
+      Number.isSafeInteger(route.upstreamAccountId) &&
+      route.upstreamAccountId > 0
+        ? route.upstreamAccountId
+        : null;
+    const routeAccountLabel = route.upstreamAccountName ?? `#${route.upstreamAccountId}`;
+    const canOpenRouteAccount = routeAccountId != null && onOpenUpstreamAccount != null;
+
+    return canOpenRouteAccount ? (
+      <button
+        type="button"
+        className="max-w-full break-all text-left font-medium transition hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        aria-label={t("live.conversations.drawer.routing.openAccount", {
+          account: routeAccountLabel,
+        })}
+        title={t("live.conversations.drawer.routing.openAccount", {
+          account: routeAccountLabel,
+        })}
+        onClick={() => onOpenUpstreamAccount(routeAccountId, routeAccountLabel)}
+      >
+        {routeAccountLabel}
+      </button>
+    ) : (
+      <span className="break-all">{routeAccountLabel}</span>
+    );
+  };
   const routingPanel = (
     <div className="space-y-4 text-sm">
       <section className="rounded-xl border border-base-content/10 bg-base-200/50 p-4">
@@ -3378,7 +3411,10 @@ export function PromptCacheConversationHistoryDrawer({
           </Alert>
         ) : null}
       </section>
-      <section className="rounded-xl border border-base-content/10 bg-base-100/80 p-4">
+      <section
+        className="rounded-xl border border-base-content/10 bg-base-100/80 p-4"
+        data-testid="prompt-cache-current-routing"
+      >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <p className="font-semibold text-base-content">
@@ -3398,42 +3434,34 @@ export function PromptCacheConversationHistoryDrawer({
             {t("live.conversations.drawer.routing.reset")}
           </Button>
         </div>
-        {binding?.stickyRoutes?.length ? (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[38rem] text-left text-xs">
-              <thead className="text-base-content/55">
-                <tr className="border-b border-base-content/10">
-                  <th className="px-2 py-2 font-medium">
-                    {t("live.conversations.drawer.routing.model")}
-                  </th>
-                  <th className="px-2 py-2 font-medium">
-                    {t("live.conversations.drawer.routing.account")}
-                  </th>
-                  <th className="px-2 py-2 font-medium">
-                    {t("live.conversations.drawer.routing.created")}
-                  </th>
-                  <th className="px-2 py-2 font-medium">
-                    {t("live.conversations.drawer.routing.updated")}
-                  </th>
-                  <th className="px-2 py-2 font-medium">
-                    {t("live.conversations.drawer.routing.lastUsed")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {(binding.stickyRoutes ?? []).map((route) => {
-                  const routeAccountId =
-                    typeof route.upstreamAccountId === "number" &&
-                    Number.isSafeInteger(route.upstreamAccountId) &&
-                    route.upstreamAccountId > 0
-                      ? route.upstreamAccountId
-                      : null;
-                  const routeAccountLabel =
-                    route.upstreamAccountName ?? `#${route.upstreamAccountId}`;
-                  const canOpenRouteAccount =
-                    routeAccountId != null && onOpenUpstreamAccount != null;
-
-                  return (
+        {routingStickyRoutes.length ? (
+          <>
+            <div
+              className="mt-3 hidden overflow-x-auto md:block"
+              data-testid="prompt-cache-current-routing-table"
+            >
+              <table className="w-full min-w-[38rem] text-left text-xs">
+                <thead className="text-base-content/55">
+                  <tr className="border-b border-base-content/10">
+                    <th className="px-2 py-2 font-medium">
+                      {t("live.conversations.drawer.routing.model")}
+                    </th>
+                    <th className="px-2 py-2 font-medium">
+                      {t("live.conversations.drawer.routing.account")}
+                    </th>
+                    <th className="px-2 py-2 font-medium">
+                      {t("live.conversations.drawer.routing.created")}
+                    </th>
+                    <th className="px-2 py-2 font-medium">
+                      {t("live.conversations.drawer.routing.updated")}
+                    </th>
+                    <th className="px-2 py-2 font-medium">
+                      {t("live.conversations.drawer.routing.lastUsed")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {routingStickyRoutes.map((route) => (
                     <tr
                       key={`${route.modelKey ?? "all"}-${route.upstreamAccountId}`}
                       className="border-b border-base-content/5 last:border-0"
@@ -3442,23 +3470,7 @@ export function PromptCacheConversationHistoryDrawer({
                         {route.modelKey ?? t("live.conversations.drawer.routing.allModels")}
                       </td>
                       <td className="px-2 py-2 text-base-content/80">
-                        {canOpenRouteAccount ? (
-                          <button
-                            type="button"
-                            className="max-w-full truncate text-left font-medium transition hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                            aria-label={t("live.conversations.drawer.routing.openAccount", {
-                              account: routeAccountLabel,
-                            })}
-                            title={t("live.conversations.drawer.routing.openAccount", {
-                              account: routeAccountLabel,
-                            })}
-                            onClick={() => onOpenUpstreamAccount(routeAccountId, routeAccountLabel)}
-                          >
-                            {routeAccountLabel}
-                          </button>
-                        ) : (
-                          <span>{routeAccountLabel}</span>
-                        )}
+                        {renderRoutingAccount(route)}
                       </td>
                       <td className="whitespace-nowrap px-2 py-2 text-base-content/62">
                         {formatConversationOperationOccurredAt(route.createdAt)}
@@ -3470,11 +3482,53 @@ export function PromptCacheConversationHistoryDrawer({
                         {formatConversationOperationOccurredAt(route.lastSeenAt)}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <dl
+              className="mt-3 divide-y divide-base-content/10 md:hidden"
+              data-testid="prompt-cache-current-routing-mobile"
+            >
+              {routingStickyRoutes.map((route) => (
+                <div
+                  key={`${route.modelKey ?? "all"}-${route.upstreamAccountId}`}
+                  className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-x-3 gap-y-1 py-3 first:pt-0 last:pb-0"
+                >
+                  <dt className="text-xs text-base-content/55">
+                    {t("live.conversations.drawer.routing.model")}
+                  </dt>
+                  <dd className="min-w-0 break-all font-mono text-xs text-base-content">
+                    {route.modelKey ?? t("live.conversations.drawer.routing.allModels")}
+                  </dd>
+                  <dt className="text-xs text-base-content/55">
+                    {t("live.conversations.drawer.routing.account")}
+                  </dt>
+                  <dd className="min-w-0 text-xs text-base-content/80">
+                    {renderRoutingAccount(route)}
+                  </dd>
+                  <dt className="text-xs text-base-content/55">
+                    {t("live.conversations.drawer.routing.created")}
+                  </dt>
+                  <dd className="min-w-0 text-xs text-base-content/62">
+                    {formatConversationOperationOccurredAt(route.createdAt)}
+                  </dd>
+                  <dt className="text-xs text-base-content/55">
+                    {t("live.conversations.drawer.routing.updated")}
+                  </dt>
+                  <dd className="min-w-0 text-xs text-base-content/62">
+                    {formatConversationOperationOccurredAt(route.updatedAt)}
+                  </dd>
+                  <dt className="text-xs text-base-content/55">
+                    {t("live.conversations.drawer.routing.lastUsed")}
+                  </dt>
+                  <dd className="min-w-0 text-xs text-base-content/62">
+                    {formatConversationOperationOccurredAt(route.lastSeenAt)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </>
         ) : (
           <p className="mt-3 text-xs text-base-content/60">
             {t("live.conversations.drawer.routing.empty")}

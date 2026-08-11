@@ -66,6 +66,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
 - Prompt Cache conversation detail tabs are ordered `概览 / 调用 / 路由 / 设置 / 事件记录`. The 路由 tab owns manual binding, encrypted-owner, fallback, and model-bucket views; 设置 retains policy, rewrite, proxy, and timeout editors.
 - Each current-route upstream-account value with a valid account ID opens that account's shared detail view. Values without an ID remain non-interactive text.
+- At narrow viewports, current routing renders each route as wrapped field/value rows instead of a horizontally scrollable table. The route region and conversation drawer must not overflow horizontally.
 - Owner-facing copy uses `事件记录` because the stream contains manual writes plus automatic runtime/system events; internal compatibility keeps `promptCacheConversationTab=operations` and `prompt_cache_conversation_operation_events`.
 - The events tab keeps one event stream and one lightweight filter row; it does not split into nested subtabs.
 - The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
