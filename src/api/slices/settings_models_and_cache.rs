@@ -1218,6 +1218,9 @@ pub(crate) struct DashboardActivitySnapshotCacheEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivityTerminalDelta {
     pub(crate) terminal_sequence: u64,
+    /// Keeps the exact timeseries classification and latency samples available to the
+    /// dashboard topic materializers without reloading an invocation from SQLite.
+    pub(crate) timeseries: TimeseriesTerminalDelta,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) source: String,

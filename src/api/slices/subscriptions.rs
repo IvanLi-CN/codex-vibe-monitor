@@ -761,6 +761,10 @@ enum DashboardTopicMaterializer {
     NetworkRecent {
         base: Arc<DashboardRecentNetworkWindowResponse>,
     },
+    Timeseries {
+        base: Arc<StdMutex<TimeseriesTopicMaterializedBase>>,
+        runtime: Arc<RuntimeProjectionHub>,
+    },
 }
 
 impl DashboardTopicMaterializer {
@@ -814,6 +818,14 @@ impl DashboardTopicMaterializer {
                 network_revision: Some(slice.revision),
                 terminal_revision: None,
             }),
+            Self::Timeseries { .. } if current.is_some() || terminal.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: None,
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
             _ => None,
         }
     }
@@ -856,7 +868,9 @@ impl DashboardTopicMaterializer {
                     (_, base_start, current_start) => base_start != current_start,
                 }
             }
-            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
+            Self::NetworkTimeseries { .. }
+            | Self::NetworkRecent { .. }
+            | Self::Timeseries { .. } => false,
         }
     }
 
@@ -938,6 +952,11 @@ impl DashboardTopicMaterializer {
             Self::NetworkRecent { base } => {
                 serde_json::to_vec(&DashboardNetworkRecentPayload { base, network })
                     .map_err(ApiError::from)
+            }
+            Self::Timeseries { base, runtime } => {
+                let mut base = base.lock().expect("timeseries materializer state lock");
+                base.apply_terminal_slice(terminal);
+                base.serialize(&runtime.snapshot())
             }
         }
     }
@@ -1724,6 +1743,7 @@ impl SubscriptionHub {
         let owns_dashboard_live = topics.iter().any(|topic| {
             topic.uses_dashboard_activity_live_overlay()
                 || topic.uses_summary_live_overlay()
+                || topic.uses_timeseries_live_projection()
                 || topic.uses_dashboard_network_live_snapshot()
         });
         let topic_keys = topics
@@ -1795,6 +1815,7 @@ impl SubscriptionHub {
                 cached.topic.name() == topic_name
                     && (cached.topic.uses_dashboard_activity_live_overlay()
                         || cached.topic.uses_summary_live_overlay()
+                        || cached.topic.uses_timeseries_live_projection()
                         || cached.topic.uses_dashboard_network_live_snapshot())
             });
         guard.dashboard_live_subscriber_count = guard
@@ -2888,6 +2909,7 @@ impl SubscriptionHub {
             // the DB-backed topic builder.
             if work.topic.uses_summary_live_overlay()
                 || work.topic.uses_dashboard_activity_live_overlay()
+                || work.topic.uses_timeseries_live_projection()
                 || work.topic.uses_dashboard_network_live_snapshot()
             {
                 continue;
@@ -6175,6 +6197,7 @@ pub(crate) async fn topic_sse_stream(
     if selected_topics.iter().any(|topic| {
         topic.uses_dashboard_activity_live_overlay()
             || topic.uses_summary_live_overlay()
+            || topic.uses_timeseries_live_projection()
             || topic.uses_dashboard_network_live_snapshot()
     }) {
         ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
@@ -6288,6 +6311,10 @@ impl SubscriptionTopic {
         )
     }
 
+    fn uses_timeseries_live_projection(&self) -> bool {
+        matches!(self, Self::TimeseriesOpenWindow { range, .. } if range != "yesterday")
+    }
+
     fn uses_summary_topic_refresh(&self) -> bool {
         self.uses_summary_live_overlay()
     }
@@ -6299,9 +6326,7 @@ impl SubscriptionTopic {
     fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
         match self {
             Self::DashboardWorkingConversationsCurrent { .. } => true,
-            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. } => {
-                range != "yesterday"
-            }
+            Self::ParallelWorkCurrent { range, .. } => range != "yesterday",
             _ => false,
         }
     }
@@ -6963,6 +6988,31 @@ impl SubscriptionTopic {
                             reporting_tz,
                             source_scope,
                             upstream_account_id: *upstream_account_id,
+                        },
+                    ));
+                }
+                Self::TimeseriesOpenWindow {
+                    range,
+                    time_zone,
+                    bucket,
+                    settlement_hour,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    let base = TimeseriesTopicMaterializedBase::build(
+                        state.as_ref(),
+                        &TimeseriesQuery {
+                            range: range.clone(),
+                            bucket: bucket.clone(),
+                            settlement_hour: *settlement_hour,
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Timeseries {
+                            base: Arc::new(StdMutex::new(base)),
+                            runtime: state.proxy_runtime_invocations.clone(),
                         },
                     ));
                 }
@@ -8926,6 +8976,7 @@ mod tests {
                     | "stats.summary.current"
                     | "dashboard.network-timeseries.window"
                     | "dashboard.network-recent.current"
+                    | "stats.timeseries.open-window"
             );
             assert_eq!(
                 state
@@ -9286,20 +9337,25 @@ mod tests {
                 "network topic materialization must borrow its typed base"
             );
         }
+        assert_eq!(
+            delivery.timeseries.serialization_count, delivery.timeseries.materialization_count,
+            "each materialized timeseries revision should serialize exactly once"
+        );
+        assert_eq!(
+            delivery.timeseries.payload_clone_count, 0,
+            "timeseries topic materialization must retain typed aggregates"
+        );
         for topic in [
             delivery.activity,
             delivery.summary,
             delivery.network_timeseries,
             delivery.network_recent,
+            delivery.timeseries,
         ] {
             assert_eq!(topic.generic_fallback_build_count, 0);
             assert_eq!(topic.live_path_db_read_count, 0);
         }
-        for topic in [
-            delivery.working_conversations,
-            delivery.parallel_work,
-            delivery.timeseries,
-        ] {
+        for topic in [delivery.working_conversations, delivery.parallel_work] {
             assert_eq!(topic.generic_fallback_build_count, 1);
             assert_eq!(topic.live_path_db_read_count, 1);
             assert_eq!(topic.builder_count, 1);
@@ -9378,7 +9434,7 @@ mod tests {
             assert!(!topic.is_unmigrated_dashboard_hot_projection());
         }
         assert!(open_parallel.is_unmigrated_dashboard_hot_projection());
-        assert!(open_timeseries.is_unmigrated_dashboard_hot_projection());
+        assert!(!open_timeseries.is_unmigrated_dashboard_hot_projection());
         assert!(!closed_parallel.is_affected_by_runtime_mutation(&mutation));
         assert!(!closed_timeseries.is_affected_by_runtime_mutation(&mutation));
         assert!(open_parallel.is_affected_by_runtime_mutation(&mutation));
