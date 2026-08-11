@@ -1296,9 +1296,16 @@ pub(crate) async fn insert_test_tag(
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
-    load_tag_detail(pool, inserted_id)
+    let mut detail = load_tag_detail(pool, inserted_id)
         .await?
-        .ok_or_else(|| anyhow!("tag not found after insert"))
+        .ok_or_else(|| anyhow!("tag not found after insert"))?;
+    sqlx::query("UPDATE pool_tags SET system_key = NULL, protected = 0 WHERE id = ?1")
+        .bind(inserted_id)
+        .execute(pool)
+        .await?;
+    detail.summary.system_key = None;
+    detail.summary.protected = false;
+    Ok(detail)
 }
 
 pub(crate) async fn insert_legacy_custom_tag(
@@ -4711,6 +4718,31 @@ fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_al
     assert!(rule.available_models.is_empty());
     assert!(!account_accepts_requested_model(Some("gpt-4o"), &rule));
     assert!(!account_accepts_requested_model(Some("o3"), &rule));
+}
+
+#[test]
+fn build_effective_routing_rule_ignores_editable_fields_from_system_tags() {
+    let mut system_tag = test_account_tag_summary(1, "system", 3);
+    system_tag.system_key = Some("unsupported_model:gpt-5.4".to_string());
+    system_tag.routing_rule.allow_cut_in = false;
+    system_tag.routing_rule.priority_tier = TagPriorityTier::Fallback;
+    system_tag.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
+    system_tag.routing_rule.upstream_429_retry_enabled = true;
+    system_tag.routing_rule.upstream_429_max_retries = 4;
+    system_tag.routing_rule.available_models = vec!["gpt-5.4-mini".to_string()];
+
+    let rule = build_effective_routing_rule(&[system_tag]);
+
+    assert!(rule.allow_cut_in);
+    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
+    assert_eq!(
+        rule.fast_mode_rewrite_mode,
+        TagFastModeRewriteMode::KeepOriginal
+    );
+    assert_eq!(rule.concurrency_limit, 0);
+    assert!(!rule.upstream_429_retry_enabled);
+    assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
+    assert_eq!(rule.system_denied_models, vec!["gpt-5.4".to_string()]);
 }
 
 #[test]
