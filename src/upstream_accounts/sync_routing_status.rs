@@ -306,12 +306,23 @@ pub(crate) fn apply_root_available_models(
     models_json: Option<&str>,
     mode: Option<&str>,
 ) {
+    let invalid_models_json =
+        models_json.is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
     let mode = mode
         .map(|value| AvailableModelsMode::from_str(Some(value)))
         .unwrap_or(AvailableModelsMode::Denylist);
-    rule.available_models = parse_string_array_json(models_json);
-    rule.available_models_mode = mode;
-    rule.available_models_defined = matches!(mode, AvailableModelsMode::Allowlist)
+    rule.available_models = if invalid_models_json {
+        Vec::new()
+    } else {
+        parse_string_array_json(models_json)
+    };
+    rule.available_models_mode = if invalid_models_json {
+        AvailableModelsMode::Allowlist
+    } else {
+        mode
+    };
+    rule.available_models_defined = invalid_models_json
+        || matches!(mode, AvailableModelsMode::Allowlist)
         || models_json.is_some_and(|value| value.trim() != "[]" && !value.trim().is_empty());
     rule.field_sources.available_models = "root".to_string();
     rule.field_sources.available_models_mode = "root".to_string();
@@ -395,14 +406,26 @@ pub(crate) fn apply_routing_policy_override(
         );
     }
     if available_models_json.is_some() || available_models_mode.is_some() {
-        let available_models = parse_string_array_json(available_models_json);
+        let invalid_models_json = available_models_json
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err());
+        let available_models = if invalid_models_json {
+            Vec::new()
+        } else if available_models_json.is_some() {
+            parse_string_array_json(available_models_json)
+        } else {
+            rule.available_models.clone()
+        };
         let mode = available_models_mode
             .map(|value| AvailableModelsMode::from_str(Some(value)))
             .unwrap_or(AvailableModelsMode::Allowlist);
         rule.field_sources.available_models = source.to_string();
         rule.available_models = available_models;
         rule.available_models_defined = true;
-        rule.available_models_mode = mode;
+        rule.available_models_mode = if invalid_models_json {
+            AvailableModelsMode::Allowlist
+        } else {
+            mode
+        };
         rule.field_sources.available_models_mode = source.to_string();
     }
 }

@@ -1708,6 +1708,10 @@ pub(crate) fn conversation_routing_override_from_row(
             .available_models_json
             .as_deref()
             .and_then(parse_available_models_json),
+        available_models_invalid: row
+            .available_models_json
+            .as_deref()
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err()),
         available_models_mode: row
             .available_models_mode
             .as_deref()

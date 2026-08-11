@@ -120,6 +120,24 @@ mod tests {
             &Vec::new(),
         ));
     }
+
+    #[test]
+    fn mode_only_conversation_override_inherits_the_current_model_list() {
+        let mut rule = build_effective_routing_rule(&[]);
+        rule.available_models = models(&["gpt-5.4"]);
+        rule.available_models_defined = true;
+        apply_conversation_routing_override(
+            &mut rule,
+            Some(&ConversationRoutingOverride {
+                available_models_mode: Some(AvailableModelsMode::Denylist),
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(rule.available_models, models(&["gpt-5.4"]));
+        assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
+        assert!(account_accepts_requested_model(Some("gpt-4.1"), &rule));
+    }
 }
 
 pub(crate) fn apply_conversation_routing_override(
@@ -143,13 +161,20 @@ pub(crate) fn apply_conversation_routing_override(
     }
     if override_policy.available_models.is_some() || override_policy.available_models_mode.is_some()
     {
-        let available_models = override_policy.available_models.clone().unwrap_or_default();
+        let available_models = override_policy
+            .available_models
+            .clone()
+            .unwrap_or_else(|| rule.available_models.clone());
         rule.available_models = available_models.clone();
         rule.available_models_defined = true;
         rule.field_sources.available_models = "conversation".to_string();
-        rule.available_models_mode = override_policy
-            .available_models_mode
-            .unwrap_or(AvailableModelsMode::Allowlist);
+        rule.available_models_mode = if override_policy.available_models_invalid {
+            AvailableModelsMode::Allowlist
+        } else {
+            override_policy
+                .available_models_mode
+                .unwrap_or(AvailableModelsMode::Allowlist)
+        };
         rule.field_sources.available_models_mode = "conversation".to_string();
     }
 }

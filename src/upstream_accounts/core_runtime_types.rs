@@ -1601,6 +1601,7 @@ pub(crate) struct ConversationRoutingOverride {
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) available_models_mode: Option<AvailableModelsMode>,
+    pub(crate) available_models_invalid: bool,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) forward_proxy_scope_key: String,

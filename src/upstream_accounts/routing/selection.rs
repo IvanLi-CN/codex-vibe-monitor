@@ -960,8 +960,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         && !sticky_cut_out_blocked_by_policy;
     let mut sticky_fallback_handoff_enabled = false;
     let bypass_requested_model_filter = binding_constraint.is_some();
-    let conversation_available_models_override =
-        conversation_override.is_some_and(|policy| policy.available_models.is_some());
+    let conversation_available_models_override = conversation_override.is_some_and(|policy| {
+        policy.available_models.is_some() || policy.available_models_mode.is_some()
+    });
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
