@@ -1615,6 +1615,7 @@ impl ConversationRoutingOverride {
             || self.codex_imagegen_rewrite_mode.is_some()
             || self.available_models.is_some()
             || self.available_models_mode.is_some()
+            || self.available_models_invalid
             || self.forward_proxy_key.is_some()
             || !self.forward_proxy_keys.is_empty()
     }

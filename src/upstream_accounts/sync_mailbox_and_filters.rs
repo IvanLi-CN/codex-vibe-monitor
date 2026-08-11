@@ -1882,10 +1882,22 @@ pub(crate) fn group_routing_rule_from_columns(
                 .map(decode_group_upstream_429_max_retries)
                 .unwrap_or(legacy_upstream_429_max_retries),
         ),
-        available_models: parse_string_array_json(policy_available_models_json),
-        available_models_mode: policy_available_models_mode
-            .map(|value| AvailableModelsMode::from_str(Some(value)))
-            .or_else(|| policy_available_models_json.map(|_| AvailableModelsMode::Allowlist)),
+        available_models: if policy_available_models_json
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            Vec::new()
+        } else {
+            parse_string_array_json(policy_available_models_json)
+        },
+        available_models_mode: if policy_available_models_json
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            Some(AvailableModelsMode::Allowlist)
+        } else {
+            policy_available_models_mode
+                .map(|value| AvailableModelsMode::from_str(Some(value)))
+                .or_else(|| policy_available_models_json.map(|_| AvailableModelsMode::Allowlist))
+        },
         available_models_defined: policy_available_models_json.is_some()
             || policy_available_models_mode.is_some(),
         status_change_reasons: status_change_reasons_from_columns(

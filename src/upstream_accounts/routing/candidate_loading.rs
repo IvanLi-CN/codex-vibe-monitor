@@ -156,13 +156,12 @@ mod tests {
         let mut rule = build_effective_routing_rule(&[]);
         rule.available_models = models(&["gpt-5.4"]);
         rule.available_models_defined = true;
-        apply_conversation_routing_override(
-            &mut rule,
-            Some(&ConversationRoutingOverride {
-                available_models_invalid: true,
-                ..Default::default()
-            }),
-        );
+        let override_policy = ConversationRoutingOverride {
+            available_models_invalid: true,
+            ..Default::default()
+        };
+        assert!(override_policy.has_policy_override());
+        apply_conversation_routing_override(&mut rule, Some(&override_policy));
 
         assert!(rule.available_models.is_empty());
         assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));

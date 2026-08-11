@@ -1,6 +1,9 @@
 use super::*;
 use sqlx::Transaction;
 
+static POOL_ROUTING_SETTINGS_WRITE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
@@ -18,6 +21,7 @@ pub(crate) async fn update_pool_routing_settings(
     headers: HeaderMap,
     Json(payload): Json<UpdatePoolRoutingSettingsRequest>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
+    let _write_guard = POOL_ROUTING_SETTINGS_WRITE_LOCK.lock().await;
     if !is_same_origin_settings_write(&headers) {
         return Err((
             StatusCode::FORBIDDEN,

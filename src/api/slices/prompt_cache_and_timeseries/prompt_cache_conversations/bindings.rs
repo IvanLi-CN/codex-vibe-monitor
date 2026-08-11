@@ -16,6 +16,9 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO: &str = 
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE: usize = 20;
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 
+static PROMPT_CACHE_BINDING_WRITE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeStickyMutation {
     Unchanged,
@@ -2606,6 +2609,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
     payload: UpdatePromptCacheConversationBindingRequest,
     origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    let _write_guard = PROMPT_CACHE_BINDING_WRITE_LOCK.lock().await;
     let binding_kind = payload.binding_kind.trim();
     let group_name = payload
         .group_name

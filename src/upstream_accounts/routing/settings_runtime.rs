@@ -650,8 +650,24 @@ pub(crate) fn build_pool_routing_settings_response(
             .as_deref()
             .map(CodexImagegenRewriteMode::from_str)
             .unwrap_or(CodexImagegenRewriteMode::KeepOriginal),
-        available_models: parse_string_array_json(row.available_models_json.as_deref()),
-        available_models_mode: AvailableModelsMode::from_str(row.available_models_mode.as_deref()),
+        available_models: if row
+            .available_models_json
+            .as_deref()
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            Vec::new()
+        } else {
+            parse_string_array_json(row.available_models_json.as_deref())
+        },
+        available_models_mode: if row
+            .available_models_json
+            .as_deref()
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            AvailableModelsMode::Allowlist
+        } else {
+            AvailableModelsMode::from_str(row.available_models_mode.as_deref())
+        },
         timeouts: pool_routing_timeouts_response(timeouts),
     }
 }
@@ -879,8 +895,9 @@ pub(crate) async fn save_pool_routing_settings(
             request_compression_algorithm = ?12,
             request_compression_level_preset = ?13,
             codex_imagegen_rewrite_mode = ?14,
-            available_models_json = ?15,
-            available_models_mode = ?16,
+            -- Model policy columns are updated below with field-local writes.
+            available_models_json = CASE WHEN ?15 IS NULL THEN available_models_json ELSE available_models_json END,
+            available_models_mode = CASE WHEN ?16 IS NULL THEN available_models_mode ELSE available_models_mode END,
             default_first_byte_timeout_secs = ?17,
             upstream_handshake_timeout_secs = ?18,
             request_read_timeout_secs = ?19,
@@ -911,6 +928,47 @@ pub(crate) async fn save_pool_routing_settings(
     .execute(pool)
     .await
     .map_err(internal_error_tuple)?;
+
+    match (update.available_models, update.available_models_mode) {
+        (Some(models), Some(mode)) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_json = ?2, available_models_mode = ?3 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+            .bind(match mode {
+                AvailableModelsMode::Allowlist => "allowlist",
+                AvailableModelsMode::Denylist => "denylist",
+            })
+            .execute(pool)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (Some(models), None) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_json = ?2 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+            .execute(pool)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (None, Some(mode)) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_mode = ?2 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(match mode {
+                AvailableModelsMode::Allowlist => "allowlist",
+                AvailableModelsMode::Denylist => "denylist",
+            })
+            .execute(pool)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (None, None) => {}
+    }
 
     load_pool_routing_settings(pool)
         .await
