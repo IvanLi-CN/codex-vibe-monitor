@@ -2,8 +2,8 @@ use super::*;
 use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
-    load_sticky_affinity_generation, load_sticky_route, load_sticky_route_with_model_generation,
-    record_pool_route_success_with_affinity_generation,
+    delete_sticky_route_if_matches_with_cause, load_sticky_affinity_generation, load_sticky_route,
+    load_sticky_route_with_model_generation, record_pool_route_success_with_affinity_generation,
     record_pool_route_success_with_affinity_generation_and_broadcast,
     record_pool_route_success_with_affinity_generation_for_attempt, upsert_sticky_route,
     upsert_sticky_route_for_model_if_current,
@@ -810,6 +810,25 @@ async fn ensure_schema_creates_sticky_affinity_generation_and_routing_source_sto
         generation_columns
             .iter()
             .any(|column| column == "updated_at")
+    );
+
+    let model_generation_columns =
+        sqlx::query("PRAGMA table_info('pool_sticky_model_route_generations')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect model sticky affinity generation columns")
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<Vec<_>>();
+    assert!(
+        model_generation_columns
+            .iter()
+            .any(|column| column == "last_clear_cause_attempt_public_id")
+    );
+    assert!(
+        model_generation_columns
+            .iter()
+            .any(|column| column == "last_clear_cause_http_status")
     );
 
     let attempt_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
@@ -6095,6 +6114,168 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
             .and_then(|scope| scope.request_model.as_deref()),
         None,
         "requestModel duplicates the normalized model key and should be omitted"
+    );
+}
+
+#[tokio::test]
+async fn model_scoped_sticky_clear_cause_does_not_cross_models() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let cleared_account_id =
+        insert_test_pool_api_key_account(&state, "Cleared model account", "upstream-cleared").await;
+    let replacement_account_id = insert_test_pool_api_key_account(
+        &state,
+        "Independent model account",
+        "upstream-independent",
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-model-clear-cause-scope";
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_sticky_route_for_model_if_current(
+        &state.pool,
+        prompt_cache_key,
+        Some("gpt-5.4"),
+        cleared_account_id,
+        None,
+        &now_iso,
+    )
+    .await
+    .expect("seed model-scoped sticky route");
+    let (_, gpt54_token) =
+        load_sticky_route_with_model_generation(&state.pool, prompt_cache_key, Some("gpt-5.4"))
+            .await
+            .expect("load gpt-5.4 sticky token");
+
+    let clear_attempt_id = sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key,
+            routing_source, request_model, upstream_account_id, upstream_route_key,
+            attempt_index, distinct_account_index, same_account_retry_index, requester_ip,
+            started_at, finished_at, status, phase, created_at
+        ) VALUES (
+            'CLEAR54', 'clear-gpt-54', ?1, '/v1/responses', ?2, ?3,
+            'stickyRoute', 'gpt-5.4', ?4, 'route-clear-54',
+            1, 1, 0, '203.0.113.54', ?1, ?1, 'failed', 'completed', ?1
+        )
+        "#,
+    )
+    .bind(&now_iso)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(prompt_cache_key)
+    .bind(cleared_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert gpt-5.4 clear attempt")
+    .last_insert_rowid();
+
+    assert!(
+        delete_sticky_route_if_matches_with_cause(
+            &state.pool,
+            prompt_cache_key,
+            cleared_account_id,
+            Some(gpt54_token),
+            Some(clear_attempt_id),
+            Some(429),
+            Some("upstreamHttp429"),
+            Some(prompt_cache_key),
+            &now_iso,
+        )
+        .await
+        .expect("clear gpt-5.4 sticky route"),
+        "the matching model bucket should be cleared"
+    );
+
+    let gpt54_clear_cause = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+        r#"
+        SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+        FROM pool_sticky_model_route_generations
+        WHERE sticky_key = ?1 AND model_key = 'gpt-5.4'
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load gpt-5.4 clear cause");
+    assert_eq!(gpt54_clear_cause.0.as_deref(), Some("CLEAR54"));
+    assert_eq!(gpt54_clear_cause.1, Some(429));
+
+    let replacement_attempt_id = sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key,
+            routing_source, request_model, upstream_account_id, upstream_route_key,
+            attempt_index, distinct_account_index, same_account_retry_index, requester_ip,
+            started_at, finished_at, status, phase, created_at
+        ) VALUES (
+            'SUCCESS51', 'success-gpt-51', ?1, '/v1/responses', ?2, ?3,
+            'freshAssignment', 'gpt-5.1-codex-max', ?4, 'route-success-51',
+            1, 1, 0, '203.0.113.51', ?1, ?1, 'success', 'completed', ?1
+        )
+        "#,
+    )
+    .bind(&now_iso)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(prompt_cache_key)
+    .bind(replacement_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert gpt-5.1 success attempt")
+    .last_insert_rowid();
+
+    assert!(matches!(
+        upsert_runtime_prompt_cache_conversation_sticky_route(
+            &state.pool,
+            prompt_cache_key,
+            Some(prompt_cache_key),
+            replacement_account_id,
+            &now_iso,
+            Some("success-gpt-51"),
+            Some(replacement_attempt_id),
+            None,
+        )
+        .await
+        .expect("persist independent model sticky route"),
+        RuntimeStickyMutation::Changed {
+            previous_upstream_account_id: None
+        }
+    ));
+
+    let Json(events) = list_prompt_cache_conversation_operation_events(
+        State(state),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+            routing_scope: None,
+            routing_model: None,
+        }),
+    )
+    .await
+    .expect("list model-scoped sticky events");
+    let replacement_event = events
+        .items
+        .iter()
+        .find(|event| event.invoke_id.as_deref() == Some("success-gpt-51"))
+        .expect("gpt-5.1 success event should be present");
+    assert_eq!(
+        replacement_event
+            .routing_context
+            .as_ref()
+            .map(|context| context.reason_code.as_str()),
+        Some("firstSuccessfulAssignment")
+    );
+    assert_eq!(
+        replacement_event
+            .routing_context
+            .as_ref()
+            .and_then(|context| context.causing_attempt_id.as_deref()),
+        None,
+        "a gpt-5.4 clear must not become the cause of a different model's assignment"
     );
 }
 

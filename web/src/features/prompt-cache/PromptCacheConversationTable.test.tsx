@@ -3035,6 +3035,112 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("策略更新");
   });
 
+  it("restores the SSE event head after clearing a routing model filter", async () => {
+    detailTopicMocks.current.operations.data = {
+      items: [
+        {
+          id: 31,
+          promptCacheKey: "pck-routing-filter-reset",
+          action: "sseRoutingHead",
+          origin: "systemAuto",
+          infoTypes: ["routing"],
+          occurredAt: "2026-03-02T12:03:00Z",
+          headline: "SSE routing head",
+          changedFields: [],
+          bindingBefore: null,
+          bindingAfter: null,
+          stickyBefore: null,
+          stickyAfter: null,
+          invokeId: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      routingModelFacets: ["gpt-5.4"],
+    };
+    apiMocks.fetchPromptCacheConversationOperationEvents.mockResolvedValue({
+      items: [
+        {
+          id: 24,
+          promptCacheKey: "pck-routing-filter-reset",
+          action: "gpt54RoutingEvent",
+          origin: "systemAuto",
+          infoTypes: ["routing"],
+          occurredAt: "2026-03-02T12:02:00Z",
+          headline: "GPT 5.4 only event",
+          changedFields: [],
+          bindingBefore: null,
+          bindingAfter: null,
+          stickyBefore: null,
+          stickyAfter: null,
+          invokeId: null,
+          routingScope: { kind: "model", modelKey: "gpt-5.4" },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      routingModelFacets: ["gpt-5.4"],
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 50,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-routing-filter-reset",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("事件记录");
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("路由相关"),
+    );
+    await user.click(routingFilterButton!);
+    await flushInteractive();
+
+    const modelSelect = document.querySelector(
+      '[role="combobox"][aria-label="路由模型"]',
+    ) as HTMLElement | null;
+    expect(modelSelect).not.toBeNull();
+    await user.click(modelSelect!);
+    await user.click(findSelectOption("gpt-5.4")!);
+    await flushInteractive();
+    expect(document.body.textContent).toContain("GPT 5.4 only event");
+    expect(document.body.textContent).not.toContain("SSE routing head");
+
+    await user.click(modelSelect!);
+    await user.click(findSelectOption("不限模型范围")!);
+    await flushInteractive();
+    expect(document.body.textContent).toContain("SSE routing head");
+    expect(document.body.textContent).not.toContain("GPT 5.4 only event");
+  });
+
   it("saves and clears conversation routing policy overrides from the settings tab", async () => {
     let currentBinding: PromptCacheConversationBindingResponse = {
       promptCacheKey: "pck-policy",

@@ -599,16 +599,63 @@ where
 {
     sqlx::query_scalar::<_, i64>(
         r#"
-        INSERT INTO pool_sticky_model_route_generations (sticky_key, model_key, generation, updated_at)
-        VALUES (?1, ?2, 1, ?3)
+        INSERT INTO pool_sticky_model_route_generations (
+            sticky_key,
+            model_key,
+            generation,
+            last_clear_cause_attempt_public_id,
+            last_clear_cause_http_status,
+            updated_at
+        ) VALUES (?1, ?2, 1, NULL, NULL, ?3)
         ON CONFLICT(sticky_key, model_key) DO UPDATE SET
             generation = pool_sticky_model_route_generations.generation + 1,
+            last_clear_cause_attempt_public_id = NULL,
+            last_clear_cause_http_status = NULL,
             updated_at = excluded.updated_at
         RETURNING generation
         "#,
     )
     .bind(sticky_key)
     .bind(model_key)
+    .bind(now_iso)
+    .fetch_one(executor)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn bump_sticky_model_generation_with_clear_cause_executor<'e, E>(
+    executor: E,
+    sticky_key: &str,
+    model_key: &str,
+    cause_attempt_public_id: Option<&str>,
+    cause_http_status: Option<i64>,
+    now_iso: &str,
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO pool_sticky_model_route_generations (
+            sticky_key,
+            model_key,
+            generation,
+            last_clear_cause_attempt_public_id,
+            last_clear_cause_http_status,
+            updated_at
+        ) VALUES (?1, ?2, 1, ?3, ?4, ?5)
+        ON CONFLICT(sticky_key, model_key) DO UPDATE SET
+            generation = pool_sticky_model_route_generations.generation + 1,
+            last_clear_cause_attempt_public_id = excluded.last_clear_cause_attempt_public_id,
+            last_clear_cause_http_status = excluded.last_clear_cause_http_status,
+            updated_at = excluded.updated_at
+        RETURNING generation
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(model_key)
+    .bind(cause_attempt_public_id)
+    .bind(cause_http_status)
     .bind(now_iso)
     .fetch_one(executor)
     .await
@@ -1136,30 +1183,37 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                 > 0
         };
         if deleted {
-            if let Some(model_key) = model_key.as_deref().filter(|_| exact_model_route.is_some()) {
-                bump_sticky_model_generation_executor(conn.as_mut(), sticky_key, model_key, now_iso)
-                    .await?;
-            } else {
-                bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
-            }
             let cause_attempt_public_id = attempt_context
                 .as_ref()
-                .and_then(|(_, attempt_public_id, _, _)| attempt_public_id.clone());
-            sqlx::query(
-                r#"
-                UPDATE pool_sticky_route_generations
-                SET last_clear_cause_attempt_public_id = ?2,
-                    last_clear_cause_http_status = ?3,
-                    updated_at = ?4
-                WHERE sticky_key = ?1
-                "#,
-            )
-            .bind(sticky_key)
-            .bind(cause_attempt_public_id)
-            .bind(cause_http_status)
-            .bind(now_iso)
-            .execute(conn.as_mut())
-            .await?;
+                .and_then(|(_, attempt_public_id, _, _)| attempt_public_id.as_deref());
+            if let Some(model_key) = model_key.as_deref().filter(|_| exact_model_route.is_some()) {
+                bump_sticky_model_generation_with_clear_cause_executor(
+                    conn.as_mut(),
+                    sticky_key,
+                    model_key,
+                    cause_attempt_public_id,
+                    cause_http_status,
+                    now_iso,
+                )
+                .await?;
+            } else {
+                bump_sticky_affinity_generation_executor(conn.as_mut(), sticky_key, now_iso).await?;
+                sqlx::query(
+                    r#"
+                    UPDATE pool_sticky_route_generations
+                    SET last_clear_cause_attempt_public_id = ?2,
+                        last_clear_cause_http_status = ?3,
+                        updated_at = ?4
+                    WHERE sticky_key = ?1
+                    "#,
+                )
+                .bind(sticky_key)
+                .bind(cause_attempt_public_id)
+                .bind(cause_http_status)
+                .bind(now_iso)
+                .execute(conn.as_mut())
+                .await?;
+            }
             let account_name = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT display_name FROM pool_upstream_accounts WHERE id = ?1",
             )

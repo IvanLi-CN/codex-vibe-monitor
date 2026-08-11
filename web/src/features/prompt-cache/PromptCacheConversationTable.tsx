@@ -2436,7 +2436,7 @@ export function PromptCacheConversationHistoryDrawer({
     }
     operationsRequestSeqRef.current += 1;
     operationsLoadControllerRef.current?.abort();
-    const topicKey = operationsTopic.descriptorKey ?? operationsFilter;
+    const topicKey = `${operationsTopic.descriptorKey ?? operationsFilter}:${operationsRoutingModel}`;
     const previousItems =
       operationsTopicKeyRef.current === topicKey ? operationEventsRef.current : [];
     const nextItems = Array.from(
@@ -2901,7 +2901,7 @@ export function PromptCacheConversationHistoryDrawer({
     }
     operationsRequestSeqRef.current += 1;
     operationsLoadControllerRef.current?.abort();
-    operationsTopicKeyRef.current = operationsTopic.descriptorKey ?? operationsFilter;
+    operationsTopicKeyRef.current = `${operationsTopic.descriptorKey ?? operationsFilter}:${operationsRoutingModel}`;
     operationEventsRef.current = [];
     operationsPageRef.current = 1;
     operationsTotalRef.current = 0;

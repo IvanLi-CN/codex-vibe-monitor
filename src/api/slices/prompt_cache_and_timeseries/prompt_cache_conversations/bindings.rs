@@ -1490,21 +1490,37 @@ where
 async fn load_pending_sticky_clear_cause_executor<'e, E>(
     executor: E,
     sticky_key: &str,
+    model_key: Option<&str>,
 ) -> Result<(Option<String>, Option<u16>)>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
-        r#"
-        SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
-        FROM pool_sticky_route_generations
-        WHERE sticky_key = ?1
-        LIMIT 1
-        "#,
-    )
-    .bind(sticky_key)
-    .fetch_optional(executor)
-    .await?;
+    let row = if let Some(model_key) = model_key {
+        sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            r#"
+            SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+            FROM pool_sticky_model_route_generations
+            WHERE sticky_key = ?1 AND model_key = ?2
+            LIMIT 1
+            "#,
+        )
+        .bind(sticky_key)
+        .bind(model_key)
+        .fetch_optional(executor)
+        .await?
+    } else {
+        sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            r#"
+            SELECT last_clear_cause_attempt_public_id, last_clear_cause_http_status
+            FROM pool_sticky_route_generations
+            WHERE sticky_key = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(sticky_key)
+        .fetch_optional(executor)
+        .await?
+    };
     Ok(row
         .map(|(attempt_id, status)| {
             (
@@ -1586,11 +1602,15 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     let write_outcome: Result<RuntimeStickyMutation> = async {
         let (trigger_attempt_id, routing_source, routing_selection_audit, trigger_invoke_id, request_model) =
             load_runtime_attempt_routing_context_executor(conn.as_mut(), attempt_id).await?;
-        let pending_clear_cause =
-            load_pending_sticky_clear_cause_executor(conn.as_mut(), sticky_key).await?;
         let current_epoch =
             load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
         let model_key = normalize_sticky_model_key(request_model.as_deref());
+        let pending_clear_cause = load_pending_sticky_clear_cause_executor(
+            conn.as_mut(),
+            sticky_key,
+            model_key.as_deref(),
+        )
+        .await?;
         let routing_scope = PromptCacheConversationOperationRoutingScope {
             kind: if model_key.is_some() {
                 "model".to_string()
