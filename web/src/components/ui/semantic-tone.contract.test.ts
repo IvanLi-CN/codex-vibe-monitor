@@ -135,4 +135,11 @@ describe("semantic tone source contract", () => {
       }
     }
   });
+
+  it("keeps shared tone-ink utility variables defined for non-Chip callers", () => {
+    const css = readFileSync(join(sourceRoot, "index.css"), "utf8");
+    for (const tone of ["primary", "secondary", "accent", "info", "success", "warning", "error"]) {
+      expect(css).toMatch(new RegExp(`--tone-ink-${tone}:`));
+    }
+  });
 });

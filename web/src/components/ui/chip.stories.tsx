@@ -40,7 +40,7 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 function ChipGallery() {
   const tones = [...SEMANTIC_TONES, ...CATEGORICAL_TONES];
   return (
-    <div className="space-y-5" data-testid="chip-gallery">
+    <div className="space-y-5" data-testid="tone-gallery">
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-base-content/56">
           Shared chip palette
@@ -79,14 +79,37 @@ function ChipGallery() {
   );
 }
 
-function parseRgb(value: string): [number, number, number] {
+function parseColor(value: string): [number, number, number] {
   const probe = document.createElement("canvas").getContext("2d");
   if (!probe) throw new Error("Canvas is required for color assertions");
   probe.fillStyle = value;
   const normalized = probe.fillStyle;
-  const match = normalized.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (!match) throw new Error(`Unable to parse computed color: ${value}`);
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
+  const rgbMatch = normalized.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (rgbMatch) return [Number(rgbMatch[1]), Number(rgbMatch[2]), Number(rgbMatch[3])];
+
+  const oklchMatch = normalized.match(/oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+)\s*\)/);
+  if (!oklchMatch) throw new Error(`Unable to parse computed color: ${value}`);
+
+  const lightness = Number(oklchMatch[1]) / (oklchMatch[2] === "%" ? 100 : 1);
+  const chroma = Number(oklchMatch[3]);
+  const hue = (Number(oklchMatch[4]) * Math.PI) / 180;
+  const labA = chroma * Math.cos(hue);
+  const labB = chroma * Math.sin(hue);
+  const l = lightness + 0.3963377774 * labA + 0.2158037573 * labB;
+  const m = lightness - 0.1055613458 * labA - 0.0638541728 * labB;
+  const s = lightness - 0.0894841775 * labA - 1.291485548 * labB;
+  const l3 = l ** 3;
+  const m3 = m ** 3;
+  const s3 = s ** 3;
+  const linearRgb = [
+    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186176 * m3 + 1.707614701 * s3,
+  ];
+  return linearRgb.map((channel) => {
+    const encoded = channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055;
+    return Math.round(Math.min(1, Math.max(0, encoded)) * 255);
+  }) as [number, number, number];
 }
 
 function luminance(channel: number) {
@@ -95,8 +118,8 @@ function luminance(channel: number) {
 }
 
 function contrastRatio(foreground: string, background: string) {
-  const [fr, fg, fb] = parseRgb(foreground);
-  const [br, bg, bb] = parseRgb(background);
+  const [fr, fg, fb] = parseColor(foreground);
+  const [br, bg, bb] = parseColor(background);
   const foregroundLuminance =
     0.2126 * luminance(fr) + 0.7152 * luminance(fg) + 0.0722 * luminance(fb);
   const backgroundLuminance =
@@ -107,7 +130,11 @@ function contrastRatio(foreground: string, background: string) {
 }
 
 async function assertGalleryColors(canvasElement: HTMLElement) {
-  const chips = Array.from(canvasElement.querySelectorAll<HTMLElement>("[data-testid^='chip-']"));
+  const chips = Array.from(
+    canvasElement.querySelectorAll<HTMLElement>(
+      "[data-testid^='chip-']:not([data-testid='chip-gallery'])",
+    ),
+  );
   expect(chips).toHaveLength(18);
   for (const chip of chips) {
     const styles = getComputedStyle(chip);
@@ -133,7 +160,7 @@ async function assertGalleryColors(canvasElement: HTMLElement) {
 const meta = {
   title: "UI/Chip",
   component: Chip,
-  tags: ["autodocs"],
+  tags: ["autodocs", "test"],
   decorators: [
     (Story) => (
       <StorySurface>

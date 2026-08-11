@@ -6,7 +6,7 @@ import { InvocationPhaseChip, InvocationPhaseSegments } from "./InvocationPhaseC
 const meta = {
   title: "Components/InvocationPhaseChip",
   component: InvocationPhaseChip,
-  tags: ["autodocs"],
+  tags: ["autodocs", "test"],
   parameters: {
     layout: "centered",
   },
