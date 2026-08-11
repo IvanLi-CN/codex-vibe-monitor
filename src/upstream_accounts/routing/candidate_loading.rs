@@ -42,8 +42,20 @@ pub(crate) fn account_accepts_requested_model(
     {
         return false;
     }
-    !rule
-        .system_denied_models
+    !requested_model_is_system_denied(Some(requested_model), rule)
+}
+
+pub(crate) fn requested_model_is_system_denied(
+    requested_model: Option<&str>,
+    rule: &EffectiveRoutingRule,
+) -> bool {
+    let Some(requested_model) = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    rule.system_denied_models
         .iter()
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
 }
@@ -138,6 +150,23 @@ mod tests {
         assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
         assert!(account_accepts_requested_model(Some("gpt-4.1"), &rule));
     }
+
+    #[test]
+    fn malformed_conversation_override_fails_closed_as_an_empty_allowlist() {
+        let mut rule = build_effective_routing_rule(&[]);
+        rule.available_models = models(&["gpt-5.4"]);
+        rule.available_models_defined = true;
+        apply_conversation_routing_override(
+            &mut rule,
+            Some(&ConversationRoutingOverride {
+                available_models_invalid: true,
+                ..Default::default()
+            }),
+        );
+
+        assert!(rule.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
+    }
 }
 
 pub(crate) fn apply_conversation_routing_override(
@@ -159,12 +188,18 @@ pub(crate) fn apply_conversation_routing_override(
         rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
         rule.field_sources.codex_imagegen_rewrite_mode = "conversation".to_string();
     }
-    if override_policy.available_models.is_some() || override_policy.available_models_mode.is_some()
+    if override_policy.available_models.is_some()
+        || override_policy.available_models_mode.is_some()
+        || override_policy.available_models_invalid
     {
-        let available_models = override_policy
-            .available_models
-            .clone()
-            .unwrap_or_else(|| rule.available_models.clone());
+        let available_models = if override_policy.available_models_invalid {
+            Vec::new()
+        } else {
+            override_policy
+                .available_models
+                .clone()
+                .unwrap_or_else(|| rule.available_models.clone())
+        };
         rule.available_models = available_models.clone();
         rule.available_models_defined = true;
         rule.field_sources.available_models = "conversation".to_string();

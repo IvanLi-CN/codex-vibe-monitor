@@ -1048,8 +1048,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 if sticky_source_rule.as_ref().is_none_or(|rule| {
-                    (bypass_requested_model_filter && !conversation_available_models_override)
-                        || account_accepts_requested_model(requested_model, rule)
+                    !requested_model_is_system_denied(requested_model, rule)
+                        && ((bypass_requested_model_filter
+                            && !conversation_available_models_override)
+                            || account_accepts_requested_model(requested_model, rule))
                 }) && account_accepts_request_capabilities(
                     request_capability_requirements_after_codex_imagegen_rewrite(
                         endpoint,
@@ -1472,8 +1474,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             );
             continue;
         }
-        if (!bypass_requested_model_filter || conversation_available_models_override)
-            && !account_accepts_requested_model(requested_model, effective_rule)
+        if requested_model_is_system_denied(requested_model, effective_rule)
+            || ((!bypass_requested_model_filter || conversation_available_models_override)
+                && !account_accepts_requested_model(requested_model, effective_rule))
         {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,

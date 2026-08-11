@@ -1241,6 +1241,12 @@ pub(crate) async fn update_upstream_account_group(
         if matches!(routing_rule.available_models_mode, OptionalField::Null) {
             available_models_json = None;
         }
+        // A mode-only patch changes interpretation, not the selected IDs.
+        // Preserve the stored JSON unless the caller explicitly clears mode
+        // or submits a replacement list.
+        let preserve_available_models_json =
+            matches!(routing_rule.available_models, OptionalField::Missing)
+                && !matches!(routing_rule.available_models_mode, OptionalField::Null);
         let timeout_patch = routing_rule.timeouts.clone().unwrap_or_default();
         let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
             &timeout_patch.responses_first_byte_timeout_secs,
@@ -1352,15 +1358,7 @@ pub(crate) async fn update_upstream_account_group(
         .bind(optional_bool_to_i64(&routing_rule.upstream_429_retry_enabled))
         .bind(if matches!(routing_rule.upstream_429_max_retries, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
-        .bind(
-            if matches!(routing_rule.available_models, OptionalField::Missing)
-                && !matches!(routing_rule.available_models_mode, OptionalField::Null)
-            {
-                1_i64
-            } else {
-                0_i64
-            },
-        )
+        .bind(if preserve_available_models_json { 1_i64 } else { 0_i64 })
         .bind(available_models_json)
         .bind(if matches!(status_change_upstream_http_401, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_bool_to_i64(&status_change_upstream_http_401))

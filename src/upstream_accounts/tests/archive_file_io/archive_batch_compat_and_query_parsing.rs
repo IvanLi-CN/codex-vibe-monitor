@@ -2644,7 +2644,7 @@ async fn update_upstream_account_group_clears_available_models_when_policy_submi
 }
 
 #[tokio::test]
-async fn update_upstream_account_group_preserves_available_models_when_field_is_omitted() {
+async fn update_upstream_account_group_preserves_available_models_when_mode_changes() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
 
     let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
@@ -2700,7 +2700,7 @@ async fn update_upstream_account_group_preserves_available_models_when_field_is_
                 upstream_429_retry_enabled: OptionalField::Missing,
                 upstream_429_max_retries: OptionalField::Missing,
                 available_models: OptionalField::Missing,
-                available_models_mode: OptionalField::Missing,
+                available_models_mode: OptionalField::Value("denylist".to_string()),
                 status_change_reasons: None,
                 timeouts: None,
             }),
@@ -2720,6 +2720,18 @@ async fn update_upstream_account_group_preserves_available_models_when_field_is_
     .await
     .expect("load preserved group policy");
     assert_eq!(stored.as_deref(), Some("[\"gpt-5.5\"]"));
+
+    let stored_mode = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+            SELECT policy_available_models_mode
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = 'preserve-model-group'
+            "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved group policy mode");
+    assert_eq!(stored_mode.as_deref(), Some("denylist"));
 }
 
 #[tokio::test]
