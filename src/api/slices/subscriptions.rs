@@ -868,9 +868,11 @@ impl DashboardTopicMaterializer {
                     (_, base_start, current_start) => base_start != current_start,
                 }
             }
-            Self::NetworkTimeseries { .. }
-            | Self::NetworkRecent { .. }
-            | Self::Timeseries { .. } => false,
+            Self::Timeseries { base, .. } => base
+                .lock()
+                .expect("timeseries materializer state lock")
+                .requires_window_rebase(),
+            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
         }
     }
 
@@ -10235,6 +10237,13 @@ mod tests {
             limit: None,
             upstream_account_id: None,
         };
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
         let activity_materializer = activity
             .build_cached_payload(state.clone())
             .await
@@ -10242,11 +10251,17 @@ mod tests {
             .dashboard_materializer()
             .expect("activity typed materializer");
         let summary_materializer = summary
-            .build_cached_payload(state)
+            .build_cached_payload(state.clone())
             .await
             .expect("build summary base")
             .dashboard_materializer()
             .expect("summary typed materializer");
+        let timeseries_materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build timeseries base")
+            .dashboard_materializer()
+            .expect("timeseries typed materializer");
 
         assert!(
             !activity_materializer.requires_terminal_window_rebase(),
@@ -10255,6 +10270,10 @@ mod tests {
         assert!(
             !summary_materializer.requires_terminal_window_rebase(),
             "a freshly built duration base must wait for the reconcile boundary",
+        );
+        assert!(
+            !timeseries_materializer.requires_terminal_window_rebase(),
+            "a freshly built timeseries base must wait for the reconcile boundary",
         );
 
         let DashboardTopicMaterializer::Activity { base, .. } = &activity_materializer else {
@@ -10269,9 +10288,20 @@ mod tests {
         base.lock()
             .expect("summary materializer state lock")
             .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        let DashboardTopicMaterializer::Timeseries { base, .. } = &timeseries_materializer else {
+            panic!("expected timeseries materializer");
+        };
+        base.lock()
+            .expect("timeseries materializer state lock")
+            .set_range_start_for_test(
+                Utc::now()
+                    - ChronoDuration::days(1)
+                    - ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64),
+            );
 
         assert!(activity_materializer.requires_terminal_window_rebase());
         assert!(summary_materializer.requires_terminal_window_rebase());
+        assert!(timeseries_materializer.requires_terminal_window_rebase());
     }
 
     #[tokio::test]

@@ -379,13 +379,13 @@ fn add_pending_timeseries_deltas(
 }
 
 fn timeseries_topic_uses_hourly_rollup_baseline(
-    params: &TimeseriesQuery,
+    _params: &TimeseriesQuery,
     reporting_tz: Tz,
     range_window: &RangeWindow,
     bucket_seconds: i64,
     invocation_max_days: u64,
 ) -> Result<bool, ApiError> {
-    if params.upstream_account_id.is_some() || bucket_seconds < 3_600 {
+    if bucket_seconds < 3_600 {
         return Ok(false);
     }
     let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, range_window);
@@ -405,6 +405,7 @@ fn timeseries_topic_uses_hourly_rollup_baseline(
 pub(crate) struct TimeseriesTopicMaterializedBase {
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    range_spec: String,
     bucket_selection: TimeseriesBucketSelection,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
@@ -437,15 +438,30 @@ impl TimeseriesTopicMaterializedBase {
             bucket_seconds,
             state.config.invocation_max_days,
         )? {
-            let baseline = build_timeseries_hourly_rollup_baseline(
-                state,
-                reporting_tz,
-                source_scope,
-                &range_window,
-                &bucket_selection,
-                false,
-            )
-            .await?;
+            let baseline = match params.upstream_account_id {
+                Some(upstream_account_id) => {
+                    build_timeseries_account_hourly_rollup_baseline(
+                        state,
+                        reporting_tz,
+                        source_scope,
+                        &range_window,
+                        &bucket_selection,
+                        upstream_account_id,
+                    )
+                    .await?
+                }
+                None => {
+                    build_timeseries_hourly_rollup_baseline(
+                        state,
+                        reporting_tz,
+                        source_scope,
+                        &range_window,
+                        &bucket_selection,
+                        false,
+                    )
+                    .await?
+                }
+            };
             (baseline.snapshot_id, baseline.aggregates)
         } else {
             let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
@@ -558,6 +574,7 @@ impl TimeseriesTopicMaterializedBase {
         Ok(Self {
             range_start: start,
             range_end: end,
+            range_spec: params.range.clone(),
             bucket_selection,
             reporting_tz,
             source_scope,
@@ -566,6 +583,23 @@ impl TimeseriesTopicMaterializedBase {
             terminal_sequence: 0,
             aggregates,
         })
+    }
+
+    pub(crate) fn requires_window_rebase(&self) -> bool {
+        let Ok(current_range) = resolve_range_window(&self.range_spec, self.reporting_tz) else {
+            return true;
+        };
+        if parse_duration_spec(&self.range_spec).is_ok() {
+            return current_range.start < self.range_start
+                || current_range.start - self.range_start
+                    >= ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64);
+        }
+        current_range.start != self.range_start
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_range_start_for_test(&mut self, range_start: DateTime<Utc>) {
+        self.range_start = range_start;
     }
 
     pub(crate) fn apply_terminal_slice(
@@ -1517,6 +1551,7 @@ mod minute_projection_tests {
         let mut base = TimeseriesTopicMaterializedBase {
             range_start: start,
             range_end: end,
+            range_spec: "1m".to_string(),
             bucket_selection: TimeseriesBucketSelection {
                 bucket_seconds: 60,
                 effective_bucket: "1m".to_string(),
@@ -1593,6 +1628,23 @@ mod minute_projection_tests {
                 7,
             )
             .expect("hour-aligned history should use rollups")
+        );
+        let account_params = TimeseriesQuery {
+            range: "60d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        };
+        assert!(
+            timeseries_topic_uses_hourly_rollup_baseline(
+                &account_params,
+                Shanghai,
+                &range_window,
+                3_600,
+                7,
+            )
+            .expect("account-scoped hour-aligned history should use rollups")
         );
         let half_hour_tz = "Asia/Kathmandu".parse::<Tz>().expect("valid timezone");
         assert!(
@@ -3617,6 +3669,129 @@ async fn build_timeseries_hourly_rollup_baseline(
             &db_runtime_records,
         )?;
     }
+
+    Ok(TimeseriesHourlyRollupBaseline {
+        snapshot_id,
+        aggregates,
+    })
+}
+
+async fn build_timeseries_account_hourly_rollup_baseline(
+    state: &AppState,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: &RangeWindow,
+    bucket_selection: &TimeseriesBucketSelection,
+    upstream_account_id: i64,
+) -> Result<TimeseriesHourlyRollupBaseline, ApiError> {
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    debug_assert!(bucket_seconds >= 3_600);
+    let range_plan = build_hourly_rollup_exact_range_plan(
+        range_window.start,
+        range_window.end,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    )?;
+    let mut aggregates = BTreeMap::new();
+    fill_timeseries_buckets(
+        &mut aggregates,
+        range_window.start,
+        range_window.end,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) = {
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        let hourly_rows =
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                query_upstream_account_stats_rollup_range_tx(
+                    tx.as_mut(),
+                    "upstream_account_stats_hourly",
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+        let mut exact_records = Vec::new();
+        let boundary_snapshot_id = rollup_live_cursor.min(snapshot_id);
+        if !range_plan.live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
+            exact_records.extend(
+                query_invocation_exact_records_for_account_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    boundary_snapshot_id,
+                    upstream_account_id,
+                )
+                .await?,
+            );
+        }
+        let mut archive_overlap_ids = HashSet::new();
+        if rollup_live_cursor < snapshot_id {
+            let tail_range_plan = HourlyRollupExactRangePlan {
+                full_hour_range: None,
+                live_exact_ranges: exact_utc_range(range_window.start, range_window.end)?
+                    .into_iter()
+                    .collect(),
+            };
+            let tail_records = query_invocation_exact_records_tx_for_account(
+                tx.as_mut(),
+                &tail_range_plan,
+                source_scope,
+                snapshot_id,
+                upstream_account_id,
+                rollup_live_cursor,
+            )
+            .await?;
+            archive_overlap_ids.extend(tail_records.iter().map(|record| record.id));
+            exact_records.extend(tail_records);
+        }
+        (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
+    };
+
+    add_rollup_rows_to_timeseries_aggregates(
+        &mut aggregates,
+        hourly_rows,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+        let archived_start = Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries start epoch"))
+            })?;
+        let archived_end = Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries end epoch"))
+            })?;
+        let archived_rows =
+            crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
+                &state.pool,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                source_scope,
+                Some((archived_start, archived_end)),
+                Some(&archive_overlap_ids),
+                upstream_account_id,
+            )
+            .await?;
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            archived_rows,
+            bucket_seconds,
+            reporting_tz,
+        )?;
+    }
+    add_terminal_timeseries_records(&mut aggregates, exact_records, bucket_seconds, reporting_tz)?;
 
     Ok(TimeseriesHourlyRollupBaseline {
         snapshot_id,
