@@ -4,6 +4,7 @@
 
 - 2026-07-20: 创建 spec，冻结 filled-content vs tone-ink contract、受影响 shared surfaces、Storybook dark evidence 与 source contract test 范围。
 - 2026-07-20: 完成 theme token、共享 Badge、InvocationWorkflowDetailPanel、AppLayout/PWA offline chip 迁移，并以 Storybook dark captures + unit/build/source-contract 验证收口。
+- 2026-08-11: 将所有文本 chip 收口到唯一 `Chip` primitive；冻结 8 个 semantic tone、10 个 categorical tone、endpoint/identity 穷举映射、六档尺寸 preset 与双主题显式不透明 surface/border/ink 合同。新增 light/dark gallery computed-contrast 防线，禁止黑白或 `*-content` 回退。
 
 ## Key Decisions
 

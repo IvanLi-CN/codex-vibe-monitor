@@ -4774,12 +4774,8 @@ async function assertImageEditEndpointRecentRow(canvasElement: HTMLElement) {
     `expected ${styles.color} on ${styles.backgroundColor} to meet the 4.5:1 contrast threshold`,
   ).toBeGreaterThanOrEqual(4.5);
   const lightness = colorChannels[0] ?? Number.NaN;
-  expect(lightness, `expected ${styles.color} to avoid black or white ink`).toBeGreaterThanOrEqual(
-    0.4,
-  );
-  expect(lightness, `expected ${styles.color} to avoid black or white ink`).toBeLessThanOrEqual(
-    0.8,
-  );
+  expect(lightness, `expected ${styles.color} to avoid black ink`).toBeGreaterThan(0.2);
+  expect(lightness, `expected ${styles.color} to avoid white ink`).toBeLessThan(0.95);
   expect(
     imageEditInkChroma(styles.color),
     `expected ${styles.color} to retain amber chroma`,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -105,7 +105,7 @@ function filterKeyForStatus(status: ImportedOauthValidationRow["status"]): Valid
   }
 }
 
-function rowBadgeVariant(status: ImportedOauthValidationRow["status"]) {
+function rowChipTone(status: ImportedOauthValidationRow["status"]) {
   switch (status) {
     case "ok":
       return "success" as const;
@@ -496,18 +496,18 @@ export function ImportedOauthValidationDialog({
                                 </td>
                                 <td className="px-4 py-4">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant={rowBadgeVariant(row.status)}>
+                                    <Chip tone={rowChipTone(row.status)}>
                                       {formatStatusLabel(t, row.status)}
-                                    </Badge>
+                                    </Chip>
                                     {row.matchedAccount ? (
-                                      <Badge variant="secondary">
+                                      <Chip tone="secondary">
                                         {t(
                                           "accountPool.upstreamAccounts.import.validation.matchedAccount",
                                           {
                                             name: row.matchedAccount.displayName,
                                           },
                                         )}
-                                      </Badge>
+                                      </Chip>
                                     ) : null}
                                   </div>
                                   <div className="mt-2 text-xs text-base-content/65">
@@ -522,14 +522,14 @@ export function ImportedOauthValidationDialog({
                                   </p>
                                   {row.attempts > 0 ? (
                                     <div className="mt-2">
-                                      <Badge variant="secondary" className="font-mono">
+                                      <Chip tone="secondary" className="font-mono">
                                         {t(
                                           "accountPool.upstreamAccounts.import.validation.attempts",
                                           {
                                             count: row.attempts,
                                           },
                                         )}
-                                      </Badge>
+                                      </Chip>
                                     </div>
                                   ) : null}
                                 </td>
@@ -581,9 +581,9 @@ export function ImportedOauthValidationDialog({
                                 <p className="min-w-0 flex-1 truncate font-semibold text-base-content">
                                   {row.fileName}
                                 </p>
-                                <Badge variant={rowBadgeVariant(row.status)}>
+                                <Chip tone={rowChipTone(row.status)}>
                                   {formatStatusLabel(t, row.status)}
-                                </Badge>
+                                </Chip>
                               </div>
                               <InlineIdentityList
                                 email={row.email}
@@ -592,21 +592,21 @@ export function ImportedOauthValidationDialog({
                               />
                               <div className="mt-3 flex flex-wrap items-center gap-2">
                                 {row.matchedAccount ? (
-                                  <Badge variant="secondary">
+                                  <Chip tone="secondary">
                                     {t(
                                       "accountPool.upstreamAccounts.import.validation.matchedAccount",
                                       {
                                         name: row.matchedAccount.displayName,
                                       },
                                     )}
-                                  </Badge>
+                                  </Chip>
                                 ) : null}
                                 {row.attempts > 0 ? (
-                                  <Badge variant="secondary" className="font-mono">
+                                  <Chip tone="secondary" className="font-mono">
                                     {t("accountPool.upstreamAccounts.import.validation.attempts", {
                                       count: row.attempts,
                                     })}
-                                  </Badge>
+                                  </Chip>
                                 ) : null}
                               </div>
                               <p className="mt-3 text-sm leading-6 text-base-content/75">
@@ -676,10 +676,10 @@ export function ImportedOauthValidationDialog({
                   })}
                 </span>
                 {counts.exhausted > 0 ? (
-                  <Badge variant="warning">
+                  <Chip tone="warning">
                     {t("accountPool.upstreamAccounts.import.validation.status.exhausted")}{" "}
                     {counts.exhausted}
-                  </Badge>
+                  </Chip>
                 ) : null}
               </div>
               <div className="flex flex-wrap justify-end gap-2">

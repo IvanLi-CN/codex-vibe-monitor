@@ -21,8 +21,8 @@ import {
   YAxis,
 } from "recharts";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -404,12 +404,12 @@ function formatConversationOperationOccurredAt(raw: string) {
   }).format(value);
 }
 
-function conversationOperationInfoTypeBadgeVariant(
+function conversationOperationInfoTypeChipTone(
   infoType: PromptCacheConversationOperationInfoType,
-): "default" | "info" | "accent" {
+): "primary" | "info" | "accent" {
   switch (infoType) {
     case "routing":
-      return "default";
+      return "primary";
     case "forwardProxy":
       return "info";
     case "requestRewrite":
@@ -417,7 +417,7 @@ function conversationOperationInfoTypeBadgeVariant(
   }
 }
 
-function conversationOperationOriginBadgeVariant(origin: string): "secondary" | "warning" | "info" {
+function conversationOperationOriginChipTone(origin: string): "secondary" | "warning" | "info" {
   switch (origin) {
     case "dashboardBulk":
       return "warning";
@@ -3467,9 +3467,11 @@ export function PromptCacheConversationHistoryDrawer({
                     forwardProxyKeysDraft.map((key) => {
                       const node = bindingProxyNodes.find((candidate) => candidate.key === key);
                       return (
-                        <span
+                        <Chip
+                          size="default"
+                          tone="secondary"
                           key={key}
-                          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-base-300 bg-base-100 px-2 py-1 text-xs"
+                          className="min-w-0 gap-1.5 px-2 py-1 text-xs"
                         >
                           <span className="max-w-48 truncate">
                             {node ? conversationForwardProxyLabel(node) : key}
@@ -3492,7 +3494,7 @@ export function PromptCacheConversationHistoryDrawer({
                           >
                             x
                           </button>
-                        </span>
+                        </Chip>
                       );
                     })
                   )}
@@ -3659,16 +3661,16 @@ export function PromptCacheConversationHistoryDrawer({
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex flex-wrap gap-2">
                 {event.infoTypes.map((infoType) => (
-                  <Badge
+                  <Chip
                     key={`${event.id}-${infoType}`}
-                    variant={conversationOperationInfoTypeBadgeVariant(infoType)}
+                    tone={conversationOperationInfoTypeChipTone(infoType)}
                   >
                     {conversationOperationInfoTypeLabel(infoType, t)}
-                  </Badge>
+                  </Chip>
                 ))}
-                <Badge variant={conversationOperationOriginBadgeVariant(event.origin)}>
+                <Chip tone={conversationOperationOriginChipTone(event.origin)}>
                   {conversationOperationOriginLabel(event.origin, t)}
-                </Badge>
+                </Chip>
               </div>
               <p className="break-words text-sm font-semibold text-base-content">
                 {conversationOperationActionLabel(event.action, event.headline, t)}

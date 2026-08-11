@@ -1,4 +1,4 @@
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
 import type { InvocationLivePhase, InvocationPhaseCounts } from "../../lib/api";
 import {
@@ -10,7 +10,7 @@ import { AppIcon, type AppIconName } from "../shared/AppIcon";
 
 export type InvocationPhaseMotion = "static" | "dynamic";
 
-interface InvocationPhaseBadgeProps {
+interface InvocationPhaseChipProps {
   phase: InvocationLivePhase;
   className?: string;
   appearance?: "badge" | "inline";
@@ -46,13 +46,13 @@ function phaseIconName(phase: InvocationLivePhase, motion: InvocationPhaseMotion
   return motion === "static" ? STATIC_PHASE_ICON_NAMES[phase] : PHASE_ICON_NAMES[phase];
 }
 
-export function InvocationPhaseBadge({
+export function InvocationPhaseChip({
   phase,
   className,
   appearance = "badge",
   showLabel = true,
   motion = "dynamic",
-}: InvocationPhaseBadgeProps) {
+}: InvocationPhaseChipProps) {
   const { t } = useTranslation();
   const display = getInvocationPhaseDisplay(phase);
   const label = t(display.labelKey);
@@ -98,25 +98,20 @@ export function InvocationPhaseBadge({
   }
 
   return (
-    <Badge
-      variant={display.badgeVariant}
+    <Chip
+      tone={display.chipTone}
       data-testid="invocation-phase-badge"
       data-phase={phase}
       data-phase-label-visible={showLabel ? "true" : "false"}
       data-phase-motion={motion}
-      className={cn(
-        showLabel ? "gap-1.5" : "h-6 w-6 justify-center px-0",
-        phase === "responding" &&
-          "border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300",
-        className,
-      )}
+      className={cn(showLabel ? "gap-1.5" : "h-6 w-6 justify-center px-0", className)}
       aria-label={showLabel ? undefined : label}
       title={showLabel ? undefined : label}
       role={showLabel ? undefined : "img"}
     >
       {icon}
       {showLabel ? label : null}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -226,18 +221,13 @@ export function InvocationPhaseSegments({
       {items.map((item) => {
         const display = getInvocationPhaseDisplay(item.phase);
         return (
-          <Badge
+          <Chip
             key={item.phase}
-            variant={display.badgeVariant}
+            tone={display.chipTone}
             data-testid="invocation-phase-segment"
             data-phase={item.phase}
             data-phase-motion={motion}
-            className={cn(
-              "gap-1.5 tabular-nums",
-              item.phase === "responding" &&
-                "border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300",
-              itemClassName,
-            )}
+            className={cn("gap-1.5 tabular-nums", itemClassName)}
           >
             <AppIcon
               name={phaseIconName(item.phase, motion)}
@@ -248,7 +238,7 @@ export function InvocationPhaseSegments({
             />
             <span>{t(display.labelKey)}</span>
             <span className="font-mono font-semibold">{item.value}</span>
-          </Badge>
+          </Chip>
         );
       })}
     </div>

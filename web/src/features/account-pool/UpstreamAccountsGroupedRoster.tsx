@@ -1,9 +1,9 @@
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import type { AccountPoolGroupSummaryData } from "../../lib/accountPoolGroups";
 import type { UpstreamAccountSummary } from "../../lib/api";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
@@ -11,25 +11,25 @@ import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
 } from "./AccountPoolGroupSummary";
-import { MotherAccountBadge } from "./MotherAccountToggle";
+import { MotherAccountChip } from "./MotherAccountToggle";
 import {
   buildLatestActionSummary,
   buildLatestActionTitle,
   CompactTimestampLine,
   CompactWindowLine,
-  compactBadge,
+  compactChip,
   formatDateTime,
   formatWindowShortLabel,
   handleRowKeyDown,
   kindLabel,
-  renderActiveRoutingPolicyBadges,
-  renderNoRefreshTokenBadge,
-  renderTagBadges,
-  renderTagOverflowBadge,
-  resolveCurrentForwardProxyBadgeLabel,
-  resolveCurrentForwardProxyBadgeVariant,
-  resolveRosterActionableStatusBadges,
-  resolveRosterSummaryStatusBadges,
+  renderActiveRoutingPolicyChips,
+  renderNoRefreshTokenChip,
+  renderTagChips,
+  renderTagOverflowChip,
+  resolveCurrentForwardProxyChipLabel,
+  resolveCurrentForwardProxyChipTone,
+  resolveRosterActionableStatusChips,
+  resolveRosterSummaryStatusChips,
   resolveRoutingBlockCountdown,
   type UpstreamAccountsTableLabels,
   windowPercent,
@@ -180,7 +180,7 @@ function normalizeVirtualItems(
   }));
 }
 
-function shouldShowPlanBadge(planType?: string | null) {
+function shouldShowPlanChip(planType?: string | null) {
   const normalized = planType?.trim().toLowerCase();
   return Boolean(normalized && normalized !== "local");
 }
@@ -234,13 +234,13 @@ function GroupMemberRow({
       resolveRoutingBlockCountdown(item.routingBlockUntil))
     : null;
   const latestActionTitle = buildLatestActionTitle(item, labels);
-  const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
+  const statusChips = resolveRosterSummaryStatusChips(item, labels);
   const primaryWindowTitle =
     [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(" · ") || undefined;
   const secondaryWindowTitle =
     [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(" · ") || undefined;
-  const showPlanBadge = shouldShowPlanBadge(item.planType);
-  const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
+  const showPlanChip = shouldShowPlanChip(item.planType);
+  const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
 
   const selectionEnabled = selectionMode === "multi" && typeof onToggleSelected === "function";
 
@@ -287,43 +287,42 @@ function GroupMemberRow({
               <div className="flex min-w-0 flex-wrap items-center gap-1">
                 {item.isMother ? (
                   <div className="shrink-0">
-                    <MotherAccountBadge label={labels.mother} />
+                    <MotherAccountChip label={labels.mother} />
                   </div>
                 ) : null}
-                {item.duplicateInfo ? compactBadge(labels.duplicate, "warning") : null}
-                {statusBadges.map((badge) => (
-                  <Badge
+                {item.duplicateInfo ? compactChip(labels.duplicate, "warning") : null}
+                {statusChips.map((badge) => (
+                  <Chip
                     key={`${badge.key}:${badge.label}`}
-                    variant={badge.variant}
+                    tone={badge.variant}
                     className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
                     title={badge.title}
                   >
                     {badge.label}
-                  </Badge>
+                  </Chip>
                 ))}
-                {renderNoRefreshTokenBadge(item, labels)}
-                {renderActiveRoutingPolicyBadges(item, labels)}
-                {compactBadge(kindLabel(item, labels), "secondary")}
-                {showPlanBadge && item.planType && planBadge
-                  ? compactBadge(item.planType, planBadge.variant, {
-                      className: planBadge.className,
-                      dataPlan: planBadge.dataPlan,
+                {renderNoRefreshTokenChip(item, labels)}
+                {renderActiveRoutingPolicyChips(item, labels)}
+                {compactChip(kindLabel(item, labels), "secondary")}
+                {showPlanChip && item.planType && planChip
+                  ? compactChip(item.planType, planChip.tone, {
+                      dataPlan: planChip.dataPlan,
                       title: item.planType,
                     })
-                  : showPlanBadge && item.planType
-                    ? compactBadge(item.planType, "accent", { title: item.planType })
+                  : showPlanChip && item.planType
+                    ? compactChip(item.planType, "accent", { title: item.planType })
                     : null}
-                {compactBadge(
-                  resolveCurrentForwardProxyBadgeLabel(item, labels),
-                  resolveCurrentForwardProxyBadgeVariant(item),
-                  { title: resolveCurrentForwardProxyBadgeLabel(item, labels) },
+                {compactChip(
+                  resolveCurrentForwardProxyChipLabel(item, labels),
+                  resolveCurrentForwardProxyChipTone(item),
+                  { title: resolveCurrentForwardProxyChipLabel(item, labels) },
                 )}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-1">
-                  {renderTagBadges(item.tags)}
+                  {renderTagChips(item.tags)}
                 </div>
-                {renderTagOverflowBadge(labels, item.tags)}
+                {renderTagOverflowChip(labels, item.tags)}
               </div>
             </div>
           </div>
@@ -437,10 +436,10 @@ function GroupMemberGridCard({
   const secondaryLabel =
     formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ??
     labels.secondaryShort.toUpperCase();
-  const showPlanBadge = shouldShowPlanBadge(item.planType);
-  const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
-  const actionableStatusBadges = resolveRosterActionableStatusBadges(item, labels);
-  const currentForwardProxyLabel = resolveCurrentForwardProxyBadgeLabel(item, labels);
+  const showPlanChip = shouldShowPlanChip(item.planType);
+  const planChip = showPlanChip ? upstreamPlanChipRecipe(item.planType) : null;
+  const actionableStatusChips = resolveRosterActionableStatusChips(item, labels);
+  const currentForwardProxyLabel = resolveCurrentForwardProxyChipLabel(item, labels);
   const compactSupportLabel =
     item.compactSupport?.status === "unsupported" && labels.compactSupport?.(item)
       ? labels.compactSupport(item)
@@ -485,43 +484,42 @@ function GroupMemberGridCard({
         >
           {item.isMother ? (
             <div className="shrink-0">
-              <MotherAccountBadge label={labels.mother} />
+              <MotherAccountChip label={labels.mother} />
             </div>
           ) : null}
-          {item.duplicateInfo ? compactBadge(labels.duplicate, "warning") : null}
-          {actionableStatusBadges.map((badge) => (
-            <Badge
+          {item.duplicateInfo ? compactChip(labels.duplicate, "warning") : null}
+          {actionableStatusChips.map((badge) => (
+            <Chip
               key={`${badge.key}:${badge.label}`}
-              variant={badge.variant}
+              tone={badge.variant}
               className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
               title={badge.title}
             >
               {badge.label}
-            </Badge>
+            </Chip>
           ))}
-          {renderNoRefreshTokenBadge(item, labels)}
-          {renderActiveRoutingPolicyBadges(item, labels)}
-          {compactBadge(kindLabel(item, labels), "secondary")}
+          {renderNoRefreshTokenChip(item, labels)}
+          {renderActiveRoutingPolicyChips(item, labels)}
+          {compactChip(kindLabel(item, labels), "secondary")}
           {compactSupportLabel
-            ? compactBadge(compactSupportLabel, "warning", {
+            ? compactChip(compactSupportLabel, "warning", {
                 title: labels.compactSupportHint?.(item) ?? undefined,
               })
             : null}
-          {showPlanBadge && item.planType && planBadge
-            ? compactBadge(item.planType, planBadge.variant, {
-                className: planBadge.className,
-                dataPlan: planBadge.dataPlan,
+          {showPlanChip && item.planType && planChip
+            ? compactChip(item.planType, planChip.tone, {
+                dataPlan: planChip.dataPlan,
                 title: item.planType,
               })
-            : showPlanBadge && item.planType
-              ? compactBadge(item.planType, "accent", { title: item.planType })
+            : showPlanChip && item.planType
+              ? compactChip(item.planType, "accent", { title: item.planType })
               : null}
-          {compactBadge(currentForwardProxyLabel, resolveCurrentForwardProxyBadgeVariant(item), {
+          {compactChip(currentForwardProxyLabel, resolveCurrentForwardProxyChipTone(item), {
             className: "max-w-[8.5rem] truncate",
             title: currentForwardProxyLabel,
           })}
-          {renderTagBadges(item.tags)}
-          {renderTagOverflowBadge(labels, item.tags)}
+          {renderTagChips(item.tags)}
+          {renderTagOverflowChip(labels, item.tags)}
         </div>
       </div>
       {routingBlockMessage || routingBlockCountdown ? (

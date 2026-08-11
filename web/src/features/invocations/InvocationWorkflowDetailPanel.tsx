@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { type TranslationKey, useTranslation } from "../../i18n";
@@ -218,7 +218,7 @@ function resolveStatusMeta(status: string | null | undefined, isZh: boolean) {
     };
   }
   if (normalized === "running") {
-    return { variant: "default" as const, label: isZh ? "运行中" : "Running" };
+    return { variant: "primary" as const, label: isZh ? "运行中" : "Running" };
   }
   if (normalized === "pending") {
     return { variant: "secondary" as const, label: isZh ? "等待中" : "Pending" };
@@ -258,7 +258,7 @@ function resolveKindMeta(kind: string, isZh: boolean) {
     default:
       return {
         label: isZh ? "尝试" : "Attempt",
-        variant: "default" as const,
+        variant: "primary" as const,
         markerClass: "border-primary/60 bg-primary/14 tone-ink-primary",
       };
   }
@@ -1150,7 +1150,7 @@ function SummaryRows({
   rows: Array<{
     label: string;
     value: string;
-    variant?: "default" | "secondary" | "success" | "warning" | "error";
+    variant?: "primary" | "secondary" | "success" | "warning" | "error";
     action?: {
       title: string;
       onClick: () => void;
@@ -1158,11 +1158,11 @@ function SummaryRows({
   }>;
   compact?: boolean;
 }) {
-  const toneClassFor = (variant?: "default" | "secondary" | "success" | "warning" | "error") => {
+  const toneClassFor = (variant?: "primary" | "secondary" | "success" | "warning" | "error") => {
     if (variant === "success") return "tone-ink-success";
     if (variant === "warning") return "tone-ink-warning";
     if (variant === "error") return "tone-ink-error";
-    if (variant === "default") return "tone-ink-info";
+    if (variant === "primary") return "tone-ink-info";
     return "text-base-content/88";
   };
 
@@ -1216,7 +1216,7 @@ function SnapshotMetric({
 }: {
   label: string;
   value: string;
-  variant?: "default" | "secondary" | "success" | "warning" | "error";
+  variant?: "primary" | "secondary" | "success" | "warning" | "error";
   compact?: boolean;
 }) {
   return (
@@ -1241,7 +1241,7 @@ function SnapshotMetric({
           variant === "success" && "tone-ink-success",
           variant === "warning" && "tone-ink-warning",
           variant === "error" && "tone-ink-error",
-          variant === "default" && "tone-ink-info",
+          variant === "primary" && "tone-ink-info",
         )}
       >
         {value}
@@ -1505,17 +1505,14 @@ function TimelineMetricButton({
             {label}
           </div>
           {tag ? (
-            <span
+            <Chip
+              size="micro"
+              tone={active ? "primary" : "secondary"}
               title={tag}
-              className={cn(
-                "inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[9.5px] font-semibold leading-none",
-                active
-                  ? "border-primary/24 bg-primary/10 text-primary/82"
-                  : "border-base-300/72 bg-base-200/86 text-base-content/54",
-              )}
+              className="shrink-0 px-1.5 text-[9.5px] font-semibold"
             >
               {tag}
-            </span>
+            </Chip>
           ) : null}
         </div>
         <div className="flex min-h-0 flex-col gap-0.5">
@@ -1540,30 +1537,24 @@ function TimelineMetricButton({
           {tertiaryChips && tertiaryChips.length > 0 ? (
             <div className="flex min-w-0 items-center gap-1 overflow-hidden">
               {tertiaryChips.map((chip) => (
-                <span
+                <Chip
+                  size="micro"
+                  tone={active ? "primary" : "secondary"}
                   key={`${label}-${chip}`}
                   title={chip}
-                  className={cn(
-                    "inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium leading-none",
-                    active
-                      ? "border-primary/18 bg-primary/10 text-primary/82"
-                      : "border-base-300/72 bg-base-200/78 text-base-content/56",
-                  )}
+                  className="shrink-0 px-1.5 text-[9.5px] font-medium"
                 >
                   {chip}
-                </span>
+                </Chip>
               ))}
               {tertiaryOverflowCount > 0 ? (
-                <span
-                  className={cn(
-                    "inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[9.5px] font-semibold leading-none",
-                    active
-                      ? "border-primary/18 bg-primary/10 text-primary/82"
-                      : "border-base-300/72 bg-base-200/78 text-base-content/56",
-                  )}
+                <Chip
+                  size="micro"
+                  tone={active ? "primary" : "secondary"}
+                  className={cn("shrink-0 px-1.5 text-[9.5px] font-semibold")}
                 >
                   +{tertiaryOverflowCount}
-                </span>
+                </Chip>
               ) : null}
             </div>
           ) : tertiary && tertiary !== FALLBACK_CELL ? (
@@ -2600,8 +2591,8 @@ function TimelineSummary({
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Badge variant={kindMeta.variant}>{kindMeta.label}</Badge>
-            {entry.status ? <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge> : null}
+            <Chip tone={kindMeta.variant}>{kindMeta.label}</Chip>
+            {entry.status ? <Chip tone={statusMeta.variant}>{statusMeta.label}</Chip> : null}
             {attemptId ? (
               <span className="font-mono text-[11px] text-primary/90">{attemptId}</span>
             ) : null}
@@ -2625,17 +2616,19 @@ function TimelineSummary({
                       side="top"
                       sideOffset={8}
                     >
-                      <span className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5">
+                      <Chip size="micro" tone="secondary" className="min-w-0 break-all px-2">
                         {fact.label}
-                      </span>
+                      </Chip>
                     </Tooltip>
                   ) : (
-                    <span
+                    <Chip
+                      size="micro"
+                      tone="secondary"
                       key={`${entry.blockId}-${fact.key}`}
-                      className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5"
+                      className="min-w-0 break-all px-2"
                     >
                       {fact.label}
-                    </span>
+                    </Chip>
                   ),
                 )}
               </div>
@@ -3072,7 +3065,7 @@ export function InvocationWorkflowDetailPanel({
     {
       label: isZh ? "总用时" : "Total Time",
       value: formatDurationMs(hero.totalDurationMs ?? record.tTotalMs, localeTag),
-      variant: "default" as const,
+      variant: "primary" as const,
     },
     {
       label: isZh ? "尝试次数" : "Attempts",
@@ -3148,14 +3141,14 @@ export function InvocationWorkflowDetailPanel({
               {isZh ? "调用详情" : "Invocation Detail"}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Badge variant={finalStatusMeta.variant}>{finalStatusMeta.label}</Badge>
+              <Chip tone={finalStatusMeta.variant}>{finalStatusMeta.label}</Chip>
               {hero.routeMode ? (
-                <Badge variant="secondary">{formatRouteMode(hero.routeMode, isZh)}</Badge>
+                <Chip tone="secondary">{formatRouteMode(hero.routeMode, isZh)}</Chip>
               ) : null}
               {detail.reconstructed ? (
-                <Badge variant="warning">{isZh ? "重建" : "Reconstructed"}</Badge>
+                <Chip tone="warning">{isZh ? "重建" : "Reconstructed"}</Chip>
               ) : null}
-              {detail.partial ? <Badge variant="warning">{isZh ? "部分" : "Partial"}</Badge> : null}
+              {detail.partial ? <Chip tone="warning">{isZh ? "部分" : "Partial"}</Chip> : null}
             </div>
           </div>
           <div className="text-right">
@@ -3283,9 +3276,9 @@ export function InvocationWorkflowDetailPanel({
                 {isZh ? "关键指标" : "Key metrics"}
               </div>
               {hero.failureClass ? (
-                <span className="rounded-full border border-base-300/72 bg-base-100/86 px-2.5 py-1 font-mono text-[11px] text-base-content/58">
+                <Chip size="compact" tone="error" className="px-2.5 py-1 font-mono text-[11px]">
                   {hero.failureClass}
-                </span>
+                </Chip>
               ) : null}
             </div>
             <div className={cn("mt-3", isCompact && "mt-2.5")}>

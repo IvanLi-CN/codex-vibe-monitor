@@ -1,11 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import { InvocationPhaseBadge, InvocationPhaseSegments } from "./InvocationPhaseBadge";
+import { InvocationPhaseChip, InvocationPhaseSegments } from "./InvocationPhaseChip";
 
 const meta = {
-  title: "Components/InvocationPhaseBadge",
-  component: InvocationPhaseBadge,
+  title: "Components/InvocationPhaseChip",
+  component: InvocationPhaseChip,
   tags: ["autodocs"],
   parameters: {
     layout: "centered",
@@ -23,7 +23,7 @@ const meta = {
     phase: "responding",
     motion: "dynamic",
   },
-} satisfies Meta<typeof InvocationPhaseBadge>;
+} satisfies Meta<typeof InvocationPhaseChip>;
 
 export default meta;
 
@@ -37,9 +37,9 @@ export const RecordPhases: Story = {
           Record dynamic
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <InvocationPhaseBadge phase="queued" motion="dynamic" />
-          <InvocationPhaseBadge phase="requesting" motion="dynamic" />
-          <InvocationPhaseBadge phase="responding" motion="dynamic" />
+          <InvocationPhaseChip phase="queued" motion="dynamic" />
+          <InvocationPhaseChip phase="requesting" motion="dynamic" />
+          <InvocationPhaseChip phase="responding" motion="dynamic" />
         </div>
       </div>
       <div className="space-y-2">
@@ -73,13 +73,13 @@ export const RecordPhases: Story = {
 export const CompactIcons: Story = {
   render: () => (
     <div className="flex items-center gap-3">
-      <InvocationPhaseBadge
+      <InvocationPhaseChip
         phase="requesting"
         appearance="inline"
         motion="dynamic"
         showLabel={false}
       />
-      <InvocationPhaseBadge
+      <InvocationPhaseChip
         phase="responding"
         appearance="inline"
         motion="dynamic"

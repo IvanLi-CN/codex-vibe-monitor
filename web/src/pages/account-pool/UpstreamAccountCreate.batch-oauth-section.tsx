@@ -1,8 +1,8 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: batch rows are normalized before persistence by the controller
 
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
@@ -12,7 +12,7 @@ import { MotherAccountToggle } from "../../features/account-pool/MotherAccountTo
 import { OauthMailboxChip } from "../../features/account-pool/OauthMailboxChip";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { AppIcon } from "../../features/shared/AppIcon";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import {
   DuplicateWarningPopover,
@@ -151,7 +151,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
                 const authUrl = rowHasActiveOauthUrl ? (row.session?.authUrl ?? "") : "";
                 const rowMailboxAddress = resolveBatchOauthMailboxAddress(row);
                 const rowInvited = row.mailboxStatus?.invited;
-                const rowPlanBadge = upstreamPlanBadgeRecipe(
+                const rowPlanChip = upstreamPlanChipRecipe(
                   row.planType ?? row.emailResolution?.planType ?? null,
                 );
                 return (
@@ -253,8 +253,8 @@ export function UpstreamAccountCreateBatchOauthSection() {
                                 }}
                               />
                               {row.mailboxSession ? (
-                                <Badge
-                                  variant={
+                                <Chip
+                                  tone={
                                     row.mailboxSession.source === "attached"
                                       ? "secondary"
                                       : "success"
@@ -263,7 +263,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
                                   {row.mailboxSession.source === "attached"
                                     ? t("accountPool.upstreamAccounts.oauth.mailboxAttached")
                                     : t("accountPool.upstreamAccounts.oauth.mailboxGenerated")}
-                                </Badge>
+                                </Chip>
                               ) : null}
                               <Tooltip
                                 content={buildActionTooltip(
@@ -635,14 +635,14 @@ export function UpstreamAccountCreateBatchOauthSection() {
                             ) : null}
                           </div>
                           <div className="ml-auto flex shrink-0 items-center gap-2">
-                            {rowPlanBadge && (row.planType ?? row.emailResolution?.planType) ? (
-                              <Badge variant={rowPlanBadge.variant}>
+                            {rowPlanChip && (row.planType ?? row.emailResolution?.planType) ? (
+                              <Chip tone={rowPlanChip.tone}>
                                 {row.planType ?? row.emailResolution?.planType}
-                              </Badge>
+                              </Chip>
                             ) : null}
-                            <Badge variant={batchStatusVariant(status)}>
+                            <Chip tone={batchStatusVariant(status)}>
                               {t(`accountPool.upstreamAccounts.batchOauth.status.${status}`)}
-                            </Badge>
+                            </Chip>
                             <Tooltip
                               content={buildActionTooltip(
                                 t("accountPool.upstreamAccounts.batchOauth.tooltip.removeTitle"),

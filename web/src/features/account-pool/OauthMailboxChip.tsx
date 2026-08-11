@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from "../../components/ui/popover";
 import { Tooltip } from "../../components/ui/tooltip";
@@ -201,50 +202,50 @@ export function OauthMailboxChip({
     };
 
     const trigger = (
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full px-2.5 font-mono text-xs",
-          "border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]",
-          canCopy &&
-            "cursor-copy hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm",
-          canCopy &&
-            "focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm",
-          !canCopy && "cursor-default text-base-content/55",
-          tone === "manual" && "border-warning/35 bg-base-100 text-base-content shadow-sm",
-          className,
-        )}
-        aria-label={canCopy ? copyAriaLabel : editor.editAriaLabel}
-        onBlur={() => {
-          if (!editor.editing) {
-            scheduleHoverPopoverClose();
-          }
-        }}
-        onFocus={openHoverPopover}
-        onMouseEnter={openHoverPopover}
-        onMouseLeave={() => {
-          if (!editor.editing) {
-            scheduleHoverPopoverClose();
-          }
-        }}
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerRelease}
-        onPointerCancel={handlePointerRelease}
-        onPointerLeave={handlePointerRelease}
-        onClick={() => {
-          if (canCopy) {
-            onCopy();
-          }
-        }}
+      <Chip
+        asChild
+        size="mailbox"
+        tone={tone === "manual" ? "warning" : tone === "copied" ? "success" : "secondary"}
+        className={cn("min-w-0 max-w-full cursor-copy justify-start font-mono", className)}
       >
-        <span className="truncate text-left">{emailAddress || emptyLabel}</span>
-        {tone === "manual" ? (
-          <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
-            <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
-            {manualBadgeLabel}
-          </span>
-        ) : null}
-      </button>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-w-0 max-w-full items-center justify-start",
+            !canCopy && "cursor-default",
+          )}
+          aria-label={canCopy ? copyAriaLabel : editor.editAriaLabel}
+          onBlur={() => {
+            if (!editor.editing) {
+              scheduleHoverPopoverClose();
+            }
+          }}
+          onFocus={openHoverPopover}
+          onMouseEnter={openHoverPopover}
+          onMouseLeave={() => {
+            if (!editor.editing) {
+              scheduleHoverPopoverClose();
+            }
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerRelease}
+          onPointerCancel={handlePointerRelease}
+          onPointerLeave={handlePointerRelease}
+          onClick={() => {
+            if (canCopy) {
+              onCopy();
+            }
+          }}
+        >
+          <span className="truncate text-left">{emailAddress || emptyLabel}</span>
+          {tone === "manual" ? (
+            <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]">
+              <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
+              {manualBadgeLabel}
+            </span>
+          ) : null}
+        </button>
+      </Chip>
     );
 
     const buttonWithCopiedTooltip = showCopiedTooltip ? (
@@ -418,15 +419,11 @@ export function OauthMailboxChip({
       arrowClassName={tone === "copied" ? "fill-base-content stroke-base-content" : undefined}
       open={tone === "copied" || tone === "manual" || hoverOpen || longPressOpen}
     >
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-7 min-w-0 max-w-full cursor-copy items-center justify-start rounded-full px-2.5 font-mono text-xs",
-          "border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow]",
-          "hover:border-primary/55 hover:bg-primary/5 hover:text-primary hover:shadow-sm",
-          "focus-visible:border-primary/55 focus-visible:bg-primary/5 focus-visible:text-primary focus-visible:shadow-sm focus-visible:outline-none",
-          tone === "manual" && "border-warning/35 bg-base-100 text-base-content shadow-sm",
-        )}
+      <Chip
+        asChild
+        size="mailbox"
+        tone={tone === "manual" ? "warning" : tone === "copied" ? "success" : "secondary"}
+        className={cn("min-w-0 max-w-full cursor-copy justify-start font-mono", className)}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
         onFocus={() => setHoverOpen(true)}
@@ -438,14 +435,20 @@ export function OauthMailboxChip({
         onPointerLeave={handlePointerRelease}
         onClick={onCopy}
       >
-        <span className="truncate text-left">{emailAddress}</span>
-        {tone === "manual" ? (
-          <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
-            <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
-            {manualBadgeLabel}
-          </span>
-        ) : null}
-      </button>
+        <button
+          type="button"
+          className="inline-flex min-w-0 max-w-full items-center justify-start"
+          aria-label={copyAriaLabel}
+        >
+          <span className="truncate text-left">{emailAddress}</span>
+          {tone === "manual" ? (
+            <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]">
+              <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
+              {manualBadgeLabel}
+            </span>
+          ) : null}
+        </button>
+      </Chip>
     </Tooltip>
   );
 }

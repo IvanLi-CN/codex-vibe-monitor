@@ -1,5 +1,5 @@
-export type UpstreamPlanBadgeVariant =
-  | "default"
+export type UpstreamPlanChipTone =
+  | "primary"
   | "accent"
   | "secondary"
   | "success"
@@ -7,18 +7,17 @@ export type UpstreamPlanBadgeVariant =
   | "warning"
   | "error";
 
-type UpstreamPlanBadgeRecipe = {
-  variant: UpstreamPlanBadgeVariant;
-  className: string;
+type UpstreamPlanChipRecipe = {
+  tone: UpstreamPlanChipTone;
   dataPlan: string;
 };
 
-const PLAN_VARIANTS: Record<string, UpstreamPlanBadgeVariant> = {
+const PLAN_VARIANTS: Record<string, UpstreamPlanChipTone> = {
   local: "secondary",
   free: "warning",
   k12: "success",
-  plus: "default",
-  pro: "default",
+  plus: "primary",
+  pro: "primary",
   team: "info",
   enterprise: "accent",
 };
@@ -37,18 +36,17 @@ function normalizePlanType(planType?: string | null) {
   return normalized ? normalized : null;
 }
 
-export function upstreamPlanBadgeRecipe(planType?: string | null): UpstreamPlanBadgeRecipe | null {
+export function upstreamPlanChipRecipe(planType?: string | null): UpstreamPlanChipRecipe | null {
   const normalized = normalizePlanType(planType);
   if (!normalized) return null;
 
   return {
-    variant: PLAN_VARIANTS[normalized] ?? "secondary",
-    className: "upstream-plan-badge",
+    tone: PLAN_VARIANTS[normalized] ?? "secondary",
     dataPlan: normalized,
   };
 }
 
-export function shouldShowUpstreamPlanBadge(planType?: string | null) {
+export function shouldShowUpstreamPlanChip(planType?: string | null) {
   const normalized = normalizePlanType(planType);
   return Boolean(normalized && normalized !== "local");
 }

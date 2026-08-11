@@ -1,14 +1,7 @@
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
-
-const motherBadgeClassName = cn(
-  "shrink-0 whitespace-nowrap leading-4 shadow-none",
-  "border-[color:color-mix(in_oklab,oklch(var(--color-warning))_58%,oklch(var(--color-base-300))_42%)]",
-  "bg-[color:color-mix(in_oklab,oklch(var(--color-warning))_26%,oklch(var(--color-base-100))_74%)]",
-  "shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-warning))_18%,transparent)]",
-);
 
 const motherAccentIconClassName =
   "text-[color:color-mix(in_oklab,oklch(var(--color-warning))_58%,currentColor_42%)]";
@@ -29,9 +22,9 @@ const motherToggleCheckedClassName = cn(
   "disabled:opacity-[0.84]",
 );
 
-export function MotherAccountBadge({ label }: { label: string }) {
+export function MotherAccountChip({ label }: { label: string }) {
   return (
-    <Badge variant="warning" className={cn(motherBadgeClassName, motherToneTextClassName)}>
+    <Chip tone="warning" className="shrink-0 whitespace-nowrap leading-4 shadow-none">
       <span className="inline-flex items-center gap-1 leading-4">
         <AppIcon
           name="crown"
@@ -40,7 +33,7 @@ export function MotherAccountBadge({ label }: { label: string }) {
         />
         <span className="leading-4">{label}</span>
       </span>
-    </Badge>
+    </Chip>
   );
 }
 

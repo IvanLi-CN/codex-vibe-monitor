@@ -20,6 +20,7 @@ import {
 } from "recharts";
 import { Alert } from "../../components/ui/alert";
 import { BubblePopoverContent } from "../../components/ui/bubble-popover";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -466,9 +467,13 @@ export function DashboardNetworkRecentPanel({
               className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-base-100/62 text-base-content shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-base-content))_8%,transparent)] backdrop-blur-[2px]"
             >
               <Spinner size="lg" aria-label={t("dashboard.networkRecent.staleLoading")} />
-              <div className="rounded-full border border-base-300/70 bg-base-100/82 px-3 py-1.5 text-xs font-semibold tracking-wide text-base-content/78">
+              <Chip
+                size="default"
+                tone="secondary"
+                className="px-3 py-1.5 text-xs font-semibold tracking-wide"
+              >
                 {t("dashboard.networkRecent.staleLoading")}
-              </div>
+              </Chip>
             </div>
           ) : null}
         </div>

@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -9,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -190,9 +190,9 @@ export function ExternalApiKeysSettingsCard() {
                       <div className="min-w-0 space-y-2">
                         <div className="font-medium text-base-content">{item.name}</div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant={statusVariant(item.status)}>
+                          <Chip tone={statusVariant(item.status)}>
                             {statusLabel(item.status, t)}
-                          </Badge>
+                          </Chip>
                           <code className="rounded-md border border-base-300/70 bg-base-100/70 px-2 py-1 text-xs">
                             {item.prefix}
                           </code>
@@ -285,9 +285,9 @@ export function ExternalApiKeysSettingsCard() {
                           </code>
                         </td>
                         <td className="px-4 py-3 align-middle">
-                          <Badge variant={statusVariant(item.status)}>
+                          <Chip tone={statusVariant(item.status)}>
                             {statusLabel(item.status, t)}
-                          </Badge>
+                          </Chip>
                         </td>
                         <td className="px-4 py-3 align-middle text-base-content/72">
                           {formatDateTime(item.lastUsedAt)}

@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -8,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import {
   Command,
   CommandEmpty,
@@ -46,7 +46,7 @@ import {
   type RoutingTimeoutFieldKey,
 } from "../../lib/poolRoutingTimeouts";
 import { requestCompressionAlgorithmLabel } from "../../lib/requestCompression";
-import { fastModeRewriteBadgeLabel, priorityTierBadgeLabel } from "../../lib/tagRoutingRule";
+import { fastModeRewriteChipLabel, priorityTierChipLabel } from "../../lib/tagRoutingRule";
 import {
   countEnabledStatusChangeReasons,
   resolveStatusChangeReasonFieldSources,
@@ -156,9 +156,9 @@ interface EffectiveProxyBindingConfig {
 
 export interface EffectiveRoutingRuleCardRowValueOverride {
   value?: string;
-  valueBadges?: string[] | null;
+  valueChips?: string[] | null;
   valueField?: EditablePolicyField | null;
-  valueVariant?: BadgeVariant;
+  valueVariant?: ChipTone;
   editor?: ReactNode;
 }
 
@@ -346,7 +346,7 @@ function sourceLabel(source: string, labels: EffectiveRoutingRuleCardProps["labe
 
 function sourceVariant(source: string) {
   return source === "account" || source === "conversation"
-    ? "default"
+    ? "primary"
     : source === "tag"
       ? "accent"
       : source === "group"
@@ -354,7 +354,7 @@ function sourceVariant(source: string) {
         : "secondary";
 }
 
-type BadgeVariant = React.ComponentProps<typeof Badge>["variant"];
+type ChipTone = React.ComponentProps<typeof Chip>["tone"];
 
 function statusChangeDisabledValue(labels: EffectiveRoutingRuleCardProps["labels"]) {
   return labels.statusChangeReasonDisabledValue ?? "Evidence only";
@@ -364,7 +364,7 @@ function valueVariant(
   field: EditablePolicyField | null,
   value: string,
   labels: EffectiveRoutingRuleCardProps["labels"],
-): BadgeVariant {
+): ChipTone {
   if (field && statusChangeReasonFromFieldKey(field)) {
     return value === statusChangeDisabledValue(labels) ? "success" : "warning";
   }
@@ -376,25 +376,25 @@ function valueVariant(
   }
   if (field === "priorityTier") {
     if (value === (labels.priorityNoNew ?? "No new")) return "warning";
-    if (value === labels.priorityPrimary) return "default";
+    if (value === labels.priorityPrimary) return "primary";
     if (value === labels.priorityFallback) return "warning";
     return "info";
   }
   if (field === "fastModeRewriteMode") {
-    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return "default";
+    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return "primary";
     if (value === labels.fastModeFillMissing) return "info";
     return "secondary";
   }
   if (field === "imageToolRewriteMode") {
     if (value === labels.imageToolForceAdd || value === labels.imageToolForceRemove)
-      return "default";
+      return "primary";
     if (value === labels.imageToolFillMissing) return "info";
     return "secondary";
   }
   if (field === "requestCompressionAlgorithm") {
     if (value === labels.requestCompressionIdentity) return "success";
     if (value === labels.requestCompressionFollow) return "info";
-    return "default";
+    return "primary";
   }
   if (field === "concurrencyLimit") {
     return value === (labels.concurrencyUnlimited ?? "Concurrency unlimited")
@@ -413,7 +413,7 @@ function valueVariant(
         ? "warning"
         : "success";
     }
-    return "default";
+    return "primary";
   }
   if (field == null && value === (labels.systemDeniedModelsEmpty ?? "None")) {
     return "success";
@@ -421,7 +421,7 @@ function valueVariant(
   return field == null ? "warning" : "secondary";
 }
 
-function ValueBadge({
+function ValueChip({
   field,
   value,
   labels,
@@ -430,19 +430,19 @@ function ValueBadge({
   field: EditablePolicyField | null;
   value: string;
   labels: EffectiveRoutingRuleCardProps["labels"];
-  variantOverride?: BadgeVariant;
+  variantOverride?: ChipTone;
 }) {
   return (
-    <Badge
+    <Chip
       className="min-w-0 max-w-full justify-self-start whitespace-normal break-words text-left leading-5"
-      variant={variantOverride ?? valueVariant(field, value, labels)}
+      tone={variantOverride ?? valueVariant(field, value, labels)}
     >
       {value}
-    </Badge>
+    </Chip>
   );
 }
 
-function ValueBadgeList({
+function ValueChipList({
   field,
   values,
   labels,
@@ -451,12 +451,12 @@ function ValueBadgeList({
   field: EditablePolicyField | null;
   values: string[];
   labels: EffectiveRoutingRuleCardProps["labels"];
-  variantOverride?: BadgeVariant;
+  variantOverride?: ChipTone;
 }) {
   return (
     <div className="flex min-w-0 flex-wrap gap-2 justify-self-start">
       {values.map((value) => (
-        <ValueBadge
+        <ValueChip
           key={value}
           field={field}
           value={value}
@@ -485,18 +485,19 @@ function ProxyBindingChips({
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       {items.map((item) => (
-        <span
+        <Chip
           key={item.key}
-          className={cn(
-            "inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border px-2.5 py-1 text-xs",
+          size="default"
+          tone={
             item.tone === "direct"
-              ? "border-primary/40 bg-primary/10 text-primary"
+              ? "primary"
               : item.tone === "missing"
-                ? "border-error/35 bg-error/15 text-error"
+                ? "error"
                 : item.tone === "available"
-                  ? "border-success/35 bg-success/15 text-success"
-                  : "border-base-300 bg-base-200/70 text-base-content/85",
-          )}
+                  ? "success"
+                  : "secondary"
+          }
+          className="min-w-0 max-w-full gap-2 px-2.5 py-1 text-xs"
         >
           <span className="max-w-56 truncate font-medium">{item.label}</span>
           {item.status ? <span className="shrink-0 text-current/70">{item.status}</span> : null}
@@ -514,7 +515,7 @@ function ProxyBindingChips({
               x
             </button>
           ) : null}
-        </span>
+        </Chip>
       ))}
     </div>
   );
@@ -849,7 +850,7 @@ export function EffectiveRoutingRuleCard({
       key: "priorityTier" as const,
       field: "priorityTier" as const,
       label: labels.fieldPriority ?? "Priority",
-      value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
+      value: priorityTierChipLabel(resolvedRule.priorityTier, labels),
       source: fieldSources.priorityTier,
       clearPayload: { priorityTier: null },
       editor: (
@@ -903,7 +904,7 @@ export function EffectiveRoutingRuleCard({
       key: "fastModeRewriteMode" as const,
       field: "fastModeRewriteMode" as const,
       label: labels.fieldFastMode ?? "FAST mode",
-      value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
+      value: fastModeRewriteChipLabel(resolvedRule.fastModeRewriteMode, labels),
       source: fieldSources.fastModeRewriteMode,
       clearPayload: { fastModeRewriteMode: null },
       editor: (
@@ -1066,7 +1067,7 @@ export function EffectiveRoutingRuleCard({
             ? (labels.availableModelsNoneAllowed ?? "No models allowed")
             : (labels.availableModelsInherited ?? "Inherited / unrestricted"),
       source: fieldSources.availableModels ?? "root",
-      valueBadges: availableModelsValue.length > 0 ? availableModelsValue : null,
+      valueChips: availableModelsValue.length > 0 ? availableModelsValue : null,
       clearPayload: { availableModels: null },
       editor: (
         <AvailableModelsEditor
@@ -1095,7 +1096,7 @@ export function EffectiveRoutingRuleCard({
           ? resolvedRule.systemDeniedModels.join(", ")
           : (labels.systemDeniedModelsEmpty ?? "None"),
       source: fieldSources.systemDeniedModels ?? "root",
-      valueBadges:
+      valueChips:
         resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
           ? resolvedRule.systemDeniedModels
           : null,
@@ -1110,7 +1111,7 @@ export function EffectiveRoutingRuleCard({
           ...row,
           displayField: row.field,
           displayValue: row.value,
-          displayValueBadges: row.valueBadges,
+          displayValueChips: row.valueChips,
           displayValueVariant: undefined,
           displayEditor: row.editor,
         };
@@ -1119,7 +1120,7 @@ export function EffectiveRoutingRuleCard({
         ...row,
         displayField: override.valueField ?? row.field,
         displayValue: override.value ?? row.value,
-        displayValueBadges: override.valueBadges ?? row.valueBadges,
+        displayValueChips: override.valueChips ?? row.valueChips,
         displayValueVariant: override.valueVariant,
         displayEditor: override.editor ?? row.editor,
       };
@@ -1210,27 +1211,24 @@ export function EffectiveRoutingRuleCard({
                           }
                         />
                       </span>
-                      {row.displayValueBadges ? (
-                        <ValueBadgeList
+                      {row.displayValueChips ? (
+                        <ValueChipList
                           field={row.displayField}
-                          values={row.displayValueBadges}
+                          values={row.displayValueChips}
                           labels={labels}
                           variantOverride={row.displayValueVariant}
                         />
                       ) : (
-                        <ValueBadge
+                        <ValueChip
                           field={row.displayField}
                           value={row.displayValue}
                           labels={labels}
                           variantOverride={row.displayValueVariant}
                         />
                       )}
-                      <Badge
-                        className="w-fit sm:justify-self-end"
-                        variant={sourceVariant(row.source)}
-                      >
+                      <Chip className="w-fit sm:justify-self-end" tone={sourceVariant(row.source)}>
                         {sourceLabel(row.source, labels)}
-                      </Badge>
+                      </Chip>
                       {editable && row.field ? (
                         <Button
                           type="button"
@@ -1308,12 +1306,12 @@ export function EffectiveRoutingRuleCard({
                       labels={proxyBindings.labels}
                       disabled={proxyBindings.busy || proxyBindings.disabled}
                     />
-                    <Badge
+                    <Chip
                       className="w-fit sm:justify-self-end"
-                      variant={sourceVariant(proxyBindingsSource)}
+                      tone={sourceVariant(proxyBindingsSource)}
                     >
                       {sourceLabel(proxyBindingsSource, labels)}
-                    </Badge>
+                    </Chip>
                     <Button
                       type="button"
                       size="icon"
@@ -1383,16 +1381,16 @@ export function EffectiveRoutingRuleCard({
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
                     <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
-                    <ValueBadge field={row.field} value={row.value} labels={labels} />
+                    <ValueChip field={row.field} value={row.value} labels={labels} />
                     <div className="min-w-0 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-base-content/65">
                         {activeOverride
                           ? (labels.timeoutOverrideValue ?? "Account override")
                           : (labels.timeoutInheritedValue ?? "Inherited")}
                       </span>
-                      <Badge className="w-fit" variant={sourceVariant(row.source)}>
+                      <Chip className="w-fit" tone={sourceVariant(row.source)}>
                         {sourceLabel(row.source, labels)}
-                      </Badge>
+                      </Chip>
                     </div>
                     {isEditable ? (
                       <Button
@@ -1517,12 +1515,12 @@ export function EffectiveRoutingRuleCard({
                     {labels.statusChangeReasonResetAction ?? "Reset"}
                   </Button>
                 ) : null}
-                <Badge variant="secondary" className="w-fit">
+                <Chip tone="secondary" className="w-fit">
                   {labels.statusChangeReasonSummary?.(
                     totalEnabledStatusChangeReasons,
                     STATUS_CHANGE_REASON_CODES.length,
                   ) ?? `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
-                </Badge>
+                </Chip>
               </div>
             </div>
             <div className="mt-3 grid gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
@@ -1577,9 +1575,9 @@ export function EffectiveRoutingRuleCard({
                 <span className="text-sm text-base-content/60">{labels.noTags}</span>
               ) : (
                 resolvedRule.sourceTagNames.map((name) => (
-                  <Badge key={name} variant="secondary">
+                  <Chip key={name} tone="secondary">
                     {name}
-                  </Badge>
+                  </Chip>
                 ))
               )}
             </div>
@@ -1661,9 +1659,9 @@ function ConcurrencyInlineEditor({
         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
           {currentLabel}
         </span>
-        <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2.5 py-1 text-sm font-semibold text-base-content">
+        <Chip size="default" tone="secondary" className="px-2.5 py-1 text-sm font-semibold">
           {displayValue}
-        </span>
+        </Chip>
       </div>
       <input
         type="range"
@@ -1792,15 +1790,11 @@ function AvailableModelsEditor({
             <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
               {value.length > 0 ? (
                 value.map((model) => (
-                  <Badge
-                    key={model}
-                    variant="secondary"
-                    className="max-w-full rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-primary"
-                  >
+                  <Chip key={model} tone="secondary" className="max-w-full px-2.5 py-1">
                     <span className="truncate">
                       {labels.availableModelsCustomLabel?.(model) ?? model}
                     </span>
-                  </Badge>
+                  </Chip>
                 ))
               ) : (
                 <span className="text-sm text-base-content/55">{emptyValueLabel}</span>

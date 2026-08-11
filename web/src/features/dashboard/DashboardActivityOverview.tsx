@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
+import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { useDashboardNetworkTimeseries } from "../../hooks/useDashboardNetworkTimeseries";
@@ -129,12 +130,16 @@ function DashboardOverviewSnapshotBanner({
             <span className="font-semibold">
               {t("dashboard.activityOverview.snapshotBannerTitle")}
             </span>
-            <span className="rounded-full border border-warning/35 bg-base-100/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/75">
+            <Chip
+              size="compact"
+              tone="warning"
+              className="px-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
+            >
               {t("dashboard.activityOverview.snapshotReadyRanges", {
                 count: readyRangeCount,
                 total: totalRangeCount,
               })}
-            </span>
+            </Chip>
           </div>
           <p className="text-sm leading-6 text-base-content/80">
             {t("dashboard.activityOverview.snapshotBannerDescription", {
@@ -156,12 +161,16 @@ function DashboardOverviewSnapshotBanner({
           <h3 className="text-sm font-semibold text-base-content">
             {t("dashboard.activityOverview.snapshotNotReadyTitle")}
           </h3>
-          <span className="rounded-full border border-base-300/80 bg-base-100/75 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/70">
+          <Chip
+            size="compact"
+            tone="secondary"
+            className="px-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
+          >
             {t("dashboard.activityOverview.snapshotReadyRanges", {
               count: readyRangeCount,
               total: totalRangeCount,
             })}
-          </span>
+          </Chip>
         </div>
         <p className="max-w-[72ch] text-sm leading-6 text-base-content/75">
           {t("dashboard.activityOverview.snapshotNotReadyDescription")}

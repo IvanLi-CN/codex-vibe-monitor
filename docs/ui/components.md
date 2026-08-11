@@ -9,7 +9,7 @@
 - `web/src/components/ui/button.tsx`：`default / secondary / outline / ghost / destructive` 五种按钮语义，以及 `default / sm / lg / icon` 四种尺寸。
 - `web/src/components/ui/input.tsx`：标准输入框，包含边框、placeholder、focus ring、disabled 透明度约束。
 - `web/src/components/ui/card.tsx`：`Card / CardHeader / CardTitle / CardDescription / CardContent / CardFooter`，默认外观由 `surface-card` 提供。
-- `web/src/components/ui/badge.tsx`：`default / accent / secondary / success / info / warning / error` 七类状态徽标。
+- `web/src/components/ui/chip.tsx`：所有文本 chip 的唯一公开入口；提供 8 个 semantic tone、10 个 categorical tone、`micro / compact / default / header / mailbox / square` 六档 preset，以及 `asChild` 交互渲染。
 - `web/src/components/ui/alert.tsx`：`default / info / success / warning / error` 五类提示面板。
 - `web/src/components/ui/switch.tsx`：布尔开关，`checked` 态使用 `primary`，`unchecked` 态停留在 `base-300`。
 - `web/src/components/ui/dialog.tsx`、`web/src/components/ui/popover.tsx`、`web/src/components/ui/tooltip.tsx`、`web/src/components/ui/info-tooltip.tsx`：浮层与提示类组件。
@@ -46,7 +46,9 @@
 - 新增基础组件前，先确认能否通过现有 `web/src/components/ui/` 目录下的 primitive 组合完成；只有当模式被多处复用且现有组合已经开始重复时，才上升为基础组件。
 - 路由驱动的导航如果与 segmented control 共用视觉语言，必须复用 `segmentedControlItemVariants(...)` 这类共享 helper，而不是复制一套新的 active class。
 - 新增按钮、徽标、提示变体时，必须落在既有语义色集合里；不要为了单个页面新增特例 variant。
-- 新增低透明 semantic badge / chip / marker / summary metric 时，文本必须走 shared tone-ink contract；只有 filled button、filled badge、实底 icon-disc 这类实体容器才允许继续使用 `*-content`。
+- 新增文本 chip 必须复用 `Chip`；semantic tone 只能使用 `neutral / primary / secondary / accent / info / success / warning / error`，categorical tone 只能使用预设 10 槽；调用方不得通过 `className` 覆盖 chip 前景、背景或边框。
+- `Chip` 的 light/dark surface、border、ink 必须显式且不透明；colored ink 不能是黑、白或近中性正文色，低透明 surface 不得使用 `*-content`。
+- 交互 `Chip` 必须保留 `focus-visible` primary outline/ring，且 focus indicator 与所在 surface 的对比度至少 `3:1`。
 - 新增输入控件时，必须复用 `field-surface`，并同时定义：默认态、focus 态、disabled 态、error 态、空数据或无匹配文案。
 - 新增可复用内容容器时，默认从 `Card` / `surface-card` 起步；内部行和配置组使用 `surface-subtle` 或 `surface-inset`，不要让页面承担 primitive 的底色和边框职责。
 - 所有可复用组件在进入多页面复用前，应至少具备一个 Storybook story 或可替代的独立验证入口。
