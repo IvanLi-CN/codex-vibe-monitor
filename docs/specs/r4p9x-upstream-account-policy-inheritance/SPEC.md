@@ -335,6 +335,8 @@ Automatic candidate selection and sticky reuse must filter by the final model po
 
 Model policy summaries and mode controls may use the shared compact chip presentation used by the account-pool surfaces. This is a presentation detail only: the wire values remain `allowlist`/`denylist`, and chip styling must not change inheritance, filtering, or system-deny semantics.
 
+The root model-policy editor presents one in-place mode button immediately left of the model multi-select at desktop widths. Below `769px`, it keeps the allowlist/denylist segmented control above the multi-select. Neither presentation changes the selected model IDs.
+
 ## Owner-Facing UI Contract
 
 Status-change trigger reasons use the same flattened reason list on every owner-facing surface.
@@ -374,11 +376,12 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 The model policy evidence is bound to the dedicated Storybook canvas
 `settings-components-pool-routing-settings-card--model-policy` at the current
 implementation commit. The captures are mock-only, element-level component
-evidence with the Storybook-managed `desktop1280` and `mobile393` viewports.
+evidence from the Storybook canvas at `1280x900` desktop and `393x852`
+compact-mobile CSS viewports.
 The desktop capture uses the light theme; the compact capture uses the dark
 theme. Both images passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
-Evidence binding commit: `a365742fe2bc46f00ea7b4ecaa8df397e1406f40`.
+Evidence binding commit: `f7385c60335301e76298f0a28214316a37ba7632`.
 
 ![Root model policy desktop](./assets/model-policy-desktop.png)
 

@@ -197,8 +197,8 @@ Validation covers:
 - candidate settings coverage proving `gpt-5.4-mini` is discoverable without changing the default enabled preset set, while `gpt-image-2` is exposed as an independent image candidate
 - validation commands completed: `cargo fmt --check`, `cargo check`, targeted Rust model-policy tests, `cd web && bun run test`, `cd web && bun run build`, and `cd web && bun run build-storybook`
 - visual evidence captured from the dedicated Storybook model-policy canvas with no overflow or occlusion:
-  - desktop light (`desktop1280`, element-level component capture): [`model-policy-desktop.png`](./assets/model-policy-desktop.png)
-  - compact mobile dark (`mobile393`, `393x852`, element-level component capture): [`model-policy-mobile.png`](./assets/model-policy-mobile.png)
+  - desktop light (`1280x900`, element-level component capture): [`model-policy-desktop.png`](./assets/model-policy-desktop.png)
+  - compact mobile dark (`393x852`, element-level component capture): [`model-policy-mobile.png`](./assets/model-policy-mobile.png)
   - desktop shows one in-place mode button beside the multi-select; compact mobile keeps the allowlist/denylist segmented control above it
   - both captures passed `trim_whitespace.py --margin-policy require_margin --evidence-surface component`
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
