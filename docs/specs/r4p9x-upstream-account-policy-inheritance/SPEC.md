@@ -381,7 +381,7 @@ compact-mobile CSS viewports.
 The desktop capture uses the light theme; the compact capture uses the dark
 theme. Both images passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
-Evidence binding commit: `f7385c60335301e76298f0a28214316a37ba7632`.
+Evidence binding commit: `f827964ed8dc4b70d19914d6eff6ab32ddba53dc`.
 
 ![Root model policy desktop](./assets/model-policy-desktop.png)
 
