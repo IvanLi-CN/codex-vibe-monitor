@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, userEvent, within } from "storybook/test";
+import { Chip } from "./chip";
 import { InfoTooltip } from "./info-tooltip";
 
 function StorySurface({ children }: { children: React.ReactNode }) {
@@ -57,10 +58,10 @@ export const Inline: Story = {
       "Current list is based on the latest search snapshot. Paging/sorting/focus will not auto-include new records. Click Search to refresh.",
   },
   render: (args) => (
-    <div className="inline-flex items-center gap-2 rounded-full border border-base-300/70 bg-base-100/45 px-3 py-2 text-sm text-base-content/80">
+    <Chip tone="neutral" className="gap-2 px-3 py-2 text-sm">
       <span>17 new records</span>
       <InfoTooltip {...args} />
-    </div>
+    </Chip>
   ),
 };
 
@@ -71,10 +72,10 @@ export const MatchTextColor: Story = {
       "The help icon uses currentColor so it matches the text color of the surrounding notice.",
   },
   render: (args) => (
-    <div className="inline-flex items-center gap-2 rounded-full border border-warning/35 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning">
+    <Chip tone="warning" className="gap-2 px-3 py-2 text-xs font-semibold">
       <span>有 17 条新数据</span>
       <InfoTooltip {...args} />
-    </div>
+    </Chip>
   ),
 };
 
@@ -86,10 +87,10 @@ export const ViewportEdgePinned: Story = {
   },
   render: (args) => (
     <div className="flex min-h-[70vh] items-start justify-end rounded-[1.6rem] border border-base-300/70 bg-base-100/35 px-4 py-6">
-      <div className="inline-flex items-center gap-2 rounded-full border border-info/35 bg-info/10 px-3 py-2 text-xs font-semibold text-info">
+      <Chip tone="info" className="gap-2 px-3 py-2 text-xs font-semibold">
         <span>边缘提示</span>
         <InfoTooltip {...args} />
-      </div>
+      </Chip>
     </div>
   ),
   play: async ({ canvasElement }) => {
@@ -132,10 +133,10 @@ export const SharedSurfaceNoiseCard: Story = {
             </div>
           ))}
         </div>
-        <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-info/35 bg-info/10 px-3 py-2 text-xs font-semibold text-info">
+        <Chip tone="info" className="mt-4 gap-2 px-3 py-2 text-xs font-semibold">
           <span>Overlay surface check</span>
           <InfoTooltip {...args} />
-        </div>
+        </Chip>
       </div>
     </ThemeRoot>
   ),

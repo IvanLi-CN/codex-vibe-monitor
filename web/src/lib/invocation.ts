@@ -1,3 +1,4 @@
+import type { CategoricalChipTone } from "../components/ui/chip";
 import type { TranslationKey } from "../i18n";
 import type { ApiInvocation } from "./api";
 
@@ -25,11 +26,14 @@ export type InvocationEndpointKind =
   | "raw";
 export type InvocationCompactionKind = "compact" | "remote_v2";
 export type InvocationImageIntent = "yes" | "direct_image" | "no" | "unknown";
-export type InvocationImageBadgeVariant = "success" | "info";
-type InvocationImageBadgeLabelKey = "table.imageTool.badge";
+export type InvocationImageChipTone = "success" | "info";
+type InvocationImageChipLabelKey = "table.imageTool.badge";
 
-type InvocationEndpointBadgeVariant = "default" | "secondary" | "info";
-type InvocationEndpointBadgeLabelKey =
+type InvocationEndpointChipTone = Extract<
+  CategoricalChipTone,
+  "blue" | "teal" | "orange" | "violet" | "emerald" | "amber" | "cyan"
+>;
+type InvocationEndpointChipLabelKey =
   | "table.endpoint.responsesBadge"
   | "table.endpoint.chatBadge"
   | "table.endpoint.compactBadge"
@@ -46,15 +50,15 @@ export interface ProxyWeightDeltaView {
 export interface InvocationEndpointDisplay {
   kind: InvocationEndpointKind;
   endpointValue: string;
-  badgeVariant: InvocationEndpointBadgeVariant | null;
-  labelKey: InvocationEndpointBadgeLabelKey | null;
+  chipTone: InvocationEndpointChipTone | null;
+  labelKey: InvocationEndpointChipLabelKey | null;
 }
 
 export interface InvocationImageIntentDisplay {
   kind: InvocationImageIntent | "missing";
-  showsBadge: boolean;
-  badgeVariant: InvocationImageBadgeVariant | null;
-  badgeLabelKey: InvocationImageBadgeLabelKey | null;
+  showsChip: boolean;
+  chipTone: InvocationImageChipTone | null;
+  badgeLabelKey: InvocationImageChipLabelKey | null;
   detailLabelKey: TranslationKey | null;
 }
 
@@ -281,7 +285,7 @@ export function resolveInvocationEndpointDisplay(
     return {
       kind: "image_gen",
       endpointValue,
-      badgeVariant: "info",
+      chipTone: "emerald",
       labelKey: "table.endpoint.imageGenBadge",
     };
   }
@@ -290,7 +294,7 @@ export function resolveInvocationEndpointDisplay(
     return {
       kind: "image_edit",
       endpointValue,
-      badgeVariant: "secondary",
+      chipTone: "amber",
       labelKey: "table.endpoint.imageEditBadge",
     };
   }
@@ -299,7 +303,7 @@ export function resolveInvocationEndpointDisplay(
     return {
       kind: "image",
       endpointValue,
-      badgeVariant: "secondary",
+      chipTone: "cyan",
       labelKey: "table.endpoint.imageBadge",
     };
   }
@@ -313,35 +317,35 @@ export function resolveInvocationEndpointDisplay(
         return {
           kind: "remote_v2",
           endpointValue,
-          badgeVariant: "info",
+          chipTone: "violet",
           labelKey: "table.endpoint.remoteV2Badge",
         };
       }
       return {
         kind: "responses",
         endpointValue,
-        badgeVariant: "default",
+        chipTone: "blue",
         labelKey: "table.endpoint.responsesBadge",
       };
     case CHAT_COMPLETIONS_ENDPOINT:
       return {
         kind: "chat",
         endpointValue,
-        badgeVariant: "secondary",
+        chipTone: "teal",
         labelKey: "table.endpoint.chatBadge",
       };
     case COMPACT_ENDPOINT:
       return {
         kind: "compact",
         endpointValue,
-        badgeVariant: "info",
+        chipTone: "orange",
         labelKey: "table.endpoint.compactBadge",
       };
     default:
       return {
         kind: "raw",
         endpointValue: endpointValue || fallback,
-        badgeVariant: null,
+        chipTone: null,
         labelKey: null,
       };
   }
@@ -359,40 +363,40 @@ export function resolveInvocationImageIntentDisplay(
     case "yes":
       return {
         kind: "yes",
-        showsBadge: true,
-        badgeVariant: "success",
+        showsChip: true,
+        chipTone: "success",
         badgeLabelKey: "table.imageTool.badge",
         detailLabelKey: "table.imageTool.detail.yes",
       };
     case "direct_image":
       return {
         kind: "direct_image",
-        showsBadge: true,
-        badgeVariant: "info",
+        showsChip: true,
+        chipTone: "info",
         badgeLabelKey: "table.imageTool.badge",
         detailLabelKey: "table.imageTool.detail.directImage",
       };
     case "no":
       return {
         kind: "no",
-        showsBadge: false,
-        badgeVariant: null,
+        showsChip: false,
+        chipTone: null,
         badgeLabelKey: null,
         detailLabelKey: "table.imageTool.detail.no",
       };
     case "unknown":
       return {
         kind: "unknown",
-        showsBadge: false,
-        badgeVariant: null,
+        showsChip: false,
+        chipTone: null,
         badgeLabelKey: null,
         detailLabelKey: "table.imageTool.detail.unknown",
       };
     default:
       return {
         kind: "missing",
-        showsBadge: false,
-        badgeVariant: null,
+        showsChip: false,
+        chipTone: null,
         badgeLabelKey: null,
         detailLabelKey: null,
       };

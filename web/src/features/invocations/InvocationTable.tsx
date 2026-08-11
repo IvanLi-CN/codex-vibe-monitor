@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Badge } from "../../components/ui/badge";
+import { Chip, type SemanticChipTone } from "../../components/ui/chip";
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
@@ -26,7 +26,7 @@ import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
-import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
+import { InvocationPhaseChip } from "./InvocationPhaseChip";
 import { InvocationWorkflowDetailPanel } from "./InvocationWorkflowDetailPanel";
 import {
   buildInvocationDetailViewModel,
@@ -34,11 +34,11 @@ import {
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   renderEndpointSummary,
   renderFastIndicator,
-  renderImageIntentBadge,
-  renderInvocationModelBadge,
-  renderReasoningEffortBadge,
+  renderImageIntentChip,
+  renderInvocationModelChip,
+  renderReasoningEffortChip,
 } from "./invocation-details-shared";
-import { renderInvocationTransportBadge } from "./invocation-transport-badge";
+import { renderInvocationTransportChip } from "./invocation-transport-chip";
 
 interface InvocationTableProps {
   records: ApiInvocation[];
@@ -51,7 +51,7 @@ interface InvocationTableProps {
 }
 
 type StatusMeta = {
-  variant: "default" | "secondary" | "success" | "warning" | "error";
+  variant: Exclude<SemanticChipTone, "neutral" | "accent" | "info">;
   labelKey?: TranslationKey;
   label?: string;
 };
@@ -62,7 +62,7 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
   warning_success: { variant: "warning", labelKey: "table.status.warningSuccess" },
   failed: { variant: "error", labelKey: "table.status.failed" },
   interrupted: { variant: "error", labelKey: "table.status.interrupted" },
-  running: { variant: "default", labelKey: "table.status.running" },
+  running: { variant: "primary", labelKey: "table.status.running" },
   pending: { variant: "warning", labelKey: "table.status.pending" },
 };
 
@@ -777,10 +777,10 @@ export function InvocationCardList({
     const modelLabel = row.modelHasMismatch
       ? `${row.requestModelValue} → ${row.responseModelValue}`
       : row.modelValue;
-    const secondaryBadges = [
+    const secondaryChips = [
       row.reasoningEffortValue !== FALLBACK_CELL ? (
         <span key="reasoning" className="inline-flex items-center">
-          {renderReasoningEffortBadge(row.reasoningEffortValue)}
+          {renderReasoningEffortChip(row.reasoningEffortValue)}
         </span>
       ) : null,
       row.fastIndicatorState !== "none" ? (
@@ -834,36 +834,36 @@ export function InvocationCardList({
           {isExpanded ? toggleLabels.expanded : toggleLabels.collapsed}
         </button>
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Badge
-            variant="secondary"
-            className="border-primary/45 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.04em] tone-ink-primary"
+          <Chip
+            tone="secondary"
+            className="px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.04em]"
             title={row.record.invokeId}
           >
             {shortInvocationId}
-          </Badge>
+          </Chip>
           <FittedInvocationId
             invokeId={row.record.invokeId}
             className="max-w-[9rem] flex-none font-mono text-[11px] font-semibold text-base-content/88 select-text sm:max-w-[13rem]"
           />
           {row.livePhase ? (
-            <InvocationPhaseBadge phase={row.livePhase} appearance="inline" motion="dynamic" />
+            <InvocationPhaseChip phase={row.livePhase} appearance="inline" motion="dynamic" />
           ) : (
-            <Badge
-              variant={row.meta.variant}
+            <Chip
+              tone={row.meta.variant}
               className="px-1.5 py-0 text-[10px]"
               data-testid="invocation-proxy-badge"
             >
               {row.statusLabel}
-            </Badge>
+            </Chip>
           )}
-          {renderInvocationTransportBadge(row.record)}
+          {renderInvocationTransportChip(row.record)}
           <span
             className="min-w-0 max-w-[10rem] truncate text-[11px] text-base-content/68"
             title={row.endpointValue}
           >
             <span className="inline-flex min-w-0 items-center gap-1">
               {renderEndpointSummary(row.endpointDisplay, t, "text-[11px]")}
-              {renderImageIntentBadge(row.imageIntentDisplay, t, "h-5 px-1.5 text-[10px]")}
+              {renderImageIntentChip(row.imageIntentDisplay, t, "h-5 px-1.5 text-[10px]")}
             </span>
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums text-info">
@@ -939,7 +939,7 @@ export function InvocationCardList({
             title={modelLabel}
             data-testid="invocation-table-model"
           >
-            {renderInvocationModelBadge(row.modelValue, {
+            {renderInvocationModelChip(row.modelValue, {
               t,
               hasMismatch: row.modelHasMismatch,
               requestModel: row.modelHasMismatch ? row.requestModelValue : undefined,
@@ -949,8 +949,8 @@ export function InvocationCardList({
               title: modelLabel,
             })}
           </span>
-          {secondaryBadges.length > 0 ? (
-            <span className="flex min-w-0 flex-wrap items-center gap-1">{secondaryBadges}</span>
+          {secondaryChips.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap items-center gap-1">{secondaryChips}</span>
           ) : null}
         </div>
 

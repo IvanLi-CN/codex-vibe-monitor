@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Command,
   CommandEmpty,
@@ -181,9 +182,13 @@ export function UpstreamAccountGroupCombobox({
                     <div className="flex min-w-0 flex-1 items-center gap-2">
                       <span className="truncate">{option.groupName}</span>
                       {typeof option.accountCount === "number" ? (
-                        <span className="ml-auto shrink-0 rounded-full border border-base-300/80 bg-base-200/70 px-2 py-0.5 text-[11px] font-medium text-base-content/70">
+                        <Chip
+                          size="compact"
+                          tone="secondary"
+                          className="ml-auto px-2 text-[11px] font-medium"
+                        >
                           {formatAccountCountLabel(option.accountCount)}
-                        </span>
+                        </Chip>
                       ) : null}
                     </div>
                   </CommandItem>

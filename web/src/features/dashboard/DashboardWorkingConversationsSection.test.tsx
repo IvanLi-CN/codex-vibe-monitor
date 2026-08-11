@@ -1318,9 +1318,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountHeaderText).toContain("3");
     expect(accountHeaderText).not.toContain("并行对话");
     expect(accountHeaderText).not.toContain("重试");
-    const headerPlanBadge = accountHeader?.querySelector(
-      ".upstream-plan-badge[data-plan='enterprise']",
-    );
+    const headerPlanBadge = accountHeader?.querySelector("[data-plan='enterprise']");
     expect(headerPlanBadge?.textContent).toBe("Ent");
     expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
     expect(accountHeader?.querySelector('[aria-label="TPM 640"]')).not.toBeNull();
@@ -2370,9 +2368,7 @@ describe("DashboardWorkingConversationsSection", () => {
     const reasoningBadge = firstRow.querySelector(
       '[data-testid="dashboard-working-conversation-reasoning-effort"]',
     );
-    const endpointBadge = Array.from(firstRow.querySelectorAll("span")).find((element) =>
-      /^(一般|Normal)$/.test(element.textContent?.trim() ?? ""),
-    )?.parentElement;
+    const endpointBadge = firstRow.querySelector('[data-testid="invocation-endpoint-badge"]');
     expect(reasoningBadge?.className).toContain("min-h-5");
     expect(endpointBadge?.className).toContain("min-h-5");
 
@@ -3091,9 +3087,9 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(currentHit.textContent).toContain("Hit 95.5%");
-    expect(currentHit.dataset.summaryTone).toBe("default");
+    expect(currentHit.dataset.summaryTone).toBe("primary");
     expect(currentCost.textContent).toContain("$0.0586");
-    expect(currentCost.dataset.summaryTone).toBe("default");
+    expect(currentCost.dataset.summaryTone).toBe("primary");
     expect(previousHit.textContent).toContain("Hit 89.9%");
     expect(previousHit.dataset.summaryTone).toBe("warning");
     expect(previousCost.textContent).toContain("$0.1001");
@@ -3201,9 +3197,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(errorCostRow.textContent).toContain("$0.5001");
     expect(errorCostRow.dataset.summaryTone).toBe("error");
     expect(defaultHitRow.textContent).toContain("Hit 90%");
-    expect(defaultHitRow.dataset.summaryTone).toBe("default");
+    expect(defaultHitRow.dataset.summaryTone).toBe("primary");
     expect(defaultCostRow.textContent).toContain("$0.1000");
-    expect(defaultCostRow.dataset.summaryTone).toBe("default");
+    expect(defaultCostRow.dataset.summaryTone).toBe("primary");
     expect(boundaryHitRow.textContent).toContain("Hit 50%");
     expect(boundaryHitRow.dataset.summaryTone).toBe("warning");
     expect(boundaryCostRow.textContent).toContain("$0.5000");
@@ -3281,6 +3277,53 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(imageEndpointBadge.textContent).toBe("image/gen");
     expect(currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
     expect(currentSlot.textContent).not.toContain("/v1/images/generations");
+  });
+
+  it("renders image edit endpoint chips without duplicate image icons in upstream account recent rows", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0].recentInvocations = [
+      createPreview({
+        id: 9010,
+        invokeId: "acct-image-edit",
+        promptCacheKey: "pck-acct-image-edit",
+        occurredAt: "2026-04-04T10:05:50Z",
+        status: "success",
+        endpoint: "/v1/images/edits",
+        imageIntent: "direct_image",
+        model: "gpt-image-1",
+        upstreamAccountName: "Pool Alpha",
+      }),
+    ];
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const recentRow = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    if (!(recentRow instanceof HTMLElement)) {
+      throw new Error("missing upstream account recent row");
+    }
+
+    const imageEditBadge = recentRow.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_edit"]',
+    );
+    if (!(imageEditBadge instanceof HTMLElement)) {
+      throw new Error("missing image edit endpoint badge");
+    }
+
+    expect(imageEditBadge.textContent).toBe("image/edit");
+    expect(recentRow.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
+    expect(recentRow.textContent).not.toContain("/v1/images/edits");
   });
 
   it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
@@ -4935,8 +4978,8 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(groupBadge).toBeInstanceOf(HTMLSpanElement);
     expect(accountBadge).toBeInstanceOf(HTMLSpanElement);
-    expect(groupBadge?.className).toContain("text-info");
-    expect(accountBadge?.className).toContain("text-secondary");
+    expect(groupBadge?.className).toContain("chip-tone-info");
+    expect(accountBadge?.className).toContain("chip-tone-secondary");
     expect(groupBadge?.className).toContain("text-[10.5px]");
     expect(accountBadge?.className).toContain("text-[10.5px]");
 
@@ -4985,7 +5028,7 @@ describe("DashboardWorkingConversationsSection", () => {
     const badge = host?.querySelector(
       '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
     );
-    const badgeText = badge?.firstElementChild?.firstElementChild;
+    const badgeText = badge?.firstElementChild;
 
     expect(sequenceButton).toBeInstanceOf(HTMLButtonElement);
     expect(sequenceButton?.textContent).toBe("COLLIDE-ABC123");

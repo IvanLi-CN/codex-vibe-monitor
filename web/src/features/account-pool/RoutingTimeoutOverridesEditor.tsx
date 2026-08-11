@@ -1,5 +1,5 @@
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import type {
   EffectiveRoutingRuleSource,
@@ -54,9 +54,9 @@ interface RoutingTimeoutOverridesEditorProps {
 
 function sourceVariant(source: EffectiveRoutingRuleSource) {
   return source === "conversation"
-    ? "default"
+    ? "primary"
     : source === "account"
-      ? "default"
+      ? "primary"
       : source === "group"
         ? "info"
         : "secondary";
@@ -125,9 +125,9 @@ export function RoutingTimeoutOverridesEditor({
                     <span className="text-xs text-base-content/65">
                       {expanded ? labels.overrideValue : labels.inheritedValue}
                     </span>
-                    <Badge className="w-fit" variant={sourceVariant(source)}>
+                    <Chip className="w-fit" tone={sourceVariant(source)}>
                       {sourceLabel}
-                    </Badge>
+                    </Chip>
                   </div>
                   <Button
                     type="button"

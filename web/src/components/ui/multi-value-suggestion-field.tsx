@@ -5,7 +5,7 @@ import {
   type TextInputAutocompleteOffProps,
 } from "../../lib/form-autocomplete";
 import { cn } from "../../lib/utils";
-import { Badge } from "./badge";
+import { Chip } from "./chip";
 import {
   Command,
   CommandEmpty,
@@ -376,13 +376,13 @@ export function MultiValueSuggestionField({
                     const displayValue =
                       optionLabelMap.get(normalizeKey(value)) ?? normalizeValue(value);
                     return (
-                      <Badge
+                      <Chip
                         key={normalizeKey(value)}
-                        variant="secondary"
-                        className="max-w-full rounded-full border border-base-300/80 bg-base-200/65 px-2.5 py-1 text-base-content"
+                        tone="secondary"
+                        className="max-w-full px-2.5 py-1"
                       >
                         <span className="truncate">{displayValue}</span>
-                      </Badge>
+                      </Chip>
                     );
                   })
                 ) : (
@@ -479,13 +479,13 @@ export function MultiValueSuggestionField({
                     const displayValue =
                       optionLabelMap.get(normalizeKey(value)) ?? normalizeValue(value);
                     return (
-                      <Badge
+                      <Chip
                         key={normalizeKey(value)}
-                        variant="secondary"
-                        className="max-w-full rounded-full border border-base-300/80 bg-base-200/65 px-2.5 py-1 text-base-content"
+                        tone="secondary"
+                        className="max-w-full px-2.5 py-1"
                       >
                         <span className="truncate">{displayValue}</span>
-                      </Badge>
+                      </Chip>
                     );
                   })
                 ) : (

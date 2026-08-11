@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { useTranslation } from "../../i18n";
 import type { QuotaSnapshot } from "../../lib/api";
@@ -78,13 +78,13 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
           </div>
           <div className="flex items-center gap-4">
             <div className="text-sm text-base-content/60">
-              <Badge
-                variant="success"
+              <Chip
+                tone="success"
                 className="px-2 py-[0.18rem] text-[11px]"
                 hidden={!snapshot?.isActive}
               >
                 {t("quota.status.active")}
-              </Badge>
+              </Chip>
             </div>
           </div>
         </div>

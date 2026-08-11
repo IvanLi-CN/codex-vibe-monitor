@@ -1,3 +1,4 @@
+import { Chip } from "../../components/ui/chip";
 import {
   CONCURRENCY_LIMIT_MAX,
   CONCURRENCY_LIMIT_MIN,
@@ -35,12 +36,10 @@ export function ConcurrencyLimitSlider({
           <p className="font-medium text-base-content">{title}</p>
           <p className="text-sm leading-6 text-base-content/68">{description}</p>
         </div>
-        <div className="rounded-full border border-base-300/80 bg-base-200/80 px-3 py-1 text-sm font-semibold text-base-content">
-          <span className="mr-2 text-xs uppercase tracking-[0.12em] text-base-content/55">
-            {currentLabel}
-          </span>
+        <Chip size="default" tone="secondary" className="px-3 py-1 text-sm font-semibold">
+          <span className="mr-2 text-xs uppercase tracking-[0.12em]">{currentLabel}</span>
           <span>{displayValue}</span>
-        </div>
+        </Chip>
       </div>
 
       <div className="mt-4 space-y-2">

@@ -1,4 +1,5 @@
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -93,19 +94,19 @@ export function PwaInstallControl({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full border border-base-300/75 bg-base-100/82 px-3 py-1 text-xs font-medium text-base-content/78">
+            <Chip size="default" tone="secondary" className="gap-2 px-3 py-1 text-xs">
               <AppIcon
                 name={shellReady ? "check-bold" : "timer-refresh-outline"}
                 className="h-4 w-4"
                 aria-hidden
               />
               {shellReady ? labels.shellReady : labels.shellPending}
-            </span>
+            </Chip>
             {isOffline ? (
-              <span className="inline-flex items-center gap-2 rounded-full border border-warning/45 bg-warning/12 px-3 py-1 text-xs font-medium tone-ink-warning">
+              <Chip size="default" tone="warning" className="gap-2 px-3 py-1 text-xs font-medium">
                 <AppIcon name="alert-circle-outline" className="h-4 w-4" aria-hidden />
                 {labels.offlineChip}
-              </span>
+              </Chip>
             ) : null}
           </div>
 

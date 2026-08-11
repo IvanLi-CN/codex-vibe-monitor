@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { Chip } from "../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -183,9 +184,9 @@ export function DemoInspector({ defaultOpen = false }: { defaultOpen?: boolean }
             data-testid="demo-inspector-summary"
           >
             <span>Demo Inspector</span>
-            <span className="rounded-full bg-secondary/15 px-2 py-0.5 text-xs text-secondary">
+            <Chip size="compact" tone="secondary" className="px-2 text-xs">
               模拟数据
-            </span>
+            </Chip>
           </summary>
           <div className="border-t border-base-300 p-4">
             <InspectorControls />
