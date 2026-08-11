@@ -371,6 +371,18 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 ## Visual Evidence
 
+The model policy evidence is bound to the dedicated Storybook canvas
+`settings-components-pool-routing-settings-card--model-policy` at the current
+implementation commit. The captures are mock-only, element-level component
+evidence with the Storybook-managed `desktop1280` and `mobile393` viewports.
+The desktop capture uses the light theme; the compact capture uses the dark
+theme. Both images passed `trim_whitespace.py` with
+`--margin-policy require_margin --evidence-surface component`.
+
+![Root model policy desktop](./assets/model-policy-desktop.png)
+
+![Root model policy compact mobile](./assets/model-policy-mobile.png)
+
 Visual evidence is captured from stable Storybook scenarios for:
 
 - account-pool layout with the tag navigation entry removed
