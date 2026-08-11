@@ -37,6 +37,10 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE: Duration = Duration::from_millis(50);
 const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
 const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
@@ -510,6 +514,8 @@ struct SubscriptionHubState {
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
+    parallel_work_prebaseline_mutations:
+        HashMap<String, BTreeMap<String, RuntimeInvocationMutation>>,
     runtime_topic_recovery_generation: u64,
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
@@ -534,6 +540,7 @@ struct CachedSubscriptionTopic {
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
+    parallel_work_refresh_scheduled: bool,
     prompt_cache_refresh_scheduled: bool,
     prompt_cache_reconcile_scheduled: bool,
     prompt_cache_pending_records: BTreeMap<String, PromptCacheTopicDelta>,
@@ -600,6 +607,10 @@ struct PromptCacheTopicDelta {
 
 struct PromptCacheBaselineBuild {
     baseline_row_id: i64,
+    persisted_identities: HashSet<String>,
+}
+
+struct ParallelWorkBaselineBuild {
     persisted_identities: HashSet<String>,
 }
 
@@ -724,6 +735,546 @@ struct DashboardSummaryMaterializerState {
     range_start: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug)]
+struct DashboardParallelWorkMaterializerState {
+    response: ParallelWorkStatsResponse,
+    baseline_response: ParallelWorkStatsResponse,
+    bucket_keys: BTreeMap<i64, HashSet<String>>,
+    baseline_bucket_keys: BTreeMap<i64, HashSet<String>>,
+    minute_keys: BTreeMap<i64, HashSet<String>>,
+    baseline_minute_keys: BTreeMap<i64, HashSet<String>>,
+    active_minute_stats: ParallelWorkActiveMinuteStats,
+    baseline_active_minute_stats: ParallelWorkActiveMinuteStats,
+    baseline_complete_minute_start_epoch: i64,
+    baseline_complete_minute_end_epoch: i64,
+    baseline_row_id: i64,
+    range: String,
+    reporting_tz: Tz,
+    upstream_account_id: Option<i64>,
+    conversations_enabled: bool,
+    baseline_identities: HashSet<String>,
+    applied_identities: HashSet<String>,
+    runtime_mutations: BTreeMap<String, RuntimeInvocationMutation>,
+    revision: u64,
+}
+
+#[derive(Debug, Default)]
+struct ParallelWorkMutationOutcome {
+    changed: bool,
+    needs_account_reconcile: bool,
+}
+
+impl DashboardParallelWorkMaterializerState {
+    fn apply_runtime_mutation(
+        &mut self,
+        mutation: &RuntimeInvocationMutation,
+    ) -> ParallelWorkMutationOutcome {
+        let identity = format!(
+            "{}\0{}",
+            mutation.identity.invoke_id, mutation.identity.occurred_at
+        );
+        if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+            if self.runtime_mutations.remove(&identity).is_none() {
+                return ParallelWorkMutationOutcome::default();
+            }
+            self.applied_identities.remove(&identity);
+            self.rebuild_runtime_overlay();
+            return ParallelWorkMutationOutcome {
+                changed: true,
+                needs_account_reconcile: false,
+            };
+        }
+        if !matches!(
+            mutation.kind,
+            RuntimeMutationKind::RuntimeUpsert
+                | RuntimeMutationKind::TerminalCommitted
+                | RuntimeMutationKind::Recovery
+        ) {
+            return ParallelWorkMutationOutcome::default();
+        }
+        if let Some(account_id) = self.upstream_account_id
+            && mutation.upstream_account_id != Some(account_id)
+        {
+            return ParallelWorkMutationOutcome {
+                changed: false,
+                needs_account_reconcile: mutation.upstream_account_id.is_none()
+                    && mutation.prompt_cache_key.is_some(),
+            };
+        }
+        if self.baseline_identities.contains(&identity) {
+            return ParallelWorkMutationOutcome::default();
+        }
+        if mutation
+            .row_id
+            .is_some_and(|row_id| row_id <= self.baseline_row_id)
+        {
+            return ParallelWorkMutationOutcome::default();
+        };
+        if self.applied_identities.contains(&identity) {
+            return ParallelWorkMutationOutcome::default();
+        }
+
+        let changed = self.apply_runtime_overlay(mutation);
+        if changed {
+            self.applied_identities.insert(identity.clone());
+            self.runtime_mutations.insert(identity, mutation.clone());
+            self.revision = self.revision.saturating_add(1);
+        }
+        ParallelWorkMutationOutcome {
+            changed,
+            needs_account_reconcile: false,
+        }
+    }
+
+    fn replay_runtime_mutations(
+        &mut self,
+        mutations: &BTreeMap<String, RuntimeInvocationMutation>,
+    ) -> bool {
+        let mut changed = false;
+        for mutation in mutations.values() {
+            changed |= self.apply_runtime_mutation(mutation).changed;
+        }
+        changed
+    }
+
+    fn apply_runtime_overlay(&mut self, mutation: &RuntimeInvocationMutation) -> bool {
+        self.apply_runtime_overlay_at(mutation, Utc::now())
+    }
+
+    fn apply_runtime_overlay_at(
+        &mut self,
+        mutation: &RuntimeInvocationMutation,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(prompt_cache_key) = mutation.prompt_cache_key.as_ref() else {
+            return false;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&mutation.identity.occurred_at) else {
+            return false;
+        };
+        if parse_to_utc_datetime(&self.response.current.range_start)
+            .is_none_or(|range_start| occurred_at < range_start)
+        {
+            return false;
+        }
+
+        let active_minute_stats_changed = self.refresh_active_minute_stats_at(now);
+
+        let bucket_seconds = self.response.current.bucket_seconds;
+        let Ok(bucket_start_epoch) = align_reporting_bucket_epoch(
+            occurred_at.timestamp(),
+            bucket_seconds,
+            self.reporting_tz,
+        ) else {
+            return false;
+        };
+        let bucket_changed = self
+            .bucket_keys
+            .entry(bucket_start_epoch)
+            .or_default()
+            .insert(prompt_cache_key.clone());
+        let minute_start_epoch = occurred_at.timestamp().div_euclid(60) * 60;
+        let minute_keys = self.minute_keys.entry(minute_start_epoch).or_default();
+        let minute_changed = minute_keys.insert(prompt_cache_key.clone());
+        let minute_is_complete = minute_start_epoch >= self.baseline_complete_minute_start_epoch
+            && minute_start_epoch < now.timestamp().div_euclid(60) * 60;
+        if minute_changed
+            && minute_is_complete
+            && let Some(active_minute_count) = self.active_minute_stats.active_minute_count
+        {
+            let previous_minute_key_count = minute_keys.len() as i64 - 1;
+            self.active_minute_stats.active_minute_count =
+                Some(active_minute_count + i64::from(previous_minute_key_count == 0));
+            self.active_minute_stats.parallel_count_sum += 1;
+        }
+
+        let overlay = ParallelWorkRuntimeOverlay {
+            occurred_at,
+            prompt_cache_key,
+            bucket_start_epoch,
+            bucket_changed,
+            minute_changed,
+            conversations_enabled: self.conversations_enabled,
+            reporting_tz: self.reporting_tz,
+            bucket_keys: &self.bucket_keys,
+            active_minute_stats: self.active_minute_stats,
+        };
+        let mut changed = active_minute_stats_changed;
+        for window in [
+            &mut self.response.current,
+            &mut self.response.minute7d,
+            &mut self.response.hour30d,
+            &mut self.response.day_all,
+        ] {
+            changed |= apply_parallel_work_runtime_overlay(window, &overlay);
+        }
+        changed
+    }
+
+    fn projected_active_minute_stats_at(
+        &self,
+        now: DateTime<Utc>,
+    ) -> ParallelWorkActiveMinuteStats {
+        let mut stats = self.baseline_active_minute_stats;
+        let Some(mut active_minute_count) = stats.active_minute_count else {
+            return stats;
+        };
+        let current_minute_start = now.timestamp().div_euclid(60) * 60;
+        for (&minute_start_epoch, keys) in &self.minute_keys {
+            if minute_start_epoch < self.baseline_complete_minute_start_epoch
+                || minute_start_epoch >= current_minute_start
+            {
+                continue;
+            }
+            let baseline_keys = self.baseline_minute_keys.get(&minute_start_epoch);
+            let baseline_key_count = baseline_keys.map_or(0, HashSet::len) as i64;
+            let baseline_minute_was_complete =
+                minute_start_epoch < self.baseline_complete_minute_end_epoch;
+            if !baseline_minute_was_complete && baseline_key_count > 0 {
+                active_minute_count += 1;
+                stats.parallel_count_sum += baseline_key_count;
+            }
+            let runtime_key_count = keys
+                .iter()
+                .filter(|key| !baseline_keys.is_some_and(|keys| keys.contains(*key)))
+                .count() as i64;
+            if runtime_key_count == 0 {
+                continue;
+            }
+            if baseline_key_count == 0 {
+                active_minute_count += 1;
+            }
+            stats.parallel_count_sum += runtime_key_count;
+        }
+        stats.active_minute_count = Some(active_minute_count);
+        stats
+    }
+
+    fn refresh_active_minute_stats_at(&mut self, now: DateTime<Utc>) -> bool {
+        let stats = self.projected_active_minute_stats_at(now);
+        if stats == self.active_minute_stats {
+            return false;
+        }
+        self.active_minute_stats = stats;
+        for window in [
+            &mut self.response.current,
+            &mut self.response.minute7d,
+            &mut self.response.hour30d,
+            &mut self.response.day_all,
+        ] {
+            window.active_minute_count = stats.active_minute_count;
+            window.avg_count = stats.average();
+        }
+        true
+    }
+
+    fn rebuild_runtime_overlay(&mut self) {
+        self.response = self.baseline_response.clone();
+        self.bucket_keys = self.baseline_bucket_keys.clone();
+        self.minute_keys = self.baseline_minute_keys.clone();
+        self.active_minute_stats = self.baseline_active_minute_stats;
+        self.applied_identities.clear();
+        let runtime_mutations = self.runtime_mutations.clone();
+        for (identity, mutation) in runtime_mutations {
+            if self.apply_runtime_overlay(&mutation) {
+                self.applied_identities.insert(identity);
+            }
+        }
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    fn requires_rolling_rebase(&self) -> bool {
+        let Some(base_range_start) = parse_to_utc_datetime(&self.response.current.range_start)
+        else {
+            return true;
+        };
+        let Ok(current_range) = resolve_range_window(&self.range, self.reporting_tz) else {
+            return true;
+        };
+        rolling_dashboard_window_requires_rebase(Some(base_range_start), Some(current_range.start))
+            || self.projected_active_minute_stats_at(Utc::now()) != self.active_minute_stats
+    }
+}
+
+#[derive(Debug)]
+struct ParallelWorkRuntimeOverlay<'a> {
+    occurred_at: DateTime<Utc>,
+    prompt_cache_key: &'a str,
+    bucket_start_epoch: i64,
+    bucket_changed: bool,
+    minute_changed: bool,
+    conversations_enabled: bool,
+    reporting_tz: Tz,
+    bucket_keys: &'a BTreeMap<i64, HashSet<String>>,
+    active_minute_stats: ParallelWorkActiveMinuteStats,
+}
+
+fn apply_parallel_work_runtime_overlay(
+    window: &mut ParallelWorkWindowResponse,
+    overlay: &ParallelWorkRuntimeOverlay<'_>,
+) -> bool {
+    let Some(range_start) = parse_to_utc_datetime(&window.range_start) else {
+        return false;
+    };
+    if overlay.occurred_at < range_start {
+        return false;
+    }
+
+    let mut changed = false;
+    if overlay.bucket_changed {
+        changed |= refresh_parallel_work_points(
+            window,
+            overlay.bucket_start_epoch,
+            overlay.reporting_tz,
+            overlay.bucket_keys,
+        );
+    }
+
+    if overlay.conversations_enabled {
+        let bucket_seconds = window.bucket_seconds;
+        let effective_time_zone = window.effective_time_zone.clone();
+        let conversation_changed = apply_parallel_work_conversation_overlay(
+            &mut window.conversations,
+            overlay.prompt_cache_key,
+            overlay.occurred_at,
+            bucket_seconds,
+            effective_time_zone.as_str(),
+        );
+        changed |= conversation_changed;
+    }
+
+    if overlay.minute_changed {
+        window.active_minute_count = overlay.active_minute_stats.active_minute_count;
+        window.avg_count = overlay.active_minute_stats.average();
+        changed = true;
+    }
+    changed
+}
+
+fn refresh_parallel_work_points(
+    window: &mut ParallelWorkWindowResponse,
+    bucket_start_epoch: i64,
+    reporting_tz: Tz,
+    bucket_keys: &BTreeMap<i64, HashSet<String>>,
+) -> bool {
+    let mut changed = false;
+    if let Some(point) = window.points.iter_mut().find(|point| {
+        parse_to_utc_datetime(&point.bucket_start)
+            .is_some_and(|start| start.timestamp() == bucket_start_epoch)
+    }) {
+        let next_count = bucket_keys
+            .get(&bucket_start_epoch)
+            .map_or(0, |keys| keys.len() as i64);
+        if point.parallel_count != next_count {
+            point.parallel_count = next_count;
+            changed = true;
+        }
+    } else {
+        let Some(last_point) = window.points.last() else {
+            return false;
+        };
+        let Some(mut cursor) = parse_to_utc_datetime(&last_point.bucket_end) else {
+            return false;
+        };
+        while cursor.timestamp() <= bucket_start_epoch {
+            let Ok(next_epoch) = next_reporting_bucket_epoch(
+                cursor.timestamp(),
+                window.bucket_seconds,
+                reporting_tz,
+            ) else {
+                return changed;
+            };
+            let Some(next) = Utc.timestamp_opt(next_epoch, 0).single() else {
+                return changed;
+            };
+            let parallel_count = bucket_keys
+                .get(&cursor.timestamp())
+                .map_or(0, |keys| keys.len() as i64);
+            window.points.push(ParallelWorkPoint {
+                bucket_start: format_utc_iso(cursor),
+                bucket_end: format_utc_iso(next),
+                parallel_count,
+            });
+            window.range_end = format_utc_iso(next);
+            cursor = next;
+            changed = true;
+        }
+    }
+    if changed {
+        refresh_parallel_work_point_totals(window);
+    }
+    changed
+}
+
+fn refresh_parallel_work_point_totals(window: &mut ParallelWorkWindowResponse) {
+    let mut active_bucket_count = 0_i64;
+    let mut min_count = None;
+    let mut max_count = None;
+    for point in &window.points {
+        if point.parallel_count > 0 {
+            active_bucket_count += 1;
+        }
+        min_count = Some(min_count.map_or(point.parallel_count, |value: i64| {
+            value.min(point.parallel_count)
+        }));
+        max_count = Some(max_count.map_or(point.parallel_count, |value: i64| {
+            value.max(point.parallel_count)
+        }));
+    }
+    window.active_bucket_count = active_bucket_count;
+    window.complete_bucket_count = window.points.len() as i64;
+    window.min_count = min_count;
+    window.max_count = max_count;
+}
+
+fn apply_parallel_work_conversation_overlay(
+    conversations: &mut Vec<ParallelWorkConversation>,
+    prompt_cache_key: &str,
+    occurred_at: DateTime<Utc>,
+    bucket_seconds: i64,
+    effective_time_zone: &str,
+) -> bool {
+    let Ok(reporting_tz) = parse_reporting_tz(Some(effective_time_zone)) else {
+        return false;
+    };
+    let Ok(start_epoch) =
+        align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)
+    else {
+        return false;
+    };
+    let Ok(end_epoch) = next_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)
+    else {
+        return false;
+    };
+    let Some(start) = Utc.timestamp_opt(start_epoch, 0).single() else {
+        return false;
+    };
+    let Some(end) = Utc.timestamp_opt(end_epoch, 0).single() else {
+        return false;
+    };
+
+    if let Some(conversation) = conversations
+        .iter_mut()
+        .find(|conversation| conversation.conversation_id == prompt_cache_key)
+    {
+        conversation.request_count = conversation.request_count.saturating_add(1);
+        if parse_to_utc_datetime(&conversation.start).is_some_and(|current| start < current) {
+            conversation.start = format_utc_iso(start);
+        }
+        if parse_to_utc_datetime(&conversation.end).is_some_and(|current| end > current) {
+            conversation.end = format_utc_iso(end);
+        }
+    } else {
+        conversations.push(ParallelWorkConversation {
+            conversation_id: prompt_cache_key.to_string(),
+            start: format_utc_iso(start),
+            end: format_utc_iso(end),
+            request_count: 1,
+        });
+    }
+    conversations.sort_by(|left, right| {
+        right
+            .end
+            .cmp(&left.end)
+            .then_with(|| right.request_count.cmp(&left.request_count))
+            .then_with(|| left.conversation_id.cmp(&right.conversation_id))
+    });
+    conversations.truncate(80);
+    true
+}
+
+async fn build_dashboard_parallel_work_materializer_state(
+    state: &Arc<AppState>,
+    query: ParallelWorkStatsQuery,
+) -> Result<DashboardParallelWorkMaterializerState, ApiError> {
+    for _ in 0..3 {
+        let mut observer = state.pool.acquire().await?;
+        let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await?;
+        let baseline_row_id =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                .fetch_one(&mut *observer)
+                .await?;
+        let materializer = build_dashboard_parallel_work_materializer_state_at_baseline(
+            state,
+            query.clone(),
+            baseline_row_id,
+        )
+        .await?;
+        let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await?;
+        if version_before == version_after {
+            return Ok(materializer);
+        }
+    }
+    Err(ApiError::from(anyhow!(
+        "parallel-work baseline changed during build"
+    )))
+}
+
+async fn build_dashboard_parallel_work_materializer_state_at_baseline(
+    state: &Arc<AppState>,
+    query: ParallelWorkStatsQuery,
+    baseline_row_id: i64,
+) -> Result<DashboardParallelWorkMaterializerState, ApiError> {
+    let ParallelWorkProjectionBaseline {
+        response,
+        bucket_keys,
+        active_minute_stats,
+    } = load_parallel_work_projection_baseline(state, query.clone()).await?;
+    let current = &response.current;
+    let range_start = parse_to_utc_datetime(&current.range_start)
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work range start")))?;
+    let range_end = parse_to_utc_datetime(&current.range_end)
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work range end")))?;
+    let reporting_tz = parse_reporting_tz(Some(current.effective_time_zone.as_str()))?;
+    let requested_reporting_tz = parse_reporting_tz(query.time_zone.as_deref())?;
+    let conversations_enabled = resolve_range_window(&query.range, requested_reporting_tz)?
+        .duration
+        <= ChronoDuration::hours(24);
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let range_start_epoch = range_start.timestamp();
+    let minute_keys = query_parallel_work_exact_key_sets(
+        &state.pool,
+        range_start,
+        range_end,
+        60,
+        chrono_tz::UTC,
+        source_scope,
+        query.upstream_account_id,
+        None,
+        None,
+    )
+    .await?;
+    Ok(DashboardParallelWorkMaterializerState {
+        baseline_response: response.clone(),
+        response,
+        baseline_bucket_keys: bucket_keys.clone(),
+        bucket_keys,
+        baseline_minute_keys: minute_keys.clone(),
+        minute_keys,
+        baseline_active_minute_stats: active_minute_stats,
+        active_minute_stats,
+        baseline_complete_minute_start_epoch: if range_start_epoch.rem_euclid(60) == 0 {
+            range_start_epoch
+        } else {
+            range_start_epoch.div_euclid(60) * 60 + 60
+        },
+        baseline_complete_minute_end_epoch: range_end.timestamp().div_euclid(60) * 60,
+        baseline_row_id,
+        range: query.range,
+        reporting_tz,
+        upstream_account_id: query.upstream_account_id,
+        conversations_enabled,
+        baseline_identities: HashSet::new(),
+        applied_identities: HashSet::new(),
+        runtime_mutations: BTreeMap::new(),
+        revision: 0,
+    })
+}
+
 impl DashboardSummaryMaterializerState {
     fn new(
         response: StatsResponse,
@@ -764,6 +1315,9 @@ enum DashboardTopicMaterializer {
     Timeseries {
         base: Arc<StdMutex<TimeseriesTopicMaterializedBase>>,
         runtime: Arc<RuntimeProjectionHub>,
+    },
+    ParallelWork {
+        base: Arc<StdMutex<DashboardParallelWorkMaterializerState>>,
     },
 }
 
@@ -826,6 +1380,16 @@ impl DashboardTopicMaterializer {
                     terminal_revision: terminal.map(|slice| slice.revision),
                 })
             }
+            Self::ParallelWork { base } => Some(DashboardTopicRevision {
+                base_revision,
+                current_revision: Some(
+                    base.lock()
+                        .expect("parallel-work materializer state lock")
+                        .revision,
+                ),
+                network_revision: None,
+                terminal_revision: None,
+            }),
             _ => None,
         }
     }
@@ -872,6 +1436,10 @@ impl DashboardTopicMaterializer {
                 .lock()
                 .expect("timeseries materializer state lock")
                 .requires_window_rebase(),
+            Self::ParallelWork { base } => base
+                .lock()
+                .expect("parallel-work materializer state lock")
+                .requires_rolling_rebase(),
             Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
         }
     }
@@ -960,6 +1528,13 @@ impl DashboardTopicMaterializer {
                 base.apply_terminal_slice(terminal);
                 base.serialize(&runtime.snapshot())
             }
+            Self::ParallelWork { base } => serde_json::to_vec(
+                &base
+                    .lock()
+                    .expect("parallel-work materializer state lock")
+                    .response,
+            )
+            .map_err(ApiError::from),
         }
     }
 }
@@ -1887,6 +2462,7 @@ impl SubscriptionHub {
                         Self::release_active_topic_dependencies(&mut guard, &topic_key, &topic);
                     }
                     guard.prompt_cache_prebaseline_records.remove(&topic_key);
+                    guard.parallel_work_prebaseline_mutations.remove(&topic_key);
                     guard.runtime_topic_recovery_generation =
                         guard.runtime_topic_recovery_generation.saturating_add(1);
                     let recovery_generation = guard.runtime_topic_recovery_generation;
@@ -2295,7 +2871,7 @@ impl SubscriptionHub {
                     .map(|delta| delta.identity.clone())
                     .collect::<HashSet<_>>()
             };
-            let persisted_identities = load_persisted_prompt_cache_identities(
+            let persisted_identities = load_persisted_invocation_identities(
                 &mut observer,
                 &candidate_identities,
                 baseline_row_id,
@@ -2319,6 +2895,74 @@ impl SubscriptionHub {
         )))
     }
 
+    async fn build_parallel_work_consistent_baseline(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) -> Result<(BuiltSubscriptionTopicPayload, ParallelWorkBaselineBuild), ApiError> {
+        for _ in 0..3 {
+            let mut observer = state.pool.acquire().await?;
+            let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            let baseline_row_id =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(&mut *observer)
+                    .await?;
+            let payload = topic.build_cached_payload(state.clone()).await?;
+            let candidate_identities = {
+                let guard = self.state.lock().await;
+                let topic_key = topic.cache_key()?;
+                let mut identities = guard
+                    .parallel_work_prebaseline_mutations
+                    .get(&topic_key)
+                    .into_iter()
+                    .flat_map(|mutations| mutations.values())
+                    .map(|mutation| {
+                        format!(
+                            "{}\0{}",
+                            mutation.identity.invoke_id, mutation.identity.occurred_at
+                        )
+                    })
+                    .collect::<HashSet<_>>();
+                if let Some(DashboardTopicMaterializer::ParallelWork { base }) = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| cached.dashboard_materializer.as_ref())
+                {
+                    identities.extend(
+                        base.lock()
+                            .expect("parallel-work materializer state lock")
+                            .runtime_mutations
+                            .keys()
+                            .cloned(),
+                    );
+                }
+                identities
+            };
+            let persisted_identities = load_persisted_invocation_identities(
+                &mut observer,
+                &candidate_identities,
+                baseline_row_id,
+            )
+            .await?;
+            let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            if version_before == version_after {
+                return Ok((
+                    payload,
+                    ParallelWorkBaselineBuild {
+                        persisted_identities,
+                    },
+                ));
+            }
+        }
+        Err(ApiError::from(anyhow!(
+            "parallel-work baseline changed during build"
+        )))
+    }
+
     async fn refresh_topic_inner(
         &self,
         state: Arc<AppState>,
@@ -2334,6 +2978,10 @@ impl SubscriptionHub {
             topic,
             SubscriptionTopic::PromptCacheWindow { .. }
                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
+        );
+        let is_open_parallel_work_topic = matches!(
+            &topic,
+            SubscriptionTopic::ParallelWorkCurrent { range, .. } if range != "yesterday"
         );
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
@@ -2357,13 +3005,19 @@ impl SubscriptionHub {
         } else {
             (None, false)
         };
-        let (mut built_payload, prompt_cache_build) = if is_prompt_cache_topic {
+        let (mut built_payload, prompt_cache_build, parallel_work_build) = if is_prompt_cache_topic
+        {
             let (payload, build) = self
                 .build_prompt_cache_consistent_baseline(state.clone(), &topic)
                 .await?;
-            (payload, Some(build))
+            (payload, Some(build), None)
+        } else if is_open_parallel_work_topic {
+            let (payload, build) = self
+                .build_parallel_work_consistent_baseline(state.clone(), &topic)
+                .await?;
+            (payload, None, Some(build))
         } else {
-            (topic.build_cached_payload(state.clone()).await?, None)
+            (topic.build_cached_payload(state.clone()).await?, None, None)
         };
         self.dashboard_topology_counters.record_materialization(
             topic.name(),
@@ -2410,6 +3064,51 @@ impl SubscriptionHub {
                     .cloned()
             {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, payload, &live)?;
+            }
+            if let BuiltSubscriptionTopicPayload::Dashboard(
+                DashboardTopicMaterializer::ParallelWork { base },
+            ) = &built_payload
+            {
+                let baseline_identities = parallel_work_build
+                    .as_ref()
+                    .map(|build| build.persisted_identities.clone())
+                    .unwrap_or_default();
+                let mut replay = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| match cached.dashboard_materializer.as_ref() {
+                        Some(DashboardTopicMaterializer::ParallelWork { base }) => Some(
+                            base.lock()
+                                .expect("parallel-work materializer state lock")
+                                .runtime_mutations
+                                .clone(),
+                        ),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let mut pending = guard
+                    .parallel_work_prebaseline_mutations
+                    .remove(&topic_key)
+                    .unwrap_or_default();
+                replay.append(&mut pending);
+                let mut base = base.lock().expect("parallel-work materializer state lock");
+                base.baseline_identities = baseline_identities;
+                let mut unresolved = BTreeMap::new();
+                for (identity, mutation) in &replay {
+                    if base
+                        .apply_runtime_mutation(mutation)
+                        .needs_account_reconcile
+                    {
+                        unresolved.insert(identity.clone(), mutation.clone());
+                    }
+                }
+                if !unresolved.is_empty() {
+                    guard
+                        .parallel_work_prebaseline_mutations
+                        .entry(topic_key.clone())
+                        .or_default()
+                        .extend(unresolved);
+                }
             }
             let mut prompt_cache_pending = guard
                 .prompt_cache_prebaseline_records
@@ -2563,6 +3262,7 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.summary_retry_backoff_ms),
+                parallel_work_refresh_scheduled: false,
                 prompt_cache_refresh_scheduled: guard
                     .topics
                     .get(&topic_key)
@@ -2745,6 +3445,27 @@ impl SubscriptionHub {
             .await;
     }
 
+    async fn materialize_dashboard_parallel_work(&self) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            for cached in guard.topics.values_mut() {
+                if matches!(
+                    &cached.dashboard_materializer,
+                    Some(DashboardTopicMaterializer::ParallelWork { .. })
+                ) {
+                    cached.parallel_work_refresh_scheduled = false;
+                }
+            }
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
     async fn materialize_pending_dashboard_topics(
         &self,
         pending: Vec<PendingDashboardTopicMaterialization>,
@@ -2914,6 +3635,23 @@ impl SubscriptionHub {
                 || work.topic.uses_timeseries_live_projection()
                 || work.topic.uses_dashboard_network_live_snapshot()
             {
+                continue;
+            }
+            if work.topic.uses_parallel_work_live_projection() {
+                if let Err(err) = self
+                    .schedule_parallel_work_topic_projection(
+                        state.clone(),
+                        work.topic.clone(),
+                        &mutations,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule parallel-work runtime projection"
+                    );
+                }
                 continue;
             }
             if work.topic.uses_summary_topic_refresh() && work.terminal_event_count > 0 {
@@ -3197,17 +3935,23 @@ impl SubscriptionHub {
                 return;
             }
             for topic in topics {
-                if let Err(err) = self
+                match self
                     .refresh_topic_if_active(state.clone(), topic.clone(), true)
                     .await
                 {
-                    self.defer_runtime_topic_recovery_retry(&topic).await;
-                    warn!(
-                        ?err,
-                        topic = %topic.name(),
-                        recovery = "dirty_last_good",
-                        "bounded runtime mutation recovery retained last-good topic frame"
-                    );
+                    Err(err) => {
+                        self.defer_runtime_topic_recovery_retry(&topic).await;
+                        warn!(
+                            ?err,
+                            topic = %topic.name(),
+                            recovery = "dirty_last_good",
+                            "bounded runtime mutation recovery retained last-good topic frame"
+                        );
+                    }
+                    Ok(_) if self.parallel_work_reconcile_pending(&topic).await => {
+                        self.defer_runtime_topic_recovery_retry(&topic).await;
+                    }
+                    Ok(_) => {}
                 }
             }
             tokio::task::yield_now().await;
@@ -3218,7 +3962,15 @@ impl SubscriptionHub {
         let Ok(topic_key) = topic.cache_key() else {
             return RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF;
         };
-        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+        let mut guard = self.state.lock().await;
+        let has_pending_mutations = guard
+            .parallel_work_prebaseline_mutations
+            .get(&topic_key)
+            .is_some_and(|mutations| !mutations.is_empty());
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            if has_pending_mutations {
+                cached.dirty = true;
+            }
             cached.runtime_topic_recovery_retry_at =
                 Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
         }
@@ -3404,6 +4156,61 @@ impl SubscriptionHub {
                 warn!(?err, topic = %topic.name(), "failed to apply dashboard network slice");
             }
         }
+    }
+}
+
+fn buffer_parallel_work_prebaseline_mutations(
+    state: &mut SubscriptionHubState,
+    topic_key: &str,
+    mutations: &[SequencedRuntimeMutation],
+) {
+    let pending_is_empty = {
+        let pending = state
+            .parallel_work_prebaseline_mutations
+            .entry(topic_key.to_string())
+            .or_default();
+        for mutation in mutations {
+            let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+                continue;
+            };
+            let identity = format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            );
+            if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+                pending.remove(&identity);
+            } else {
+                pending.insert(identity, mutation.clone());
+            }
+        }
+        pending.is_empty()
+    };
+    if pending_is_empty {
+        state.parallel_work_prebaseline_mutations.remove(topic_key);
+    }
+}
+
+fn remove_parallel_work_prebaseline_mutations(
+    state: &mut SubscriptionHubState,
+    topic_key: &str,
+    mutations: &[SequencedRuntimeMutation],
+) {
+    let Some(pending) = state.parallel_work_prebaseline_mutations.get_mut(topic_key) else {
+        return;
+    };
+    for mutation in mutations {
+        let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+            continue;
+        };
+        if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+            pending.remove(&format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            ));
+        }
+    }
+    if pending.is_empty() {
+        state.parallel_work_prebaseline_mutations.remove(topic_key);
     }
 }
 
@@ -3711,6 +4518,217 @@ impl SubscriptionHub {
             }
         });
         Ok(())
+    }
+
+    async fn schedule_parallel_work_topic_projection(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        mutations: &[SequencedRuntimeMutation],
+    ) -> Result<(), ApiError> {
+        enum ParallelWorkSchedule {
+            None,
+            Materialize,
+            Reconcile,
+        }
+
+        let topic_key = topic.cache_key()?;
+        loop {
+            let materializer = {
+                let mut guard = self.state.lock().await;
+                let active = guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default();
+                if active == 0 {
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                    }
+                    return Ok(());
+                }
+                if !guard.topics.contains_key(&topic_key) {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if guard.topics[&topic_key].dirty {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                let cached = guard
+                    .topics
+                    .get_mut(&topic_key)
+                    .expect("cached topic exists");
+                let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+                    cached.dashboard_materializer.as_ref()
+                else {
+                    return Ok(());
+                };
+                base.clone()
+            };
+
+            let outcome = {
+                let mut base = materializer
+                    .lock()
+                    .expect("parallel-work materializer state lock");
+                let mut outcome = ParallelWorkMutationOutcome::default();
+                for mutation in mutations {
+                    let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+                        continue;
+                    };
+                    let mutation_outcome = base.apply_runtime_mutation(mutation);
+                    outcome.changed |= mutation_outcome.changed;
+                    outcome.needs_account_reconcile |= mutation_outcome.needs_account_reconcile;
+                }
+                outcome
+            };
+
+            let schedule = {
+                let mut guard = self.state.lock().await;
+                let active = guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default();
+                if active == 0 {
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                    }
+                    return Ok(());
+                }
+                remove_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                if !guard.topics.contains_key(&topic_key) {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if guard.topics[&topic_key].dirty {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if outcome.needs_account_reconcile {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                }
+                let cached = guard
+                    .topics
+                    .get_mut(&topic_key)
+                    .expect("cached topic exists");
+                if !matches!(
+                    cached.dashboard_materializer.as_ref(),
+                    Some(DashboardTopicMaterializer::ParallelWork { base }) if Arc::ptr_eq(base, &materializer)
+                ) {
+                    None
+                } else if outcome.needs_account_reconcile {
+                    if cached.parallel_work_refresh_scheduled {
+                        Some(ParallelWorkSchedule::None)
+                    } else {
+                        cached.dirty = true;
+                        cached.parallel_work_refresh_scheduled = true;
+                        Some(ParallelWorkSchedule::Reconcile)
+                    }
+                } else if !outcome.changed || cached.parallel_work_refresh_scheduled {
+                    Some(ParallelWorkSchedule::None)
+                } else {
+                    cached.parallel_work_refresh_scheduled = true;
+                    Some(ParallelWorkSchedule::Materialize)
+                }
+            };
+            let Some(schedule) = schedule else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            match schedule {
+                ParallelWorkSchedule::None => {}
+                ParallelWorkSchedule::Materialize => {
+                    let hub = state.subscription_hub.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
+                        hub.materialize_dashboard_parallel_work().await;
+                    });
+                }
+                ParallelWorkSchedule::Reconcile => {
+                    let hub = state.subscription_hub.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
+                        let result = hub
+                            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                            .await;
+                        if let Err(err) = result {
+                            warn!(
+                                ?err,
+                                topic = %topic.name(),
+                                "failed to reconcile account-scoped parallel-work projection"
+                            );
+                            hub.schedule_parallel_work_reconcile_retry(state, &topic)
+                                .await;
+                        } else if hub.parallel_work_reconcile_pending(&topic).await {
+                            hub.schedule_parallel_work_reconcile_retry(state, &topic)
+                                .await;
+                        }
+                    });
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    async fn schedule_parallel_work_reconcile_retry(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let recovery_scheduled = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                > 0;
+            let has_pending_mutations = guard
+                .parallel_work_prebaseline_mutations
+                .get(&topic_key)
+                .is_some_and(|mutations| !mutations.is_empty());
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return;
+            };
+            cached.parallel_work_refresh_scheduled = false;
+            if has_pending_mutations {
+                cached.dirty = true;
+            }
+            if !active {
+                return;
+            }
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+            if guard.runtime_topic_recovery_running {
+                false
+            } else {
+                guard.runtime_topic_recovery_running = true;
+                true
+            }
+        };
+        if recovery_scheduled {
+            let hub = state.subscription_hub.clone();
+            tokio::spawn(async move {
+                hub.run_runtime_topic_recovery(state).await;
+            });
+        }
+        self.runtime_topic_recovery_notify.notify_one();
+    }
+
+    async fn parallel_work_reconcile_pending(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        self.state
+            .lock()
+            .await
+            .parallel_work_prebaseline_mutations
+            .get(&topic_key)
+            .is_some_and(|mutations| !mutations.is_empty())
     }
 
     async fn schedule_prompt_cache_topic_projection(
@@ -4974,7 +5992,7 @@ fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value:
     object.insert(key.to_string(), value);
 }
 
-async fn load_persisted_prompt_cache_identities(
+async fn load_persisted_invocation_identities(
     conn: &mut sqlx::SqliteConnection,
     identities: &HashSet<String>,
     baseline_row_id: i64,
@@ -4990,16 +6008,18 @@ async fn load_persisted_prompt_cache_identities(
         );
         query.push_bind(baseline_row_id);
         query.push(" AND (");
-        let mut separated = query.separated(" OR ");
-        for (invoke_id, occurred_at) in chunk {
-            separated
+        for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(invoke_id = ")
                 .push_bind(*invoke_id)
                 .push(" AND occurred_at = ")
                 .push_bind(*occurred_at)
                 .push(")");
         }
-        separated.push_unseparated(")");
+        query.push(")");
         for (invoke_id, occurred_at) in query
             .build_query_as::<(String, String)>()
             .fetch_all(&mut *conn)
@@ -6326,11 +7346,11 @@ impl SubscriptionTopic {
     }
 
     fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
-        match self {
-            Self::DashboardWorkingConversationsCurrent { .. } => true,
-            Self::ParallelWorkCurrent { range, .. } => range != "yesterday",
-            _ => false,
-        }
+        matches!(self, Self::DashboardWorkingConversationsCurrent { .. })
+    }
+
+    fn uses_parallel_work_live_projection(&self) -> bool {
+        matches!(self, Self::ParallelWorkCurrent { range, .. } if range != "yesterday")
     }
 
     fn is_closed_dashboard_hot_snapshot(&self) -> bool {
@@ -7048,6 +8068,28 @@ impl SubscriptionTopic {
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::NetworkRecent {
                             base: Arc::new(response),
+                        },
+                    ));
+                }
+                Self::ParallelWorkCurrent {
+                    range,
+                    time_zone,
+                    bucket,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    let base = build_dashboard_parallel_work_materializer_state(
+                        &state,
+                        ParallelWorkStatsQuery {
+                            range: range.clone(),
+                            bucket: bucket.clone(),
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::ParallelWork {
+                            base: Arc::new(StdMutex::new(base)),
                         },
                     ));
                 }
@@ -8979,6 +10021,7 @@ mod tests {
                     | "dashboard.network-timeseries.window"
                     | "dashboard.network-recent.current"
                     | "stats.timeseries.open-window"
+                    | "stats.parallel-work.current"
             );
             assert_eq!(
                 state
@@ -9132,21 +10175,129 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("persist generic fallback benchmark invocation");
+        let mut second_parallel_work = fallback.clone();
+        second_parallel_work.id = 748_005;
+        second_parallel_work.invoke_id =
+            "dashboard-runtime-topology-second-parallel-work".to_string();
+        second_parallel_work.prompt_cache_key =
+            Some("dashboard-runtime-topology-second".to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(second_parallel_work.id)
+        .bind(second_parallel_work.invoke_id.as_str())
+        .bind(second_parallel_work.occurred_at.as_str())
+        .bind(second_parallel_work.source.as_str())
+        .bind("success")
+        .bind(42_i64)
+        .bind(0.25_f64)
+        .bind(
+            json!({
+                "promptCacheKey": second_parallel_work.prompt_cache_key.as_deref(),
+                "upstreamAccountId": second_parallel_work.upstream_account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist second parallel-work benchmark invocation");
+        let mut parallel_work_mutations = Vec::with_capacity(10_000);
+        parallel_work_mutations.push(SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::invocation(&fallback, RuntimeMutationKind::RuntimeUpsert),
+        });
+        parallel_work_mutations.push(SequencedRuntimeMutation {
+            sequence: 2,
+            mutation: RuntimeMutation::invocation(
+                &second_parallel_work,
+                RuntimeMutationKind::RuntimeUpsert,
+            ),
+        });
+        parallel_work_mutations.extend((3..=10_000).map(|sequence| SequencedRuntimeMutation {
+            sequence,
+            mutation: RuntimeMutation::invocation(&fallback, RuntimeMutationKind::RuntimeUpsert),
+        }));
         state
             .subscription_hub
-            .handle_runtime_mutation_batch(
-                state.clone(),
-                (1..=10_000)
-                    .map(|sequence| SequencedRuntimeMutation {
-                        sequence,
-                        mutation: RuntimeMutation::invocation(
-                            &fallback,
-                            RuntimeMutationKind::RuntimeUpsert,
-                        ),
-                    })
-                    .collect(),
-            )
+            .handle_runtime_mutation_batch(state.clone(), parallel_work_mutations)
             .await;
+        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE * 2).await;
+        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let projected_parallel = {
+            let guard = state.subscription_hub.state.lock().await;
+            guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")]
+                .snapshot_frame
+                .payload_value()
+        };
+        let exact_parallel = load_parallel_work_stats_response(
+            &state,
+            ParallelWorkStatsQuery {
+                range: "1d".to_string(),
+                bucket: Some("1m".to_string()),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                upstream_account_id: None,
+            },
+        )
+        .await
+        .expect("build exact parallel-work response");
+        let fallback_occurred_at =
+            parse_to_utc_datetime(&fallback.occurred_at).expect("parse fallback timestamp");
+        let fallback_bucket_start = format_utc_iso(
+            Utc.timestamp_opt(fallback_occurred_at.timestamp().div_euclid(60) * 60, 0)
+                .single()
+                .expect("construct fallback minute"),
+        );
+        let projected_point = projected_parallel["current"]["points"]
+            .as_array()
+            .and_then(|points| {
+                points.iter().find(|point| {
+                    point["bucketStart"].as_str() == Some(fallback_bucket_start.as_str())
+                })
+            })
+            .expect("projected fallback point");
+        let exact_point = exact_parallel
+            .current
+            .points
+            .iter()
+            .find(|point| point.bucket_start == fallback_bucket_start)
+            .expect("exact fallback point");
+        assert_eq!(
+            projected_point["parallelCount"],
+            json!(exact_point.parallel_count),
+            "runtime projection must preserve the exact distinct-key bucket count"
+        );
+        let projected_conversation = projected_parallel["current"]["conversations"]
+            .as_array()
+            .and_then(|conversations| {
+                conversations.iter().find(|conversation| {
+                    conversation["conversationId"].as_str() == fallback.prompt_cache_key.as_deref()
+                })
+            })
+            .expect("projected fallback conversation");
+        let exact_conversation = exact_parallel
+            .current
+            .conversations
+            .iter()
+            .find(|conversation| {
+                Some(conversation.conversation_id.as_str()) == fallback.prompt_cache_key.as_deref()
+            })
+            .expect("exact fallback conversation");
+        assert_eq!(
+            projected_conversation,
+            &serde_json::to_value(exact_conversation).expect("serialize exact conversation"),
+            "runtime projection must preserve the exact conversation span"
+        );
         let delivery_before_reconnect = state.subscription_hub.dashboard_topology_counters();
         for topic in [
             delivery_before_reconnect.activity,
@@ -9357,20 +10508,862 @@ mod tests {
             assert_eq!(topic.generic_fallback_build_count, 0);
             assert_eq!(topic.live_path_db_read_count, 0);
         }
-        for topic in [delivery.working_conversations, delivery.parallel_work] {
-            assert_eq!(topic.generic_fallback_build_count, 1);
-            assert_eq!(topic.live_path_db_read_count, 1);
-            assert_eq!(topic.builder_count, 1);
-            assert_eq!(topic.materialization_count, 1);
-            assert_eq!(topic.serialization_count, 1);
-            assert_eq!(topic.cursor_advanced, 1);
-        }
+        let topic = delivery.working_conversations;
+        assert_eq!(topic.generic_fallback_build_count, 1);
+        assert_eq!(topic.live_path_db_read_count, 1);
+        assert_eq!(topic.builder_count, 1);
+        assert_eq!(topic.materialization_count, 1);
+        assert_eq!(topic.serialization_count, 1);
+        assert_eq!(topic.cursor_advanced, 1);
+        assert_eq!(delivery.parallel_work.generic_fallback_build_count, 0);
+        assert_eq!(delivery.parallel_work.live_path_db_read_count, 0);
         assert!(
             state
                 .subscription_hub
                 .dashboard_delivery_has_degraded_signal(),
             "generic fallback topics must not be classified as healthy"
         );
+    }
+
+    #[test]
+    fn parallel_work_projection_extends_rolling_window_with_live_bucket() {
+        let current_bucket = Utc::now().timestamp().div_euclid(60) * 60;
+        let initial_start = Utc
+            .timestamp_opt(current_bucket - 120, 0)
+            .single()
+            .expect("construct initial point start");
+        let initial_end = Utc
+            .timestamp_opt(current_bucket - 60, 0)
+            .single()
+            .expect("construct initial point end");
+        let live_end = Utc
+            .timestamp_opt(current_bucket + 60, 0)
+            .single()
+            .expect("construct live point end");
+        let mut window = ParallelWorkWindowResponse {
+            range_start: format_utc_iso(initial_start),
+            range_end: format_utc_iso(initial_end),
+            bucket_seconds: 60,
+            complete_bucket_count: 1,
+            active_bucket_count: 0,
+            active_minute_count: Some(0),
+            min_count: Some(0),
+            max_count: Some(0),
+            avg_count: None,
+            effective_time_zone: chrono_tz::UTC.to_string(),
+            time_zone_fallback: false,
+            points: vec![ParallelWorkPoint {
+                bucket_start: format_utc_iso(initial_start),
+                bucket_end: format_utc_iso(initial_end),
+                parallel_count: 0,
+            }],
+            conversations: Vec::new(),
+        };
+        let bucket_keys =
+            BTreeMap::from([(current_bucket, HashSet::from(["live-key".to_string()]))]);
+
+        assert!(refresh_parallel_work_points(
+            &mut window,
+            current_bucket,
+            chrono_tz::UTC,
+            &bucket_keys,
+        ));
+        assert_eq!(window.range_end, format_utc_iso(live_end));
+        assert_eq!(window.complete_bucket_count, 3);
+        assert_eq!(
+            window.points.last().map(|point| point.parallel_count),
+            Some(1)
+        );
+    }
+
+    fn parallel_work_materializer_state(
+        range: &str,
+        range_start: DateTime<Utc>,
+        baseline_row_id: i64,
+        upstream_account_id: Option<i64>,
+    ) -> DashboardParallelWorkMaterializerState {
+        let range_end = range_start + ChronoDuration::minutes(1);
+        let window = ParallelWorkWindowResponse {
+            range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            bucket_seconds: 60,
+            complete_bucket_count: 1,
+            active_bucket_count: 0,
+            active_minute_count: Some(0),
+            min_count: Some(0),
+            max_count: Some(0),
+            avg_count: None,
+            effective_time_zone: chrono_tz::UTC.to_string(),
+            time_zone_fallback: false,
+            points: vec![ParallelWorkPoint {
+                bucket_start: format_utc_iso(range_start),
+                bucket_end: format_utc_iso(range_end),
+                parallel_count: 0,
+            }],
+            conversations: vec![ParallelWorkConversation {
+                conversation_id: "baseline-key".to_string(),
+                start: format_utc_iso(range_start),
+                end: format_utc_iso(range_end),
+                request_count: 1,
+            }],
+        };
+        let response = ParallelWorkStatsResponse {
+            current: window.clone(),
+            minute7d: window.clone(),
+            hour30d: window.clone(),
+            day_all: window,
+        };
+        let range_start_epoch = range_start.timestamp();
+        DashboardParallelWorkMaterializerState {
+            baseline_response: response.clone(),
+            response,
+            baseline_bucket_keys: BTreeMap::new(),
+            bucket_keys: BTreeMap::new(),
+            baseline_minute_keys: BTreeMap::new(),
+            minute_keys: BTreeMap::new(),
+            baseline_active_minute_stats: ParallelWorkActiveMinuteStats::default(),
+            active_minute_stats: ParallelWorkActiveMinuteStats::default(),
+            baseline_complete_minute_start_epoch: if range_start_epoch.rem_euclid(60) == 0 {
+                range_start_epoch
+            } else {
+                range_start_epoch.div_euclid(60) * 60 + 60
+            },
+            baseline_complete_minute_end_epoch: range_end.timestamp().div_euclid(60) * 60,
+            baseline_row_id,
+            range: range.to_string(),
+            reporting_tz: chrono_tz::UTC,
+            upstream_account_id,
+            conversations_enabled: true,
+            baseline_identities: HashSet::new(),
+            applied_identities: HashSet::new(),
+            runtime_mutations: BTreeMap::new(),
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn parallel_work_projection_excludes_incomplete_current_minute_from_average() {
+        let now = Utc::now();
+        let current_minute_start = now.timestamp().div_euclid(60) * 60;
+        let occurred_at = Utc
+            .timestamp_opt(current_minute_start + 1, 0)
+            .single()
+            .expect("construct current incomplete minute");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        assert!(state.apply_runtime_overlay_at(
+            &RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "current-minute-invoke",
+                    format_utc_iso(occurred_at),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("current-minute-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            },
+            now,
+        ));
+        assert_eq!(state.active_minute_stats, active_minute_stats);
+        assert_eq!(state.response.current.active_minute_count, Some(4));
+        assert_eq!(state.response.current.avg_count, Some(3.0));
+    }
+
+    #[test]
+    fn parallel_work_projection_promotes_closed_runtime_minutes_on_next_overlay() {
+        let minute_start = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("construct minute start");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            minute_start - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        let first = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "completed-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(1)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("completed-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(state.apply_runtime_overlay_at(&first, minute_start + ChronoDuration::seconds(30)));
+        assert_eq!(state.active_minute_stats, active_minute_stats);
+
+        let next_minute = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "next-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(61)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("next-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(
+            state
+                .apply_runtime_overlay_at(&next_minute, minute_start + ChronoDuration::seconds(90))
+        );
+        assert_eq!(
+            state.active_minute_stats,
+            ParallelWorkActiveMinuteStats {
+                active_minute_count: Some(5),
+                parallel_count_sum: 13,
+            }
+        );
+        assert_eq!(state.response.current.avg_count, Some(2.6));
+    }
+
+    #[test]
+    fn parallel_work_projection_promotes_persisted_current_minute_after_boundary() {
+        let minute_start = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("construct minute start");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            minute_start - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        state.baseline_complete_minute_end_epoch = minute_start.timestamp();
+        state.baseline_minute_keys.insert(
+            minute_start.timestamp(),
+            HashSet::from(["persisted-current-minute-key".to_string()]),
+        );
+        state.minute_keys = state.baseline_minute_keys.clone();
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        let next_minute = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "next-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(61)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("next-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(
+            state
+                .apply_runtime_overlay_at(&next_minute, minute_start + ChronoDuration::seconds(90))
+        );
+        assert_eq!(
+            state.active_minute_stats,
+            ParallelWorkActiveMinuteStats {
+                active_minute_count: Some(5),
+                parallel_count_sum: 13,
+            }
+        );
+        assert_eq!(state.response.current.avg_count, Some(2.6));
+    }
+
+    #[test]
+    fn parallel_work_projection_skips_rows_already_in_its_cold_baseline() {
+        let occurred_at = Utc::now() - ChronoDuration::seconds(30);
+        let mut state = parallel_work_materializer_state("1d", occurred_at, 42, None);
+        let outcome = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "baseline-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::TerminalCommitted,
+            row_id: Some(42),
+            is_terminal: true,
+            prompt_cache_key: Some("baseline-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+
+        assert!(!outcome.changed);
+        assert_eq!(state.response.current.conversations[0].request_count, 1);
+    }
+
+    #[test]
+    fn parallel_work_projection_requires_typed_reconcile_for_unknown_account_fallback() {
+        let occurred_at = Utc::now() - ChronoDuration::seconds(30);
+        let mut state = parallel_work_materializer_state("1d", occurred_at, 0, Some(77));
+        let outcome = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "fallback-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: Some(43),
+            is_terminal: false,
+            prompt_cache_key: Some("account-fallback-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+
+        assert!(!outcome.changed);
+        assert!(outcome.needs_account_reconcile);
+    }
+
+    #[test]
+    fn parallel_work_projection_rebases_moving_ranges() {
+        let state = parallel_work_materializer_state(
+            "1d",
+            Utc::now() - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+
+        assert!(state.requires_rolling_rebase());
+    }
+
+    #[test]
+    fn parallel_work_projection_removes_runtime_only_work_immediately() {
+        let occurred_at = Utc::now();
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let identity =
+            RuntimeInvocationIdentity::new("runtime-only-invoke", format_utc_iso(occurred_at));
+        let upsert = RuntimeInvocationMutation {
+            identity: identity.clone(),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("runtime-only-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(state.apply_runtime_mutation(&upsert).changed);
+        assert!(
+            state
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "runtime-only-key" })
+        );
+
+        let removed = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity,
+            kind: RuntimeMutationKind::RuntimeRemoved,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: None,
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+        assert!(removed.changed);
+        assert!(
+            !state
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "runtime-only-key" })
+        );
+        assert_eq!(
+            state
+                .response
+                .current
+                .points
+                .iter()
+                .map(|point| point.parallel_count)
+                .sum::<i64>(),
+            0
+        );
+    }
+
+    #[test]
+    fn parallel_work_projection_replays_runtime_entries_after_rebase() {
+        let occurred_at = Utc::now();
+        let mut old = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "rebase-race-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("rebase-race-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(old.apply_runtime_mutation(&mutation).changed);
+
+        let mut rebased = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(1),
+            0,
+            None,
+        );
+        assert!(rebased.replay_runtime_mutations(&old.runtime_mutations));
+        assert!(
+            rebased
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "rebase-race-key" })
+        );
+    }
+
+    #[test]
+    fn parallel_work_projection_skips_runtime_entries_already_in_rebased_baseline() {
+        let occurred_at = Utc::now();
+        let mut old = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "persisted-rebase-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("persisted-rebase-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(old.apply_runtime_mutation(&mutation).changed);
+
+        let mut rebased = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(1),
+            0,
+            None,
+        );
+        for window in [
+            &mut rebased.response.current,
+            &mut rebased.response.minute7d,
+            &mut rebased.response.hour30d,
+            &mut rebased.response.day_all,
+        ] {
+            window.conversations = vec![ParallelWorkConversation {
+                conversation_id: "persisted-rebase-key".to_string(),
+                start: format_utc_iso(occurred_at),
+                end: format_utc_iso(occurred_at + ChronoDuration::minutes(1)),
+                request_count: 1,
+            }];
+        }
+        rebased.baseline_response = rebased.response.clone();
+        rebased.baseline_identities.insert(format!(
+            "{}\0{}",
+            mutation.identity.invoke_id, mutation.identity.occurred_at
+        ));
+
+        assert!(!rebased.replay_runtime_mutations(&old.runtime_mutations));
+        assert_eq!(rebased.response.current.conversations[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_reconcile_failure_schedules_runtime_recovery_retry() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: Some(77),
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        {
+            let mut guard = hub.state.lock().await;
+            let cached = guard.topics.get_mut(&topic_key).expect("cached topic");
+            cached.dirty = true;
+            cached.parallel_work_refresh_scheduled = true;
+        }
+
+        hub.schedule_parallel_work_reconcile_retry(state.clone(), &topic)
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard.topics.get(&topic_key).expect("cached topic");
+        assert!(cached.dirty);
+        assert!(!cached.parallel_work_refresh_scheduled);
+        assert!(cached.runtime_topic_recovery_retry_at.is_some());
+        assert!(guard.runtime_topic_recovery_running);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_replays_mutations_buffered_before_cold_baseline() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        let occurred_at = format_utc_iso(Utc::now());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("prebaseline-invoke", occurred_at),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("prebaseline-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation before initial baseline");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.prepare_connection(state, vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build and replay parallel-work baseline");
+        let guard = hub.state.lock().await;
+        let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+            guard.topics[&topic_key].dashboard_materializer.as_ref()
+        else {
+            panic!("parallel-work topic must use a typed materializer");
+        };
+        assert!(
+            base.lock()
+                .expect("parallel-work materializer state lock")
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| conversation.conversation_id == "prebaseline-key")
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_discards_prebaseline_mutations_after_last_owner_leaves() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let mut lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "released-prebaseline-invoke",
+                    format_utc_iso(Utc::now()),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("released-prebaseline-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation before initial baseline");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        let topic_keys = std::mem::take(&mut lease.topic_keys);
+        let topic_names = std::mem::take(&mut lease.topic_names);
+        hub.release_topic_subscribers(topic_keys, topic_names, lease.owns_dashboard_live)
+            .await;
+        drop(lease);
+
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.schedule_parallel_work_topic_projection(state, topic, &mutations)
+            .await
+            .expect("ignore mutation after final owner release");
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_retains_unknown_account_mutation_through_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: Some(77),
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "unknown-account-invoke",
+                format_utc_iso(Utc::now()),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("unknown-account-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(mutation.clone()),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("schedule unknown-account reconcile");
+        hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
+            .await
+            .expect("reconcile unknown-account baseline");
+
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .get(&topic_key)
+                .is_some_and(|pending| pending.contains_key(&format!(
+                    "{}\0{}",
+                    mutation.identity.invoke_id, mutation.identity.occurred_at
+                )))
+        );
+
+        let removed = RuntimeInvocationMutation {
+            identity: mutation.identity.clone(),
+            kind: RuntimeMutationKind::RuntimeRemoved,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: None,
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        let removals = [SequencedRuntimeMutation {
+            sequence: 2,
+            mutation: RuntimeMutation::Invocation(removed),
+        }];
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic, &removals)
+            .await
+            .expect("discard removed unknown-account mutation");
+
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_replays_mutations_buffered_while_rebasing() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        {
+            let mut guard = hub.state.lock().await;
+            guard
+                .topics
+                .get_mut(&topic_key)
+                .expect("cached topic")
+                .dirty = true;
+        }
+
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "rebase-buffered-invoke",
+                    format_utc_iso(Utc::now()),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("rebase-buffered-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation while rebase is in flight");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.refresh_topic_if_active(state, topic, true)
+            .await
+            .expect("rebuild parallel-work baseline")
+            .expect("active owner receives rebuilt topic");
+        let guard = hub.state.lock().await;
+        let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+            guard.topics[&topic_key].dashboard_materializer.as_ref()
+        else {
+            panic!("parallel-work topic must retain a typed materializer");
+        };
+        assert!(
+            base.lock()
+                .expect("parallel-work materializer state lock")
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| conversation.conversation_id == "rebase-buffered-key")
+        );
+        drop(guard);
+        drop(lease);
     }
 
     #[test]
@@ -9435,7 +11428,7 @@ mod tests {
         ] {
             assert!(!topic.is_unmigrated_dashboard_hot_projection());
         }
-        assert!(open_parallel.is_unmigrated_dashboard_hot_projection());
+        assert!(!open_parallel.is_unmigrated_dashboard_hot_projection());
         assert!(!open_timeseries.is_unmigrated_dashboard_hot_projection());
         assert!(!closed_parallel.is_affected_by_runtime_mutation(&mutation));
         assert!(!closed_timeseries.is_affected_by_runtime_mutation(&mutation));
@@ -11096,6 +13089,7 @@ mod tests {
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
+            parallel_work_refresh_scheduled: false,
             prompt_cache_refresh_scheduled: false,
             prompt_cache_reconcile_scheduled: false,
             prompt_cache_pending_records: BTreeMap::new(),

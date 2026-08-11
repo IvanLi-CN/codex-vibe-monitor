@@ -3339,10 +3339,25 @@ pub(crate) fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) struct ParallelWorkProjectionBaseline {
+    pub(crate) response: ParallelWorkStatsResponse,
+    pub(crate) bucket_keys: BTreeMap<i64, HashSet<String>>,
+    pub(crate) active_minute_stats: ParallelWorkActiveMinuteStats,
+}
+
 pub(crate) async fn load_parallel_work_stats_response(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
 ) -> Result<ParallelWorkStatsResponse, ApiError> {
+    load_parallel_work_projection_baseline(state, params)
+        .await
+        .map(|baseline| baseline.response)
+}
+
+pub(crate) async fn load_parallel_work_projection_baseline(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+) -> Result<ParallelWorkProjectionBaseline, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
@@ -3383,7 +3398,7 @@ pub(crate) async fn load_parallel_work_stats_response(
         .single()
         .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work fill end epoch")))?;
 
-    let current_counts = if bucket_seconds >= 3_600 {
+    let bucket_keys = if bucket_seconds >= 3_600 {
         let leading_full_bucket_epoch = if fill_start < range_window.start {
             next_reporting_bucket_epoch(fill_start_epoch, bucket_seconds, reporting_tz)?
         } else {
@@ -3440,23 +3455,27 @@ pub(crate) async fn load_parallel_work_stats_response(
         for (bucket_epoch, keys) in tail_bucket_keys {
             bucket_keys.entry(bucket_epoch).or_default().extend(keys);
         }
-        parallel_work_counts_from_key_sets(bucket_keys)
+        bucket_keys
     } else {
-        parallel_work_counts_from_key_sets(
-            query_parallel_work_exact_key_sets(
-                &state.pool,
-                range_window.start,
-                range_window.end,
-                bucket_seconds,
-                reporting_tz,
-                source_scope,
-                upstream_account_id,
-                None,
-                None,
-            )
-            .await?,
+        query_parallel_work_exact_key_sets(
+            &state.pool,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            source_scope,
+            upstream_account_id,
+            None,
+            None,
         )
+        .await?
     };
+    let current_counts = bucket_keys
+        .iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (*bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect::<BTreeMap<_, _>>();
     let conversations = if range_window.duration <= ChronoDuration::hours(24) {
         query_parallel_work_conversation_spans(
             &state.pool,
@@ -3500,11 +3519,15 @@ pub(crate) async fn load_parallel_work_stats_response(
         conversations,
     )?;
 
-    Ok(ParallelWorkStatsResponse {
-        current: current.clone(),
-        minute7d: current.clone(),
-        hour30d: current.clone(),
-        day_all: current,
+    Ok(ParallelWorkProjectionBaseline {
+        response: ParallelWorkStatsResponse {
+            current: current.clone(),
+            minute7d: current.clone(),
+            hour30d: current.clone(),
+            day_all: current,
+        },
+        bucket_keys,
+        active_minute_stats,
     })
 }
 
