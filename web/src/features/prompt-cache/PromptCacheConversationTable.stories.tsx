@@ -2180,6 +2180,70 @@ export const DrawerBindingControls: Story = {
   },
 };
 
+async function openDrawerRouting(canvasElement: HTMLElement) {
+  bindingByPromptCacheKey.set(
+    CONVERSATION_ROUTING_KEY,
+    buildBindingResponse({
+      promptCacheKey: CONVERSATION_ROUTING_KEY,
+      bindingKind: "upstreamAccount",
+      upstreamAccountId: 21,
+      upstreamAccountName: "growth.6vv4@relay.example",
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
+      stickyRoutes: [
+        {
+          modelKey: null,
+          upstreamAccountId: 21,
+          upstreamAccountName: "growth.6vv4@relay.example",
+          createdAt: "2026-05-13T23:40:00.000Z",
+          updatedAt: "2026-05-13T23:42:00.000Z",
+          lastSeenAt: "2026-05-13T23:47:36.000Z",
+        },
+        {
+          modelKey: "gpt-5.4",
+          upstreamAccountId: 22,
+          upstreamAccountName: "mia.7rmmq@support.example",
+          createdAt: "2026-05-13T23:43:00.000Z",
+          updatedAt: "2026-05-13T23:47:36.000Z",
+          lastSeenAt: "2026-05-13T23:47:39.000Z",
+        },
+      ],
+    }),
+  );
+  const documentScope = within(canvasElement.ownerDocument.body);
+  await userEvent.click(
+    documentScope.getAllByRole("button", { name: /打开全部调用记录|open full call history/i })[0],
+  );
+  await userEvent.click(await documentScope.findByRole("tab", { name: /路由|Routing/i }));
+  await waitFor(() => {
+    expect(
+      Array.from(MockEventSource.instances).some(
+        (instance) => instance.readyState === MockEventSource.OPEN,
+      ),
+    ).toBe(true);
+  });
+  const bindingDescriptor = {
+    topic: "prompt-cache.conversation-binding.current",
+    params: { promptCacheKey: CONVERSATION_ROUTING_KEY },
+  };
+  MockEventSource.emitMessage({
+    type: "snapshot",
+    topic: bindingDescriptor,
+    topicKey: JSON.stringify(bindingDescriptor),
+    schemaEpoch: "prompt-cache.conversation-binding.current/v1",
+    cursor: 1,
+    payload: bindingByPromptCacheKey.get(CONVERSATION_ROUTING_KEY),
+  });
+  await expect(await documentScope.findByText(/当前路由|Current routing/i)).toBeInTheDocument();
+  await expect(documentScope.getAllByText(/全部模型|All models/i).length).toBeGreaterThan(0);
+  await expect(await documentScope.findAllByText(/gpt-5\.4/)).toHaveLength(2);
+  await expect(documentScope.getAllByText("mia.7rmmq@support.example").length).toBeGreaterThan(0);
+
+  return documentScope;
+}
+
 export const DrawerRouting: Story = {
   tags: ["test"],
   args: {
@@ -2201,66 +2265,7 @@ export const DrawerRouting: Story = {
     },
   },
   play: async ({ canvasElement, args }) => {
-    bindingByPromptCacheKey.set(
-      CONVERSATION_ROUTING_KEY,
-      buildBindingResponse({
-        promptCacheKey: CONVERSATION_ROUTING_KEY,
-        bindingKind: "upstreamAccount",
-        upstreamAccountId: 21,
-        upstreamAccountName: "growth.6vv4@relay.example",
-        hasEncryptedSessionOwner: true,
-        encryptedOwnerAccountId: 21,
-        encryptedOwnerAccountName: "growth.6vv4@relay.example",
-        encryptedOwnerGroupName: "CIII",
-        stickyRoutes: [
-          {
-            modelKey: null,
-            upstreamAccountId: 21,
-            upstreamAccountName: "growth.6vv4@relay.example",
-            createdAt: "2026-05-13T23:40:00.000Z",
-            updatedAt: "2026-05-13T23:42:00.000Z",
-            lastSeenAt: "2026-05-13T23:47:36.000Z",
-          },
-          {
-            modelKey: "gpt-5.4",
-            upstreamAccountId: 22,
-            upstreamAccountName: "mia.7rmmq@support.example",
-            createdAt: "2026-05-13T23:43:00.000Z",
-            updatedAt: "2026-05-13T23:47:36.000Z",
-            lastSeenAt: "2026-05-13T23:47:39.000Z",
-          },
-        ],
-      }),
-    );
-    const documentScope = within(canvasElement.ownerDocument.body);
-    await userEvent.click(
-      documentScope.getAllByRole("button", { name: /打开全部调用记录|open full call history/i })[0],
-    );
-    await userEvent.click(await documentScope.findByRole("tab", { name: /路由|Routing/i }));
-    await waitFor(() => {
-      expect(
-        Array.from(MockEventSource.instances).some(
-          (instance) => instance.readyState === MockEventSource.OPEN,
-        ),
-      ).toBe(true);
-    });
-    const bindingDescriptor = {
-      topic: "prompt-cache.conversation-binding.current",
-      params: { promptCacheKey: CONVERSATION_ROUTING_KEY },
-    };
-    MockEventSource.emitMessage({
-      type: "snapshot",
-      topic: bindingDescriptor,
-      topicKey: JSON.stringify(bindingDescriptor),
-      schemaEpoch: "prompt-cache.conversation-binding.current/v1",
-      cursor: 1,
-      payload: bindingByPromptCacheKey.get(CONVERSATION_ROUTING_KEY),
-    });
-    await expect(await documentScope.findByText(/当前路由|Current routing/i)).toBeInTheDocument();
-    await expect(documentScope.getAllByText(/全部模型|All models/i).length).toBeGreaterThan(0);
-    await expect(await documentScope.findAllByText(/gpt-5\.4/)).toHaveLength(2);
-    await expect(documentScope.getAllByText("mia.7rmmq@support.example").length).toBeGreaterThan(0);
-
+    const documentScope = await openDrawerRouting(canvasElement);
     await userEvent.click(
       documentScope.getByRole("button", { name: /清空绑定并重选|Clear binding and reselect/i }),
     );
@@ -2269,12 +2274,19 @@ export const DrawerRouting: Story = {
     });
     await expect(resetConfirmation).toBeInTheDocument();
     await userEvent.click(within(resetConfirmation).getByRole("button", { name: /取消|Cancel/i }));
+    await waitFor(() => {
+      expect(documentScope.queryByRole("alertdialog")).toBeNull();
+    });
+    await expect(bindingByPromptCacheKey.get(CONVERSATION_ROUTING_KEY)?.stickyRoutes).toHaveLength(
+      2,
+    );
 
     await userEvent.click(
       documentScope.getByRole("button", {
         name: /查看 mia\.7rmmq@support\.example 的账号详情|View details for mia\.7rmmq@support\.example/i,
       }),
     );
+    await expect(args.onOpenUpstreamAccount).toHaveBeenCalledTimes(1);
     await expect(args.onOpenUpstreamAccount).toHaveBeenCalledWith(22, "mia.7rmmq@support.example");
   },
 };
@@ -2293,13 +2305,16 @@ export const DrawerRoutingMobile: Story = {
       },
     },
   },
-  play: async (context) => {
-    await DrawerRouting.play?.(context);
-    const documentScope = within(context.canvasElement.ownerDocument.body);
+  play: async ({ canvasElement }) => {
+    const documentScope = await openDrawerRouting(canvasElement);
+    const drawerShell =
+      canvasElement.ownerDocument.body.querySelector<HTMLElement>(".drawer-shell");
     const currentRouting = await documentScope.findByTestId("prompt-cache-current-routing");
     const mobileRouting = await documentScope.findByTestId("prompt-cache-current-routing-mobile");
 
+    await expect(drawerShell).not.toBeNull();
     await expect(mobileRouting).toBeVisible();
+    await expect(drawerShell?.scrollWidth).toBeLessThanOrEqual(drawerShell?.clientWidth ?? 0);
     await expect(currentRouting.scrollWidth).toBeLessThanOrEqual(currentRouting.clientWidth);
     await expect(mobileRouting.scrollWidth).toBeLessThanOrEqual(mobileRouting.clientWidth);
   },
