@@ -16,6 +16,9 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO: &str = 
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE: usize = 20;
 const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 
+static PROMPT_CACHE_BINDING_WRITE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeStickyMutation {
     Unchanged,
@@ -57,6 +60,8 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) image_tool_rewrite_mode: Option<String>,
     pub(crate) codex_imagegen_rewrite_mode: Option<String>,
     pub(crate) available_models_json: Option<String>,
+    #[sqlx(default)]
+    pub(crate) available_models_mode: Option<String>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys_json: Option<String>,
     pub(crate) updated_at: String,
@@ -88,6 +93,7 @@ pub(crate) struct PromptCacheConversationPolicyFieldSources {
     pub(crate) image_tool_rewrite_mode: String,
     pub(crate) codex_imagegen_rewrite_mode: String,
     pub(crate) available_models: String,
+    pub(crate) available_models_mode: String,
     pub(crate) forward_proxy_key: String,
 }
 
@@ -111,6 +117,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
+    pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) policy_field_sources: PromptCacheConversationPolicyFieldSources,
@@ -303,6 +310,8 @@ pub(crate) struct UpdatePromptCacheConversationBindingRequest {
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     available_models: PatchField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
+    available_models_mode: PatchField<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     forward_proxy_key: PatchField<String>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     forward_proxy_keys: PatchField<Vec<String>>,
@@ -441,6 +450,7 @@ pub(crate) async fn binding_response_for_none(
         available_models: effective_policy
             .available_models()
             .map(|models| models.to_vec()),
+        available_models_mode: Some(effective_policy.available_models_mode),
         forward_proxy_key,
         forward_proxy_keys,
         policy_field_sources: PromptCacheConversationPolicyFieldSources::inherited(Some(
@@ -486,6 +496,11 @@ pub(crate) async fn binding_response_from_row(
     } else {
         None
     };
+    let (legacy_available_models, available_models_invalid) = row
+        .available_models_json
+        .as_deref()
+        .map(parse_available_models_json_with_invalid)
+        .unwrap_or((None, false));
     let policy_field_sources =
         PromptCacheConversationPolicyFieldSources::from_row(&row, effective_policy.as_ref());
     let effective_available_models = effective_policy
@@ -610,11 +625,30 @@ pub(crate) async fn binding_response_from_row(
                     .as_ref()
                     .map(|rule| rule.codex_imagegen_rewrite_mode)
             }),
-        available_models: row
-            .available_models_json
-            .as_deref()
-            .and_then(parse_available_models_json)
-            .or(effective_available_models),
+        available_models: if available_models_invalid {
+            Some(Vec::new())
+        } else {
+            legacy_available_models
+                .clone()
+                .or(effective_available_models)
+        },
+        available_models_mode: if available_models_invalid {
+            Some(AvailableModelsMode::Allowlist)
+        } else {
+            row.available_models_mode
+                .as_deref()
+                .map(|value| AvailableModelsMode::from_str(Some(value)))
+                .or_else(|| {
+                    legacy_available_models
+                        .as_ref()
+                        .map(|_| AvailableModelsMode::Allowlist)
+                })
+                .or_else(|| {
+                    effective_policy
+                        .as_ref()
+                        .map(|rule| rule.available_models_mode)
+                })
+        },
         forward_proxy_key,
         forward_proxy_keys,
         policy_field_sources,
@@ -643,6 +677,10 @@ impl PromptCacheConversationPolicyFieldSources {
                 .to_string(),
             available_models: effective_policy
                 .map(|rule| rule.available_models_source())
+                .unwrap_or("root")
+                .to_string(),
+            available_models_mode: effective_policy
+                .map(|rule| rule.available_models_mode_source())
                 .unwrap_or("root")
                 .to_string(),
             forward_proxy_key: "account".to_string(),
@@ -674,6 +712,16 @@ impl PromptCacheConversationPolicyFieldSources {
                 row.available_models_json.as_ref(),
                 effective_policy.map(|rule| rule.available_models_source()),
             ),
+            available_models_mode: if row.available_models_mode.is_some()
+                || row.available_models_json.is_some()
+            {
+                "conversation".to_string()
+            } else {
+                effective_policy
+                    .map(|rule| rule.available_models_mode_source())
+                    .unwrap_or("account")
+                    .to_string()
+            },
             forward_proxy_key: source_for_optional(
                 row.forward_proxy_key
                     .as_ref()
@@ -971,6 +1019,12 @@ fn prompt_cache_conversation_policy_changed_fields(
                 .and_then(|row| row.available_models_json.as_deref())
                 .and_then(parse_available_models_json),
     );
+    push_if_changed(
+        &mut changed_fields,
+        "availableModelsMode",
+        before.and_then(|row| row.available_models_mode.as_deref())
+            != after.and_then(|row| row.available_models_mode.as_deref()),
+    );
 
     let before_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(before);
     let after_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(after);
@@ -1020,6 +1074,7 @@ fn prompt_cache_conversation_policy_info_types(changed_fields: &[String]) -> Vec
                 | "imageToolRewriteMode"
                 | "codexImagegenRewriteMode"
                 | "availableModels"
+                | "availableModelsMode"
         )
     });
     if has_request_rewrite {
@@ -1973,6 +2028,7 @@ where
             binding.image_tool_rewrite_mode,
             binding.codex_imagegen_rewrite_mode,
             binding.available_models_json,
+            binding.available_models_mode,
             binding.forward_proxy_key,
             binding.forward_proxy_keys_json,
             binding.updated_at
@@ -2077,25 +2133,25 @@ pub(crate) fn normalize_available_models_patch(
             normalized.push(model.to_string());
         }
     }
-    if normalized.is_empty() {
-        return Err(ApiError::bad_request(anyhow!(
-            "availableModels must contain at least one model when overridden"
-        )));
-    }
     Ok(PatchField::Value(normalized))
 }
 
 pub(crate) fn parse_available_models_json(value: &str) -> Option<Vec<String>> {
-    serde_json::from_str::<Vec<String>>(value)
-        .ok()
-        .map(|values| {
-            values
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .filter(|values| !values.is_empty())
+    parse_available_models_json_with_invalid(value).0
+}
+
+pub(crate) fn parse_available_models_json_with_invalid(value: &str) -> (Option<Vec<String>>, bool) {
+    let values = match serde_json::from_str::<Vec<String>>(value) {
+        Ok(values) => values,
+        Err(_) => return (None, true),
+    };
+    let invalid_entry = values.iter().any(|value| value.trim().is_empty());
+    let normalized = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    (Some(normalized), invalid_entry)
 }
 
 pub(crate) fn parse_forward_proxy_keys_json(value: Option<&str>) -> Vec<String> {
@@ -2126,7 +2182,21 @@ pub(crate) fn conversation_routing_override_from_row(
         available_models: row
             .available_models_json
             .as_deref()
-            .and_then(parse_available_models_json),
+            .map(parse_available_models_json_with_invalid)
+            .and_then(|(models, _)| models),
+        available_models_invalid: row
+            .available_models_json
+            .as_deref()
+            .is_some_and(|raw| parse_available_models_json_with_invalid(raw).1),
+        available_models_mode: row
+            .available_models_mode
+            .as_deref()
+            .map(|value| AvailableModelsMode::from_str(Some(value)))
+            .or_else(|| {
+                row.available_models_json
+                    .as_ref()
+                    .map(|_| AvailableModelsMode::Allowlist)
+            }),
         forward_proxy_key: row
             .forward_proxy_key
             .as_deref()
@@ -2858,6 +2928,7 @@ async fn clear_prompt_cache_conversation_affinity(
     prompt_cache_key: &str,
     origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    let _write_guard = PROMPT_CACHE_BINDING_WRITE_LOCK.lock().await;
     let mut conn = state.pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(conn.as_mut())
@@ -2949,6 +3020,7 @@ fn existing_binding_request(
             image_tool_rewrite_mode: PatchField::Missing,
             codex_imagegen_rewrite_mode: PatchField::Missing,
             available_models: PatchField::Missing,
+            available_models_mode: PatchField::Missing,
             forward_proxy_key: PatchField::Missing,
             forward_proxy_keys: PatchField::Missing,
         },
@@ -2963,6 +3035,7 @@ fn existing_binding_request(
                 image_tool_rewrite_mode: PatchField::Missing,
                 codex_imagegen_rewrite_mode: PatchField::Missing,
                 available_models: PatchField::Missing,
+                available_models_mode: PatchField::Missing,
                 forward_proxy_key: PatchField::Missing,
                 forward_proxy_keys: PatchField::Missing,
             }
@@ -2977,6 +3050,7 @@ fn existing_binding_request(
             image_tool_rewrite_mode: PatchField::Missing,
             codex_imagegen_rewrite_mode: PatchField::Missing,
             available_models: PatchField::Missing,
+            available_models_mode: PatchField::Missing,
             forward_proxy_key: PatchField::Missing,
             forward_proxy_keys: PatchField::Missing,
         },
@@ -2989,6 +3063,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
     payload: UpdatePromptCacheConversationBindingRequest,
     origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    let _write_guard = PROMPT_CACHE_BINDING_WRITE_LOCK.lock().await;
     let binding_kind = payload.binding_kind.trim();
     let group_name = payload
         .group_name
@@ -3041,6 +3116,23 @@ async fn save_prompt_cache_conversation_binding_for_key(
         PatchField::Missing => PatchField::Missing,
         PatchField::Null => PatchField::Null,
         PatchField::Value(models) => PatchField::Value(serde_json::to_string(&models)?),
+    };
+    let available_models_mode = match payload.available_models_mode {
+        PatchField::Missing if matches!(&available_models, PatchField::Value(_)) => {
+            PatchField::Value("allowlist".to_string())
+        }
+        PatchField::Missing if matches!(&available_models, PatchField::Null) => PatchField::Null,
+        PatchField::Missing => PatchField::Missing,
+        PatchField::Null => PatchField::Null,
+        PatchField::Value(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            if normalized != "allowlist" && normalized != "denylist" {
+                return Err(ApiError::bad_request(anyhow!(
+                    "availableModelsMode must be allowlist or denylist"
+                )));
+            }
+            PatchField::Value(normalized)
+        }
     };
     let forward_proxy_key =
         normalize_forward_proxy_key_patch(state, payload.forward_proxy_key).await?;
@@ -3114,11 +3206,28 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .as_ref()
             .and_then(|row| row.codex_imagegen_rewrite_mode.clone()),
     );
-    let next_available_models = next_optional_patch_value(
-        available_models,
+    let next_available_models = if matches!(&available_models_mode, PatchField::Null) {
+        None
+    } else {
+        next_optional_patch_value(
+            available_models,
+            existing_row
+                .as_ref()
+                .and_then(|row| row.available_models_json.clone()),
+        )
+    };
+    let next_available_models_mode = next_optional_patch_value(
+        available_models_mode,
         existing_row
             .as_ref()
-            .and_then(|row| row.available_models_json.clone()),
+            .and_then(|row| row.available_models_mode.clone())
+            .or_else(|| {
+                existing_row.as_ref().and_then(|row| {
+                    row.available_models_json
+                        .as_ref()
+                        .map(|_| "allowlist".to_string())
+                })
+            }),
     );
     let next_forward_proxy_keys = next_optional_patch_value(
         forward_proxy_keys,
@@ -3152,6 +3261,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
         && next_image_tool_rewrite_mode.is_none()
         && next_codex_imagegen_rewrite_mode.is_none()
         && next_available_models.is_none()
+        && next_available_models_mode.is_none()
         && next_forward_proxy_key.is_none()
         && next_forward_proxy_keys_json.is_none();
 
@@ -3182,12 +3292,13 @@ async fn save_prompt_cache_conversation_binding_for_key(
                         image_tool_rewrite_mode,
                         codex_imagegen_rewrite_mode,
                         available_models_json,
+                        available_models_mode,
                         forward_proxy_key,
                         forward_proxy_keys_json,
                         created_at,
                         updated_at
                     )
-                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
+                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
                     ON CONFLICT(prompt_cache_key) DO UPDATE SET
                         binding_kind = excluded.binding_kind,
                         group_name = NULL,
@@ -3202,6 +3313,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                         image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                         codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                         available_models_json = excluded.available_models_json,
+                        available_models_mode = excluded.available_models_mode,
                         forward_proxy_key = excluded.forward_proxy_key,
                         forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                         updated_at = excluded.updated_at
@@ -3219,6 +3331,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                 .bind(&next_image_tool_rewrite_mode)
                 .bind(&next_codex_imagegen_rewrite_mode)
                 .bind(&next_available_models)
+                .bind(&next_available_models_mode)
                 .bind(&next_forward_proxy_key)
                 .bind(&next_forward_proxy_keys_json)
                 .execute(&state.pool)
@@ -3247,12 +3360,13 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     image_tool_rewrite_mode,
                     codex_imagegen_rewrite_mode,
                     available_models_json,
+                    available_models_mode,
                     forward_proxy_key,
                     forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = excluded.group_name,
@@ -3267,6 +3381,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                     codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                     available_models_json = excluded.available_models_json,
+                    available_models_mode = excluded.available_models_mode,
                     forward_proxy_key = excluded.forward_proxy_key,
                     forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                     updated_at = excluded.updated_at
@@ -3285,6 +3400,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(&next_image_tool_rewrite_mode)
             .bind(&next_codex_imagegen_rewrite_mode)
             .bind(&next_available_models)
+            .bind(&next_available_models_mode)
             .bind(&next_forward_proxy_key)
             .bind(&next_forward_proxy_keys_json)
             .execute(&state.pool)
@@ -3320,12 +3436,13 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     image_tool_rewrite_mode,
                     codex_imagegen_rewrite_mode,
                     available_models_json,
+                    available_models_mode,
                     forward_proxy_key,
                     forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = NULL,
@@ -3340,6 +3457,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
                     codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                     available_models_json = excluded.available_models_json,
+                    available_models_mode = excluded.available_models_mode,
                     forward_proxy_key = excluded.forward_proxy_key,
                     forward_proxy_keys_json = excluded.forward_proxy_keys_json,
                     updated_at = excluded.updated_at
@@ -3356,12 +3474,13 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(next_allow_switch_upstream)
             .bind(&next_fast_mode_rewrite_mode)
             .bind(&next_image_tool_rewrite_mode)
-                .bind(&next_codex_imagegen_rewrite_mode)
-                .bind(&next_available_models)
-                .bind(&next_forward_proxy_key)
-                .bind(&next_forward_proxy_keys_json)
-                .execute(conn.as_mut())
-                .await?;
+            .bind(&next_codex_imagegen_rewrite_mode)
+            .bind(&next_available_models)
+            .bind(&next_available_models_mode)
+            .bind(&next_forward_proxy_key)
+            .bind(&next_forward_proxy_keys_json)
+            .execute(conn.as_mut())
+            .await?;
                 let now_iso = format_utc_iso(Utc::now());
                 overwrite_sticky_routes_for_manual_binding_executor(
                     conn.as_mut(),
@@ -3737,6 +3856,7 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                         image_tool_rewrite_mode: PatchField::Missing,
                         codex_imagegen_rewrite_mode: PatchField::Missing,
                         available_models: PatchField::Missing,
+                        available_models_mode: PatchField::Missing,
                         forward_proxy_key: PatchField::Missing,
                         forward_proxy_keys: PatchField::Missing,
                     },
@@ -3808,4 +3928,32 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
         total_failed,
         items,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_mode_changes_are_request_rewrite_events() {
+        let info_types =
+            prompt_cache_conversation_policy_info_types(&["availableModelsMode".to_string()]);
+
+        assert_eq!(
+            info_types,
+            vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE.to_string()]
+        );
+    }
+
+    #[test]
+    fn available_models_parser_fails_closed_on_blank_entries() {
+        assert_eq!(
+            parse_available_models_json_with_invalid(r#"[" "]"#),
+            (Some(Vec::new()), true)
+        );
+        assert_eq!(
+            parse_available_models_json_with_invalid("[]"),
+            (Some(Vec::new()), false)
+        );
+    }
 }

@@ -404,6 +404,7 @@ function GroupSettingsStory({
                 upstream429RetryEnabled: false,
                 upstream429MaxRetries: 0,
                 availableModels: ["gpt-5.5"],
+                availableModelsMode: "allowlist",
                 availableModelsDefined: true,
                 statusChangeReasons: buildDefaultStatusChangeReasons(),
               }}

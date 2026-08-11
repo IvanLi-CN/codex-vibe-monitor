@@ -1415,12 +1415,12 @@ pub(crate) async fn create_test_fast_mode_tag(
             name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 1, 1, ?3, ?4, 0, 0, 0, '[]', ?5, ?5)
+        ) VALUES (?1, ?2, 0, 1, 1, ?3, ?4, 0, 0, 0, '[]', ?5, ?5)
         RETURNING id
         "#,
     )
     .bind(name)
-    .bind(format!("test:{name}"))
+    .bind(None::<String>)
     .bind(priority_tier)
     .bind(fast_mode_rewrite_mode)
     .bind(&now_iso)

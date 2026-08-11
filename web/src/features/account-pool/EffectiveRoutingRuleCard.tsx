@@ -22,6 +22,7 @@ import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Switch } from "../../components/ui/switch";
 import type {
+  AvailableModelsMode,
   CodexImagegenRewriteMode,
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
@@ -200,6 +201,11 @@ interface EffectiveRoutingRuleCardProps {
     requestCompressionDeflate: string;
     requestCompressionZstd: string;
     availableModelsInherited?: string;
+    availableModelsMode?: string;
+    availableModelsAllowlist?: string;
+    availableModelsDenylist?: string;
+    availableModelsAllowed?: string;
+    availableModelsDenied?: string;
     availableModelsNoneAllowed?: string;
     availableModelsEmpty?: string;
     availableModelsField?: string;
@@ -303,6 +309,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
       availableModels: [],
+      availableModelsMode: "denylist",
       systemDeniedModels: [],
       statusChangeReasons: resolveStatusChangeReasons(null),
       statusChangeReasonFieldSources: resolveStatusChangeReasonFieldSources(null),
@@ -619,9 +626,19 @@ function normalizeModelIds(values: string[]) {
   return normalized;
 }
 
-function availableModelsSourceDeniesAll(source: EffectiveRoutingRuleSource | undefined) {
+function availableModelsSourceDeniesAll(
+  source: EffectiveRoutingRuleSource | undefined,
+  mode?: AvailableModelsMode,
+  defined?: boolean,
+) {
   return (
-    source === "group" || source === "tag" || source === "account" || source === "conversation"
+    mode === "allowlist" &&
+    defined !== false &&
+    (source === "root" ||
+      source === "group" ||
+      source === "tag" ||
+      source === "account" ||
+      source === "conversation")
   );
 }
 
@@ -800,9 +817,27 @@ export function EffectiveRoutingRuleCard({
   };
 
   const availableModelsValue = normalizeModelIds(resolvedRule.availableModels ?? []);
+  const availableModelsSource = fieldSources.availableModels;
+  const availableModelsMode =
+    resolvedRule.availableModelsMode ??
+    (availableModelsSource === "group" ||
+    availableModelsSource === "tag" ||
+    availableModelsSource === "account" ||
+    availableModelsSource === "conversation"
+      ? "allowlist"
+      : "denylist");
+  const availableModelsDefined =
+    resolvedRule.availableModelsDefined ?? resolvedRule.availableModelsMode == null;
   const updateAvailableModels = (nextModels: string[]) => {
     changeField("availableModels", {
       availableModels: normalizeModelIds(nextModels),
+      availableModelsMode,
+    });
+  };
+  const updateAvailableModelsMode = (nextMode: AvailableModelsMode) => {
+    changeField("availableModels", {
+      availableModels: availableModelsValue,
+      availableModelsMode: nextMode,
     });
   };
   const appendAvailableModel = (model: string) => {
@@ -1059,23 +1094,37 @@ export function EffectiveRoutingRuleCard({
     {
       key: "availableModels" as const,
       field: "availableModels" as const,
-      label: labels.fieldAvailableModels ?? "Available models",
+      label:
+        availableModelsSource === "conversation"
+          ? (labels.fieldAvailableModels ?? "Available models")
+          : availableModelsMode === "allowlist"
+            ? (labels.availableModelsAllowed ?? labels.fieldAvailableModels ?? "Allowed models")
+            : (labels.availableModelsDenied ?? labels.fieldAvailableModels ?? "Denied models"),
       value:
         availableModelsValue.length > 0
-          ? availableModelsValue.join(", ")
-          : availableModelsSourceDeniesAll(fieldSources.availableModels)
+          ? `${availableModelsMode === "allowlist" ? (labels.availableModelsAllowlist ?? "Allowlist") : (labels.availableModelsDenylist ?? "Denylist")}: ${availableModelsValue.join(", ")}`
+          : availableModelsSourceDeniesAll(
+                fieldSources.availableModels,
+                availableModelsMode,
+                availableModelsDefined,
+              )
             ? (labels.availableModelsNoneAllowed ?? "No models allowed")
             : (labels.availableModelsInherited ?? "Inherited / unrestricted"),
       source: fieldSources.availableModels ?? "root",
       valueChips: availableModelsValue.length > 0 ? availableModelsValue : null,
-      clearPayload: { availableModels: null },
+      clearPayload: { availableModels: null, availableModelsMode: null },
       editor: (
         <AvailableModelsEditor
           value={availableModelsValue}
+          mode={availableModelsMode}
           options={availableModelOptions}
           inputValue={availableModelInput}
           emptyValueLabel={
-            availableModelsSourceDeniesAll(fieldSources.availableModels)
+            availableModelsSourceDeniesAll(
+              fieldSources.availableModels,
+              availableModelsMode,
+              availableModelsDefined,
+            )
               ? (labels.availableModelsNoneAllowed ?? "No models allowed")
               : (labels.availableModelsInherited ?? "Inherited / unrestricted")
           }
@@ -1084,6 +1133,7 @@ export function EffectiveRoutingRuleCard({
           onInputChange={setAvailableModelInput}
           onAdd={appendAvailableModel}
           onChange={updateAvailableModels}
+          onModeChange={updateAvailableModelsMode}
         />
       ),
     },
@@ -1709,6 +1759,7 @@ function RetryInlineEditor({ retries, disabled, labels, onChange }: RetryInlineE
 
 interface AvailableModelsEditorProps {
   value: string[];
+  mode: AvailableModelsMode;
   options: string[];
   inputValue: string;
   emptyValueLabel: string;
@@ -1717,10 +1768,12 @@ interface AvailableModelsEditorProps {
   onInputChange: (value: string) => void;
   onAdd: (value: string) => void;
   onChange: (value: string[]) => void;
+  onModeChange: (value: AvailableModelsMode) => void;
 }
 
 function AvailableModelsEditor({
   value,
+  mode,
   options,
   inputValue,
   emptyValueLabel,
@@ -1729,6 +1782,7 @@ function AvailableModelsEditor({
   onInputChange,
   onAdd,
   onChange,
+  onModeChange,
 }: AvailableModelsEditorProps) {
   const trimmedInput = inputValue.trim();
   const canAdd = trimmedInput.length > 0 && !value.includes(trimmedInput);
@@ -1754,6 +1808,19 @@ function AvailableModelsEditor({
 
   return (
     <div className="min-w-[18rem]">
+      <PolicyInlineOptionGroup<AvailableModelsMode>
+        ariaLabel={
+          labels.availableModelsMode ?? labels.fieldAvailableModels ?? "Available models mode"
+        }
+        value={mode}
+        disabled={disabled}
+        options={[
+          { value: "allowlist", label: labels.availableModelsAllowlist ?? "Allowlist" },
+          { value: "denylist", label: labels.availableModelsDenylist ?? "Denylist" },
+        ]}
+        onChange={onModeChange}
+      />
+      <div className="h-2" />
       <Popover
         open={disabled ? false : open}
         onOpenChange={(nextOpen) => {

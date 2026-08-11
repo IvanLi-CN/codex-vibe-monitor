@@ -994,7 +994,7 @@ pub(crate) async fn update_tag(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
-    if existing.protected != 0 {
+    if existing.protected != 0 || existing.system_key.is_some() {
         return Err((
             StatusCode::CONFLICT,
             "system tag cannot be edited".to_string(),
@@ -1211,7 +1211,7 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_request_compression_algorithm(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
-        let available_models_json = match &routing_rule.available_models {
+        let mut available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,
             OptionalField::Value(value) => Some(
                 encode_string_array_json(&normalize_available_models(
@@ -1221,6 +1221,32 @@ pub(crate) async fn update_upstream_account_group(
                 .map_err(internal_error_tuple)?,
             ),
         };
+        let available_models_mode = match &routing_rule.available_models_mode {
+            OptionalField::Missing => match &routing_rule.available_models {
+                OptionalField::Value(_) => Some("allowlist".to_string()),
+                OptionalField::Missing | OptionalField::Null => None,
+            },
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                let normalized = value.trim().to_ascii_lowercase();
+                if normalized != "allowlist" && normalized != "denylist" {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "availableModelsMode must be allowlist or denylist".to_string(),
+                    ));
+                }
+                Some(normalized)
+            }
+        };
+        if matches!(routing_rule.available_models_mode, OptionalField::Null) {
+            available_models_json = None;
+        }
+        // A mode-only patch changes interpretation, not the selected IDs.
+        // Preserve the stored JSON unless the caller explicitly clears mode
+        // or submits a replacement list.
+        let preserve_available_models_json =
+            matches!(routing_rule.available_models, OptionalField::Missing)
+                && !matches!(routing_rule.available_models_mode, OptionalField::Null);
         let timeout_patch = routing_rule.timeouts.clone().unwrap_or_default();
         let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
             &timeout_patch.responses_first_byte_timeout_secs,
@@ -1332,7 +1358,7 @@ pub(crate) async fn update_upstream_account_group(
         .bind(optional_bool_to_i64(&routing_rule.upstream_429_retry_enabled))
         .bind(if matches!(routing_rule.upstream_429_max_retries, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_retry_count_to_i64(&routing_rule.upstream_429_max_retries))
-        .bind(if matches!(routing_rule.available_models, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(if preserve_available_models_json { 1_i64 } else { 0_i64 })
         .bind(available_models_json)
         .bind(if matches!(status_change_upstream_http_401, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(optional_bool_to_i64(&status_change_upstream_http_401))
@@ -1371,6 +1397,21 @@ pub(crate) async fn update_upstream_account_group(
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
+        if !matches!(routing_rule.available_models_mode, OptionalField::Missing)
+            || matches!(
+                routing_rule.available_models,
+                OptionalField::Value(_) | OptionalField::Null
+            )
+        {
+            sqlx::query(
+                "UPDATE pool_upstream_account_group_notes SET policy_available_models_mode = ?2 WHERE group_name = ?1",
+            )
+            .bind(&group_name)
+            .bind(available_models_mode)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        }
     }
     tx.commit().await.map_err(internal_error_tuple)?;
 

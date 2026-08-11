@@ -484,6 +484,7 @@ const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.5-pro",
     "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5.4-pro",
     "gpt-5.3-codex",
     "gpt-5.2",
@@ -491,6 +492,7 @@ const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
 ];
+const PROXY_IMAGE_MODEL_IDS: &[&str] = &["gpt-image-2"];
 const PREVIOUS_PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.5-pro",

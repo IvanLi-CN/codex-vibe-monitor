@@ -4470,14 +4470,18 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             "availableModels": [],
         }))
         .expect("deserialize empty available models payload");
-    let empty_models_err = patch_prompt_cache_conversation_binding(
+    let Json(empty_models_response) = patch_prompt_cache_conversation_binding(
         State(state.clone()),
         AxumPath(prompt_cache_key.to_string()),
         Json(empty_models_payload),
     )
     .await
-    .expect_err("empty available models override should fail");
-    assert!(matches!(empty_models_err, ApiError::BadRequest(_)));
+    .expect("empty available models allowlist should save and reject all models");
+    assert_eq!(empty_models_response.available_models, Some(Vec::new()));
+    assert_eq!(
+        empty_models_response.available_models_mode,
+        Some(AvailableModelsMode::Allowlist)
+    );
     let sticky_account_id: i64 =
         sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
             .bind(prompt_cache_key)

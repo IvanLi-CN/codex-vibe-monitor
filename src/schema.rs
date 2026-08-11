@@ -679,6 +679,7 @@ pub(crate) fn prompt_cache_conversation_bindings_create_sql(table_name: &str) ->
             image_tool_rewrite_mode TEXT,
             codex_imagegen_rewrite_mode TEXT,
             available_models_json TEXT,
+            available_models_mode TEXT,
             forward_proxy_key TEXT,
             forward_proxy_keys_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -749,6 +750,7 @@ pub(crate) fn prompt_cache_binding_copy_expr(
             "image_tool_rewrite_mode" => "image_tool_rewrite_mode",
             "codex_imagegen_rewrite_mode" => "codex_imagegen_rewrite_mode",
             "available_models_json" => "available_models_json",
+            "available_models_mode" => "available_models_mode",
             "forward_proxy_key" => "forward_proxy_key",
             "forward_proxy_keys_json" => "forward_proxy_keys_json",
             _ => "NULL",
@@ -822,6 +824,8 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
         prompt_cache_binding_copy_expr(&existing_columns, "codex_imagegen_rewrite_mode");
     let available_models_json_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "available_models_json");
+    let available_models_mode_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "available_models_mode");
     let forward_proxy_keys_json_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "forward_proxy_keys_json");
 
@@ -855,6 +859,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             image_tool_rewrite_mode,
             codex_imagegen_rewrite_mode,
             available_models_json,
+            available_models_mode,
             forward_proxy_key,
             forward_proxy_keys_json,
             created_at,
@@ -875,6 +880,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             {image_tool_rewrite_mode_copy},
             {codex_imagegen_rewrite_mode_copy},
             {available_models_json_copy},
+            {available_models_mode_copy},
             {forward_proxy_key_copy},
             {forward_proxy_keys_json_copy},
             created_at,
@@ -3647,6 +3653,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     migrate_prompt_cache_conversation_bindings_contract(pool)
         .await
         .context("failed to migrate prompt_cache_conversation_bindings contract")?;
+    let binding_columns =
+        load_sqlite_table_columns(pool, "prompt_cache_conversation_bindings").await?;
+    if !binding_columns.contains("available_models_mode") {
+        sqlx::query(
+            "ALTER TABLE prompt_cache_conversation_bindings ADD COLUMN available_models_mode TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add available_models_mode to prompt_cache_conversation_bindings")?;
+    }
 
     sqlx::query(
         r#"

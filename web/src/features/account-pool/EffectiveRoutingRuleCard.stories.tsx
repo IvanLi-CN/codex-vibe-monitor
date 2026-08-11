@@ -35,6 +35,8 @@ const labels = {
   imageToolForceAdd: "Force add",
   imageToolForceRemove: "Force remove",
   availableModelsInherited: "Inherited / unrestricted",
+  availableModelsAllowlist: "Allowlist",
+  availableModelsDenylist: "Denylist",
   availableModelsNoneAllowed: "No models allowed",
   availableModelsEmpty: "No matching models",
   systemDeniedModelsEmpty: "None",
@@ -117,6 +119,7 @@ const relaxedRule: EffectiveRoutingRule = {
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
   availableModels: [],
+  availableModelsMode: "denylist",
   systemDeniedModels: [],
   statusChangeReasons: buildDefaultStatusChangeReasons(),
   statusChangeReasonFieldSources: buildDefaultStatusChangeReasonFieldSources(),
@@ -163,6 +166,7 @@ const strictRule: EffectiveRoutingRule = {
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 4,
   availableModels: ["gpt-5.5", "gpt-5.4-mini"],
+  availableModelsMode: "allowlist",
   systemDeniedModels: ["gpt-5.5"],
   statusChangeReasons: {
     ...buildDefaultStatusChangeReasons(),
@@ -187,6 +191,7 @@ const strictRule: EffectiveRoutingRule = {
     concurrencyLimit: "tag",
     upstream429Retry: "account",
     availableModels: "account",
+    availableModelsMode: "account",
     systemDeniedModels: "system",
   },
   timeouts: {
@@ -216,6 +221,7 @@ const strictFieldSources = {
   concurrencyLimit: "tag",
   upstream429Retry: "account",
   availableModels: "account",
+  availableModelsMode: "account",
   systemDeniedModels: "system",
 } as const;
 

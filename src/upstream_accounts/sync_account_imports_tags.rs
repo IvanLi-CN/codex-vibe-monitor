@@ -36,6 +36,7 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_request_compression_algorithm, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
     policy_available_models_json,
+    policy_available_models_mode,
     policy_status_change_upstream_http_401,
     policy_status_change_upstream_http_402,
     policy_status_change_upstream_http_403,
@@ -73,6 +74,7 @@ pub(crate) async fn ensure_protected_system_tag(
     system_key: &str,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
         UPDATE pool_tags
@@ -89,7 +91,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -106,7 +108,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -121,8 +123,30 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    // Protected system tags are immutable signals. Keep any legacy model list,
+    // but discard editable routing fields left on a tag promoted by name.
+    sqlx::query(
+        r#"
+        UPDATE pool_tags
+        SET allow_cut_out = 1,
+            allow_cut_in = 1,
+            priority_tier = 'normal',
+            fast_mode_rewrite_mode = 'keep_original',
+            concurrency_limit = 0,
+            upstream_429_retry_enabled = 0,
+            upstream_429_max_retries = 0,
+            updated_at = ?2
+        WHERE system_key = ?1
+        "#,
+    )
+    .bind(system_key)
+    .bind(&now_iso)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -2265,7 +2289,7 @@ pub(crate) async fn persist_tag_update(
     rule: &TagRoutingRule,
 ) -> Result<TagDetail> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
+    let affected = sqlx::query(
         r#"
         UPDATE pool_tags
         SET name = ?2,
@@ -2279,6 +2303,8 @@ pub(crate) async fn persist_tag_update(
             available_models_json = ?10,
             updated_at = ?11
         WHERE id = ?1
+          AND protected = 0
+          AND system_key IS NULL
         "#,
     )
     .bind(tag_id)
@@ -2297,7 +2323,11 @@ pub(crate) async fn persist_tag_update(
     .bind(encode_string_array_json(&rule.available_models)?)
     .bind(&now_iso)
     .execute(pool)
-    .await?;
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        return Err(anyhow!("system tag cannot be edited"));
+    }
     load_tag_detail(pool, tag_id)
         .await?
         .ok_or_else(|| anyhow!("tag not found after update"))
@@ -2307,8 +2337,9 @@ pub(crate) async fn delete_tag_by_id(
     pool: &Pool<Sqlite>,
     tag_id: i64,
 ) -> Result<(), (StatusCode, String)> {
-    let is_protected =
-        sqlx::query_scalar::<_, i64>("SELECT protected FROM pool_tags WHERE id = ?1")
+    let is_protected = sqlx::query_scalar::<_, i64>(
+            "SELECT CASE WHEN protected != 0 OR system_key IS NOT NULL THEN 1 ELSE 0 END FROM pool_tags WHERE id = ?1",
+        )
             .bind(tag_id)
             .fetch_optional(pool)
             .await
@@ -2350,21 +2381,41 @@ pub(crate) async fn delete_tag_by_id(
             "tag is still associated with accounts or pending OAuth sessions".to_string(),
         ));
     }
-    let affected = sqlx::query("DELETE FROM pool_tags WHERE id = ?1")
-        .bind(tag_id)
-        .execute(pool)
-        .await
-        .map_err(internal_error_tuple)?
-        .rows_affected();
+    let affected =
+        sqlx::query("DELETE FROM pool_tags WHERE id = ?1 AND protected = 0 AND system_key IS NULL")
+            .bind(tag_id)
+            .execute(pool)
+            .await
+            .map_err(internal_error_tuple)?
+            .rows_affected();
     if affected == 0 {
-        return Err((StatusCode::NOT_FOUND, "tag not found".to_string()));
+        let still_exists =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM pool_tags WHERE id = ?1 LIMIT 1")
+                .bind(tag_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(internal_error_tuple)?
+                .is_some();
+        return Err(if still_exists {
+            (
+                StatusCode::CONFLICT,
+                "system tag cannot be deleted".to_string(),
+            )
+        } else {
+            (StatusCode::NOT_FOUND, "tag not found".to_string())
+        });
     }
     Ok(())
 }
 
 pub(crate) fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
     let message = err.to_string();
-    if message.contains("UNIQUE constraint failed") {
+    if message.contains("system tag cannot be edited") {
+        (
+            StatusCode::CONFLICT,
+            "system tag cannot be edited".to_string(),
+        )
+    } else if message.contains("UNIQUE constraint failed") {
         (StatusCode::CONFLICT, "tag name already exists".to_string())
     } else {
         internal_error_tuple(err)
@@ -2477,6 +2528,7 @@ pub(crate) async fn load_upstream_account_groups(
             notes.policy_upstream_429_retry_enabled,
             notes.policy_upstream_429_max_retries,
             notes.policy_available_models_json,
+            notes.policy_available_models_mode,
             notes.policy_status_change_upstream_http_401,
             notes.policy_status_change_upstream_http_402,
             notes.policy_status_change_upstream_http_403,
@@ -2533,6 +2585,7 @@ pub(crate) async fn load_upstream_account_groups(
             row.policy_upstream_429_retry_enabled,
             row.policy_upstream_429_max_retries,
             row.policy_available_models_json.as_deref(),
+            row.policy_available_models_mode.as_deref(),
             row.policy_status_change_upstream_http_401,
             row.policy_status_change_upstream_http_402,
             row.policy_status_change_upstream_http_403,
@@ -3758,6 +3811,7 @@ pub(crate) fn group_routing_rule_from_group_metadata(
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         available_models: Vec::new(),
+        available_models_mode: None,
         available_models_defined: false,
         status_change_reasons: default_status_change_reasons(),
         timeouts: None,

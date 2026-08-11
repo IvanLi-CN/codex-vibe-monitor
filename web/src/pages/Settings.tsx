@@ -14,6 +14,7 @@ import { AppIcon } from "../features/shared/AppIcon";
 import { useSettings } from "../hooks/useSettings";
 import { useTranslation } from "../i18n";
 import {
+  type AvailableModelsMode,
   createForwardProxyNodeLatencyTestEventSource,
   createForwardProxyNodesLatencyTestEventSource,
   type ForwardProxyLatencyTestNodeProgress,
@@ -53,6 +54,8 @@ type RoutingDraft = {
   requestCompressionAlgorithm: RequestCompressionAlgorithm;
   requestCompressionLevelPreset: RequestCompressionLevelPreset;
   codexImagegenRewriteMode: import("../lib/api").CodexImagegenRewriteMode;
+  availableModels: string[];
+  availableModelsMode: AvailableModelsMode;
   responsesFirstByteTimeoutSecs: string;
   compactFirstByteTimeoutSecs: string;
   imageFirstByteTimeoutSecs: string;
@@ -254,6 +257,8 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     requestCompressionAlgorithm: routing.requestCompressionAlgorithm ?? "identity",
     requestCompressionLevelPreset: routing.requestCompressionLevelPreset ?? "balanced",
     codexImagegenRewriteMode: routing.codexImagegenRewriteMode ?? "keep_original",
+    availableModels: routing.availableModels ?? [],
+    availableModelsMode: routing.availableModelsMode ?? "denylist",
     responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
     imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),
@@ -743,6 +748,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
       requestCompressionLevelPreset: routingDraft.requestCompressionLevelPreset,
       codexImagegenRewriteMode: routingDraft.codexImagegenRewriteMode,
+      availableModels: routingDraft.availableModels,
+      availableModelsMode: routingDraft.availableModelsMode,
       timeouts: parsedTimeouts,
     };
 
@@ -2038,6 +2045,14 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 }
                 onCodexImagegenRewriteModeChange={(value) =>
                   updateRoutingDraft({ codexImagegenRewriteMode: value })
+                }
+                availableModelOptions={[
+                  ...(settings?.proxy.models ?? []),
+                  ...(settings?.proxy.imageModels ?? []),
+                ]}
+                onAvailableModelsChange={(value) => updateRoutingDraft({ availableModels: value })}
+                onAvailableModelsModeChange={(value) =>
+                  updateRoutingDraft({ availableModelsMode: value })
                 }
                 onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
                 onSave={() => void saveRoutingDefaults()}

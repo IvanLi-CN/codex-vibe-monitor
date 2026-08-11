@@ -78,6 +78,7 @@ export type CodexImagegenRewriteMode = ImageToolRewriteMode;
 export type CapabilitySupport = "supported" | "unsupported" | "unknown";
 export type CapabilityOverride = Exclude<CapabilitySupport, "unknown">;
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
+export type AvailableModelsMode = "allowlist" | "denylist";
 export type RequestCompressionAlgorithm = "follow" | "identity" | "gzip" | "deflate" | "zstd";
 export type RequestCompressionLevelPreset = "fast" | "balanced" | "best";
 
@@ -98,6 +99,7 @@ export interface TagRoutingRule {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableModels?: string[];
+  availableModelsMode?: AvailableModelsMode;
   availableModelsDefined?: boolean;
 }
 
@@ -173,6 +175,7 @@ export interface EffectiveRoutingRuleFieldSources {
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
   availableModels?: EffectiveRoutingRuleSource;
+  availableModelsMode?: EffectiveRoutingRuleSource;
   systemDeniedModels?: EffectiveRoutingRuleSource;
 }
 
@@ -376,6 +379,8 @@ export interface UpdatePoolRoutingSettingsPayload {
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode;
+  availableModels?: string[];
+  availableModelsMode?: AvailableModelsMode;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
@@ -387,6 +392,8 @@ export interface PoolRoutingSettings {
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   codexImagegenRewriteMode?: CodexImagegenRewriteMode;
+  availableModels?: string[];
+  availableModelsMode?: AvailableModelsMode;
   timeouts?: PoolRoutingTimeoutSettings;
 }
 
@@ -854,6 +861,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
   availableModels?: NullableRoutingRuleValue<string[]>;
+  availableModelsMode?: NullableRoutingRuleValue<AvailableModelsMode>;
   statusChangeReasons?: Partial<Record<StatusChangeReasonCode, NullableRoutingRuleValue<boolean>>>;
   timeouts?: {
     responsesFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
@@ -935,6 +943,9 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
 
 function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const availableModelsDefined =
+    payload.availableModelsDefined === true ||
+    (payload.availableModelsDefined == null && Array.isArray(payload.availableModels));
   const concurrencyLimit = normalizeFiniteNumber(payload.concurrencyLimit);
   const upstream429MaxRetries = normalizeUpstreamAccountGroupMaxRetries(
     payload.upstream429MaxRetries,
@@ -961,8 +972,13 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     availableModels: normalizeStringArray(payload.availableModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
-    availableModelsDefined:
-      payload.availableModelsDefined === true || Array.isArray(payload.availableModels),
+    availableModelsDefined,
+    availableModelsMode:
+      payload.availableModelsMode === "allowlist" || payload.availableModelsMode === "denylist"
+        ? payload.availableModelsMode
+        : availableModelsDefined
+          ? "allowlist"
+          : undefined,
   };
 }
 
@@ -1162,6 +1178,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
       availableModels: normalizeSource(rawSources.availableModels),
+      availableModelsMode: normalizeSource(rawSources.availableModelsMode),
       systemDeniedModels: normalizeSource(rawSources.systemDeniedModels),
     },
     statusChangeReasonFieldSources: normalizeStatusChangeReasonFieldSources(
