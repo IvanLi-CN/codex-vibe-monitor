@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.60.1",
+  "base_stable_version": "2.60.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-12T07:08:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.60.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8bc9a69af9daeba0baf8c79d37a43a9a8e339db5",
+  "pr_number": 790,
+  "pr_title": "fix(web): compact effective model mode toggle",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.60.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.60.1",
+  "target_sha": "7270a5fe1433af9d04f1930b8d91460d8683dbd6",
+  "type_label": "type:patch"
+}
