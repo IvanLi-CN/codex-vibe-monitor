@@ -3217,7 +3217,7 @@ export function PromptCacheConversationHistoryDrawer({
             onClick={() =>
               void saveConversationInlinePolicy("availableModels", {
                 availableModels: availableModelsOverrideList,
-                availableModelsMode: "allowlist",
+                availableModelsMode: binding?.availableModelsMode ?? "allowlist",
               })
             }
           >
