@@ -6054,7 +6054,6 @@ impl SubscriptionHub {
             query_working_prompt_cache_conversation_candidate_keys(
                 state.as_ref(),
                 source_scope,
-                range_end,
                 &range_start_bound,
                 page_size as i64,
                 blocked_binding_filter.as_ref(),
@@ -6096,7 +6095,6 @@ impl SubscriptionHub {
         let total_matched = query_working_prompt_cache_conversation_total_matched(
             state.as_ref(),
             source_scope,
-            range_end,
             &range_start_bound,
             blocked_binding_filter.as_ref(),
             &hydrated_visible_keys,
@@ -14956,6 +14954,136 @@ mod tests {
             .expect("commit snapshot transaction");
         state.pool.close().await;
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_paginated_snapshot_excludes_future_runtime_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let snapshot_at = Utc::now();
+        let mut before_snapshot = dashboard_runtime_topology_live_record(&format_naive(
+            (snapshot_at - ChronoDuration::seconds(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ));
+        before_snapshot.id = 0;
+        before_snapshot.invoke_id = "working-runtime-before-snapshot".to_string();
+        before_snapshot.status = Some("success".to_string());
+        before_snapshot.live_phase = None;
+        before_snapshot.prompt_cache_key = Some("working-runtime-before-snapshot-key".to_string());
+        before_snapshot.total_tokens = Some(19);
+        before_snapshot.created_at = before_snapshot.occurred_at.clone();
+        state.proxy_runtime_invocations.upsert(before_snapshot);
+
+        let mut second_before_snapshot = dashboard_runtime_topology_live_record(&format_naive(
+            (snapshot_at - ChronoDuration::seconds(2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ));
+        second_before_snapshot.id = 0;
+        second_before_snapshot.invoke_id = "working-runtime-before-second-snapshot".to_string();
+        second_before_snapshot.status = Some("success".to_string());
+        second_before_snapshot.live_phase = None;
+        second_before_snapshot.prompt_cache_key =
+            Some("working-runtime-before-second-snapshot-key".to_string());
+        second_before_snapshot.total_tokens = Some(17);
+        second_before_snapshot.created_at = second_before_snapshot.occurred_at.clone();
+        state
+            .proxy_runtime_invocations
+            .upsert(second_before_snapshot);
+
+        let mut after_snapshot = dashboard_runtime_topology_live_record(&format_naive(
+            (snapshot_at + ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ));
+        after_snapshot.id = 0;
+        after_snapshot.invoke_id = "working-runtime-after-snapshot".to_string();
+        after_snapshot.status = Some("success".to_string());
+        after_snapshot.live_phase = None;
+        after_snapshot.prompt_cache_key = Some("working-runtime-after-snapshot-key".to_string());
+        after_snapshot.total_tokens = Some(23);
+        after_snapshot.created_at = after_snapshot.occurred_at.clone();
+        state.proxy_runtime_invocations.upsert(after_snapshot);
+
+        let persisted_after_snapshot_at =
+            format_utc_iso_precise(snapshot_at + ChronoDuration::minutes(2));
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, payload, raw_response,
+                created_at
+            ) VALUES (?1, ?2, 'proxy', 'success', 29, ?3, '{}', ?4)
+            "#,
+        )
+        .bind("working-durable-after-snapshot")
+        .bind(format_naive(
+            (snapshot_at + ChronoDuration::minutes(2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(json!({ "promptCacheKey": "working-durable-after-snapshot-key" }).to_string())
+        .bind(persisted_after_snapshot_at)
+        .execute(&state.pool)
+        .await
+        .expect("persist working key after frozen snapshot");
+
+        let response = build_prompt_cache_conversations_response_for_request(
+            state.as_ref(),
+            PromptCacheConversationsRequest {
+                selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+                detail_level: PromptCacheConversationDetailLevel::Full,
+                recent_invocation_limit: Some(16),
+                page_size: Some(1),
+                cursor: None,
+                snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+                blocked_binding_filter: None,
+            },
+        )
+        .await
+        .expect("build paginated working snapshot");
+
+        assert_eq!(response.total_matched, Some(2));
+        assert!(response.has_more);
+        let next_cursor = response.next_cursor.clone().expect("second page cursor");
+        assert_eq!(response.conversations.len(), 1);
+        assert_eq!(
+            response.conversations[0].prompt_cache_key,
+            "working-runtime-before-snapshot-key"
+        );
+        assert_eq!(response.conversations[0].request_count, 1);
+        assert_eq!(response.conversations[0].recent_invocations.len(), 1);
+
+        let second_page = build_prompt_cache_conversations_response_for_request(
+            state.as_ref(),
+            PromptCacheConversationsRequest {
+                selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+                detail_level: PromptCacheConversationDetailLevel::Full,
+                recent_invocation_limit: Some(16),
+                page_size: Some(1),
+                cursor: Some(next_cursor),
+                snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+                blocked_binding_filter: None,
+            },
+        )
+        .await
+        .expect("build second frozen working page");
+        assert_eq!(second_page.total_matched, Some(2));
+        assert!(!second_page.has_more);
+        assert!(second_page.next_cursor.is_none());
+        assert_eq!(second_page.conversations.len(), 1);
+        assert_eq!(
+            second_page.conversations[0].prompt_cache_key,
+            "working-runtime-before-second-snapshot-key"
+        );
+        assert_eq!(second_page.conversations[0].request_count, 1);
+        assert_eq!(second_page.conversations[0].recent_invocations.len(), 1);
     }
 
     #[tokio::test]

@@ -143,6 +143,36 @@ pub(crate) fn runtime_prompt_cache_overlay_records(
         .collect()
 }
 
+fn runtime_prompt_cache_record_is_visible_at_snapshot(
+    record: &ApiInvocation,
+    snapshot_at: DateTime<Utc>,
+) -> bool {
+    // A paginated response is anchored to its initial snapshot. Runtime entries have no durable
+    // row ceiling until P1 acknowledges them, so both timestamps must already be visible before
+    // they can participate in the frozen page membership.
+    parse_to_utc_datetime(&record.occurred_at).is_some_and(|occurred_at| occurred_at <= snapshot_at)
+        && parse_to_utc_datetime(&record.created_at)
+            .is_some_and(|created_at| created_at <= snapshot_at)
+}
+
+fn runtime_prompt_cache_overlay_records_at_snapshot(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range_start_bound: &str,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+    snapshot_at: DateTime<Utc>,
+) -> Vec<ApiInvocation> {
+    runtime_prompt_cache_overlay_records(
+        state,
+        source_scope,
+        range_start_bound,
+        blocked_binding_filter,
+    )
+    .into_iter()
+    .filter(|record| runtime_prompt_cache_record_is_visible_at_snapshot(record, snapshot_at))
+    .collect()
+}
+
 pub(crate) fn runtime_prompt_cache_overlay_keys(
     runtime_overlay_records: &[ApiInvocation],
 ) -> HashSet<String> {
@@ -251,23 +281,8 @@ pub(crate) fn merge_runtime_prompt_cache_aggregates(
         let Some(runtime) = runtime_prompt_cache_aggregate_from_record(record) else {
             continue;
         };
-        if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor
-        {
-            let sort_anchor_at = runtime
-                .sort_anchor_at
-                .as_deref()
-                .unwrap_or(&runtime.last_activity_at);
-            let cursor_sort_anchor_at = cursor_sort_anchor_at.as_str();
-            let cursor_created_at = cursor_created_at.as_str();
-            let cursor_prompt_cache_key = cursor_prompt_cache_key.as_str();
-            let is_after_cursor = sort_anchor_at < cursor_sort_anchor_at
-                || (sort_anchor_at == cursor_sort_anchor_at
-                    && (runtime.created_at.as_str() < cursor_created_at
-                        || (runtime.created_at.as_str() == cursor_created_at
-                            && runtime.prompt_cache_key.as_str() < cursor_prompt_cache_key)));
-            if !is_after_cursor {
-                continue;
-            }
+        if cursor.is_some() && !prompt_cache_aggregate_is_after_cursor(&runtime, cursor) {
+            continue;
         }
         match rows_by_key.entry(runtime.prompt_cache_key.clone()) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -283,6 +298,25 @@ pub(crate) fn merge_runtime_prompt_cache_aggregates(
     sort_prompt_cache_working_aggregates(&mut rows);
     rows.truncate(limit.max(0) as usize);
     rows
+}
+
+fn prompt_cache_aggregate_is_after_cursor(
+    aggregate: &PromptCacheConversationAggregateRow,
+    cursor: Option<&(String, String, String, Option<i64>)>,
+) -> bool {
+    let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor
+    else {
+        return true;
+    };
+    let sort_anchor_at = aggregate
+        .sort_anchor_at
+        .as_deref()
+        .unwrap_or(&aggregate.last_activity_at);
+    sort_anchor_at < cursor_sort_anchor_at.as_str()
+        || (sort_anchor_at == cursor_sort_anchor_at.as_str()
+            && (aggregate.created_at.as_str() < cursor_created_at.as_str()
+                || (aggregate.created_at.as_str() == cursor_created_at.as_str()
+                    && aggregate.prompt_cache_key.as_str() < cursor_prompt_cache_key.as_str())))
 }
 
 pub(crate) async fn apply_prompt_cache_lifecycle_aggregate_totals(
@@ -528,26 +562,16 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key(
 pub(crate) async fn query_working_prompt_cache_conversation_candidate_keys(
     state: &AppState,
     source_scope: InvocationSourceScope,
-    range_end: DateTime<Utc>,
     range_start_bound: &str,
     page_size: i64,
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
 ) -> Result<Vec<String>, ApiError> {
-    let snapshot = PromptCacheConversationSnapshotFilter {
-        snapshot_upper_bound: format_utc_iso_precise(range_end),
-        snapshot_created_at_upper_bound: None,
-        snapshot_boundary_row_id_ceiling: None,
-    };
     let mut connection = state.pool.acquire().await?;
-    let aggregates = query_prompt_cache_working_conversation_aggregates_page(
+    let aggregates = query_prompt_cache_working_conversation_live_candidate_aggregates(
         &mut *connection,
         range_start_bound,
-        &snapshot,
-        0,
-        "",
         source_scope,
         blocked_binding_filter,
-        None,
         page_size.max(0),
     )
     .await?;
@@ -572,16 +596,10 @@ pub(crate) async fn query_working_prompt_cache_conversation_candidate_keys(
 pub(crate) async fn query_working_prompt_cache_conversation_total_matched(
     state: &AppState,
     source_scope: InvocationSourceScope,
-    range_end: DateTime<Utc>,
     range_start_bound: &str,
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
     additional_visible_keys: &HashSet<String>,
 ) -> Result<i64, ApiError> {
-    let snapshot = PromptCacheConversationSnapshotFilter {
-        snapshot_upper_bound: format_utc_iso_precise(range_end),
-        snapshot_created_at_upper_bound: None,
-        snapshot_boundary_row_id_ceiling: None,
-    };
     let runtime_overlay_records = runtime_prompt_cache_overlay_records(
         state,
         source_scope,
@@ -591,15 +609,14 @@ pub(crate) async fn query_working_prompt_cache_conversation_total_matched(
     let mut visible_keys = runtime_prompt_cache_overlay_keys(&runtime_overlay_records);
     visible_keys.extend(additional_visible_keys.iter().cloned());
     let mut connection = state.pool.acquire().await?;
-    let db_total_matched = query_working_prompt_cache_conversation_count_at_snapshot(
+    let db_total_matched = query_working_prompt_cache_conversation_count_at_live(
         &mut *connection,
         range_start_bound,
-        &snapshot,
         source_scope,
         blocked_binding_filter,
     )
     .await?;
-    let existing_visible_keys = query_existing_working_prompt_cache_conversation_keys(
+    let existing_visible_keys = query_existing_working_prompt_cache_conversation_keys_at_live(
         &mut *connection,
         range_start_bound,
         source_scope,
@@ -710,23 +727,22 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request_with_r
     )
     .await?;
     let db_page_limit = page_size + 1;
-    let aggregates = query_prompt_cache_working_conversation_aggregates_page(
+    let aggregates = query_prompt_cache_working_conversation_aggregates_at_snapshot(
         &mut *connection,
         &range_start_bound,
         &snapshot_filter,
-        snapshot_hour_start_epoch,
-        &snapshot_hour_start_bound,
         source_scope,
         request.blocked_binding_filter.as_ref(),
         cursor.as_ref(),
         db_page_limit,
     )
     .await?;
-    let runtime_overlay_records = runtime_prompt_cache_overlay_records(
+    let runtime_overlay_records = runtime_prompt_cache_overlay_records_at_snapshot(
         state,
         source_scope,
         &range_start_bound,
         request.blocked_binding_filter.as_ref(),
+        snapshot_at,
     );
     let mut aggregates = merge_runtime_prompt_cache_aggregates(
         aggregates,
@@ -765,14 +781,16 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request_with_r
     )
     .await?;
     let runtime_overlay_keys = runtime_prompt_cache_overlay_keys(&runtime_overlay_records);
-    let existing_runtime_overlay_keys = query_existing_working_prompt_cache_conversation_keys(
-        &mut *connection,
-        &range_start_bound,
-        source_scope,
-        &runtime_overlay_keys,
-        request.blocked_binding_filter.as_ref(),
-    )
-    .await?;
+    let existing_runtime_overlay_keys =
+        query_existing_working_prompt_cache_conversation_keys_at_snapshot(
+            &mut *connection,
+            &range_start_bound,
+            &snapshot_filter,
+            source_scope,
+            &runtime_overlay_keys,
+            request.blocked_binding_filter.as_ref(),
+        )
+        .await?;
     let total_matched = db_total_matched
         + runtime_overlay_keys
             .difference(&existing_runtime_overlay_keys)
@@ -936,7 +954,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
             .await?;
             let runtime_overlay_keys = runtime_prompt_cache_overlay_keys(&runtime_overlay_records);
             let existing_runtime_overlay_keys =
-                query_existing_working_prompt_cache_conversation_keys(
+                query_existing_working_prompt_cache_conversation_keys_at_live(
                     &state.pool,
                     &range_start_bound,
                     source_scope,
