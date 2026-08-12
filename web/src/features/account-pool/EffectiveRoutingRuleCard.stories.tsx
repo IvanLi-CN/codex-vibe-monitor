@@ -633,15 +633,8 @@ export const EditableAccountOverrides: Story = {
         throw new Error(`missing expanded content for ${labelText}`);
       }
 
-      const textNode = Array.from(label.childNodes).find(
-        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
-      );
-      if (!textNode) {
-        throw new Error(`missing label text node for ${labelText}`);
-      }
-
       const range = document.createRange();
-      range.selectNodeContents(textNode);
+      range.selectNodeContents(label);
       const textRect = range.getBoundingClientRect();
       const editorRect = editor.getBoundingClientRect();
       const textCenterY = textRect.top + textRect.height / 2;

@@ -379,7 +379,7 @@ at the current implementation commit. The capture is mock-only, element-level
 component evidence from the Storybook canvas at a `1440x1600` desktop CSS
 viewport. It uses the light theme and passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
-Evidence binding commit: `9a4f2bb5cf6c2785a06ee709f61a862e3579d8a6`.
+Evidence binding commit: `b08220fdd5cd58e74ca10969bd0d4a5dcd58ce54`.
 
 PR: include
 ![Effective model policy desktop](./assets/effective-model-policy-desktop.png)
