@@ -651,6 +651,29 @@ export const EditableAccountOverrides: Story = {
   },
 };
 
+export const EditableAvailableModels: Story = {
+  render: () => (
+    <EditableRoutingRuleDemo initialRule={strictRule} visibleRows={["availableModels"]} />
+  ),
+  play: async ({ canvasElement }) => {
+    const modeToggle = canvasElement.querySelector<HTMLButtonElement>(
+      'button[data-testid="available-models-mode-toggle"]',
+    );
+    if (!modeToggle) {
+      throw new Error("missing desktop available-models mode toggle");
+    }
+
+    expect(modeToggle.classList.contains("hidden")).toBe(true);
+    expect(modeToggle.classList.contains("min-[769px]:inline-flex")).toBe(true);
+    expect(modeToggle.textContent).toContain("Allowlist");
+
+    await userEvent.click(modeToggle);
+
+    expect(modeToggle.textContent).toContain("Denylist");
+    expect(canvasElement.textContent).toContain("gpt-5.4-mini");
+  },
+};
+
 export const EditableMultipleAccountOverrides: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
 };

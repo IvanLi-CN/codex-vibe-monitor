@@ -538,6 +538,45 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain("Add gpt-5.4-mini");
   });
 
+  it("keeps the desktop mode toggle beside the selector and preserves selected models", () => {
+    const onChange = vi.fn();
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.4-mini"],
+          availableModelsMode: "denylist",
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "account",
+          },
+        })}
+        labels={{
+          ...labels,
+          availableModelsAllowlist: "Allowlist",
+          availableModelsDenylist: "Denylist",
+        }}
+        editablePolicy={{ onChange }}
+      />,
+    );
+
+    const modeToggle = document.querySelector<HTMLButtonElement>(
+      'button[data-testid="available-models-mode-toggle"]',
+    );
+    expect(modeToggle).not.toBeNull();
+    expect(modeToggle?.textContent).toContain("Denylist");
+    expect(modeToggle?.classList.contains("hidden")).toBe(true);
+    expect(modeToggle?.classList.contains("min-[769px]:inline-flex")).toBe(true);
+
+    act(() => {
+      modeToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith("availableModels", {
+      availableModels: ["gpt-5.4-mini"],
+      availableModelsMode: "allowlist",
+    });
+  });
+
   it("renders status change reasons with their resolved source and evidence-only state", () => {
     const baseReasons = buildDefaultStatusChangeReasons();
     const baseSources = buildDefaultStatusChangeReasonFieldSources();
