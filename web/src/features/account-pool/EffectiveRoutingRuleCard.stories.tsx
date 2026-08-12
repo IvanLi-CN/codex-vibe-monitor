@@ -472,8 +472,7 @@ function applyPatchToRule(
     }
   }
   if ("availableModels" in patch) {
-    if (patch.availableModels !== null)
-      next.availableModels = patch.availableModels ?? next.availableModels;
+    next.availableModels = patch.availableModels ?? [];
     nextSources.availableModels = sourceFor(patch.availableModels);
   }
   if ("availableModelsMode" in patch && patch.availableModelsMode !== null) {
