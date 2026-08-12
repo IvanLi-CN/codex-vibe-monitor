@@ -1313,27 +1313,53 @@ export function EffectiveRoutingRuleCard({
                     </div>
                     {expanded && row.field ? (
                       <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                        <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                          <p className="text-sm font-semibold text-base-content">
-                            <PolicyFieldLabel
-                              label={row.label}
-                              hint={
-                                row.key === "imageToolRewriteMode"
-                                  ? labels.imageToolRewriteHint
-                                  : row.key === "codexImagegenRewriteMode"
-                                    ? labels.codexImagegenRewriteHint
-                                    : undefined
-                              }
-                            />
-                          </p>
-                          <div className="min-w-0 sm:col-span-3">{row.displayEditor}</div>
+                        <div
+                          className={cn(
+                            "grid grid-cols-1 gap-y-2 sm:items-center sm:gap-x-3",
+                            row.key === "availableModels"
+                              ? "sm:grid-cols-1"
+                              : "sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem]",
+                          )}
+                        >
+                          {row.key !== "availableModels" ? (
+                            <p className="text-sm font-semibold text-base-content">
+                              <PolicyFieldLabel
+                                label={row.label}
+                                hint={
+                                  row.key === "imageToolRewriteMode"
+                                    ? labels.imageToolRewriteHint
+                                    : row.key === "codexImagegenRewriteMode"
+                                      ? labels.codexImagegenRewriteHint
+                                      : undefined
+                                }
+                              />
+                            </p>
+                          ) : null}
+                          <div
+                            className={cn(
+                              "min-w-0",
+                              row.key !== "availableModels" && "sm:col-span-3",
+                            )}
+                          >
+                            {row.displayEditor}
+                          </div>
                           {busy ? (
-                            <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs text-base-content/60",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {labels.overrideSaving ?? "Saving..."}
                             </p>
                           ) : null}
                           {error ? (
-                            <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs font-medium text-error",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {error}
                             </p>
                           ) : null}
@@ -1818,7 +1844,7 @@ function AvailableModelsEditor({
 
   return (
     <div className="min-w-[18rem]">
-      <div className="flex flex-col gap-2 min-[769px]:flex-row min-[769px]:items-start">
+      <div className="flex flex-col gap-2 min-[769px]:flex-row min-[769px]:items-center">
         <Button
           type="button"
           variant="outline"

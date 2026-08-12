@@ -566,6 +566,8 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(modeToggle?.textContent).toContain("Denylist");
     expect(modeToggle?.classList.contains("hidden")).toBe(true);
     expect(modeToggle?.classList.contains("min-[769px]:inline-flex")).toBe(true);
+    expect(modeToggle?.parentElement?.className).toContain("min-[769px]:items-center");
+    expect((document.body.textContent?.match(/Available models/g) ?? []).length).toBe(1);
 
     act(() => {
       modeToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
