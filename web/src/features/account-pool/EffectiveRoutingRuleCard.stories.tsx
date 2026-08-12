@@ -477,7 +477,9 @@ function applyPatchToRule(
     nextSources.availableModels = sourceFor(patch.availableModels);
   }
   if ("availableModelsMode" in patch && patch.availableModelsMode !== null) {
-    next.availableModelsMode = patch.availableModelsMode ?? next.availableModelsMode;
+    next.availableModelsMode = patch.availableModelsMode;
+  } else if ("availableModelsMode" in patch && patch.availableModelsMode === null) {
+    next.availableModelsMode = "denylist";
   }
   if ("statusChangeReasons" in patch && patch.statusChangeReasons) {
     for (const [reason, value] of Object.entries(patch.statusChangeReasons)) {

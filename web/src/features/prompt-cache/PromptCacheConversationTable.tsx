@@ -270,6 +270,9 @@ function buildConversationEffectiveRoutingRule(
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     availableModels: binding.availableModels ?? [],
+    availableModelsMode:
+      binding.availableModelsMode ?? (binding.availableModels == null ? "denylist" : "allowlist"),
+    availableModelsDefined: binding.availableModels != null || binding.availableModelsMode != null,
     systemDeniedModels: [],
     sourceTagIds: [],
     sourceTagNames: [],
@@ -3041,7 +3044,10 @@ export function PromptCacheConversationHistoryDrawer({
         | { fastModeRewriteMode: PromptCacheConversationRewriteMode | null }
         | { imageToolRewriteMode: PromptCacheConversationRewriteMode | null }
         | { codexImagegenRewriteMode: PromptCacheConversationRewriteMode | null }
-        | { availableModels: string[] | null }
+        | {
+            availableModels: string[] | null;
+            availableModelsMode?: "allowlist" | "denylist" | null;
+          }
         | { forwardProxyKeys: string[] | null }
         | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> },
     ) => {
@@ -3211,6 +3217,7 @@ export function PromptCacheConversationHistoryDrawer({
             onClick={() =>
               void saveConversationInlinePolicy("availableModels", {
                 availableModels: availableModelsOverrideList,
+                availableModelsMode: "allowlist",
               })
             }
           >
@@ -3603,6 +3610,7 @@ export function PromptCacheConversationHistoryDrawer({
               if (field === "availableModels") {
                 void saveConversationInlinePolicy("availableModels", {
                   availableModels: payload.availableModels ?? null,
+                  availableModelsMode: payload.availableModelsMode ?? null,
                 });
                 return;
               }
