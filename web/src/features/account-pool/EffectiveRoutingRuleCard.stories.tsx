@@ -476,6 +476,9 @@ function applyPatchToRule(
       next.availableModels = patch.availableModels ?? next.availableModels;
     nextSources.availableModels = sourceFor(patch.availableModels);
   }
+  if ("availableModelsMode" in patch && patch.availableModelsMode !== null) {
+    next.availableModelsMode = patch.availableModelsMode ?? next.availableModelsMode;
+  }
   if ("statusChangeReasons" in patch && patch.statusChangeReasons) {
     for (const [reason, value] of Object.entries(patch.statusChangeReasons)) {
       if (value === null) {
