@@ -375,11 +375,11 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 The effective model-policy evidence is bound to the dedicated Storybook canvas
 `account-pool-components-effective-routing-rule-card--editable-available-models`
-at the current implementation commit. The capture is mock-only, element-level
+at the final UI implementation commit. The capture is mock-only, element-level
 component evidence from the Storybook canvas at a `1440x1600` desktop CSS
 viewport. It uses the light theme and passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
-Evidence binding commit: `bae59f26c7ff2160dd1b0a9aeaaf26b68be5a91b`.
+Evidence binding commit: `7287880505335b080e1b08a99b15588871ad99c6`.
 
 PR: include
 ![Effective model policy desktop](./assets/effective-model-policy-desktop.png)
