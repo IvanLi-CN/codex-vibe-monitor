@@ -373,21 +373,16 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 ## Visual Evidence
 
-The model policy evidence is bound to the dedicated Storybook canvas
-`settings-components-pool-routing-settings-card--model-policy` at the current
-implementation commit. The captures are mock-only, element-level component
-evidence from the Storybook canvas at `1280x900` desktop and `393x852`
-compact-mobile CSS viewports.
-The desktop capture uses the light theme; the compact capture uses the dark
-theme. Both images passed `trim_whitespace.py` with
+The effective model-policy evidence is bound to the dedicated Storybook canvas
+`account-pool-components-effective-routing-rule-card--editable-available-models`
+at the final UI implementation commit. The capture is mock-only, element-level
+component evidence from the Storybook canvas at a `1440x1600` desktop CSS
+viewport. It uses the light theme and passed `trim_whitespace.py` with
 `--margin-policy require_margin --evidence-surface component`.
-Evidence binding commit: `f827964ed8dc4b70d19914d6eff6ab32ddba53dc`.
+Evidence binding commit: `7287880505335b080e1b08a99b15588871ad99c6`.
 
 PR: include
-![Root model policy desktop](./assets/model-policy-desktop.png)
-
-PR: include
-![Root model policy compact mobile](./assets/model-policy-mobile.png)
+![Effective model policy desktop](./assets/effective-model-policy-desktop.png)
 
 Visual evidence is captured from stable Storybook scenarios for:
 
@@ -417,76 +412,52 @@ Visual evidence is captured from stable Storybook scenarios for:
 
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
-PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
 
-PR: include
 ![Upstream account create page without tag editors](./assets/upstream-account-create-no-tag-editor.png)
 
-PR: include
 ![Upstream account detail read-only system tags](./assets/upstream-account-detail-read-only-system-tags.png)
 
-PR: include
 ![Upstream account list system tag filter](./assets/upstream-account-list-system-tag-filter.png)
 
-PR: include
 ![Effective routing rule inline account overrides](./assets/effective-rule-inline-overrides-trimmed.png)
 
-PR: include
 ![Effective routing rule account overrides default expanded](./assets/effective-rule-multiple-account-overrides-default-expanded.png)
 
-PR: include
 ![Account route proxy bindings](./assets/account-route-proxy-bindings-story.png)
 
-PR: include
 ![Effective routing rule available-model tag selector](./assets/effective-rule-available-models-tag-selector.png)
 
-PR: include
 ![Effective routing rule upstream 429 retry count selector](./assets/effective-rule-429-retry-count-selector.png)
 
-PR: include
 ![Group timeout mixed inheritance dialog](./assets/group-timeout-mixed-inheritance-story.png)
 
-PR: include
 ![Account timeout source badges and overrides](./assets/account-timeout-source-badges-story.png)
 
-PR: include
 ![Groups page routing policy dialog status change reasons](./assets/status-change-reasons-page-groups.png)
 
-PR: include
 ![Upstream Accounts grouped roster routing policy dialog status change reasons](./assets/status-change-reasons-page-upstream-accounts-grouped.png)
 
-PR: include
 ![Upstream account detail routing tab status change reasons](./assets/status-change-reasons-page-upstream-account-detail.png)
 
-PR: include
 ![Group routing tab upstream 429 retry selector desktop](./assets/group-retry-selector-enabled-desktop.png)
 
-PR: include
 ![Group routing tab upstream 429 retry selector mobile](./assets/group-retry-selector-enabled-mobile.png)
 
-PR: include
 ![Group routing policy desktop inline selectors](./assets/group-routing-desktop-inline-selectors.png)
 
-PR: include
 ![Group routing policy mobile selectors](./assets/group-routing-mobile-selectors.png)
 
-PR: include
 ![Fast rewrite quick policy force add chip](./assets/fast-policy-force-fast-chip.png)
 
-PR: include
 ![Fast rewrite quick policy leave unchanged chip](./assets/fast-policy-leave-fast-chip.png)
 
-PR: include
 ![System settings routing defaults](./assets/system-settings-routing-defaults.png)
 
-PR: include
 ![Group request compression follow override](./assets/2026-07-15-group-routing-follow-compression.png)
 
-PR: include
 ![Effective routing rule request compression row](./assets/2026-07-15-effective-rule-request-compression.png)
 
-PR: include
 ![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)
 
 - source_type: storybook_canvas
@@ -497,7 +468,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the real effective-rule card exposes the Full Responses-only policy boundary through the image-tool help affordance.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only routing policy data
@@ -513,7 +483,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the actual group settings dialog renders the same Lite client-owned-tools boundary beside the image-tool selector.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only group policy data
@@ -529,7 +498,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: component
   evidence_note: verifies the effective-rule card distinguishes hosted image tools from the independently inherited Codex imagegen policy and renders all four Codex rewrite modes.
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only routing policy data
@@ -546,7 +514,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the desktop capability area uses a three-column, two-row layout and includes Standalone Search as the sixth independent capability.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -563,7 +530,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the card exposes the exact endpoint, observed value, persistent override, effective value, observation time, and reason.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -580,7 +546,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the capability cards collapse to one column without horizontal overflow while preserving all Standalone Search controls and state.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -597,7 +562,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact desktop layout keeps six capability cards in three columns and two rows while retaining the status summary, override control, timestamp, and reason fields.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -614,7 +578,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact card preserves the exact endpoint, three-value status summary, persistent override selector, observation time, and reason without excessive vertical padding.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -631,7 +594,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact single-column card remains readable on narrow screens, keeps the override control usable, and produces no horizontal overflow.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data

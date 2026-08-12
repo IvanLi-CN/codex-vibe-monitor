@@ -1313,27 +1313,53 @@ export function EffectiveRoutingRuleCard({
                     </div>
                     {expanded && row.field ? (
                       <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                        <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                          <p className="text-sm font-semibold text-base-content">
-                            <PolicyFieldLabel
-                              label={row.label}
-                              hint={
-                                row.key === "imageToolRewriteMode"
-                                  ? labels.imageToolRewriteHint
-                                  : row.key === "codexImagegenRewriteMode"
-                                    ? labels.codexImagegenRewriteHint
-                                    : undefined
-                              }
-                            />
-                          </p>
-                          <div className="min-w-0 sm:col-span-3">{row.displayEditor}</div>
+                        <div
+                          className={cn(
+                            "grid grid-cols-1 gap-y-2 sm:items-center sm:gap-x-3",
+                            row.key === "availableModels"
+                              ? "sm:grid-cols-1"
+                              : "sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem]",
+                          )}
+                        >
+                          {row.key !== "availableModels" ? (
+                            <p className="text-sm font-semibold text-base-content">
+                              <PolicyFieldLabel
+                                label={row.label}
+                                hint={
+                                  row.key === "imageToolRewriteMode"
+                                    ? labels.imageToolRewriteHint
+                                    : row.key === "codexImagegenRewriteMode"
+                                      ? labels.codexImagegenRewriteHint
+                                      : undefined
+                                }
+                              />
+                            </p>
+                          ) : null}
+                          <div
+                            className={cn(
+                              "min-w-0",
+                              row.key !== "availableModels" && "sm:col-span-3",
+                            )}
+                          >
+                            {row.displayEditor}
+                          </div>
                           {busy ? (
-                            <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs text-base-content/60",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {labels.overrideSaving ?? "Saving..."}
                             </p>
                           ) : null}
                           {error ? (
-                            <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs font-medium text-error",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {error}
                             </p>
                           ) : null}
@@ -1805,137 +1831,170 @@ function AvailableModelsEditor({
   };
 
   const triggerTitle = value.length > 0 ? value.join(", ") : emptyValueLabel;
+  const currentModeLabel =
+    mode === "allowlist"
+      ? (labels.availableModelsAllowlist ?? "Allowlist")
+      : (labels.availableModelsDenylist ?? "Denylist");
+  const nextMode = mode === "allowlist" ? "denylist" : "allowlist";
+  const nextModeLabel =
+    nextMode === "allowlist"
+      ? (labels.availableModelsAllowlist ?? "Allowlist")
+      : (labels.availableModelsDenylist ?? "Denylist");
+  const modeToggleLabel = `${currentModeLabel} -> ${nextModeLabel}`;
 
   return (
     <div className="min-w-[18rem]">
-      <PolicyInlineOptionGroup<AvailableModelsMode>
-        ariaLabel={
-          labels.availableModelsMode ?? labels.fieldAvailableModels ?? "Available models mode"
-        }
-        value={mode}
-        disabled={disabled}
-        options={[
-          { value: "allowlist", label: labels.availableModelsAllowlist ?? "Allowlist" },
-          { value: "denylist", label: labels.availableModelsDenylist ?? "Denylist" },
-        ]}
-        onChange={onModeChange}
-      />
-      <div className="h-2" />
-      <Popover
-        open={disabled ? false : open}
-        onOpenChange={(nextOpen) => {
-          if (disabled) {
-            setOpen(false);
-            return;
-          }
-          setOpen(nextOpen);
-          if (!nextOpen) {
-            onInputChange("");
-          }
-        }}
-      >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            role="combobox"
-            aria-expanded={open}
-            aria-label={labels.fieldAvailableModels ?? "Available models"}
+      <div className="flex flex-col gap-2 min-[769px]:flex-row min-[769px]:items-center">
+        <Button
+          type="button"
+          variant="outline"
+          data-testid="available-models-mode-toggle"
+          aria-pressed={mode === "allowlist"}
+          aria-label={modeToggleLabel}
+          title={modeToggleLabel}
+          disabled={disabled}
+          onClick={() => onModeChange(nextMode)}
+          className="hidden h-9 w-auto shrink-0 gap-1.5 rounded-md px-3 min-[769px]:inline-flex"
+        >
+          <span>{currentModeLabel}</span>
+          <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
+        </Button>
+        <div className="min-[769px]:hidden">
+          <PolicyInlineOptionGroup<AvailableModelsMode>
+            ariaLabel={
+              labels.availableModelsMode ?? labels.fieldAvailableModels ?? "Available models mode"
+            }
+            value={mode}
             disabled={disabled}
-            title={triggerTitle}
-            className={cn(
-              "flex w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
-              "hover:border-primary/35",
-              disabled && "cursor-not-allowed opacity-60",
-            )}
-          >
-            <AppIcon
-              name="tag-outline"
-              className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55"
-              aria-hidden
-            />
-            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              {value.length > 0 ? (
-                value.map((model) => (
-                  <Chip key={model} tone="secondary" className="max-w-full px-2.5 py-1">
-                    <span className="truncate">
-                      {labels.availableModelsCustomLabel?.(model) ?? model}
-                    </span>
-                  </Chip>
-                ))
-              ) : (
-                <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
-              )}
-            </span>
-            <AppIcon
-              name="chevron-down"
-              className="h-4 w-4 shrink-0 text-base-content/45"
-              aria-hidden
-            />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
-          <Command shouldFilter={false}>
-            <CommandInput
-              value={inputValue}
-              placeholder={
-                labels.availableModelsPlaceholder ?? labels.availableModelsAddCustom ?? "Add model"
+            options={[
+              { value: "allowlist", label: labels.availableModelsAllowlist ?? "Allowlist" },
+              { value: "denylist", label: labels.availableModelsDenylist ?? "Denylist" },
+            ]}
+            onChange={onModeChange}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <Popover
+            open={disabled ? false : open}
+            onOpenChange={(nextOpen) => {
+              if (disabled) {
+                setOpen(false);
+                return;
               }
-              onValueChange={onInputChange}
-            />
-            <CommandList>
-              {canAdd ? (
-                <>
-                  <CommandGroup>
-                    <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
-                      <AppIcon
-                        name="plus-circle-outline"
-                        className="mr-2 h-4 w-4 text-primary"
-                        aria-hidden
-                      />
-                      <span className="truncate">{trimmedInput}</span>
-                    </CommandItem>
-                  </CommandGroup>
-                  <CommandSeparator />
-                </>
-              ) : null}
-              {filteredOptions.length === 0 ? (
-                <CommandEmpty>{labels.availableModelsEmpty ?? "No matching models"}</CommandEmpty>
-              ) : (
-                <CommandGroup>
-                  {filteredOptions.map((model) => {
-                    const active = selectedValueSet.has(model);
-                    return (
-                      <CommandItem
-                        key={model}
-                        value={model}
-                        disabled={disabled}
-                        onSelect={() =>
-                          onChange(
-                            active ? value.filter((item) => item !== model) : [...value, model],
-                          )
-                        }
-                      >
-                        <AppIcon
-                          name="check"
-                          className={cn(
-                            "mr-2 h-4 w-4 text-primary transition-opacity",
-                            active ? "opacity-100" : "opacity-0",
-                          )}
-                          aria-hidden
-                        />
+              setOpen(nextOpen);
+              if (!nextOpen) {
+                onInputChange("");
+              }
+            }}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                role="combobox"
+                aria-expanded={open}
+                aria-label={labels.fieldAvailableModels ?? "Available models"}
+                disabled={disabled}
+                title={triggerTitle}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+                  "hover:border-primary/35",
+                  disabled && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <AppIcon
+                  name="tag-outline"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55"
+                  aria-hidden
+                />
+                <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  {value.length > 0 ? (
+                    value.map((model) => (
+                      <Chip key={model} tone="secondary" className="max-w-full px-2.5 py-1">
                         <span className="truncate">
                           {labels.availableModelsCustomLabel?.(model) ?? model}
                         </span>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              )}
-            </CommandList>
-          </Command>
-        </PopoverContent>
-      </Popover>
+                      </Chip>
+                    ))
+                  ) : (
+                    <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
+                  )}
+                </span>
+                <AppIcon
+                  name="chevron-down"
+                  className="h-4 w-4 shrink-0 text-base-content/45"
+                  aria-hidden
+                />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  value={inputValue}
+                  placeholder={
+                    labels.availableModelsPlaceholder ??
+                    labels.availableModelsAddCustom ??
+                    "Add model"
+                  }
+                  onValueChange={onInputChange}
+                />
+                <CommandList>
+                  {canAdd ? (
+                    <>
+                      <CommandGroup>
+                        <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
+                          <AppIcon
+                            name="plus-circle-outline"
+                            className="mr-2 h-4 w-4 text-primary"
+                            aria-hidden
+                          />
+                          <span className="truncate">{trimmedInput}</span>
+                        </CommandItem>
+                      </CommandGroup>
+                      <CommandSeparator />
+                    </>
+                  ) : null}
+                  {filteredOptions.length === 0 ? (
+                    <CommandEmpty>
+                      {labels.availableModelsEmpty ?? "No matching models"}
+                    </CommandEmpty>
+                  ) : (
+                    <CommandGroup>
+                      {filteredOptions.map((model) => {
+                        const active = selectedValueSet.has(model);
+                        return (
+                          <CommandItem
+                            key={model}
+                            value={model}
+                            disabled={disabled}
+                            onSelect={() =>
+                              onChange(
+                                active ? value.filter((item) => item !== model) : [...value, model],
+                              )
+                            }
+                          >
+                            <AppIcon
+                              name="check"
+                              className={cn(
+                                "mr-2 h-4 w-4 text-primary transition-opacity",
+                                active ? "opacity-100" : "opacity-0",
+                              )}
+                              aria-hidden
+                            />
+                            <span className="truncate">
+                              {labels.availableModelsCustomLabel?.(model) ?? model}
+                            </span>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  )}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
     </div>
   );
 }
