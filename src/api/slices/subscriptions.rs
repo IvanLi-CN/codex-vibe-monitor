@@ -11519,6 +11519,7 @@ mod tests {
 
     async fn collect_dashboard_runtime_topology_sse_events(
         response: Response,
+        required_working_keys: &[&str],
     ) -> BTreeMap<String, Value> {
         let expected = [
             "dashboard.activity.current",
@@ -11532,8 +11533,23 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut stream = response.into_body().into_data_stream();
         let mut buffered = Vec::new();
-        let mut events = BTreeMap::new();
-        while events.len() < expected.len() {
+        let mut events: BTreeMap<String, Value> = BTreeMap::new();
+        loop {
+            let working_keys_ready = events
+                .get("dashboard.working-conversations.current")
+                .and_then(|envelope| envelope.pointer("/payload/conversations"))
+                .and_then(Value::as_array)
+                .map(|conversations| {
+                    required_working_keys.iter().all(|required_key| {
+                        conversations.iter().any(|conversation| {
+                            conversation["promptCacheKey"].as_str() == Some(required_key)
+                        })
+                    })
+                })
+                .unwrap_or(required_working_keys.is_empty());
+            if events.len() == expected.len() && working_keys_ready {
+                break;
+            }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
@@ -11979,8 +11995,20 @@ mod tests {
             "same-cursor reconnect must not rebuild the Dashboard bundle"
         );
         let (first_frames, second_frames) = tokio::join!(
-            collect_dashboard_runtime_topology_sse_events(first_response),
-            collect_dashboard_runtime_topology_sse_events(second_response),
+            collect_dashboard_runtime_topology_sse_events(
+                first_response,
+                &[
+                    "dashboard-runtime-topology-fallback",
+                    "dashboard-runtime-topology-second",
+                ],
+            ),
+            collect_dashboard_runtime_topology_sse_events(
+                second_response,
+                &[
+                    "dashboard-runtime-topology-fallback",
+                    "dashboard-runtime-topology-second",
+                ],
+            ),
         );
         state.shutdown.cancel();
         assert_eq!(
