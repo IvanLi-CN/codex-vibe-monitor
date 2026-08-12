@@ -608,6 +608,7 @@ export const EditableImagegenRewritePolicies: Story = {
 };
 
 export const EditableAccountOverrides: Story = {
+  tags: ["test"],
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
     const rows = Array.from(canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"));
@@ -655,6 +656,7 @@ export const EditableAccountOverrides: Story = {
 };
 
 export const EditableAvailableModels: Story = {
+  tags: ["test"],
   render: () => (
     <EditableRoutingRuleDemo initialRule={strictRule} visibleRows={["availableModels"]} />
   ),
@@ -673,6 +675,27 @@ export const EditableAvailableModels: Story = {
     await userEvent.click(modeToggle);
 
     expect(modeToggle.textContent).toContain("Denylist");
+    expect(canvasElement.textContent).toContain("gpt-5.4-mini");
+  },
+};
+
+export const EditableAvailableModelsCompact: Story = {
+  tags: ["test"],
+  render: () => (
+    <EditableRoutingRuleDemo initialRule={strictRule} visibleRows={["availableModels"]} />
+  ),
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    const modeGroup = canvasElement.querySelector<HTMLElement>(
+      '[role="radiogroup"][aria-label="Available models"]',
+    );
+    if (!modeGroup) {
+      throw new Error("missing compact available-models mode group");
+    }
+    expect(modeGroup.querySelectorAll('[role="radio"]')).toHaveLength(2);
+    expect(modeGroup.querySelector('[aria-checked="true"]')?.textContent).toContain("Allowlist");
     expect(canvasElement.textContent).toContain("gpt-5.4-mini");
   },
 };
