@@ -427,7 +427,7 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) points: Vec<TimeseriesPoint>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsResponse {
     pub(crate) current: ParallelWorkWindowResponse,
@@ -2063,7 +2063,7 @@ pub(crate) struct TimeseriesQuery {
     pub(crate) upstream_account_id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsQuery {
     #[serde(default = "default_range")]
