@@ -84,6 +84,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_available_models_mode TEXT,
             policy_status_change_upstream_http_401 INTEGER,
             policy_status_change_upstream_http_402 INTEGER,
             policy_status_change_upstream_http_403 INTEGER,
@@ -419,6 +420,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_available_models_json")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_available_models_mode",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_available_models_mode")?;
     for column in [
         "policy_status_change_upstream_http_401",
         "policy_status_change_upstream_http_402",
@@ -1194,6 +1202,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
             policy_available_models_json TEXT,
+            policy_available_models_mode TEXT,
             policy_status_change_upstream_http_401 INTEGER,
             policy_status_change_upstream_http_402 INTEGER,
             policy_status_change_upstream_http_403 INTEGER,
@@ -1355,6 +1364,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_available_models_json")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_available_models_mode",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes.policy_available_models_mode")?;
     for column in [
         "policy_status_change_upstream_http_401",
         "policy_status_change_upstream_http_402",
@@ -1481,6 +1497,62 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_sticky_model_routes (
+            sticky_key TEXT NOT NULL,
+            model_key TEXT NOT NULL,
+            account_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (sticky_key, model_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_sticky_model_routes table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_sticky_model_routes_account_updated
+        ON pool_sticky_model_routes (account_id, updated_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_sticky_model_routes_account_updated")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_sticky_model_route_generations (
+            sticky_key TEXT NOT NULL,
+            model_key TEXT NOT NULL,
+            generation INTEGER NOT NULL DEFAULT 0,
+            last_clear_cause_attempt_public_id TEXT,
+            last_clear_cause_http_status INTEGER,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (sticky_key, model_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_sticky_model_route_generations table existence")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_sticky_model_route_generations",
+        "last_clear_cause_attempt_public_id",
+    )
+    .await?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_sticky_model_route_generations",
+        "last_clear_cause_http_status",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS pool_sticky_route_generations (
             sticky_key TEXT PRIMARY KEY,
             generation INTEGER NOT NULL DEFAULT 0,
@@ -1523,6 +1595,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             request_compression_algorithm TEXT,
             request_compression_level_preset TEXT,
             codex_imagegen_rewrite_mode TEXT,
+            available_models_json TEXT NOT NULL DEFAULT '[]',
+            available_models_mode TEXT NOT NULL DEFAULT 'denylist',
             default_first_byte_timeout_secs INTEGER,
             upstream_handshake_timeout_secs INTEGER,
             request_read_timeout_secs INTEGER,
@@ -1534,6 +1608,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_routing_settings table existence")?;
+    let existing_routing_settings_columns =
+        load_sqlite_table_columns(pool, "pool_routing_settings").await?;
+    let routing_models_mode_was_missing =
+        !existing_routing_settings_columns.contains("available_models_mode");
     ensure_nullable_integer_column(pool, "pool_routing_settings", "primary_sync_interval_secs")
         .await
         .context("failed to ensure pool_routing_settings.primary_sync_interval_secs")?;
@@ -1599,6 +1677,36 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_routing_settings", "codex_imagegen_rewrite_mode")
         .await
         .context("failed to ensure pool_routing_settings.codex_imagegen_rewrite_mode")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "available_models_json",
+        "'[]'",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.available_models_json")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "available_models_mode",
+        "'denylist'",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.available_models_mode")?;
+    if routing_models_mode_was_missing {
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET available_models_mode = CASE
+                WHEN trim(coalesce(available_models_json, '')) IN ('', '[]') THEN 'denylist'
+                ELSE 'allowlist'
+            END
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to backfill legacy pool_routing_settings.available_models_mode")?;
+    }
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",

@@ -60,7 +60,7 @@ export function useConversationDetailTopics({
   operationsInfoType,
 }: {
   open: boolean;
-  activeTab: "overview" | "calls" | "settings" | "operations";
+  activeTab: "overview" | "calls" | "routing" | "settings" | "operations";
   scope: ConversationDetailScope | null;
   operationsInfoType?: string;
 }) {
@@ -100,7 +100,7 @@ export function useConversationDetailTopics({
   );
   const binding = useSubscriptionTopic<PromptCacheConversationBindingResponse>(
     bindingDescriptor,
-    open && activeTab === "settings",
+    open && (activeTab === "routing" || activeTab === "settings"),
   );
   const operations = useSubscriptionTopic<PromptCacheConversationOperationEventListResponse>(
     operationsDescriptor,

@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
 import type { ApiInvocation, InvocationFocus } from "../../lib/api";
 import { invocationStableDomKey, invocationStableKey } from "../../lib/invocation";
@@ -19,12 +19,12 @@ import {
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   renderEndpointSummary,
   renderFastIndicator,
-  renderImageIntentBadge,
-  renderInvocationModelBadge,
+  renderImageIntentChip,
+  renderInvocationModelChip,
   renderInvocationModelRoutingSummary,
-  renderReasoningEffortBadge,
+  renderReasoningEffortChip,
 } from "../invocations/invocation-details-shared";
-import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
+import { renderInvocationTransportChip } from "../invocations/invocation-transport-chip";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
 
@@ -39,7 +39,7 @@ interface InvocationRecordsTableProps {
 }
 
 type StatusMeta = {
-  variant: "default" | "secondary" | "success" | "warning" | "error";
+  variant: "primary" | "secondary" | "success" | "warning" | "error";
   labelKey?: string;
   label?: string;
 };
@@ -96,7 +96,7 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: st
   warning_success: { variant: "warning", labelKey: "table.status.warningSuccess" },
   failed: { variant: "error", labelKey: "table.status.failed" },
   interrupted: { variant: "error", labelKey: "table.status.interrupted" },
-  running: { variant: "default", labelKey: "table.status.running" },
+  running: { variant: "primary", labelKey: "table.status.running" },
   pending: { variant: "warning", labelKey: "table.status.pending" },
 };
 
@@ -155,17 +155,17 @@ function resolveFailureClassMeta(failureClass?: ApiInvocation["failureClass"]) {
   }
 }
 
-function renderActionableBadge(
+function renderActionableChip(
   value: ApiInvocation["isActionable"],
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   if (typeof value !== "boolean") return FALLBACK_CELL;
   return (
-    <Badge variant={value ? "warning" : "secondary"}>
+    <Chip tone={value ? "warning" : "secondary"}>
       {value
         ? t("records.table.exception.actionableYes")
         : t("records.table.exception.actionableNo")}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -255,12 +255,12 @@ function renderFocusSummary(
           </dd>
           <dt className="text-base-content/60">{t("records.table.exception.failureClass")}</dt>
           <dd className="flex justify-end">
-            <Badge variant={failureClass.variant}>
+            <Chip tone={failureClass.variant}>
               {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
-            </Badge>
+            </Chip>
           </dd>
           <dt className="text-base-content/60">{t("records.table.exception.actionable")}</dt>
-          <dd className="flex justify-end">{renderActionableBadge(row.record.isActionable, t)}</dd>
+          <dd className="flex justify-end">{renderActionableChip(row.record.isActionable, t)}</dd>
           <dt className="text-base-content/60">{t("records.table.exception.error")}</dt>
           <dd className="truncate text-right font-mono">
             {row.collapsedErrorSummary || FALLBACK_CELL}
@@ -307,7 +307,7 @@ function renderDetailSummaryStrip(
             {t("table.column.status")}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
+            <Chip tone={row.statusMeta.variant}>{row.statusLabel}</Chip>
             <span className="truncate text-xs text-base-content/70">{row.occurredAtLabel}</span>
           </div>
           <div className="text-sm font-medium">
@@ -338,9 +338,9 @@ function renderDetailSummaryStrip(
               indicatorTestId: "invocation-records-model-routing-indicator",
               adornments: (
                 <>
-                  {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                  {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                  {renderInvocationTransportBadge(row.record)}
+                  {renderReasoningEffortChip(row.reasoningEffortValue)}
+                  {renderImageIntentChip(row.imageIntentDisplay, t)}
+                  {renderInvocationTransportChip(row.record)}
                   {renderFastIndicator(row.fastIndicatorState, t)}
                 </>
               ),
@@ -350,14 +350,14 @@ function renderDetailSummaryStrip(
               className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
               title={row.modelValue}
             >
-              {renderInvocationModelBadge(row.modelValue, {
+              {renderInvocationModelChip(row.modelValue, {
                 t,
                 hasMismatch: false,
                 testId: "invocation-records-model",
               })}
-              {renderReasoningEffortBadge(row.reasoningEffortValue)}
-              {renderImageIntentBadge(row.imageIntentDisplay, t)}
-              {renderInvocationTransportBadge(row.record)}
+              {renderReasoningEffortChip(row.reasoningEffortValue)}
+              {renderImageIntentChip(row.imageIntentDisplay, t)}
+              {renderInvocationTransportChip(row.record)}
               {renderFastIndicator(row.fastIndicatorState, t)}
             </div>
           )}
@@ -413,7 +413,7 @@ function renderDetailSummaryStrip(
           {t("table.column.status")}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
+          <Chip tone={row.statusMeta.variant}>{row.statusLabel}</Chip>
           <span className="truncate text-xs text-base-content/70">{row.occurredAtLabel}</span>
         </div>
         <div className="mt-2 text-sm font-medium">
@@ -444,9 +444,9 @@ function renderDetailSummaryStrip(
             indicatorTestId: "invocation-records-model-routing-indicator",
             adornments: (
               <>
-                {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                {renderInvocationTransportBadge(row.record)}
+                {renderReasoningEffortChip(row.reasoningEffortValue)}
+                {renderImageIntentChip(row.imageIntentDisplay, t)}
+                {renderInvocationTransportChip(row.record)}
                 {renderFastIndicator(row.fastIndicatorState, t)}
               </>
             ),
@@ -456,14 +456,14 @@ function renderDetailSummaryStrip(
             className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
             title={row.modelValue}
           >
-            {renderInvocationModelBadge(row.modelValue, {
+            {renderInvocationModelChip(row.modelValue, {
               t,
               hasMismatch: false,
               testId: "invocation-records-model",
             })}
-            {renderReasoningEffortBadge(row.reasoningEffortValue)}
-            {renderImageIntentBadge(row.imageIntentDisplay, t)}
-            {renderInvocationTransportBadge(row.record)}
+            {renderReasoningEffortChip(row.reasoningEffortValue)}
+            {renderImageIntentChip(row.imageIntentDisplay, t)}
+            {renderInvocationTransportChip(row.record)}
             {renderFastIndicator(row.fastIndicatorState, t)}
           </div>
         )}
@@ -741,12 +741,12 @@ export function InvocationRecordsTable({
               {formatOptionalText(row.record.failureKind)}
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
-              <Badge variant={failureClass.variant}>
+              <Chip tone={failureClass.variant}>
                 {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
-              </Badge>
+              </Chip>
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
-              {renderActionableBadge(row.record.isActionable, t)}
+              {renderActionableChip(row.record.isActionable, t)}
             </td>
             <td
               className="max-w-[18rem] truncate px-3 py-3 align-middle text-left text-xs"
@@ -911,7 +911,7 @@ export function InvocationRecordsTable({
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">{row.occurredAtLabel}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
+                    <Chip tone={row.statusMeta.variant}>{row.statusLabel}</Chip>
                     <span className="truncate text-xs text-base-content/70">
                       {row.proxyDisplayName}
                     </span>
@@ -946,9 +946,9 @@ export function InvocationRecordsTable({
                     indicatorTestId: "invocation-records-model-routing-indicator",
                     adornments: (
                       <>
-                        {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                        {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                        {renderInvocationTransportBadge(row.record)}
+                        {renderReasoningEffortChip(row.reasoningEffortValue)}
+                        {renderImageIntentChip(row.imageIntentDisplay, t)}
+                        {renderInvocationTransportChip(row.record)}
                         {renderFastIndicator(row.fastIndicatorState, t)}
                       </>
                     ),
@@ -958,14 +958,14 @@ export function InvocationRecordsTable({
                     className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
                     title={row.modelValue}
                   >
-                    {renderInvocationModelBadge(row.modelValue, {
+                    {renderInvocationModelChip(row.modelValue, {
                       t,
                       hasMismatch: false,
                       testId: "invocation-records-model",
                     })}
-                    {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                    {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                    {renderInvocationTransportBadge(row.record)}
+                    {renderReasoningEffortChip(row.reasoningEffortValue)}
+                    {renderImageIntentChip(row.imageIntentDisplay, t)}
+                    {renderInvocationTransportChip(row.record)}
                     {renderFastIndicator(row.fastIndicatorState, t)}
                   </div>
                 )}
@@ -1002,18 +1002,21 @@ export function InvocationRecordsTable({
                     )}
                     {row.record.id > 0 ? (
                       <div className="flex justify-end">
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-2 rounded-full border border-base-300/70 bg-base-100/70 px-3 py-1.5 text-xs font-medium text-base-content/78 transition hover:border-base-300 hover:bg-base-100"
-                          onClick={() => setDrawerRecordId(row.record.id)}
+                        <Chip
+                          asChild
+                          size="default"
+                          tone="secondary"
+                          className="gap-2 px-3 py-1.5 text-xs font-medium"
                         >
-                          <AppIcon
-                            name="chevron-right-circle"
-                            className="h-3.5 w-3.5"
-                            aria-hidden
-                          />
-                          {t("table.responseBody.openFullDetails")}
-                        </button>
+                          <button type="button" onClick={() => setDrawerRecordId(row.record.id)}>
+                            <AppIcon
+                              name="chevron-right-circle"
+                              className="h-3.5 w-3.5"
+                              aria-hidden
+                            />
+                            {t("table.responseBody.openFullDetails")}
+                          </button>
+                        </Chip>
                       </div>
                     ) : null}
                     <InvocationWorkflowDetailPanel
@@ -1075,29 +1078,29 @@ export function InvocationRecordsTable({
                           indicatorTestId: "invocation-records-model-routing-indicator",
                           adornments: (
                             <>
-                              {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                              {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                              {renderInvocationTransportBadge(row.record)}
+                              {renderReasoningEffortChip(row.reasoningEffortValue)}
+                              {renderImageIntentChip(row.imageIntentDisplay, t)}
+                              {renderInvocationTransportChip(row.record)}
                               {renderFastIndicator(row.fastIndicatorState, t)}
                             </>
                           ),
                         })
                       ) : (
                         <div className="flex items-center gap-1" title={row.modelValue}>
-                          {renderInvocationModelBadge(row.modelValue, {
+                          {renderInvocationModelChip(row.modelValue, {
                             t,
                             hasMismatch: false,
                             testId: "invocation-records-model",
                           })}
-                          {renderReasoningEffortBadge(row.reasoningEffortValue)}
-                          {renderImageIntentBadge(row.imageIntentDisplay, t)}
-                          {renderInvocationTransportBadge(row.record)}
+                          {renderReasoningEffortChip(row.reasoningEffortValue)}
+                          {renderImageIntentChip(row.imageIntentDisplay, t)}
+                          {renderInvocationTransportChip(row.record)}
                           {renderFastIndicator(row.fastIndicatorState, t)}
                         </div>
                       )}
                     </td>
                     <td className="px-3 py-3 align-middle text-left text-xs">
-                      <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
+                      <Chip tone={row.statusMeta.variant}>{row.statusLabel}</Chip>
                     </td>
                     {renderFocusCells(row, isExpanded)}
                     <td className="px-3 py-3 align-middle text-right">
@@ -1139,18 +1142,24 @@ export function InvocationRecordsTable({
                           )}
                           {row.record.id > 0 ? (
                             <div className="flex justify-end">
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-2 rounded-full border border-base-300/70 bg-base-100/70 px-3 py-1.5 text-xs font-medium text-base-content/78 transition hover:border-base-300 hover:bg-base-100"
-                                onClick={() => setDrawerRecordId(row.record.id)}
+                              <Chip
+                                asChild
+                                size="default"
+                                tone="secondary"
+                                className="gap-2 px-3 py-1.5 text-xs font-medium"
                               >
-                                <AppIcon
-                                  name="chevron-right-circle"
-                                  className="h-3.5 w-3.5"
-                                  aria-hidden
-                                />
-                                {t("table.responseBody.openFullDetails")}
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setDrawerRecordId(row.record.id)}
+                                >
+                                  <AppIcon
+                                    name="chevron-right-circle"
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden
+                                  />
+                                  {t("table.responseBody.openFullDetails")}
+                                </button>
+                              </Chip>
                             </div>
                           ) : null}
                           <div id={detailId} className="min-w-0 max-w-full overflow-hidden">
@@ -1183,7 +1192,7 @@ export function InvocationRecordsTable({
           header={
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={drawerRow.statusMeta.variant}>{drawerRow.statusLabel}</Badge>
+                <Chip tone={drawerRow.statusMeta.variant}>{drawerRow.statusLabel}</Chip>
                 <span className="text-xs text-base-content/60">{drawerRow.occurredAtLabel}</span>
               </div>
               <div>

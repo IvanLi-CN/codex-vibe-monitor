@@ -3104,12 +3104,12 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
             name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 0, 1, 'normal', 'keep_original', 0, 0, 0, '[]', ?3, ?3)
+        ) VALUES (?1, ?2, 0, 0, 1, 'normal', 'keep_original', 0, 0, 0, '[]', ?3, ?3)
         RETURNING id
         "#,
     )
     .bind("sticky-preflight-lock")
-    .bind("test:sticky-preflight-lock")
+    .bind(None::<String>)
     .bind(&now_iso)
     .fetch_one(&state.pool)
     .await

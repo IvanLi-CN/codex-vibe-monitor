@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
@@ -26,7 +26,7 @@ interface DashboardInvocationDetailDrawerProps {
 const TRANSIENT_RECORD_LOOKUP_RETRY_MS = 1_500;
 
 type StatusMeta = {
-  variant: "default" | "secondary" | "success" | "warning" | "error";
+  variant: "primary" | "secondary" | "success" | "warning" | "error";
   labelKey?: string;
   label?: string;
 };
@@ -59,7 +59,7 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
     return { variant: "error", labelKey: "table.status.interrupted" };
   }
   if (lower === "running") {
-    return { variant: "default", labelKey: "table.status.running" };
+    return { variant: "primary", labelKey: "table.status.running" };
   }
   if (lower === "pending") {
     return { variant: "warning", labelKey: "table.status.pending" };
@@ -235,9 +235,9 @@ export function DashboardInvocationDetailDrawer({
       header={
         <div className="space-y-3" data-testid="dashboard-invocation-detail-drawer">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{slotLabel}</Badge>
-            <Badge variant={statusMeta.variant}>{statusLabel}</Badge>
-            {displaySequenceId ? <Badge variant="secondary">{displaySequenceId}</Badge> : null}
+            <Chip tone="secondary">{slotLabel}</Chip>
+            <Chip tone={statusMeta.variant}>{statusLabel}</Chip>
+            {displaySequenceId ? <Chip tone="secondary">{displaySequenceId}</Chip> : null}
           </div>
           <div className="section-heading">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">

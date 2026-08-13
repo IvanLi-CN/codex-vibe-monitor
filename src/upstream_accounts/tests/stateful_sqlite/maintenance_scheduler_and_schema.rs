@@ -288,6 +288,7 @@ fn test_account_tag_summary(id: i64, name: &str, concurrency_limit: i64) -> Acco
         id,
         name: name.to_string(),
         routing_rule,
+        available_models_invalid: false,
         system_key: None,
         protected: false,
     }
@@ -306,7 +307,9 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         available_models: vec![],
+        available_models_mode: AvailableModelsMode::Allowlist,
         available_models_defined: false,
+        tag_available_models: None,
         status_change_reasons: default_status_change_reasons(),
         status_change_reason_field_sources: default_status_change_reason_field_sources("root"),
         system_denied_models: vec![],
@@ -323,6 +326,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
             concurrency_limit: "root".to_string(),
             upstream_429_retry: "root".to_string(),
             available_models: "root".to_string(),
+            available_models_mode: "root".to_string(),
             system_denied_models: "root".to_string(),
         },
         timeouts: RoutingTimeoutSettings {
@@ -1272,7 +1276,7 @@ pub(crate) async fn insert_test_tag(
                 name, system_key, protected, allow_cut_out, allow_cut_in, priority_tier,
                 fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
                 upstream_429_max_retries, available_models_json, created_at, updated_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             RETURNING id
             "#,
     )
@@ -1293,9 +1297,16 @@ pub(crate) async fn insert_test_tag(
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
-    load_tag_detail(pool, inserted_id)
+    let mut detail = load_tag_detail(pool, inserted_id)
         .await?
-        .ok_or_else(|| anyhow!("tag not found after insert"))
+        .ok_or_else(|| anyhow!("tag not found after insert"))?;
+    sqlx::query("UPDATE pool_tags SET system_key = NULL, protected = 0 WHERE id = ?1")
+        .bind(inserted_id)
+        .execute(pool)
+        .await?;
+    detail.summary.system_key = None;
+    detail.summary.protected = false;
+    Ok(detail)
 }
 
 pub(crate) async fn insert_legacy_custom_tag(
@@ -4711,6 +4722,77 @@ fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_al
 }
 
 #[test]
+fn build_effective_routing_rule_ignores_editable_fields_from_protected_system_tags() {
+    let mut system_tag = test_account_tag_summary(1, "system", 3);
+    system_tag.protected = true;
+    system_tag.system_key = Some("unsupported_model:gpt-5.4".to_string());
+    system_tag.routing_rule.allow_cut_in = false;
+    system_tag.routing_rule.priority_tier = TagPriorityTier::Fallback;
+    system_tag.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
+    system_tag.routing_rule.upstream_429_retry_enabled = true;
+    system_tag.routing_rule.upstream_429_max_retries = 4;
+    system_tag.routing_rule.available_models = vec!["gpt-5.4-mini".to_string()];
+
+    let rule = build_effective_routing_rule(&[system_tag]);
+
+    assert!(rule.allow_cut_in);
+    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
+    assert_eq!(
+        rule.fast_mode_rewrite_mode,
+        TagFastModeRewriteMode::KeepOriginal
+    );
+    assert_eq!(rule.concurrency_limit, 0);
+    assert!(!rule.upstream_429_retry_enabled);
+    assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
+    assert_eq!(rule.system_denied_models, vec!["gpt-5.4".to_string()]);
+}
+
+#[test]
+fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
+    let mut root_rule = test_effective_routing_rule(0);
+    apply_root_available_models(&mut root_rule, Some(r#"[" "]"#), Some("denylist"));
+    assert!(root_rule.available_models_defined);
+    assert!(root_rule.available_models.is_empty());
+    assert_eq!(
+        root_rule.available_models_mode,
+        AvailableModelsMode::Allowlist
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &root_rule
+    ));
+
+    let mut lower_rule = test_effective_routing_rule(0);
+    apply_routing_policy_override(
+        &mut lower_rule,
+        "group",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(r#"[" "]"#),
+        Some("denylist"),
+    );
+    assert!(lower_rule.available_models_defined);
+    assert!(lower_rule.available_models.is_empty());
+    assert_eq!(
+        lower_rule.available_models_mode,
+        AvailableModelsMode::Allowlist
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &lower_rule
+    ));
+}
+
+#[test]
 fn apply_tag_layer_routing_policy_preserves_inherited_available_models_when_tags_do_not_define_them()
  {
     let mut inherited = test_effective_routing_rule(0);
@@ -4788,6 +4870,45 @@ fn apply_tag_layer_routing_policy_keeps_group_tag_disjoint_models_as_deny_all() 
         &inherited
     ));
     assert_eq!(inherited.field_sources.available_models, "tag");
+}
+
+#[test]
+fn apply_tag_layer_routing_policy_keeps_inherited_denylist_and_adds_tag_constraint() {
+    let mut inherited = test_effective_routing_rule(0);
+    inherited.available_models = vec!["gpt-5.4".to_string()];
+    inherited.available_models_mode = AvailableModelsMode::Denylist;
+    inherited.available_models_defined = true;
+    inherited.field_sources.available_models = "group".to_string();
+    inherited.field_sources.available_models_mode = "group".to_string();
+
+    let mut tag = test_account_tag_summary(1, "tag", 0);
+    tag.routing_rule.available_models = vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()];
+    let tag_rule = build_effective_routing_rule(&[tag]);
+
+    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+    assert_eq!(
+        inherited.available_models_mode,
+        AvailableModelsMode::Denylist
+    );
+    assert_eq!(inherited.available_models, vec!["gpt-5.4".to_string()]);
+    assert_eq!(
+        inherited.tag_available_models,
+        Some(vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()])
+    );
+    assert!(!account_accepts_requested_model(
+        Some("gpt-5.4"),
+        &inherited
+    ));
+    assert!(account_accepts_requested_model(Some("gpt-4.1"), &inherited));
+}
+
+#[test]
+fn malformed_available_models_mode_keeps_legacy_allowlist_semantics() {
+    assert_eq!(
+        AvailableModelsMode::from_str(Some("unexpected")),
+        AvailableModelsMode::Allowlist
+    );
 }
 
 #[test]
@@ -4924,6 +5045,49 @@ async fn load_effective_routing_rule_for_account_reads_tag_available_models_from
 }
 
 #[tokio::test]
+async fn load_effective_routing_rule_for_account_fails_closed_on_malformed_tag_models() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Malformed Tag Model Constraint").await;
+    let now_iso = format_utc_iso(Utc::now());
+    let tag_id: i64 = sqlx::query_scalar(
+        r#"
+            INSERT INTO pool_tags (
+                name, system_key, protected, allow_cut_out, allow_cut_in, priority_tier,
+                fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+                upstream_429_max_retries, available_models_json, created_at, updated_at
+            ) VALUES ('malformed-tag-models', NULL, 0, 1, 1, 'normal', 'keep_original', 0, 0, 0,
+                      'not-json', ?1, ?1)
+            RETURNING id
+            "#,
+    )
+    .bind(&now_iso)
+    .fetch_one(&pool)
+    .await
+    .expect("insert malformed tag");
+    sqlx::query(
+        r#"
+            INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?3)
+            "#,
+    )
+    .bind(account_id)
+    .bind(tag_id)
+    .bind(&now_iso)
+    .execute(&pool)
+    .await
+    .expect("attach malformed tag");
+
+    let rule = load_effective_routing_rule_for_account(&pool, account_id)
+        .await
+        .expect("load effective routing rule");
+
+    assert!(rule.available_models_defined);
+    assert!(rule.available_models.is_empty());
+    assert_eq!(rule.field_sources.available_models, "tag");
+    assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
+}
+
+#[tokio::test]
 async fn ensure_account_has_unsupported_model_tag_creates_generic_system_deny_tag() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Unsupported Model Learn").await;
@@ -4947,6 +5111,63 @@ async fn ensure_account_has_unsupported_model_tag_creates_generic_system_deny_ta
 
     assert_eq!(row.0.as_deref(), Some("unsupported_model:gpt-5.4-mini"));
     assert_eq!(row.1, 1);
+}
+
+#[tokio::test]
+async fn ensure_protected_system_tag_clears_legacy_editable_policy() {
+    let pool = test_pool().await;
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+            UPDATE pool_tags
+            SET system_key = NULL,
+                protected = 0,
+                allow_cut_out = 0,
+                allow_cut_in = 0,
+                priority_tier = 'fallback',
+                fast_mode_rewrite_mode = 'force_remove',
+                concurrency_limit = 7,
+                upstream_429_retry_enabled = 1,
+                upstream_429_max_retries = 9,
+                available_models_json = '["gpt-5.4"]',
+                updated_at = ?2
+            WHERE name = ?1
+            "#,
+    )
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
+    .bind(&now_iso)
+    .execute(&pool)
+    .await
+    .expect("prepare legacy tag");
+
+    ensure_protected_system_tag(
+        &pool,
+        GPT55_UNSUPPORTED_SYSTEM_TAG_NAME,
+        GPT55_UNSUPPORTED_SYSTEM_TAG_KEY,
+    )
+    .await
+    .expect("promote legacy system tag");
+
+    let row: (i64, i64, String, String, i64, i64, String) = sqlx::query_as(
+        r#"
+            SELECT allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode,
+                   concurrency_limit, upstream_429_retry_enabled, available_models_json
+            FROM pool_tags
+            WHERE system_key = ?1
+            "#,
+    )
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .fetch_one(&pool)
+    .await
+    .expect("load promoted system tag");
+
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1, 1);
+    assert_eq!(row.2, "normal");
+    assert_eq!(row.3, "keep_original");
+    assert_eq!(row.4, 0);
+    assert_eq!(row.5, 0);
+    assert_eq!(row.6, "[\"gpt-5.4\"]");
 }
 
 #[tokio::test]
@@ -5271,6 +5492,7 @@ async fn update_upstream_account_clears_individual_account_policy_override() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5357,6 +5579,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: Some(UpdateRoutingTimeoutSettingsRequest {
                         responses_first_byte_timeout_secs: OptionalField::Missing,
@@ -5494,6 +5717,7 @@ async fn update_upstream_account_writes_positive_new_conversation_policy() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5572,6 +5796,7 @@ async fn update_upstream_account_preserves_priority_tier_when_omitted() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5633,6 +5858,7 @@ async fn update_upstream_account_accepts_no_new_priority_write() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5711,6 +5937,7 @@ async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5772,6 +5999,7 @@ async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Value(vec![]),
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5831,6 +6059,7 @@ async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
                     available_models: OptionalField::Missing,
+                    available_models_mode: OptionalField::Missing,
                     status_change_reasons: None,
                     timeouts: None,
                 }),
@@ -5998,7 +6227,10 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             request_compression_algorithm: Some(RequestCompressionAlgorithm::Gzip),
             request_compression_level_preset: Some(RequestCompressionLevelPreset::Best),
             codex_imagegen_rewrite_mode: Some(CodexImagegenRewriteMode::ForceAdd),
+            available_models: None,
+            available_models_mode: None,
             timeout_updates: None,
+            maintenance_settings: None,
         },
     )
     .await

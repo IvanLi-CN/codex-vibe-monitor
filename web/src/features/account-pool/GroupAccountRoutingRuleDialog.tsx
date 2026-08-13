@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,7 @@ import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import type {
+  AvailableModelsMode,
   CodexImagegenRewriteMode,
   EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
@@ -61,6 +62,7 @@ import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 
 const CODEX_IMAGEGEN_INHERIT_VALUE = "__inherit__";
+const AVAILABLE_MODE_INHERIT_VALUE = "__inherit_available_models_mode__";
 
 type GroupAccountRoutingRuleDraft = {
   allowCutOut: boolean;
@@ -76,6 +78,7 @@ type GroupAccountRoutingRuleDraft = {
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
   availableModels: string[];
+  availableModelsMode: AvailableModelsMode | typeof AVAILABLE_MODE_INHERIT_VALUE;
   availableModelInput: string;
   availableModelsTouched: boolean;
   statusChangeReasons: Record<StatusChangeReasonCode, boolean>;
@@ -218,6 +221,9 @@ function buildDraft(
     upstream429RetryEnabled: rule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(rule?.upstream429MaxRetries),
     availableModels: normalizeModelIds(rule?.availableModels ?? []),
+    availableModelsMode:
+      rule?.availableModelsMode ??
+      (rule?.availableModelsDefined === true ? "allowlist" : AVAILABLE_MODE_INHERIT_VALUE),
     availableModelInput: "",
     availableModelsTouched: false,
     statusChangeReasons: resolveStatusChangeReasons(rule?.statusChangeReasons),
@@ -259,6 +265,8 @@ function buildPayload(
     draft.codexImagegenRewriteMode === CODEX_IMAGEGEN_INHERIT_VALUE
       ? null
       : draft.codexImagegenRewriteMode;
+  const availableModelsMode =
+    draft.availableModelsMode === AVAILABLE_MODE_INHERIT_VALUE ? null : draft.availableModelsMode;
   const payload: UpdateGroupAccountRoutingRulePayload = {
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
@@ -273,6 +281,7 @@ function buildPayload(
       ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
       : 0,
     availableModels: normalizeModelIds(draft.availableModels),
+    availableModelsMode,
     statusChangeReasons: buildStatusChangeReasonPayload(draft.statusChangeReasons),
     timeouts: parsedTimeouts.patch,
   };
@@ -316,6 +325,9 @@ function buildPayload(
     ) {
       changedPayload.upstream429RetryEnabled = payload.upstream429RetryEnabled;
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries;
+    }
+    if (draft.availableModelsMode !== (base.availableModelsMode ?? AVAILABLE_MODE_INHERIT_VALUE)) {
+      changedPayload.availableModelsMode = availableModelsMode;
     }
     if (
       draft.availableModelsTouched ||
@@ -407,6 +419,10 @@ export interface GroupAccountRoutingRuleLabels {
   upstream429RetryCountOnce: string;
   upstream429RetryCountMany: (count: number) => string;
   availableModels: string;
+  availableModelsMode?: string;
+  availableModelsAllowlist?: string;
+  availableModelsDenylist?: string;
+  availableModelsModeInherited?: string;
   availableModelsHint: string;
   availableModelsSearchPlaceholder: string;
   availableModelsEmpty: string;
@@ -862,6 +878,38 @@ export function GroupAccountRoutingRuleEditor({
           <p className="text-xs leading-5 text-base-content/65">{labels.availableModelsHint}</p>
         </div>
         <div className="mt-4 grid gap-3">
+          <div className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-[0.08em] text-base-content/60">
+              {labels.availableModelsMode ?? labels.availableModels}
+            </p>
+            <PolicyInlineOptionGroup<string>
+              ariaLabel={labels.availableModelsMode ?? labels.availableModels}
+              value={draft.availableModelsMode}
+              disabled={busy}
+              options={[
+                ...(changedFieldsOnly
+                  ? [
+                      {
+                        value: AVAILABLE_MODE_INHERIT_VALUE,
+                        label:
+                          labels.availableModelsModeInherited ?? labels.availableModelsInherited,
+                      },
+                    ]
+                  : []),
+                { value: "allowlist", label: labels.availableModelsAllowlist ?? "Allowlist" },
+                { value: "denylist", label: labels.availableModelsDenylist ?? "Denylist" },
+              ]}
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  availableModelsMode: value as
+                    | AvailableModelsMode
+                    | typeof AVAILABLE_MODE_INHERIT_VALUE,
+                  availableModelsTouched: true,
+                }))
+              }
+            />
+          </div>
           <MultiSelectFilterCombobox
             options={availableModelComboboxOptions}
             value={draft.availableModels}
@@ -910,11 +958,11 @@ export function GroupAccountRoutingRuleEditor({
           {draft.availableModels.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {draft.availableModels.map((model) => (
-                <Badge key={model} variant="secondary" className="gap-1 pr-1">
+                <Chip key={model} tone="secondary" className="gap-1 pr-1">
                   <span>{labels.availableModelsCustomLabel(model)}</span>
                   <button
                     type="button"
-                    className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content"
+                    className="rounded-full p-0.5 text-current/70 transition hover:bg-base-300/70 hover:text-current"
                     aria-label={`${labels.availableModelsRemove} ${model}`}
                     onClick={() =>
                       setDraft((current) => ({
@@ -926,7 +974,7 @@ export function GroupAccountRoutingRuleEditor({
                   >
                     <AppIcon name="close" className="h-3 w-3" aria-hidden />
                   </button>
-                </Badge>
+                </Chip>
               ))}
             </div>
           ) : null}

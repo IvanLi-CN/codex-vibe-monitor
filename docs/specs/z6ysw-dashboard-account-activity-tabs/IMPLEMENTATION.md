@@ -8,6 +8,13 @@
 - Lifecycle: active
 - Catalog note: dashboard workspace dual tabs, account activity aggregation, invocation-based in-progress semantics
 
+## Chip palette and size lock
+
+- Dashboard policy, account attention, recent invocation, endpoint, identity and mailbox text chips now use the single `web/src/components/ui/chip.tsx` entrypoint.
+- Semantic tones are exhaustive (`neutral`, `primary`, `secondary`, `accent`, `info`, `success`, `warning`, `error`); endpoint tones and identity slots are exhaustive categorical mappings defined in the topic spec.
+- `header`, `compact` and `mailbox` presets preserve the existing 24px, 20px-class and 28px heights on desktop and mobile. No touch-only size expansion was introduced.
+- Light/dark Storybook gallery and source contract tests enforce opaque themed colors, WCAG AA text contrast, colored ink chroma, and the prohibition on black/white or `*-content` chip fallbacks.
+
 ## Coverage / rollout summary
 
 - 已实现：上游账号 recent 行保持既有“对话短 ID + 请求 ID + 状态”主标识行；下方的时间/模型/思考强度与 `Hit / Token / Cost` 现于宽屏同一行左右对齐，窄屏回流为前者在上、摘要在下。live 账号卡不再以 `h-full` 或宽屏最小高度等高拉伸，双列 grid 顶对齐；卡内 recent 列表同样不再分配等高 track，错误摘要只增加所属调用行与账号卡的内容高度。加载 skeleton 继续保留稳定高度。

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
+import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
 import { fetchSystemStatus, type SystemStatusResponse } from "../../lib/api";
 
@@ -37,9 +38,9 @@ function MetricCell({ title, value, hint, tone = "default", badge }: MetricCellP
       <div className="flex flex-wrap items-center gap-2">
         <div className="metric-label normal-case tracking-normal">{title}</div>
         {badge ? (
-          <span className="rounded-full border border-base-300/75 bg-base-100/80 px-2 py-0.5 text-[11px] font-semibold text-base-content/72">
+          <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
             {badge}
-          </span>
+          </Chip>
         ) : null}
       </div>
       <div className={`metric-value mt-2 text-2xl tabular-nums sm:text-3xl ${toneClass}`}>
@@ -109,9 +110,9 @@ function PairedMetric({
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-sm font-semibold text-base-content">{title}</div>
         {badge ? (
-          <span className="rounded-full border border-base-300/75 bg-base-100/80 px-2 py-0.5 text-[11px] font-semibold text-base-content/72">
+          <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
             {badge}
-          </span>
+          </Chip>
         ) : null}
       </div>
       {summary ? (

@@ -1,11 +1,11 @@
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { AppIcon } from "../../features/shared/AppIcon";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateDialogs } from "./UpstreamAccountCreate.dialogs";
 import { UpstreamAccountCreatePrimaryCard } from "./UpstreamAccountCreate.primary-card";
@@ -30,7 +30,7 @@ export function UpstreamAccountCreatePageSections() {
     t,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
-  const oauthCompletedPlanBadge = upstreamPlanBadgeRecipe(oauthCompletedDetail?.planType ?? null);
+  const oauthCompletedPlanChip = upstreamPlanChipRecipe(oauthCompletedDetail?.planType ?? null);
 
   return (
     <div className="grid gap-6">
@@ -149,15 +149,11 @@ export function UpstreamAccountCreatePageSections() {
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-medium">{t("accountPool.upstreamAccounts.oauth.completed")}</p>
-                  {oauthCompletedPlanBadge && oauthCompletedDetail.planType ? (
-                    <Badge variant={oauthCompletedPlanBadge.variant}>
-                      {oauthCompletedDetail.planType}
-                    </Badge>
+                  {oauthCompletedPlanChip && oauthCompletedDetail.planType ? (
+                    <Chip tone={oauthCompletedPlanChip.tone}>{oauthCompletedDetail.planType}</Chip>
                   ) : null}
                   {oauthCompletedDetail.duplicateInfo ? (
-                    <Badge variant="warning">
-                      {t("accountPool.upstreamAccounts.duplicate.badge")}
-                    </Badge>
+                    <Chip tone="warning">{t("accountPool.upstreamAccounts.duplicate.badge")}</Chip>
                   ) : null}
                 </div>
                 <p className="text-sm opacity-90">

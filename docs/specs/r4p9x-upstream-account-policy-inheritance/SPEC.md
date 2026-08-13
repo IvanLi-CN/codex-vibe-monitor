@@ -4,13 +4,16 @@ Spec ID: r4p9x
 
 ## Goal
 
-Upstream account routing policy is resolved through three layers:
+Upstream account routing policy is resolved through four editable layers:
 
-1. Group policy
-2. Read-only system tag signals
+1. Root defaults
+2. Group policy
 3. Account policy
+4. Conversation policy
 
-Only group and account policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
+Read-only system tag signals are applied after the selected model rule and cannot be overridden.
+
+Only root, group, account, and conversation model policy are operator-editable. Tags are no longer a user-managed policy layer. The account-pool UI may display and filter system tags, but tag creation, editing, deletion, manual attach/detach, and tag-based policy authoring are not supported.
 
 ## Policy Surface
 
@@ -25,6 +28,7 @@ The editable inherited policy covers:
 - concurrency limit
 - upstream 429 retry count (`0..5`)
 - available models
+- available models mode (`allowlist` or `denylist`)
 - status-change trigger reasons for:
   - `upstream_http_401`
   - `upstream_http_402`
@@ -69,6 +73,7 @@ Root defaults preserve existing behavior:
 - upstream request compression algorithm: identity
 - upstream request compression level preset: balanced
 - available models: unrestricted
+- available models mode: denylist
 - every status-change reason toggle: enabled
 - request-path timeouts continue to use the existing global pool defaults
 
@@ -87,10 +92,15 @@ Accounts also track read-only system signals alongside editable policy:
 
 Effective account policy is computed in this order:
 
-1. Start with root defaults.
-2. Apply group policy.
-3. Merge system tag signals.
-4. Apply account policy.
+1. Start with root defaults (`denylist + []`).
+2. Apply the group model rule when explicitly stored.
+3. Apply the account model rule when explicitly stored.
+4. Apply the conversation model rule when explicitly stored.
+5. Apply `systemDeniedModels` as a final, non-overridable deny set.
+
+Each explicit lower-level model rule replaces both the inherited mode and list. Missing or `null` lower-level fields inherit. An allowlist with an empty list rejects every model; a denylist with an empty list adds no restriction. Legacy records with a defined `availableModels` list are interpreted as allowlists, including legacy clients that submit only the list.
+
+Clearing a lower-level model rule is atomic: a legacy client that sends only `availableModels: null` clears both the stored list and mode. Read-only legacy tag model constraints, when present, remain allowlists and never become an editable tag policy; they retain their constraint source while inheriting the four editable levels.
 
 Request compression has one scope restriction:
 
@@ -151,12 +161,15 @@ System tags are not an editable routing authoring surface. Their current contrac
 - `unsupported_transport:websocket` remains a read-only transport signal for display and filtering
 - future system tags may add internal signals, but they must remain operator read-only
 
-`availableModels` follows only group/account inheritance semantics:
+`availableModels` follows root -> group -> account -> conversation inheritance semantics:
 
 - missing or `null` means inherit the upstream layer
 - there is no tag-level allowlist editing
 - account policy may replace the inherited group/root model set with its own list
-- an explicit empty account or group list means no models are allowed
+- an explicit empty allowlist means no models are allowed
+- an explicit empty denylist means no models are denied
+
+The regular model candidate catalog includes `gpt-5.4-mini` without enabling it by default. Image candidates are independent from `/v1/models` hijacking and currently recommend `gpt-image-2`; historical image IDs, private aliases, and custom IDs remain valid policy values.
 
 ## Image Tool Routing
 
@@ -320,6 +333,10 @@ Automatic candidate selection and sticky reuse must filter by the final model po
 - if exact match fails, dated aliases may fall back to the existing base-model alias rule
 - accounts denied for the requested model must be excluded from automatic and sticky migration candidates before retry/failover scoring
 
+Model policy summaries and mode controls may use the shared compact chip presentation used by the account-pool surfaces. This is a presentation detail only: the wire values remain `allowlist`/`denylist`, and chip styling must not change inheritance, filtering, or system-deny semantics.
+
+The root model-policy editor presents one in-place mode button immediately left of the model multi-select at desktop widths. Below `769px`, it keeps the allowlist/denylist segmented control above the multi-select. Neither presentation changes the selected model IDs.
+
 ## Owner-Facing UI Contract
 
 Status-change trigger reasons use the same flattened reason list on every owner-facing surface.
@@ -356,6 +373,17 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 ## Visual Evidence
 
+The effective model-policy evidence is bound to the dedicated Storybook canvas
+`account-pool-components-effective-routing-rule-card--editable-available-models`
+at the final UI implementation commit. The capture is mock-only, element-level
+component evidence from the Storybook canvas at a `1440x1600` desktop CSS
+viewport. It uses the light theme and passed `trim_whitespace.py` with
+`--margin-policy require_margin --evidence-surface component`.
+Evidence binding commit: `7287880505335b080e1b08a99b15588871ad99c6`.
+
+PR: include
+![Effective model policy desktop](./assets/effective-model-policy-desktop.png)
+
 Visual evidence is captured from stable Storybook scenarios for:
 
 - account-pool layout with the tag navigation entry removed
@@ -384,76 +412,52 @@ Visual evidence is captured from stable Storybook scenarios for:
 
 ![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
-PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
 
-PR: include
 ![Upstream account create page without tag editors](./assets/upstream-account-create-no-tag-editor.png)
 
-PR: include
 ![Upstream account detail read-only system tags](./assets/upstream-account-detail-read-only-system-tags.png)
 
-PR: include
 ![Upstream account list system tag filter](./assets/upstream-account-list-system-tag-filter.png)
 
-PR: include
 ![Effective routing rule inline account overrides](./assets/effective-rule-inline-overrides-trimmed.png)
 
-PR: include
 ![Effective routing rule account overrides default expanded](./assets/effective-rule-multiple-account-overrides-default-expanded.png)
 
-PR: include
 ![Account route proxy bindings](./assets/account-route-proxy-bindings-story.png)
 
-PR: include
 ![Effective routing rule available-model tag selector](./assets/effective-rule-available-models-tag-selector.png)
 
-PR: include
 ![Effective routing rule upstream 429 retry count selector](./assets/effective-rule-429-retry-count-selector.png)
 
-PR: include
 ![Group timeout mixed inheritance dialog](./assets/group-timeout-mixed-inheritance-story.png)
 
-PR: include
 ![Account timeout source badges and overrides](./assets/account-timeout-source-badges-story.png)
 
-PR: include
 ![Groups page routing policy dialog status change reasons](./assets/status-change-reasons-page-groups.png)
 
-PR: include
 ![Upstream Accounts grouped roster routing policy dialog status change reasons](./assets/status-change-reasons-page-upstream-accounts-grouped.png)
 
-PR: include
 ![Upstream account detail routing tab status change reasons](./assets/status-change-reasons-page-upstream-account-detail.png)
 
-PR: include
 ![Group routing tab upstream 429 retry selector desktop](./assets/group-retry-selector-enabled-desktop.png)
 
-PR: include
 ![Group routing tab upstream 429 retry selector mobile](./assets/group-retry-selector-enabled-mobile.png)
 
-PR: include
 ![Group routing policy desktop inline selectors](./assets/group-routing-desktop-inline-selectors.png)
 
-PR: include
 ![Group routing policy mobile selectors](./assets/group-routing-mobile-selectors.png)
 
-PR: include
 ![Fast rewrite quick policy force add chip](./assets/fast-policy-force-fast-chip.png)
 
-PR: include
 ![Fast rewrite quick policy leave unchanged chip](./assets/fast-policy-leave-fast-chip.png)
 
-PR: include
 ![System settings routing defaults](./assets/system-settings-routing-defaults.png)
 
-PR: include
 ![Group request compression follow override](./assets/2026-07-15-group-routing-follow-compression.png)
 
-PR: include
 ![Effective routing rule request compression row](./assets/2026-07-15-effective-rule-request-compression.png)
 
-PR: include
 ![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)
 
 - source_type: storybook_canvas
@@ -464,7 +468,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the real effective-rule card exposes the Full Responses-only policy boundary through the image-tool help affordance.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only routing policy data
@@ -480,7 +483,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the actual group settings dialog renders the same Lite client-owned-tools boundary beside the image-tool selector.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only group policy data
@@ -496,7 +498,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: component
   evidence_note: verifies the effective-rule card distinguishes hosted image tools from the independently inherited Codex imagegen policy and renders all four Codex rewrite modes.
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only routing policy data
@@ -513,7 +514,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the desktop capability area uses a three-column, two-row layout and includes Standalone Search as the sixth independent capability.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -530,7 +530,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the card exposes the exact endpoint, observed value, persistent override, effective value, observation time, and reason.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -547,7 +546,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the capability cards collapse to one column without horizontal overflow while preserving all Standalone Search controls and state.
   candidate_sha: `9f0e90f3193132112e68c75989a34765fddfb58d`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -564,7 +562,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact desktop layout keeps six capability cards in three columns and two rows while retaining the status summary, override control, timestamp, and reason fields.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -581,7 +578,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact card preserves the exact endpoint, three-value status summary, persistent override selector, observation time, and reason without excessive vertical padding.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data
@@ -598,7 +594,6 @@ PR: include
   evidence_surface: page
   evidence_note: verifies the compact single-column card remains readable on narrow screens, keeps the override control usable, and produces no horizontal overflow.
   candidate_sha: `9a5ffcb6594629aa06b7c8943eebc0ae65dcf87a`
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only API-key account data

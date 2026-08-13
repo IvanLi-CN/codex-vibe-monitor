@@ -49,6 +49,14 @@
 
 ## 需求（Requirements）
 
+### Chip 显示合同
+
+- Dashboard policy、recent invocation、endpoint、identity 与账号状态文本 chip 必须统一经由 `web/src/components/ui/chip.tsx` 渲染；不保留页面私有 Badge 入口，也不允许调用方通过 `className` 覆盖前景、背景或边框色。
+- policy/状态语义使用 `neutral / primary / secondary / accent / info / success / warning / error`；recent identity 使用稳定的 `sky / cyan / blue / violet / indigo / fuchsia / teal / emerald` 八槽位。
+- endpoint 分类固定为 `responses=blue`、`chat=teal`、`compact=orange`、`remote_v2=violet`、`image_gen=emerald`、`image_edit=amber`、`image=cyan`；`raw/unknown` 不渲染分类 chip。
+- policy chip 使用 `header` preset（保持 `24px`），recent endpoint/reasoning 使用 `compact` preset（保持现有 `20px` 级尺寸），mailbox 使用 `mailbox` preset（保持 `28px`）；desktop/mobile 复用同一 preset，不增加触屏尺寸。
+- light/dark 双主题必须使用显式、不透明的 chip surface/border/ink 三元组；colored ink 不得解析成黑、白或近中性正文色，且文本对比度至少 `4.5:1`。
+
 ### MUST
 
 - Dashboard 工作区区块右上必须新增 `对话 / 上游账号` tabs，默认保持在 `对话`。

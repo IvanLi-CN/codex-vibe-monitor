@@ -583,6 +583,8 @@ pub(crate) async fn load_pool_routing_settings(
             request_compression_algorithm,
             request_compression_level_preset,
             codex_imagegen_rewrite_mode,
+            available_models_json,
+            available_models_mode,
             default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
             request_read_timeout_secs
@@ -633,6 +635,8 @@ pub(crate) fn build_pool_routing_settings_response(
 ) -> PoolRoutingSettingsResponse {
     let timeouts = resolve_pool_routing_timeouts_from_row(row, &state.config);
     let request_compression = resolve_pool_request_compression_settings_from_row(row);
+    let (available_models, available_models_invalid) =
+        parse_string_array_json_with_invalid(row.available_models_json.as_deref());
     PoolRoutingSettingsResponse {
         writes_enabled: true,
         api_key_configured: row
@@ -648,6 +652,16 @@ pub(crate) fn build_pool_routing_settings_response(
             .as_deref()
             .map(CodexImagegenRewriteMode::from_str)
             .unwrap_or(CodexImagegenRewriteMode::KeepOriginal),
+        available_models: if available_models_invalid {
+            Vec::new()
+        } else {
+            available_models
+        },
+        available_models_mode: if available_models_invalid {
+            AvailableModelsMode::Allowlist
+        } else {
+            AvailableModelsMode::from_str(row.available_models_mode.as_deref())
+        },
         timeouts: pool_routing_timeouts_response(timeouts),
     }
 }
@@ -772,7 +786,10 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) request_compression_algorithm: Option<RequestCompressionAlgorithm>,
     pub(crate) request_compression_level_preset: Option<RequestCompressionLevelPreset>,
     pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
+    pub(crate) available_models: Option<&'a [String]>,
+    pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
+    pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -799,9 +816,29 @@ pub(crate) async fn save_pool_routing_settings(
         Some(api_key) => Some(mask_api_key(api_key)),
         None => current.masked_api_key.clone(),
     };
-    let primary_sync_interval_secs = current.primary_sync_interval_secs;
-    let secondary_sync_interval_secs = current.secondary_sync_interval_secs;
-    let priority_available_account_cap = current.priority_available_account_cap;
+    let (primary_sync_interval_secs, secondary_sync_interval_secs, priority_available_account_cap) =
+        if let Some(maintenance_settings) = update.maintenance_settings {
+            (
+                Some(
+                    i64::try_from(maintenance_settings.primary_sync_interval_secs)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+                Some(
+                    i64::try_from(maintenance_settings.secondary_sync_interval_secs)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+                Some(
+                    i64::try_from(maintenance_settings.priority_available_account_cap)
+                        .map_err(|err| internal_error_tuple(anyhow!(err)))?,
+                ),
+            )
+        } else {
+            (
+                current.primary_sync_interval_secs,
+                current.secondary_sync_interval_secs,
+                current.priority_available_account_cap,
+            )
+        };
     let responses_first_byte_timeout_secs = update
         .timeout_updates
         .and_then(|value| value.responses_first_byte_timeout_secs)
@@ -839,11 +876,25 @@ pub(crate) async fn save_pool_routing_settings(
         .codex_imagegen_rewrite_mode
         .map(|value| value.as_str().to_string())
         .or(current.codex_imagegen_rewrite_mode.clone());
+    let available_models_json = update
+        .available_models
+        .map(|models| serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+        .or(current.available_models_json.clone())
+        .unwrap_or_else(|| "[]".to_string());
+    let available_models_mode = update
+        .available_models_mode
+        .map(|value| match value {
+            AvailableModelsMode::Allowlist => "allowlist".to_string(),
+            AvailableModelsMode::Denylist => "denylist".to_string(),
+        })
+        .or(current.available_models_mode.clone())
+        .unwrap_or_else(|| "denylist".to_string());
     let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
     let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
     let request_read_timeout_secs = current.request_read_timeout_secs;
     let now_iso = format_utc_iso(Utc::now());
 
+    let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
         r#"
         UPDATE pool_routing_settings
@@ -860,10 +911,13 @@ pub(crate) async fn save_pool_routing_settings(
             request_compression_algorithm = ?12,
             request_compression_level_preset = ?13,
             codex_imagegen_rewrite_mode = ?14,
-            default_first_byte_timeout_secs = ?15,
-            upstream_handshake_timeout_secs = ?16,
-            request_read_timeout_secs = ?17,
-            updated_at = ?18
+            -- Model policy columns are updated below with field-local writes.
+            available_models_json = CASE WHEN ?15 IS NULL THEN available_models_json ELSE available_models_json END,
+            available_models_mode = CASE WHEN ?16 IS NULL THEN available_models_mode ELSE available_models_mode END,
+            default_first_byte_timeout_secs = ?17,
+            upstream_handshake_timeout_secs = ?18,
+            request_read_timeout_secs = ?19,
+            updated_at = ?20
         WHERE id = ?1
         "#,
     )
@@ -881,14 +935,58 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(request_compression_algorithm)
     .bind(request_compression_level_preset)
     .bind(codex_imagegen_rewrite_mode)
+    .bind(available_models_json)
+    .bind(available_models_mode)
     .bind(default_first_byte_timeout_secs)
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
     .bind(now_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
 
+    match (update.available_models, update.available_models_mode) {
+        (Some(models), Some(mode)) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_json = ?2, available_models_mode = ?3 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+            .bind(match mode {
+                AvailableModelsMode::Allowlist => "allowlist",
+                AvailableModelsMode::Denylist => "denylist",
+            })
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (Some(models), None) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_json = ?2 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string()))
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (None, Some(mode)) => {
+            sqlx::query(
+                "UPDATE pool_routing_settings SET available_models_mode = ?2 WHERE id = ?1",
+            )
+            .bind(POOL_SETTINGS_SINGLETON_ID)
+            .bind(match mode {
+                AvailableModelsMode::Allowlist => "allowlist",
+                AvailableModelsMode::Denylist => "denylist",
+            })
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+        (None, None) => {}
+    }
+
+    tx.commit().await.map_err(internal_error_tuple)?;
     load_pool_routing_settings(pool)
         .await
         .map_err(internal_error_tuple)

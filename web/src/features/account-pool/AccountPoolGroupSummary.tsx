@@ -1,16 +1,16 @@
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import type { AccountPoolGroupSummaryData } from "../../lib/accountPoolGroups";
 import type { TagRoutingRule } from "../../lib/api";
 import {
-  type ActiveRoutingPolicyBadgeLabels,
-  resolveActiveRoutingPolicyBadges,
+  type ActiveRoutingPolicyChipLabels,
+  resolveActiveRoutingPolicyChips,
 } from "../../lib/tagRoutingRule";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 
-export type AccountPoolGroupSummaryLabels = ActiveRoutingPolicyBadgeLabels & {
+export type AccountPoolGroupSummaryLabels = ActiveRoutingPolicyChipLabels & {
   count: (count: number) => string;
   concurrency: (value: number) => string;
   exclusiveNode: string;
@@ -23,15 +23,14 @@ export type AccountPoolGroupSummaryLabels = ActiveRoutingPolicyBadgeLabels & {
   upstream429Disabled: string;
 };
 
-function groupPlanBadgeRecipe(planKey: string) {
+function groupPlanChipRecipe(planKey: string) {
   if (planKey === "api") {
     return {
-      variant: "info" as const,
-      className: undefined,
+      tone: "info" as const,
       dataPlan: undefined,
     };
   }
-  return upstreamPlanBadgeRecipe(planKey);
+  return upstreamPlanChipRecipe(planKey);
 }
 
 function resolveGroupRoutingRule(group: AccountPoolGroupSummaryData): TagRoutingRule {
@@ -67,7 +66,7 @@ export function AccountPoolGroupSummary({
 }) {
   const showSettingsAction =
     canEditGroupSettings && Boolean(group.groupName) && typeof onEditGroupSettings === "function";
-  const activePolicyBadges = resolveActiveRoutingPolicyBadges(resolveGroupRoutingRule(group), {
+  const activePolicyChips = resolveActiveRoutingPolicyChips(resolveGroupRoutingRule(group), {
     ...labels,
     policyConcurrency: labels.policyConcurrency ?? ((value) => labels.concurrency(value)),
     policyRetry: labels.policyRetry ?? ((count) => labels.upstream429Enabled(count)),
@@ -112,40 +111,37 @@ export function AccountPoolGroupSummary({
 
       <div className="flex flex-wrap items-center gap-1.5">
         {group.planCounts.map((plan) => {
-          const recipe = groupPlanBadgeRecipe(plan.key);
+          const recipe = groupPlanChipRecipe(plan.key);
           return (
-            <Badge
+            <Chip
               key={plan.key}
-              variant={recipe?.variant ?? "secondary"}
-              className={cn(
-                "shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4",
-                recipe?.className,
-              )}
+              tone={recipe?.tone ?? "secondary"}
+              className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
               data-plan={recipe?.dataPlan}
             >
               {plan.label} {plan.count}
-            </Badge>
+            </Chip>
           );
         })}
-        {activePolicyBadges.map((badge) => (
-          <Badge
+        {activePolicyChips.map((badge) => (
+          <Chip
             key={`policy:${badge.key}`}
-            variant={badge.variant}
+            tone={badge.variant}
             className="px-2 py-px text-[11px] font-medium leading-4"
             title={badge.title ?? badge.label}
           >
             {badge.label}
-          </Badge>
+          </Chip>
         ))}
         {group.nodeShuntEnabled ? (
-          <Badge variant="info" className="px-2 py-px text-[11px] font-medium leading-4">
+          <Chip tone="info" className="px-2 py-px text-[11px] font-medium leading-4">
             {labels.exclusiveNode}
-          </Badge>
+          </Chip>
         ) : null}
-        {showRetryState && activePolicyBadges.length === 0 ? (
-          <Badge variant="secondary" className="px-2 py-px text-[11px] font-medium leading-4">
+        {showRetryState && activePolicyChips.length === 0 ? (
+          <Chip tone="secondary" className="px-2 py-px text-[11px] font-medium leading-4">
             {labels.upstream429Disabled}
-          </Badge>
+          </Chip>
         ) : null}
       </div>
 
@@ -156,14 +152,14 @@ export function AccountPoolGroupSummary({
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {Array.isArray(group.boundProxyLabels) && group.boundProxyLabels.length > 0 ? (
             group.boundProxyLabels.map((label) => (
-              <Badge
+              <Chip
                 key={label}
-                variant="secondary"
+                tone="secondary"
                 className="max-w-full px-2 py-px text-[11px] font-medium leading-4"
                 title={label}
               >
                 <span className="truncate">{label}</span>
-              </Badge>
+              </Chip>
             ))
           ) : (
             <span className="text-[12px] leading-5 text-base-content/58">

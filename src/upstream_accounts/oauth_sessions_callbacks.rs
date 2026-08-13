@@ -1,6 +1,9 @@
 use super::*;
 use sqlx::Transaction;
 
+static POOL_ROUTING_SETTINGS_WRITE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
@@ -18,6 +21,7 @@ pub(crate) async fn update_pool_routing_settings(
     headers: HeaderMap,
     Json(payload): Json<UpdatePoolRoutingSettingsRequest>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
+    let _write_guard = POOL_ROUTING_SETTINGS_WRITE_LOCK.lock().await;
     if !is_same_origin_settings_write(&headers) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -82,6 +86,25 @@ pub(crate) async fn update_pool_routing_settings(
         .as_deref()
         .map(|value| super::sync::normalize_codex_imagegen_rewrite_mode(Some(value)))
         .transpose()?;
+    let available_models_mode = match payload.available_models_mode.as_deref() {
+        Some(value) => Some(match value.trim().to_ascii_lowercase().as_str() {
+            "allowlist" => AvailableModelsMode::Allowlist,
+            "denylist" => AvailableModelsMode::Denylist,
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "availableModelsMode must be allowlist or denylist".to_string(),
+                ));
+            }
+        }),
+        None if payload.available_models.is_some() => Some(AvailableModelsMode::Allowlist),
+        None => None,
+    };
+    let available_models = payload
+        .available_models
+        .as_ref()
+        .map(|models| normalize_available_models(Some(models.clone()), "availableModels"))
+        .transpose()?;
     let crypto_key = if api_key.is_some() {
         Some(state.upstream_accounts.require_crypto_key()?)
     } else {
@@ -92,6 +115,9 @@ pub(crate) async fn update_pool_routing_settings(
         || request_compression_algorithm.is_some()
         || request_compression_level_preset.is_some()
         || codex_imagegen_rewrite_mode.is_some()
+        || available_models.is_some()
+        || available_models_mode.is_some()
+        || payload.maintenance.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -102,7 +128,10 @@ pub(crate) async fn update_pool_routing_settings(
                 request_compression_algorithm,
                 request_compression_level_preset,
                 codex_imagegen_rewrite_mode,
+                available_models: available_models.as_deref(),
+                available_models_mode,
                 timeout_updates: timeout_updates.as_ref(),
+                maintenance_settings: payload.maintenance.as_ref().map(|_| merged_maintenance),
             },
         )
         .await?;
@@ -117,11 +146,6 @@ pub(crate) async fn update_pool_routing_settings(
             )
             .await;
         }
-    }
-    if payload.maintenance.is_some() {
-        save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)
-            .await
-            .map_err(internal_error_tuple)?;
     }
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
@@ -1900,6 +1924,42 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_image_first_byte_timeout_secs,
     };
+    let policy_available_models_mode = match payload.routing_rule.as_ref() {
+        Some(rule) => match &rule.available_models_mode {
+            OptionalField::Missing => match &rule.available_models {
+                OptionalField::Value(_) => Some("allowlist".to_string()),
+                OptionalField::Missing => row.policy_available_models_mode.clone(),
+                OptionalField::Null => None,
+            },
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                let normalized = value.trim().to_ascii_lowercase();
+                if normalized != "allowlist" && normalized != "denylist" {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "availableModelsMode must be allowlist or denylist".to_string(),
+                    ));
+                }
+                Some(normalized)
+            }
+        },
+        None => row.policy_available_models_mode.clone(),
+    };
+    let policy_available_models_json = match payload.routing_rule.as_ref() {
+        Some(rule) if matches!(rule.available_models_mode, OptionalField::Null) => None,
+        Some(rule) => match &rule.available_models {
+            OptionalField::Missing => row.policy_available_models_json.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(
+                encode_string_array_json(&normalize_available_models(
+                    Some(value.clone()),
+                    "availableModels",
+                )?)
+                .map_err(internal_error_tuple)?,
+            ),
+        },
+        None => row.policy_available_models_json.clone(),
+    };
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool
@@ -1973,7 +2033,8 @@ pub(crate) async fn update_upstream_account_inner(
             policy_codex_imagegen_capability_override = ?45,
             policy_standalone_search_capability_override = ?46,
             updated_at = ?47,
-            policy_codex_imagegen_rewrite_mode = ?48
+            policy_codex_imagegen_rewrite_mode = ?48,
+            policy_available_models_mode = ?49
         WHERE id = ?1
         "#,
     )
@@ -2067,20 +2128,7 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_upstream_429_max_retries,
     })
-    .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => match &rule.available_models {
-            OptionalField::Missing => row.policy_available_models_json.clone(),
-            OptionalField::Null => None,
-            OptionalField::Value(value) => Some(
-                encode_string_array_json(&normalize_available_models(
-                    Some(value.clone()),
-                    "availableModels",
-                )?)
-                .map_err(internal_error_tuple)?,
-            ),
-        },
-        None => row.policy_available_models_json.clone(),
-    })
+    .bind(policy_available_models_json)
     .bind(status_change_upstream_http_401)
     .bind(status_change_upstream_http_402)
     .bind(status_change_upstream_http_403)
@@ -2173,6 +2221,7 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_codex_imagegen_rewrite_mode.clone(),
     })
+    .bind(policy_available_models_mode)
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;

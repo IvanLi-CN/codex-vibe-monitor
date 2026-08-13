@@ -561,37 +561,37 @@ describe("resolveInvocationEndpointDisplay", () => {
     expect(resolveInvocationEndpointDisplay({ endpoint: " /v1/responses " })).toEqual({
       kind: "responses",
       endpointValue: "/v1/responses",
-      badgeVariant: "default",
+      chipTone: "blue",
       labelKey: "table.endpoint.responsesBadge",
     });
     expect(resolveInvocationEndpointDisplay("/v1/chat/completions")).toEqual({
       kind: "chat",
       endpointValue: "/v1/chat/completions",
-      badgeVariant: "secondary",
+      chipTone: "teal",
       labelKey: "table.endpoint.chatBadge",
     });
     expect(resolveInvocationEndpointDisplay("/v1/responses/compact")).toEqual({
       kind: "compact",
       endpointValue: "/v1/responses/compact",
-      badgeVariant: "info",
+      chipTone: "orange",
       labelKey: "table.endpoint.compactBadge",
     });
     expect(resolveInvocationEndpointDisplay("/v1/images/generations")).toEqual({
       kind: "image_gen",
       endpointValue: "/v1/images/generations",
-      badgeVariant: "info",
+      chipTone: "emerald",
       labelKey: "table.endpoint.imageGenBadge",
     });
     expect(resolveInvocationEndpointDisplay("/v1/images/edits")).toEqual({
       kind: "image_edit",
       endpointValue: "/v1/images/edits",
-      badgeVariant: "secondary",
+      chipTone: "amber",
       labelKey: "table.endpoint.imageEditBadge",
     });
     expect(resolveInvocationEndpointDisplay("/v1/images/variations")).toEqual({
       kind: "image",
       endpointValue: "/v1/images/variations",
-      badgeVariant: "secondary",
+      chipTone: "cyan",
       labelKey: "table.endpoint.imageBadge",
     });
   });
@@ -606,7 +606,7 @@ describe("resolveInvocationEndpointDisplay", () => {
     ).toEqual({
       kind: "remote_v2",
       endpointValue: "/v1/responses",
-      badgeVariant: "info",
+      chipTone: "violet",
       labelKey: "table.endpoint.remoteV2Badge",
     });
 
@@ -620,7 +620,7 @@ describe("resolveInvocationEndpointDisplay", () => {
     ).toEqual({
       kind: "responses",
       endpointValue: "/v1/responses",
-      badgeVariant: "default",
+      chipTone: "blue",
       labelKey: "table.endpoint.responsesBadge",
     });
 
@@ -633,7 +633,7 @@ describe("resolveInvocationEndpointDisplay", () => {
     ).toEqual({
       kind: "remote_v2",
       endpointValue: "/v1/responses",
-      badgeVariant: "info",
+      chipTone: "violet",
       labelKey: "table.endpoint.remoteV2Badge",
     });
   });
@@ -642,13 +642,13 @@ describe("resolveInvocationEndpointDisplay", () => {
     expect(resolveInvocationEndpointDisplay("/v1/responses/experimental")).toEqual({
       kind: "raw",
       endpointValue: "/v1/responses/experimental",
-      badgeVariant: null,
+      chipTone: null,
       labelKey: null,
     });
     expect(resolveInvocationEndpointDisplay(undefined)).toEqual({
       kind: "raw",
       endpointValue: "—",
-      badgeVariant: null,
+      chipTone: null,
       labelKey: null,
     });
   });
@@ -662,7 +662,7 @@ describe("resolveInvocationImageIntentDisplay", () => {
       }),
     ).toMatchObject({
       kind: "yes",
-      showsBadge: true,
+      showsChip: true,
       badgeLabelKey: "table.imageTool.badge",
       detailLabelKey: "table.imageTool.detail.yes",
     });
@@ -673,7 +673,7 @@ describe("resolveInvocationImageIntentDisplay", () => {
       }),
     ).toMatchObject({
       kind: "direct_image",
-      showsBadge: true,
+      showsChip: true,
       badgeLabelKey: "table.imageTool.badge",
       detailLabelKey: "table.imageTool.detail.directImage",
     });
@@ -684,7 +684,7 @@ describe("resolveInvocationImageIntentDisplay", () => {
       }),
     ).toMatchObject({
       kind: "no",
-      showsBadge: false,
+      showsChip: false,
       detailLabelKey: "table.imageTool.detail.no",
     });
 
@@ -694,13 +694,13 @@ describe("resolveInvocationImageIntentDisplay", () => {
       }),
     ).toMatchObject({
       kind: "unknown",
-      showsBadge: false,
+      showsChip: false,
       detailLabelKey: "table.imageTool.detail.unknown",
     });
 
     expect(resolveInvocationImageIntentDisplay(undefined)).toMatchObject({
       kind: "missing",
-      showsBadge: false,
+      showsChip: false,
       detailLabelKey: null,
     });
   });
@@ -1023,7 +1023,7 @@ describe("InvocationTable", () => {
     expect(html).toContain("/v1/responses");
     expect(html).toContain("/v1/chat/completions");
     expect(html).toContain('data-reasoning-effort-tone="high"');
-    expect(html).toContain("border-warning/45");
+    expect(html).toContain("chip-tone-warning");
     expect(html).toContain(">—</span>");
   });
 
@@ -1850,7 +1850,7 @@ describe("InvocationTable", () => {
 
     expect(html).toContain("custom-tier");
     expect(html).toContain('data-reasoning-effort-tone="unknown"');
-    expect(html).toContain("border-dashed");
+    expect(html).toContain("chip-tone-neutral");
   });
 
   it("renders max and ultra with their highest-intensity shared tones", () => {
@@ -1873,7 +1873,7 @@ describe("InvocationTable", () => {
 
     expect(html).toContain('data-reasoning-effort-tone="max"');
     expect(html).toContain('data-reasoning-effort-tone="ultra"');
-    expect(html).toContain("text-error");
+    expect(html).toContain("chip-tone-error");
     expect(html).toContain('title="max"');
     expect(html).toContain('title="ultra"');
     expect(html).toContain('data-model-identity="gpt-5.6"');

@@ -27,18 +27,145 @@ pub(crate) fn account_accepts_requested_model(
     else {
         return true;
     };
-    if rule.available_models_defined
-        && !rule
-            .available_models
+    if !model_policy_accepts_requested_model(
+        requested_model,
+        rule.available_models_mode,
+        rule.available_models_defined,
+        &rule.available_models,
+    ) {
+        return false;
+    }
+    if let Some(tag_available_models) = rule.tag_available_models.as_deref()
+        && !tag_available_models
             .iter()
             .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
     {
         return false;
     }
-    !rule
-        .system_denied_models
+    !requested_model_is_system_denied(Some(requested_model), rule)
+}
+
+pub(crate) fn requested_model_is_system_denied(
+    requested_model: Option<&str>,
+    rule: &EffectiveRoutingRule,
+) -> bool {
+    let Some(requested_model) = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    rule.system_denied_models
         .iter()
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
+}
+
+fn model_policy_accepts_requested_model(
+    requested_model: &str,
+    mode: AvailableModelsMode,
+    defined: bool,
+    models: &[String],
+) -> bool {
+    let matches_model_rule = models
+        .iter()
+        .any(|candidate| requested_model_matches_constraint(requested_model, candidate));
+    match mode {
+        AvailableModelsMode::Allowlist => !defined || matches_model_rule,
+        AvailableModelsMode::Denylist => !matches_model_rule,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn models(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn allowlist_requires_an_exact_or_dated_alias_match() {
+        let allowed = models(&["gpt-5.4"]);
+        assert!(model_policy_accepts_requested_model(
+            "GPT-5.4-2026-03-05",
+            AvailableModelsMode::Allowlist,
+            true,
+            &allowed,
+        ));
+        assert!(!model_policy_accepts_requested_model(
+            "gpt-5.4-pro",
+            AvailableModelsMode::Allowlist,
+            true,
+            &allowed,
+        ));
+    }
+
+    #[test]
+    fn denylist_rejects_matches_but_empty_denylist_is_unrestricted() {
+        let denied = models(&["gpt-5.4"]);
+        assert!(!model_policy_accepts_requested_model(
+            "gpt-5.4",
+            AvailableModelsMode::Denylist,
+            true,
+            &denied,
+        ));
+        assert!(model_policy_accepts_requested_model(
+            "custom-image-model",
+            AvailableModelsMode::Denylist,
+            true,
+            &Vec::new(),
+        ));
+    }
+
+    #[test]
+    fn empty_allowlist_rejects_every_model_only_when_defined() {
+        assert!(!model_policy_accepts_requested_model(
+            "custom-model",
+            AvailableModelsMode::Allowlist,
+            true,
+            &Vec::new(),
+        ));
+        assert!(model_policy_accepts_requested_model(
+            "custom-model",
+            AvailableModelsMode::Allowlist,
+            false,
+            &Vec::new(),
+        ));
+    }
+
+    #[test]
+    fn mode_only_conversation_override_inherits_the_current_model_list() {
+        let mut rule = build_effective_routing_rule(&[]);
+        rule.available_models = models(&["gpt-5.4"]);
+        rule.available_models_defined = true;
+        apply_conversation_routing_override(
+            &mut rule,
+            Some(&ConversationRoutingOverride {
+                available_models_mode: Some(AvailableModelsMode::Denylist),
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(rule.available_models, models(&["gpt-5.4"]));
+        assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
+        assert!(account_accepts_requested_model(Some("gpt-4.1"), &rule));
+    }
+
+    #[test]
+    fn malformed_conversation_override_fails_closed_as_an_empty_allowlist() {
+        let mut rule = build_effective_routing_rule(&[]);
+        rule.available_models = models(&["gpt-5.4"]);
+        rule.available_models_defined = true;
+        let override_policy = ConversationRoutingOverride {
+            available_models_invalid: true,
+            ..Default::default()
+        };
+        assert!(override_policy.has_policy_override());
+        apply_conversation_routing_override(&mut rule, Some(&override_policy));
+
+        assert!(rule.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
+    }
 }
 
 pub(crate) fn apply_conversation_routing_override(
@@ -60,10 +187,29 @@ pub(crate) fn apply_conversation_routing_override(
         rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
         rule.field_sources.codex_imagegen_rewrite_mode = "conversation".to_string();
     }
-    if let Some(available_models) = override_policy.available_models.as_ref() {
+    if override_policy.available_models.is_some()
+        || override_policy.available_models_mode.is_some()
+        || override_policy.available_models_invalid
+    {
+        let available_models = if override_policy.available_models_invalid {
+            Vec::new()
+        } else {
+            override_policy
+                .available_models
+                .clone()
+                .unwrap_or_else(|| rule.available_models.clone())
+        };
         rule.available_models = available_models.clone();
         rule.available_models_defined = true;
         rule.field_sources.available_models = "conversation".to_string();
+        rule.available_models_mode = if override_policy.available_models_invalid {
+            AvailableModelsMode::Allowlist
+        } else {
+            override_policy
+                .available_models_mode
+                .unwrap_or(AvailableModelsMode::Allowlist)
+        };
+        rule.field_sources.available_models_mode = "conversation".to_string();
     }
 }
 
@@ -156,6 +302,11 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         let mut rule = build_effective_routing_rule(&[]);
         apply_root_request_compression_defaults(&mut rule, &root_request_compression);
         apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
+        apply_root_available_models(
+            &mut rule,
+            root_settings.available_models_json.as_deref(),
+            root_settings.available_models_mode.as_deref(),
+        );
         let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
         let request_compression_override_enabled =
             account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
@@ -217,6 +368,11 @@ pub(crate) async fn load_effective_routing_rule_for_group(
         .unwrap_or(CodexImagegenRewriteMode::KeepOriginal);
     apply_root_request_compression_defaults(&mut rule, &root_request_compression);
     apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
+    apply_root_available_models(
+        &mut rule,
+        root_settings.available_models_json.as_deref(),
+        root_settings.available_models_mode.as_deref(),
+    );
     let Some(group_name) = group_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -945,8 +1101,12 @@ pub(crate) async fn load_account_routing_candidates(
             ) AS credits_balance,
             account.last_selected_at,
             (
-                SELECT COUNT(*)
-                FROM pool_sticky_routes route
+                SELECT COUNT(DISTINCT route.sticky_key)
+                FROM (
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_routes
+                    UNION ALL
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
+                ) route
                 WHERE route.account_id = account.id
                   AND route.last_seen_at >=
         "#,
@@ -1062,8 +1222,12 @@ pub(crate) async fn load_account_routing_candidate(
             ) AS credits_balance,
             account.last_selected_at,
             (
-                SELECT COUNT(*)
-                FROM pool_sticky_routes route
+                SELECT COUNT(DISTINCT route.sticky_key)
+                FROM (
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_routes
+                    UNION ALL
+                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
+                ) route
                 WHERE route.account_id = account.id
                   AND route.last_seen_at >= ?2
             ) AS active_sticky_conversations

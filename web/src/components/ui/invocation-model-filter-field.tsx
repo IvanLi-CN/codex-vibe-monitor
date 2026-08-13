@@ -3,7 +3,7 @@ import { AppIcon } from "../../features/shared/AppIcon";
 import type { InvocationModelRerouteFilter, InvocationModelTarget } from "../../lib/api";
 import type { TextInputAutocompleteOffProps } from "../../lib/form-autocomplete";
 import { cn } from "../../lib/utils";
-import { Badge } from "./badge";
+import { Chip } from "./chip";
 import type { FilterableComboboxOption } from "./filterable-combobox";
 import { FormFieldFeedback } from "./form-field-feedback";
 import { MultiValueSuggestionField } from "./multi-value-suggestion-field";
@@ -229,12 +229,12 @@ export function InvocationModelFilterField({
                 {visibleModels.visible.length > 0 ? (
                   <>
                     {visibleModels.visible.map((item) => (
-                      <Badge key={`model-${item}`} variant="secondary" className="max-w-full">
+                      <Chip key={`model-${item}`} tone="secondary" className="max-w-full">
                         <span className="truncate">{item}</span>
-                      </Badge>
+                      </Chip>
                     ))}
                     {visibleModels.hiddenCount > 0 ? (
-                      <Badge variant="secondary">+{visibleModels.hiddenCount}</Badge>
+                      <Chip tone="secondary">+{visibleModels.hiddenCount}</Chip>
                     ) : null}
                   </>
                 ) : (
@@ -243,16 +243,16 @@ export function InvocationModelFilterField({
                   </span>
                 )}
                 {visibleReasoningEfforts.visible.map((item) => (
-                  <Badge key={`reasoning-${item}`} variant="info" className="max-w-full">
+                  <Chip key={`reasoning-${item}`} tone="info" className="max-w-full">
                     <span className="truncate">
                       {reasoningEffortLabel} {item}
                     </span>
-                  </Badge>
+                  </Chip>
                 ))}
                 {visibleReasoningEfforts.hiddenCount > 0 ? (
-                  <Badge variant="info">
+                  <Chip tone="info">
                     {reasoningEffortLabel} +{visibleReasoningEfforts.hiddenCount}
-                  </Badge>
+                  </Chip>
                 ) : null}
               </span>
             </span>

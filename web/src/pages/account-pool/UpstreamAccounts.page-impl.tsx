@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -11,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -974,16 +974,16 @@ export default function UpstreamAccountsPage() {
       latestActionFieldMessage: t("accountPool.upstreamAccounts.latestAction.fields.message"),
       forwardProxyPending: t("accountPool.upstreamAccounts.proxy.pending"),
       forwardProxyUnconfigured: t("accountPool.upstreamAccounts.proxy.unconfigured"),
-      policyPriorityPrimary: t("accountPool.policyBadges.primary"),
-      policyPriorityFallback: t("accountPool.policyBadges.fallback"),
-      policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
-      policyFastForceAdd: t("accountPool.policyBadges.fastAdd"),
-      policyFastForceRemove: t("accountPool.policyBadges.fastRemove"),
-      policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
-      policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
-      policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
-      policyConcurrency: (count) => t("accountPool.policyBadges.concurrency", { count }),
-      policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
+      policyPriorityPrimary: t("accountPool.policyChips.primary"),
+      policyPriorityFallback: t("accountPool.policyChips.fallback"),
+      policyFastFillMissing: t("accountPool.policyChips.fastFill"),
+      policyFastForceAdd: t("accountPool.policyChips.fastAdd"),
+      policyFastForceRemove: t("accountPool.policyChips.fastRemove"),
+      policyForbidCutOut: t("accountPool.policyChips.forbidCutOut"),
+      policyForbidCutIn: t("accountPool.policyChips.forbidCutIn"),
+      policyForbidNewConversation: t("accountPool.policyChips.forbidNew"),
+      policyConcurrency: (count) => t("accountPool.policyChips.concurrency", { count }),
+      policyRetry: (count) => t("accountPool.policyChips.retry", { count }),
     }),
     [
       accountActionLabel,
@@ -1029,7 +1029,7 @@ export default function UpstreamAccountsPage() {
       ungroupedLabel: t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
       groupedPlanLabel: (planType) =>
         planType === "api"
-          ? t("accountPool.upstreamAccounts.grouped.apiBadge")
+          ? t("accountPool.upstreamAccounts.grouped.apiChip")
           : groupedPlanLabel(planType),
     });
   }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
@@ -1427,9 +1427,9 @@ export default function UpstreamAccountsPage() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-medium text-base-content">{row.displayName}</span>
-                  <Badge variant={bulkSyncRowStatusVariant(row.status)}>
+                  <Chip tone={bulkSyncRowStatusVariant(row.status)}>
                     {t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}
-                  </Badge>
+                  </Chip>
                 </div>
                 {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
               </div>
@@ -1974,17 +1974,17 @@ export default function UpstreamAccountsPage() {
                     upstream429Enabled: (count) =>
                       t("accountPool.groups.upstream429Enabled", { count }),
                     upstream429Disabled: t("accountPool.groups.upstream429Disabled"),
-                    policyPriorityPrimary: t("accountPool.policyBadges.primary"),
-                    policyPriorityFallback: t("accountPool.policyBadges.fallback"),
-                    policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
-                    policyFastForceAdd: t("accountPool.policyBadges.fastAdd"),
-                    policyFastForceRemove: t("accountPool.policyBadges.fastRemove"),
-                    policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
-                    policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
-                    policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
+                    policyPriorityPrimary: t("accountPool.policyChips.primary"),
+                    policyPriorityFallback: t("accountPool.policyChips.fallback"),
+                    policyFastFillMissing: t("accountPool.policyChips.fastFill"),
+                    policyFastForceAdd: t("accountPool.policyChips.fastAdd"),
+                    policyFastForceRemove: t("accountPool.policyChips.fastRemove"),
+                    policyForbidCutOut: t("accountPool.policyChips.forbidCutOut"),
+                    policyForbidCutIn: t("accountPool.policyChips.forbidCutIn"),
+                    policyForbidNewConversation: t("accountPool.policyChips.forbidNew"),
                     policyConcurrency: (count) =>
-                      t("accountPool.policyBadges.concurrency", { count }),
-                    policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
+                      t("accountPool.policyChips.concurrency", { count }),
+                    policyRetry: (count) => t("accountPool.policyChips.retry", { count }),
                   }}
                 />
               )}
@@ -2019,14 +2019,11 @@ export default function UpstreamAccountsPage() {
                       </div>
                     ) : null}
                     {paginationStatusText ? (
-                      <div
+                      <Chip
+                        size="default"
+                        tone={showBlockingRosterLoading ? "primary" : "error"}
                         data-testid="upstream-accounts-pagination-status"
-                        className={cn(
-                          "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm",
-                          showBlockingRosterLoading
-                            ? "border-primary/20 bg-primary/8 text-primary"
-                            : "border-error/20 bg-error/8 text-error",
-                        )}
+                        className="gap-2 px-3 py-1.5 text-sm"
                       >
                         {showBlockingRosterLoading ? (
                           <Spinner size="sm" className="h-4 w-4" />
@@ -2034,7 +2031,7 @@ export default function UpstreamAccountsPage() {
                           <AppIcon name="alert-circle-outline" className="h-4 w-4" aria-hidden />
                         )}
                         <span>{paginationStatusText}</span>
-                      </div>
+                      </Chip>
                     ) : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-3">

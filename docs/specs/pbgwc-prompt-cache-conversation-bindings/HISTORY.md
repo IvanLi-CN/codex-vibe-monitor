@@ -2,6 +2,14 @@
 
 ## Key Decisions
 
+- 2026-08-11: Automatic Sticky affinity is now scoped by normalized `promptCacheKey + modelKey`. Dated aliases share a base-model bucket, exact buckets override the all-model fallback, and two-level fencing permits independent model completion while retaining first-success-wins inside a bucket.
+- 2026-08-11: Manual account binding and full reset remain conversation-wide. Account binding overwrites all materialized buckets, normal manual clear preserves Sticky state, and the confirmed reset removes binding, owner, fallback, and model buckets together.
+- 2026-08-11: Added the dedicated 路由 tab and moved binding controls there. Routing events now state their all-model/model scope, preserve original request-model context when needed, expose full-history model facets, and aggregate multi-bucket changes as expandable transitions.
+- 2026-08-11: Kept automatic clear causality inside its all-model or normalized-model generation bucket, so a failed route for one model cannot make another model's first assignment appear failure-driven. The Events tab also replaces a model-filtered HTTP subset when returning to unrestricted SSE rows.
+- 2026-08-11: Made each current-route upstream-account value an account-detail entry point when its account ID is known, while preserving non-interactive fallback text for historical or incomplete route data.
+- 2026-08-11: Made current routing use wrapped field/value rows on narrow viewports, preserving model, account, and timestamps without horizontal overflow.
+- 2026-08-11: Gave the conversation affinity-reset confirmation its own padded content group and separated safe-area action footer. The shared dialog shell deliberately stays edge-to-edge for mobile sheets; this destructive flow now owns the spacing that its title, explanation, and actions require.
+
 - 2026-08-06: Owner approved the shared invocation card evidence. The desktop, narrow, and expanded narrow `ui_demo` snapshots are now persisted as stable Spec assets; this Spec remains owner-facing only while the invocation observability Spec publishes the selected images in the PR body.
 
 - 2026-08-03: Detail drawers now use tab-scoped authoritative topics. The current Calls head is realtime while the entire captured HTTP snapshot, including page 1, remains frozen; cached Calls hydration survives direct opens, and away-from-top head refreshes retain existing visible rows while only new stable keys enter the reveal count. Overview builds its summary and samples through one SQLite read transaction plus captured runtime overlay with a fixed accepted page width. Its SSE-disabled HTTP fallback captures an unpinned head and re-reads it with the returned snapshot for summary, samples, and full-range bounds, while a cached binding fallback baseline remains scope-local. Records changes coalesce, binding/events use committed configuration broadcasts, and Settings resolves external changes without silently overwriting a dirty draft.

@@ -195,9 +195,13 @@ Codex Vibe Monitor 的界面应像一张可信的观测实验台：稳定、清�
 
 ### Chips
 
-- **Style:** chip 和 badge 使用圆角胶囊、细边框、低透明语义底色。
-- **Semantic Text Contract:** `*-content` 只用于实底或高填充语义容器；低透明语义底上的文字必须走共享 tone-ink contract，不能把 filled-content token 直接拿来画普通正文。
+- **Single entrypoint:** 所有文本 chip 统一使用 `web/src/components/ui/chip.tsx`，不再保留 Badge 入口或页面私有文本胶囊。
+- **Palette:** semantic tone 固定为 `neutral / primary / secondary / accent / info / success / warning / error`；categorical tone 固定为 `sky / cyan / blue / indigo / violet / fuchsia / teal / emerald / amber / orange`。红色只用于 `error`，不进入分类调色盘。
+- **Theming:** light/dark 均使用显式、不透明的 surface/border/ink 三元组。colored ink 必须带明确色相，不得是黑、白或近中性正文色；文本对比度至少 `4.5:1`。
+- **Focus:** 交互 Chip 保留 `focus-visible` primary outline/ring，indicator 与所在 surface 的对比度至少 `3:1`。
+- **Semantic Text Contract:** `*-content` 只用于实底或高填充语义容器；低透明语义底上的文字必须走 Chip 的 tone contract，不能把 filled-content token 直接拿来画普通正文。
 - **State:** selected/active 必须同时改变边框、背景和文字权重；不要只靠颜色微差。
+- **Size lock:** `micro / compact / default / header / mailbox / square` 复刻既有高度、padding、字号与 line-height；desktop/mobile 复用相同 preset，不增加触屏尺寸。
 
 ### Cards / Containers
 

@@ -44,6 +44,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - `upstream 429 retry` is rendered as a single `0..5` inline count selector; `0` maps to disabled without a separate toggle control
 - concurrency stays embedded in the expanded row; available models render as a tag-selector style control instead of repeated add buttons
 - available-model overrides may store an empty list to explicitly allow no models
+- model-policy summaries and mode controls use the shared compact chip presentation where the host surface provides it; this does not alter the allowlist/denylist wire contract
 - `systemDeniedModels` stays a read-only system result and has no account override control
 - timeout editors are shared across group/account surfaces and now use the same summary-row + source-badge + field-local expand interaction model as the effective routing rule card
 - the group settings dialog is split into `Group info`, `Routing settings`, and `Proxy nodes` tabs so group metadata, routing policy, and proxy-node binding are edited in separate panels under one save action
@@ -85,6 +86,12 @@ The API-key account detail Overview renders six independent capability cards in 
 - Standalone Search card: exact `/v1/alpha/search` eligibility with automatic learning and persistent supported/unsupported override
 
 ## API and Resolution
+
+Model filtering persists `available_models_mode` beside each root, group, account, and conversation model list. Root storage defaults to `denylist` and `[]`; nullable lower layers preserve inheritance. Runtime selection branches on the effective mode, applies the last explicit rule in root -> group -> account -> conversation order, and then rejects immutable `systemDeniedModels`. Direct image endpoints therefore report `modelNotAllowed` before image capability checks when a model is filtered, while Codex `image_gen` keeps its independent capability/rewrite requirement.
+
+Compatibility details are enforced at every write boundary: list-only legacy writes become allowlists, list-only `null` clears remove the mode and list together, explicit empty allowlists remain valid reject-all rules, and read-only legacy tag model constraints retain allowlist semantics with a tag source instead of inheriting the root denylist mode.
+
+The settings contract exposes regular proxy candidates including `gpt-5.4-mini` and a separate image candidate list containing `gpt-image-2`. The new regular candidate is not added to the default enabled preset list, and image candidates do not change the `/v1/models` hijack switch.
 
 Account and group routing policy writes distinguish missing, `null`, and value for nullable policy fields.
 
@@ -186,6 +193,14 @@ Validation covers:
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
 - frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
+- model-policy regressions proving exact and dated allowlist matches, denylist exclusion, empty-list semantics, legacy list-only compatibility, and immutable system-deny behavior
+- candidate settings coverage proving `gpt-5.4-mini` is discoverable without changing the default enabled preset set, while `gpt-image-2` is exposed as an independent image candidate
+- validation commands completed: `cargo fmt --check`, `cargo check`, targeted Rust model-policy tests, `cd web && bun run test`, `cd web && bun run build`, and `cd web && bun run build-storybook`
+- visual evidence captured from the dedicated Storybook model-policy canvas with no overflow or occlusion:
+  - desktop light (`1280x900`, element-level component capture): [`model-policy-desktop.png`](./assets/model-policy-desktop.png)
+  - compact mobile dark (`393x852`, element-level component capture): [`model-policy-mobile.png`](./assets/model-policy-mobile.png)
+  - desktop shows one in-place mode button beside the multi-select; compact mobile keeps the allowlist/denylist segmented control above it
+  - both captures passed `trim_whitespace.py --margin-policy require_margin --evidence-surface component`
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`

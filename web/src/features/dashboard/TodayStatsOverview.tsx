@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
+import { Chip } from "../../components/ui/chip";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useTranslation } from "../../i18n";
 import type {
@@ -664,9 +664,9 @@ export function TodayStatsOverview({
             </p>
           </div>
           {showDayBadge ? (
-            <Badge variant="default" className="px-2 py-[0.18rem] text-[11px]">
+            <Chip tone="primary" className="px-2 py-[0.18rem] text-[11px]">
               {t("dashboard.today.dayBadge")}
-            </Badge>
+            </Chip>
           ) : null}
         </div>
       ) : null}

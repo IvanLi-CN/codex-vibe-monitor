@@ -2,7 +2,6 @@
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -11,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -32,7 +32,7 @@ import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDet
 import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
 import { ModelRoutingHealthPanel } from "../../features/account-pool/ModelRoutingHealthPanel";
 import {
-  MotherAccountBadge,
+  MotherAccountChip,
   MotherAccountToggle,
 } from "../../features/account-pool/MotherAccountToggle";
 import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
@@ -67,7 +67,7 @@ import type {
   UpstreamCapabilityState,
 } from "../../lib/api";
 import { resetUpstreamAccountModelRouting } from "../../lib/api";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import {
   type AccountDraft,
   areAccountDraftsEqual,
@@ -600,7 +600,7 @@ const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images
 const CODEX_IMAGEGEN_CAPABILITY_NAMESPACE = ["image_gen"] as const;
 const STANDALONE_SEARCH_CAPABILITY_ENDPOINTS = ["/v1/alpha/search"] as const;
 
-function capabilityBadgeVariant(
+function capabilityChipTone(
   value: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
 ) {
   if (value === "supported") return "success";
@@ -643,9 +643,9 @@ function AccountCapabilityCard({
           <div className="min-w-0 flex-1">
             <CardTitle className="text-[0.9375rem] leading-5">{title}</CardTitle>
           </div>
-          <Badge variant={capabilityBadgeVariant(state.effective)} className="shrink-0 self-start">
+          <Chip tone={capabilityChipTone(state.effective)} className="shrink-0 self-start">
             {capabilityStatusLabel(state.effective, t)}
-          </Badge>
+          </Chip>
         </div>
         <div className="space-y-1.5">
           <div className="flex min-h-[2.25rem] items-start">
@@ -676,34 +676,34 @@ function AccountCapabilityCard({
             <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.observed")}
             </span>
-            <Badge
-              variant={capabilityBadgeVariant(state.observed)}
+            <Chip
+              tone={capabilityChipTone(state.observed)}
               className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
             >
               {capabilityStatusLabel(state.observed, t)}
-            </Badge>
+            </Chip>
           </div>
           <div className="surface-subtle flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-1.5">
             <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.override")}
             </span>
-            <Badge
-              variant={capabilityBadgeVariant(state.override ?? null)}
+            <Chip
+              tone={capabilityChipTone(state.override ?? null)}
               className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
             >
               {capabilityStatusLabel(state.override ?? null, t)}
-            </Badge>
+            </Chip>
           </div>
           <div className="surface-subtle flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-1.5">
             <span className="text-[0.65rem] font-semibold uppercase tracking-[0.06em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.effective")}
             </span>
-            <Badge
-              variant={capabilityBadgeVariant(state.effective)}
+            <Chip
+              tone={capabilityChipTone(state.effective)}
               className="max-w-full truncate px-1.5 py-0 text-[0.68rem]"
             >
               {capabilityStatusLabel(state.effective, t)}
-            </Badge>
+            </Chip>
           </div>
         </div>
         <SelectField
@@ -1765,7 +1765,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [accountId, openUpstreamAccount],
   );
-  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType);
+  const selectedPlanChip = upstreamPlanChipRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? "",
     accountHealthStatus(selectedDetail ?? selected),
@@ -2366,39 +2366,33 @@ function SharedUpstreamAccountDetailDrawerInner({
               <div className="space-y-3">
                 {selected ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
+                    <Chip tone={enableStatusVariant(accountEnableStatus(selected))}>
                       {accountEnableStatusLabel(accountEnableStatus(selected))}
-                    </Badge>
-                    <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
+                    </Chip>
+                    <Chip tone={workStatusVariant(accountWorkStatus(selected))}>
                       {accountWorkStatusLabel(accountWorkStatus(selected))}
-                    </Badge>
-                    <Badge variant={syncStateVariant(accountSyncState(selected))}>
+                    </Chip>
+                    <Chip tone={syncStateVariant(accountSyncState(selected))}>
                       {accountSyncStateLabel(accountSyncState(selected))}
-                    </Badge>
-                    <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
+                    </Chip>
+                    <Chip tone={healthStatusVariant(accountHealthStatus(selected))}>
                       {accountHealthStatusLabel(accountHealthStatus(selected))}
-                    </Badge>
-                    <Badge variant={kindVariant(selected.kind)}>
-                      {accountKindLabel(selected.kind)}
-                    </Badge>
-                    {selected.planType && selectedPlanBadge ? (
-                      <Badge
-                        variant={selectedPlanBadge.variant}
-                        className={selectedPlanBadge.className}
-                        data-plan={selectedPlanBadge.dataPlan}
-                      >
+                    </Chip>
+                    <Chip tone={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Chip>
+                    {selected.planType && selectedPlanChip ? (
+                      <Chip tone={selectedPlanChip.tone} data-plan={selectedPlanChip.dataPlan}>
                         {selected.planType}
-                      </Badge>
+                      </Chip>
                     ) : null}
                     {selected.duplicateInfo ? (
-                      <Badge variant="warning">
+                      <Chip tone="warning">
                         {t("accountPool.upstreamAccounts.duplicate.badge")}
-                      </Badge>
+                      </Chip>
                     ) : null}
                     {selected.kind === "api_key_codex" ? (
-                      <Badge variant="secondary">
+                      <Chip tone="secondary">
                         {t("accountPool.upstreamAccounts.apiKey.localPlaceholder")}
-                      </Badge>
+                      </Chip>
                     ) : null}
                   </div>
                 ) : null}
@@ -2411,7 +2405,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       {detailIdentity?.displayName ?? `#${accountId}`}
                     </h2>
                     {selected?.isMother ? (
-                      <MotherAccountBadge label={t("accountPool.upstreamAccounts.mother.badge")} />
+                      <MotherAccountChip label={t("accountPool.upstreamAccounts.mother.badge")} />
                     ) : null}
                   </div>
                   <p className="section-description">
@@ -3210,14 +3204,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <div className="surface-subtle flex min-h-12 flex-wrap items-center gap-2 rounded-[1.2rem] px-3 py-2 shadow-sm">
                           {(selectedDetail.tags ?? []).length > 0 ? (
                             selectedDetail.tags.map((tag) => (
-                              <Badge
+                              <Chip
                                 key={tag.id}
-                                variant="secondary"
-                                className="min-w-0 max-w-[10rem] truncate border-base-300/90 bg-base-200/90 px-2 py-px text-[11px] font-medium leading-4 text-base-content/92"
+                                tone="secondary"
+                                className="min-w-0 max-w-[10rem] truncate px-2 py-px text-[11px] font-medium leading-4"
                                 title={tag.name}
                               >
                                 {tag.name}
-                              </Badge>
+                              </Chip>
                             ))
                           ) : (
                             <span className="text-sm text-base-content/60">
@@ -3588,6 +3582,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                       availableModelsNoneAllowed: t(
                         "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed",
                       ),
+                      availableModelsAllowed: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowed",
+                      ),
+                      availableModelsDenied: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied",
+                      ),
+                      availableModelsMode: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsMode",
+                      ),
+                      availableModelsAllowlist: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist",
+                      ),
+                      availableModelsDenylist: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist",
+                      ),
                       systemDeniedModelsEmpty: t(
                         "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty",
                       ),
@@ -3947,53 +3956,53 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 className="flex flex-wrap items-center gap-2"
                                 data-testid="account-event-meta"
                               >
-                                <Badge variant="secondary">
+                                <Chip tone="secondary">
                                   {accountActionLabel(actionEvent.action) ??
                                     t("accountPool.upstreamAccounts.latestAction.unknown")}
-                                </Badge>
-                                <Badge variant="secondary">
+                                </Chip>
+                                <Chip tone="secondary">
                                   {accountActionSourceLabel(actionEvent.source) ??
                                     t("accountPool.upstreamAccounts.latestAction.unknown")}
-                                </Badge>
+                                </Chip>
                                 {actionEvent.reasonCode ? (
-                                  <Badge variant="secondary">
+                                  <Chip tone="secondary">
                                     {accountActionReasonLabel(actionEvent.reasonCode)}
-                                  </Badge>
+                                  </Chip>
                                 ) : null}
                                 {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
-                                  <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
+                                  <Chip tone="secondary">{`HTTP ${actionEvent.httpStatus}`}</Chip>
                                 ) : null}
                                 {hasAccountFailureImpact(actionEvent) ? (
-                                  <dl className="contents" data-testid="account-event-impact">
-                                    <Badge
-                                      variant="secondary"
+                                  <div className="contents" data-testid="account-event-impact">
+                                    <Chip
+                                      tone="secondary"
                                       className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
                                       data-testid="account-event-impact-chip"
                                     >
-                                      <dt className="font-normal text-base-content/55">
+                                      <span className="font-normal opacity-75">
                                         {t(
                                           "accountPool.upstreamAccounts.recentActions.impact.scope",
                                         )}
-                                      </dt>
-                                      <dd className="font-semibold text-base-content/90">
+                                      </span>
+                                      <span className="font-semibold">
                                         {t(
                                           hasModelRoutingTransition(actionEvent)
                                             ? "accountPool.upstreamAccounts.recentActions.impact.scopeModel"
                                             : "accountPool.upstreamAccounts.recentActions.impact.scopeAccount",
                                         )}
-                                      </dd>
-                                    </Badge>
-                                    <Badge
-                                      variant="error"
+                                      </span>
+                                    </Chip>
+                                    <Chip
+                                      tone="error"
                                       className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
                                       data-testid="account-event-impact-chip"
                                     >
-                                      <dt className="font-normal opacity-75">
+                                      <span className="font-normal opacity-75">
                                         {t(
                                           "accountPool.upstreamAccounts.recentActions.impact.affectedModels",
                                         )}
-                                      </dt>
-                                      <dd className="min-w-0 break-all font-semibold">
+                                      </span>
+                                      <span className="min-w-0 break-all font-semibold">
                                         {hasModelRoutingTransition(actionEvent)
                                           ? (actionEvent.model ??
                                             t(
@@ -4002,9 +4011,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                                           : t(
                                               "accountPool.upstreamAccounts.recentActions.impact.allModels",
                                             )}
-                                      </dd>
-                                    </Badge>
-                                  </dl>
+                                      </span>
+                                    </Chip>
+                                  </div>
                                 ) : null}
                                 <span className="text-xs text-base-content/55">
                                   {formatDateTime(actionEvent.occurredAt)}
@@ -4037,7 +4046,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               ) : null}
                               {actionEvent.blockedBinding ? (
                                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                                  <Badge variant="info">
+                                  <Chip tone="info">
                                     {actionEvent.blockedBinding.constraintSource ===
                                     "encryptedSessionOwner"
                                       ? t(
@@ -4046,7 +4055,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                       : t(
                                           "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount",
                                         )}
-                                  </Badge>
+                                  </Chip>
                                   <Button
                                     type="button"
                                     size="sm"
