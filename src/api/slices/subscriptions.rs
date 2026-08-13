@@ -297,6 +297,50 @@ pub(crate) struct DashboardHotTopicsHealthSnapshot {
     pub(crate) timeseries: DashboardHotTopicHealthSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct DashboardHotTopicRecoveryState {
+    degraded: bool,
+    deferred: bool,
+}
+
+impl DashboardHotTopicRecoveryState {
+    fn merge(&mut self, other: Self) {
+        self.degraded |= other.degraded;
+        self.deferred |= other.deferred;
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardHotTopicRecoveryHealth {
+    activity: DashboardHotTopicRecoveryState,
+    summary: DashboardHotTopicRecoveryState,
+    network_timeseries: DashboardHotTopicRecoveryState,
+    network_recent: DashboardHotTopicRecoveryState,
+    working_conversations: DashboardHotTopicRecoveryState,
+    parallel_work: DashboardHotTopicRecoveryState,
+    timeseries: DashboardHotTopicRecoveryState,
+}
+
+impl DashboardHotTopicRecoveryHealth {
+    fn record(&mut self, topic: &SubscriptionTopic, state: DashboardHotTopicRecoveryState) {
+        let target = match topic {
+            SubscriptionTopic::DashboardActivityCurrent { .. } => &mut self.activity,
+            SubscriptionTopic::SummaryCurrent { .. } => &mut self.summary,
+            SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. } => {
+                &mut self.network_timeseries
+            }
+            SubscriptionTopic::DashboardNetworkRecentCurrent => &mut self.network_recent,
+            SubscriptionTopic::DashboardWorkingConversationsCurrent { .. } => {
+                &mut self.working_conversations
+            }
+            SubscriptionTopic::ParallelWorkCurrent { .. } => &mut self.parallel_work,
+            SubscriptionTopic::TimeseriesOpenWindow { .. } => &mut self.timeseries,
+            _ => return,
+        };
+        target.merge(state);
+    }
+}
+
 #[derive(Debug, Default)]
 struct DashboardTopicTopologyCounters {
     active_subscriber_count: AtomicU64,
@@ -366,6 +410,8 @@ struct DashboardDeliveryTopologyCounters {
     working_conversations: DashboardTopicTopologyCounters,
     parallel_work: DashboardTopicTopologyCounters,
     timeseries: DashboardTopicTopologyCounters,
+    working_conversations_cadence_miss_count: AtomicU64,
+    parallel_work_cadence_miss_count: AtomicU64,
 }
 
 impl DashboardDeliveryTopologyCounters {
@@ -460,6 +506,17 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
+    fn record_cadence_miss(&self, topic_name: &str) {
+        let counter = match topic_name {
+            "dashboard.working-conversations.current" => {
+                &self.working_conversations_cadence_miss_count
+            }
+            "stats.parallel-work.current" => &self.parallel_work_cadence_miss_count,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         DashboardDeliveryTopologyCounterSnapshot {
             activity: self.activity.snapshot(),
@@ -475,13 +532,14 @@ impl DashboardDeliveryTopologyCounters {
     fn hot_topic_health(
         &self,
         projection: DashboardRuntimeTopologyCounterSnapshot,
-        working_conversations_deferred: bool,
+        recovery: DashboardHotTopicRecoveryHealth,
     ) -> DashboardHotTopicsHealthSnapshot {
         let counters = self.snapshot();
         let topic = |counter: DashboardTopicTopologyCounterSnapshot,
                      cadence_miss_count: u64,
-                     deferred: bool| {
-            let degraded = counter.generic_fallback_build_count > 0
+                     recovery: DashboardHotTopicRecoveryState| {
+            let degraded = recovery.degraded
+                || counter.generic_fallback_build_count > 0
                 || counter.live_path_db_read_count > 0
                 || counter.reconnect_churn_count > 0
                 || counter.lagged_count > 0
@@ -493,7 +551,7 @@ impl DashboardDeliveryTopologyCounters {
                 topic_class: SubscriptionTopicClass::HotProjection.as_str().to_string(),
                 state: if degraded {
                     "degraded"
-                } else if deferred {
+                } else if recovery.deferred {
                     "deferred"
                 } else {
                     "healthy"
@@ -513,19 +571,43 @@ impl DashboardDeliveryTopologyCounters {
         };
         let current_cadence = projection.current.cadence_miss_count;
         let network_cadence = projection.network.cadence_miss_count;
+        let terminal_cadence = projection.terminal.cadence_miss_count;
+        let working_conversations_cadence = self
+            .working_conversations_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let parallel_work_cadence = self
+            .parallel_work_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let current_and_terminal_cadence = current_cadence.saturating_add(terminal_cadence);
         let mut health = DashboardHotTopicsHealthSnapshot {
             state: String::new(),
-            activity: topic(counters.activity, current_cadence, false),
-            summary: topic(counters.summary, current_cadence, false),
-            network_timeseries: topic(counters.network_timeseries, network_cadence, false),
-            network_recent: topic(counters.network_recent, network_cadence, false),
+            activity: topic(counters.activity, current_cadence, recovery.activity),
+            summary: topic(counters.summary, current_cadence, recovery.summary),
+            network_timeseries: topic(
+                counters.network_timeseries,
+                network_cadence,
+                recovery.network_timeseries,
+            ),
+            network_recent: topic(
+                counters.network_recent,
+                network_cadence,
+                recovery.network_recent,
+            ),
             working_conversations: topic(
                 counters.working_conversations,
-                0,
-                working_conversations_deferred,
+                working_conversations_cadence,
+                recovery.working_conversations,
             ),
-            parallel_work: topic(counters.parallel_work, 0, false),
-            timeseries: topic(counters.timeseries, 0, false),
+            parallel_work: topic(
+                counters.parallel_work,
+                parallel_work_cadence,
+                recovery.parallel_work,
+            ),
+            timeseries: topic(
+                counters.timeseries,
+                current_and_terminal_cadence,
+                recovery.timeseries,
+            ),
         };
         let states = [
             health.activity.state.as_str(),
@@ -579,6 +661,10 @@ impl DashboardDeliveryTopologyCounters {
         self.working_conversations.reset();
         self.parallel_work.reset();
         self.timeseries.reset();
+        self.working_conversations_cadence_miss_count
+            .store(0, Ordering::Relaxed);
+        self.parallel_work_cadence_miss_count
+            .store(0, Ordering::Relaxed);
     }
 }
 
@@ -2928,17 +3014,40 @@ impl SubscriptionHub {
         &self,
         projection: DashboardRuntimeTopologyCounterSnapshot,
     ) -> DashboardHotTopicsHealthSnapshot {
-        let working_conversations_deferred =
-            self.state.lock().await.topics.values().any(|cached| {
-                matches!(
+        let recovery = {
+            let guard = self.state.lock().await;
+            let mut recovery = DashboardHotTopicRecoveryHealth::default();
+            for (topic_key, cached) in &guard.topics {
+                if cached.topic.class() != SubscriptionTopicClass::HotProjection
+                    || guard
+                        .active_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                {
+                    continue;
+                }
+                let recovery_pending = guard.runtime_topic_recovery_queued.contains(topic_key)
+                    || cached.runtime_topic_recovery_retry_at.is_some();
+                let deferred = matches!(
                     cached.topic,
                     SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                 ) && (cached.prompt_cache_pressure_deferred
                     || cached.prompt_cache_reconcile_required
-                    || !cached.prompt_cache_pending_key_hydrations.is_empty())
-            });
+                    || !cached.prompt_cache_pending_key_hydrations.is_empty());
+                recovery.record(
+                    &cached.topic,
+                    DashboardHotTopicRecoveryState {
+                        degraded: cached.dirty || recovery_pending,
+                        deferred,
+                    },
+                );
+            }
+            recovery
+        };
         self.dashboard_topology_counters
-            .hot_topic_health(projection, working_conversations_deferred)
+            .hot_topic_health(projection, recovery)
     }
 
     pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
@@ -5542,7 +5651,7 @@ impl SubscriptionHub {
     ) -> Result<(), ApiError> {
         enum ParallelWorkSchedule {
             None,
-            Materialize,
+            Materialize(Instant),
             Reconcile,
         }
 
@@ -5643,7 +5752,7 @@ impl SubscriptionHub {
                     Some(ParallelWorkSchedule::None)
                 } else {
                     cached.parallel_work_refresh_scheduled = true;
-                    Some(ParallelWorkSchedule::Materialize)
+                    Some(ParallelWorkSchedule::Materialize(Instant::now()))
                 }
             };
             let Some(schedule) = schedule else {
@@ -5652,10 +5761,17 @@ impl SubscriptionHub {
             };
             match schedule {
                 ParallelWorkSchedule::None => {}
-                ParallelWorkSchedule::Materialize => {
+                ParallelWorkSchedule::Materialize(scheduled_at) => {
                     let hub = state.subscription_hub.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
+                        let deadline = scheduled_at + PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE;
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                        if Instant::now().saturating_duration_since(deadline)
+                            > PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE
+                        {
+                            hub.dashboard_topology_counters
+                                .record_cadence_miss("stats.parallel-work.current");
+                        }
                         hub.materialize_dashboard_parallel_work().await;
                     });
                 }
@@ -5915,8 +6031,15 @@ impl SubscriptionHub {
         for topic in scheduled {
             let hub = state.subscription_hub.clone();
             let state = state.clone();
+            let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
             tokio::spawn(async move {
-                tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                if Instant::now().saturating_duration_since(deadline)
+                    > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+                {
+                    hub.dashboard_topology_counters
+                        .record_cadence_miss(topic.name());
+                }
                 if let Err(err) = hub
                     .materialize_prompt_cache_topic(state.clone(), &topic)
                     .await
@@ -6036,8 +6159,15 @@ impl SubscriptionHub {
 
     fn spawn_prompt_cache_topic_materialization(state: Arc<AppState>, topic: SubscriptionTopic) {
         let hub = state.subscription_hub.clone();
+        let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
         tokio::spawn(async move {
-            tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            if Instant::now().saturating_duration_since(deadline)
+                > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+            {
+                hub.dashboard_topology_counters
+                    .record_cadence_miss(topic.name());
+            }
             if let Err(err) = hub
                 .materialize_prompt_cache_topic(state.clone(), &topic)
                 .await
@@ -13303,7 +13433,8 @@ mod tests {
             ..Default::default()
         };
 
-        let health = counters.hot_topic_health(projection, false);
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
 
         assert_eq!(health.state, "degraded");
         assert_eq!(health.activity.cadence_miss_count, 2);
@@ -13313,6 +13444,92 @@ mod tests {
         assert_eq!(health.working_conversations.reconnect_churn_count, 1);
         assert_eq!(health.working_conversations.state, "degraded");
         assert_eq!(health.timeseries.topic_class, "hot_projection");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_cadence_misses_to_each_materializer() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_cadence_miss("dashboard.working-conversations.current");
+        counters.record_cadence_miss("stats.parallel-work.current");
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            current: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 2,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.working_conversations.cadence_miss_count, 1);
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.cadence_miss_count, 1);
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.cadence_miss_count, 5);
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+    }
+
+    #[tokio::test]
+    async fn dashboard_hot_topic_health_marks_cursor_gap_last_good_as_degraded() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topics = vec![
+            SubscriptionTopic::DashboardWorkingConversationsCurrent {
+                page_size: 20,
+                recent_invocation_limit: 16,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::TimeseriesOpenWindow {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                settlement_hour: None,
+                upstream_account_id: None,
+            },
+        ];
+        {
+            let mut guard = hub.state.lock().await;
+            for topic in &topics {
+                guard.topics.insert(
+                    topic.cache_key().expect("hot topic key"),
+                    seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+                );
+            }
+            // Keep the recovery worker parked so the health snapshot observes dirty last-good.
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register hot topic owners");
+
+        hub.mark_runtime_mutation_gap_and_recover(state, 4, "cursor_gap")
+            .await;
+        let health = hub
+            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default())
+            .await;
+
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+        drop(lease);
     }
 
     #[test]
