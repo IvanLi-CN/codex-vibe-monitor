@@ -1,12 +1,16 @@
 use super::*;
+use sqlx::Executor;
 
-pub(crate) async fn query_prompt_cache_conversation_events(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_events<'e, E>(
+    executor: E,
     range_start_bound: &str,
     snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
-) -> Result<Vec<PromptCacheConversationEventRow>> {
+) -> Result<Vec<PromptCacheConversationEventRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -67,18 +71,21 @@ pub(crate) async fn query_prompt_cache_conversation_events(
 
     query
         .build_query_as::<PromptCacheConversationEventRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_recent_invocations<'e, E>(
+    executor: E,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
     limit_per_key: i64,
     snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
-) -> Result<Vec<PromptCacheConversationInvocationPreviewRow>> {
+) -> Result<Vec<PromptCacheConversationInvocationPreviewRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if selected_keys.is_empty() || limit_per_key <= 0 {
         return Ok(Vec::new());
     }
@@ -204,19 +211,22 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
 
     query
         .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_at_snapshot(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_at_snapshot<'e, E>(
+    executor: E,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
     snapshot_hour_start_epoch: i64,
     snapshot_hour_start_bound: &str,
     snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
-) -> Result<Vec<PromptCacheConversationUpstreamAccountSummaryRow>> {
+) -> Result<Vec<PromptCacheConversationUpstreamAccountSummaryRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -340,7 +350,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
 
     query
         .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }
@@ -388,10 +398,13 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_prompt_cache_conversation_manual_binding_summaries(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_manual_binding_summaries<'e, E>(
+    executor: E,
     selected_keys: &[String],
-) -> Result<Vec<PromptCacheConversationManualBindingSummaryRow>> {
+) -> Result<Vec<PromptCacheConversationManualBindingSummaryRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -424,7 +437,7 @@ pub(crate) async fn query_prompt_cache_conversation_manual_binding_summaries(
 
     query
         .build_query_as::<PromptCacheConversationManualBindingSummaryRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }
@@ -464,12 +477,15 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries(
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot<'e, E>(
+    executor: E,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
     snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
-) -> Result<Vec<PromptCacheConversationEncryptedOwnerSummaryRow>> {
+) -> Result<Vec<PromptCacheConversationEncryptedOwnerSummaryRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -552,7 +568,7 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at
 
     query
         .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }

@@ -85,6 +85,32 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
     runtime_overlay_records: &[ApiInvocation],
 ) -> Result<Vec<PromptCacheConversationResponse>> {
+    let mut connection = state.pool.acquire().await?;
+    hydrate_prompt_cache_conversations_on_connection(
+        state,
+        &mut connection,
+        source_scope,
+        aggregates,
+        range_end,
+        detail_level,
+        recent_invocation_limit,
+        snapshot,
+        runtime_overlay_records,
+    )
+    .await
+}
+
+pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
+    state: &AppState,
+    connection: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+    aggregates: Vec<PromptCacheConversationAggregateRow>,
+    range_end: DateTime<Utc>,
+    detail_level: PromptCacheConversationDetailLevel,
+    recent_invocation_limit: Option<i64>,
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
+    runtime_overlay_records: &[ApiInvocation],
+) -> Result<Vec<PromptCacheConversationResponse>> {
     if aggregates.is_empty() {
         return Ok(Vec::new());
     }
@@ -100,14 +126,17 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         PromptCacheConversationDetailLevel::Compact => recent_invocation_limit.unwrap_or(2),
     };
 
-    let events = if detail_level == PromptCacheConversationDetailLevel::Full {
-        let chart_range_start_bound = resolve_prompt_cache_conversation_chart_range_start(
-            range_end,
-            aggregates.iter().map(|row| row.created_at.as_str()).min(),
-        );
+    let chart_range_start_bound =
+        (detail_level == PromptCacheConversationDetailLevel::Full).then(|| {
+            resolve_prompt_cache_conversation_chart_range_start(
+                range_end,
+                aggregates.iter().map(|row| row.created_at.as_str()).min(),
+            )
+        });
+    let mut events = if let Some(chart_range_start_bound) = chart_range_start_bound.as_deref() {
         query_prompt_cache_conversation_events(
-            &state.pool,
-            &chart_range_start_bound,
+            &mut *connection,
+            chart_range_start_bound,
             snapshot,
             source_scope,
             &selected_keys,
@@ -117,10 +146,10 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         Vec::new()
     };
 
-    let upstream_account_rows = if detail_level == PromptCacheConversationDetailLevel::Full {
+    let mut upstream_account_rows = if detail_level == PromptCacheConversationDetailLevel::Full {
         if let Some(snapshot) = snapshot {
             query_prompt_cache_conversation_upstream_account_summaries_at_snapshot(
-                &state.pool,
+                &mut *connection,
                 source_scope,
                 &selected_keys,
                 snapshot.snapshot_hour_start_epoch,
@@ -141,7 +170,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     };
 
     let recent_invocation_rows = query_prompt_cache_conversation_recent_invocations(
-        &state.pool,
+        &mut *connection,
         source_scope,
         &selected_keys,
         recent_invocation_limit,
@@ -156,7 +185,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     {
         if let Some(snapshot) = snapshot {
             query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
-                &state.pool,
+                &mut *connection,
                 source_scope,
                 &selected_keys,
                 snapshot,
@@ -170,8 +199,73 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         Vec::new()
     };
     let manual_binding_rows =
-        query_prompt_cache_conversation_manual_binding_summaries(&state.pool, &selected_keys)
+        query_prompt_cache_conversation_manual_binding_summaries(&mut *connection, &selected_keys)
             .await?;
+
+    // Runtime records use id 0 until persistence assigns their SQLite identity. The aggregate
+    // overlay already selects them, so detail hydration must contribute the same transient rows
+    // to charts and account summaries instead of publishing totals without their wire details.
+    if detail_level == PromptCacheConversationDetailLevel::Full {
+        let selected_keys = selected_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        for record in runtime_overlay_records
+            .iter()
+            .filter(|record| record.id <= 0)
+        {
+            let Some(prompt_cache_key) = record
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+            else {
+                continue;
+            };
+            if !selected_keys.contains(prompt_cache_key) {
+                continue;
+            }
+            let status = record
+                .status
+                .as_deref()
+                .map(str::trim)
+                .filter(|status| !status.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            let is_within_chart_range =
+                chart_range_start_bound
+                    .as_deref()
+                    .is_some_and(|chart_start| {
+                        parse_to_utc_datetime(chart_start).is_some_and(|chart_start| {
+                            parse_to_utc_datetime(&record.occurred_at)
+                                .is_some_and(|occurred_at| occurred_at >= chart_start)
+                        })
+                    });
+            if is_within_chart_range {
+                events.push(PromptCacheConversationEventRow {
+                    occurred_at: record.occurred_at.clone(),
+                    status,
+                    error_message: record.error_message.clone(),
+                    downstream_error_message: record.downstream_error_message.clone(),
+                    failure_kind: record.failure_kind.clone(),
+                    failure_class: record.failure_class.clone(),
+                    request_tokens: record.total_tokens.unwrap_or_default().max(0),
+                    prompt_cache_key: prompt_cache_key.to_string(),
+                });
+            }
+            upstream_account_rows.push(PromptCacheConversationUpstreamAccountSummaryRow {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                upstream_account_id: record.upstream_account_id,
+                upstream_account_name: normalize_trimmed_optional_string(
+                    record.upstream_account_name.clone(),
+                ),
+                request_count: 1,
+                total_tokens: record.total_tokens.unwrap_or_default().max(0),
+                total_cost: record.cost.unwrap_or_default(),
+                last_activity_at: record.occurred_at.clone(),
+            });
+        }
+    }
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -205,6 +299,14 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
             request_tokens,
             cumulative_tokens,
         });
+    }
+    for points in grouped_events.values_mut() {
+        points.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+        let mut cumulative_tokens = 0_i64;
+        for point in points {
+            cumulative_tokens = cumulative_tokens.saturating_add(point.request_tokens);
+            point.cumulative_tokens = cumulative_tokens;
+        }
     }
 
     let mut upstream_account_rows_by_key: HashMap<

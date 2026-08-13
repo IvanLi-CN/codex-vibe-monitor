@@ -157,6 +157,9 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         .subscription_hub
         .dashboard_delivery_has_degraded_signal();
     let prompt_cache_failed_or_stale = prompt_cache_projection.failed_or_stale_topic_count > 0;
+    let prompt_cache_live_path_db_read = prompt_cache_projection.live_path_db_read_count > 0;
+    let prompt_cache_bounded_cold_recovery =
+        prompt_cache_projection.bounded_cold_recovery_topic_count > 0;
     let prompt_cache_pressure_deferred = prompt_cache_projection.pressure_deferred_topic_count > 0;
     let projection_deferred = dashboard_projection.last_defer_reason.is_some()
         || terminal_projection.hard_limit_reason.is_some()
@@ -177,12 +180,14 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || projection_cadence_missed
             || delivery_degraded
             || prompt_cache_failed_or_stale
+            || prompt_cache_live_path_db_read
             || event_bus.state == "degraded"
             || backfill.state == "degraded",
         projection_deferred
             || cursor_growth
             || writer_pressure_active
             || prompt_cache_pressure_deferred
+            || prompt_cache_bounded_cold_recovery
             || backfill.state == "deferred",
     )
     .to_string();
