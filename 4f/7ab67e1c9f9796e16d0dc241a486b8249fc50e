@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.60.2",
+  "base_stable_version": "2.60.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-13T13:41:04Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.60.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d8ee16fd611cad87a3df66e00d906271bfdfea0c",
+  "pr_number": 784,
+  "pr_title": "perf: migrate Dashboard hot topics to typed projections",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.60.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.60.2",
+  "target_sha": "4f7ab67e1c9f9796e16d0dc241a486b8249fc50e",
+  "type_label": "type:patch"
+}
