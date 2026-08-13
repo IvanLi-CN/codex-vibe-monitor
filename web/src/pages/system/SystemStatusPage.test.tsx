@@ -60,6 +60,24 @@ function renderPage() {
   });
 }
 
+function hotTopic(state = "healthy", overrides: Partial<Record<string, string | number>> = {}) {
+  return {
+    topicClass: "hot_projection",
+    state,
+    activeSubscriberCount: 2,
+    builderCount: 12,
+    genericFallbackBuildCount: 0,
+    livePathDbReadCount: 0,
+    materializationCount: 12,
+    serializationCount: 12,
+    payloadCloneCount: 0,
+    frameReused: 8,
+    cadenceMissCount: 0,
+    reconnectChurnCount: 0,
+    ...overrides,
+  };
+}
+
 describe("SystemStatusPage", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -293,6 +311,16 @@ describe("SystemStatusPage", () => {
             jsonOverlayCount: 0,
           },
         },
+        dashboardHotTopics: {
+          state: "degraded",
+          activity: hotTopic("degraded", { cadenceMissCount: 3 }),
+          summary: hotTopic(),
+          networkTimeseries: hotTopic(),
+          networkRecent: hotTopic(),
+          workingConversations: hotTopic(),
+          parallelWork: hotTopic("degraded", { livePathDbReadCount: 2 }),
+          timeseries: hotTopic(),
+        },
       },
       refreshedAt: "2026-06-22T08:00:00Z",
     });
@@ -307,5 +335,15 @@ describe("SystemStatusPage", () => {
     expect(pageText).toContain("Typed runtime 事件总线");
     expect(pageText).toContain("启动回填");
     expect(pageText).toContain("当前后端尚未发布这一 additive 诊断字段。");
+    expect(
+      host?.querySelector('[data-testid="system-status-dashboard-hot-topics"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="system-status-hot-topic-activity"]')?.textContent,
+    ).toContain("cadence 3");
+    expect(
+      host?.querySelector('[data-testid="system-status-hot-topic-parallelWork"]')?.textContent,
+    ).toContain("DB 2");
+    expect(host?.querySelectorAll('[data-testid^="system-status-hot-topic-"]')).toHaveLength(7);
   });
 });

@@ -4,27 +4,28 @@
 
 ## Current Status
 
-- Implementation: 未开始
+- Implementation: child tickets complete; aggregate rollout validation pending
 - Lifecycle: active
-- Catalog note: activity、summary 与 network 已有 typed 基础；本主题三条 hot topic 尚未完成迁移
+- Catalog note: Dashboard 七条 hot topic 已具备 typed materializer、稳定 selection 与只读健康诊断
 
 ## Coverage / rollout summary
 
-- working-conversations 仍可通过通用 Prompt Cache builder 完整 hydrate。
-- open-range parallel-work 仍可执行当前范围 exact query。
-- open-window timeseries 仍可进入通用 timeseries builder。
-- per-topic hot health 与端到端 Dashboard bundle 性能门禁尚未建立。
+- working-conversations、open-range parallel-work 与 open-window timeseries 均使用 revision-aware typed materializer；健康 live path 不进入通用 builder。
+- activity SSE descriptor 固定 `recentLimit=16`，组件按当前可见数量在客户端截断，避免 visibility 变化重建 topic key。
+- `runtimePressureHealth.dashboardHotTopics` 按七条 topic 报告 class、state、subscriber、build、fallback、live DB read、serialization、cadence miss 与 reconnect churn。
+- System Status 以只读方式展示 healthy、deferred、hot-DB-read 与 cadence-miss；字段缺失时保持 unknown 兼容。
+- 完整 Dashboard topic bundle 的 10,000 mutation、双订阅共享 frame 与零 fallback/DB-read 门禁由 stateful topology test 覆盖。
 
 ## Remaining Gaps
 
-- 建立 topic class 的穷举类型边界。
-- 为三条 hot topic 实现 typed projection/materializer 与 bounded recovery。
-- 稳定 activity `recentLimit` SSE descriptor。
-- 增加 System Status health、浏览器视口证据与线上 A/B 验收。
+- 在 aggregate PR 完成 integration CI、owner acceptance 与线上受控 A/B 验收。
 
 ## Related Changes
 
-- None
+- Ticket #785: working-conversations typed projection and bounded recovery.
+- Ticket #786: parallel-work typed projection.
+- Ticket #787: open-window timeseries typed materializer.
+- Ticket #792: exhaustive topic classification, stable activity selection, hot-topic health and System Status diagnostics.
 
 ## References
 

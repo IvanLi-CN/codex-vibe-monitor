@@ -380,6 +380,18 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
     }),
     { serializationCount: 0, frameBytesCount: 0, laggedCount: 0, skippedCount: 0 },
   );
+  const hotTopics = health?.dashboardHotTopics;
+  const hotTopicRows = hotTopics
+    ? ([
+        ["activity", hotTopics.activity],
+        ["summary", hotTopics.summary],
+        ["networkTimeseries", hotTopics.networkTimeseries],
+        ["networkRecent", hotTopics.networkRecent],
+        ["workingConversations", hotTopics.workingConversations],
+        ["parallelWork", hotTopics.parallelWork],
+        ["timeseries", hotTopics.timeseries],
+      ] as const)
+    : [];
 
   return (
     <section
@@ -396,6 +408,50 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
         <Alert variant={alertVariant}>
           {t("system.status.runtimePressure.summary", { state: stateLabel })}
         </Alert>
+        <div
+          className="border-y border-base-300/70 py-3"
+          data-testid="system-status-dashboard-hot-topics"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h4 className="text-sm font-semibold text-base-content">
+              {t("system.status.runtimePressure.hotTopics.title")}
+            </h4>
+            <span className="text-xs font-medium text-base-content/70">
+              {t(`system.status.runtimePressure.states.${hotTopics?.state ?? "unknown"}`)}
+            </span>
+          </div>
+          {hotTopicRows.length > 0 ? (
+            <div className="mt-3 divide-y divide-base-300/60">
+              {hotTopicRows.map(([name, topic]) => (
+                <div
+                  className="grid gap-1 py-2 text-xs sm:grid-cols-[minmax(10rem,1fr)_auto] sm:items-center"
+                  data-testid={`system-status-hot-topic-${name}`}
+                  key={name}
+                >
+                  <div>
+                    <span className="font-medium text-base-content">
+                      {t(`system.status.runtimePressure.hotTopics.${name}`)}
+                    </span>
+                    <span className="ml-2 text-base-content/55">{topic.topicClass}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-base-content/70 sm:justify-end">
+                    <span>{t(`system.status.runtimePressure.states.${topic.state}`)}</span>
+                    <span>sub {topic.activeSubscriberCount.toLocaleString()}</span>
+                    <span>build {topic.builderCount.toLocaleString()}</span>
+                    <span>DB {topic.livePathDbReadCount.toLocaleString()}</span>
+                    <span>fallback {topic.genericFallbackBuildCount.toLocaleString()}</span>
+                    <span>cadence {topic.cadenceMissCount.toLocaleString()}</span>
+                    <span>churn {topic.reconnectChurnCount.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-base-content/60">
+              {t("system.status.runtimePressure.additiveUnknown")}
+            </p>
+          )}
+        </div>
         {health ? (
           <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
             <summary className="cursor-pointer text-sm font-semibold text-base-content">

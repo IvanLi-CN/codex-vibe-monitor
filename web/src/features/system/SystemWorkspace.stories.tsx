@@ -9,6 +9,7 @@ import type {
   SystemStatusResponse,
   SystemTaskRunsResponse,
 } from "../../lib/api";
+import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import SystemLayout from "../../pages/system/SystemLayout";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
 import SystemSettingsPage from "../../pages/system/SystemSettingsPage";
@@ -19,6 +20,27 @@ import {
   StorybookPageEnvironment,
   type StorybookRequestHandler,
 } from "../../storybook/storybookPageHelpers";
+
+function hotTopic(
+  state = "healthy",
+  overrides: Partial<RuntimePressureDashboardHotTopicHealth> = {},
+): RuntimePressureDashboardHotTopicHealth {
+  return {
+    topicClass: "hot_projection",
+    state,
+    activeSubscriberCount: 2,
+    builderCount: 418,
+    genericFallbackBuildCount: 0,
+    livePathDbReadCount: 0,
+    materializationCount: 418,
+    serializationCount: 418,
+    payloadCloneCount: 0,
+    frameReused: 352,
+    cadenceMissCount: 0,
+    reconnectChurnCount: 0,
+    ...overrides,
+  };
+}
 
 const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   liveInvocationsCount: 128_076,
@@ -127,6 +149,16 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
         businessPayloadCount: 104,
         jsonOverlayCount: 0,
       },
+    },
+    dashboardHotTopics: {
+      state: "healthy",
+      activity: hotTopic(),
+      summary: hotTopic(),
+      networkTimeseries: hotTopic(),
+      networkRecent: hotTopic(),
+      workingConversations: hotTopic(),
+      parallelWork: hotTopic(),
+      timeseries: hotTopic(),
     },
     eventBus: {
       state: "healthy",
@@ -521,6 +553,93 @@ function runtimePressureStatus(
     },
   };
 }
+
+function hotTopicStatus(
+  scenario: "healthy" | "deferred" | "hot-db-read" | "cadence-miss",
+): SystemStatusResponse {
+  const status = runtimePressureStatus(
+    scenario === "healthy" ? "healthy" : scenario === "deferred" ? "deferred" : "degraded",
+  );
+  const base = status.runtimePressureHealth!;
+  const topics = base.dashboardHotTopics!;
+  return {
+    ...status,
+    runtimePressureHealth: {
+      ...base,
+      process: { ...base.process, pressureLevel: "normal", swapBytes: 0 },
+      dashboardProjection: {
+        ...base.dashboardProjection,
+        state: "healthy",
+        degradedReason: undefined,
+        lastDeferReason: undefined,
+      },
+      eventBus: {
+        ...base.eventBus!,
+        state: "healthy",
+        routerLaggedCount: 0,
+        routerGapCount: 0,
+        cursorRecoveryCount: 0,
+      },
+      dashboardHotTopics: {
+        ...topics,
+        state:
+          scenario === "healthy" ? "healthy" : scenario === "deferred" ? "deferred" : "degraded",
+        workingConversations:
+          scenario === "deferred" ? hotTopic("deferred") : topics.workingConversations,
+        parallelWork:
+          scenario === "hot-db-read"
+            ? hotTopic("degraded", { livePathDbReadCount: 3 })
+            : topics.parallelWork,
+        activity:
+          scenario === "cadence-miss"
+            ? hotTopic("degraded", { cadenceMissCount: 4 })
+            : topics.activity,
+      },
+    },
+  };
+}
+
+const hotTopicPlay =
+  (testId: string, metric: string) =>
+  async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByTestId("system-status-dashboard-hot-topics")).toBeVisible();
+    await expect(await canvas.findByTestId(testId)).toHaveTextContent(metric);
+  };
+
+export const StatusHotTopicsHealthy: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: hotTopicStatus("healthy") },
+  play: hotTopicPlay("system-status-hot-topic-activity", "DB 0"),
+};
+
+export const StatusHotTopicsDeferred: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: hotTopicStatus("deferred") },
+  play: hotTopicPlay("system-status-hot-topic-workingConversations", "已延后"),
+};
+
+export const StatusHotTopicsHotDbRead: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: hotTopicStatus("hot-db-read"),
+    viewport: { defaultViewport: "desktop1660x900" },
+  },
+  play: hotTopicPlay("system-status-hot-topic-parallelWork", "DB 3"),
+};
+
+export const StatusHotTopicsCadenceMiss: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: hotTopicStatus("cadence-miss"),
+    viewport: { defaultViewport: "mobile393" },
+  },
+  play: hotTopicPlay("system-status-hot-topic-activity", "cadence 4"),
+};
 
 const runtimePressurePlay =
   (label: string) =>
