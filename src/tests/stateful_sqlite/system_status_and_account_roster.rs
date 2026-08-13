@@ -1415,12 +1415,12 @@ pub(crate) async fn create_test_fast_mode_tag(
             name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 1, 1, ?3, ?4, 0, 0, 0, '[]', ?5, ?5)
+        ) VALUES (?1, ?2, 0, 1, 1, ?3, ?4, 0, 0, 0, '[]', ?5, ?5)
         RETURNING id
         "#,
     )
     .bind(name)
-    .bind(format!("test:{name}"))
+    .bind(None::<String>)
     .bind(priority_tier)
     .bind(fast_mode_rewrite_mode)
     .bind(&now_iso)
@@ -2603,6 +2603,26 @@ async fn upstream_account_summary_and_detail_include_active_conversation_count()
         .await
         .expect("insert sticky route");
     }
+    for (sticky_key, model_key) in [
+        ("sticky-recent-1", "gpt-5.4"),
+        ("sticky-model-only", "gpt-5.1-codex-max"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_sticky_model_routes (
+                sticky_key, model_key, account_id, created_at, updated_at, last_seen_at
+            ) VALUES (?1, ?2, ?3, ?4, ?4, ?5)
+            "#,
+        )
+        .bind(sticky_key)
+        .bind(model_key)
+        .bind(account_id)
+        .bind(&created_at)
+        .bind(&second_recent_seen_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert model sticky route");
+    }
 
     let Json(list_response) = list_upstream_accounts(
         State(state.clone()),
@@ -2619,7 +2639,7 @@ async fn upstream_account_summary_and_detail_include_active_conversation_count()
         list_item
             .get("activeConversationCount")
             .and_then(serde_json::Value::as_i64),
-        Some(2)
+        Some(3)
     );
 
     let Json(detail_response) = get_upstream_account(
@@ -2635,7 +2655,7 @@ async fn upstream_account_summary_and_detail_include_active_conversation_count()
         detail_json
             .get("activeConversationCount")
             .and_then(serde_json::Value::as_i64),
-        Some(2)
+        Some(3)
     );
 }
 

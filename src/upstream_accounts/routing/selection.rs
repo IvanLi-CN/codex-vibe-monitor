@@ -903,7 +903,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut resolved_candidates = Vec::new();
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
         let (route, generation) =
-            load_sticky_route_with_generation(&state.pool, sticky_key).await?;
+            load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
+                .await?;
         (route, Some(generation))
     } else {
         (None, None)
@@ -960,8 +961,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         && !sticky_cut_out_blocked_by_policy;
     let mut sticky_fallback_handoff_enabled = false;
     let bypass_requested_model_filter = binding_constraint.is_some();
-    let conversation_available_models_override =
-        conversation_override.is_some_and(|policy| policy.available_models.is_some());
+    let conversation_available_models_override = conversation_override.is_some_and(|policy| {
+        policy.available_models.is_some()
+            || policy.available_models_mode.is_some()
+            || policy.available_models_invalid
+    });
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
@@ -1047,8 +1051,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 if sticky_source_rule.as_ref().is_none_or(|rule| {
-                    (bypass_requested_model_filter && !conversation_available_models_override)
-                        || account_accepts_requested_model(requested_model, rule)
+                    !requested_model_is_system_denied(requested_model, rule)
+                        && ((bypass_requested_model_filter
+                            && !conversation_available_models_override)
+                            || account_accepts_requested_model(requested_model, rule))
                 }) && account_accepts_request_capabilities(
                     request_capability_requirements_after_codex_imagegen_rewrite(
                         endpoint,
@@ -1471,8 +1477,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             );
             continue;
         }
-        if (!bypass_requested_model_filter || conversation_available_models_override)
-            && !account_accepts_requested_model(requested_model, effective_rule)
+        if requested_model_is_system_denied(requested_model, effective_rule)
+            || ((!bypass_requested_model_filter || conversation_available_models_override)
+                && !account_accepts_requested_model(requested_model, effective_rule))
         {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
@@ -1868,7 +1875,9 @@ mod tests {
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             available_models: Vec::new(),
+            available_models_mode: AvailableModelsMode::Allowlist,
             available_models_defined: false,
+            tag_available_models: None,
             status_change_reasons: default_status_change_reasons(),
             status_change_reason_field_sources: default_status_change_reason_field_sources("root"),
             system_denied_models: Vec::new(),
@@ -1885,6 +1894,7 @@ mod tests {
                 concurrency_limit: "root".to_string(),
                 upstream_429_retry: "root".to_string(),
                 available_models: "root".to_string(),
+                available_models_mode: "root".to_string(),
                 system_denied_models: "root".to_string(),
             },
             timeouts: RoutingTimeoutSettings::default(),

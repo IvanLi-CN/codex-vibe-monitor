@@ -1,8 +1,8 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useEffect, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import {
   Dialog,
   DialogCloseIcon,
@@ -31,7 +31,7 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
+import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import { normalizeMotherGroupKey } from "../../lib/upstreamMother";
 import { cn } from "../../lib/utils";
 
@@ -2269,7 +2269,7 @@ export function DuplicateAccountDetailDialog({
     lastSuccessSync: string;
   };
 }) {
-  const planBadge = upstreamPlanBadgeRecipe(detail?.planType ?? null);
+  const planChip = upstreamPlanChipRecipe(detail?.planType ?? null);
   return (
     <Dialog open={open} onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}>
       <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(38rem,calc(100vw-2rem))]">
@@ -2288,14 +2288,12 @@ export function DuplicateAccountDetailDialog({
           ) : detail ? (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={accountStatusVariant(detail.status)}>
-                  {statusLabel(detail.status)}
-                </Badge>
-                <Badge variant={accountKindVariant(detail.kind)}>{kindLabel(detail.kind)}</Badge>
-                {planBadge && detail.planType ? (
-                  <Badge variant={planBadge.variant}>{detail.planType}</Badge>
+                <Chip tone={accountStatusVariant(detail.status)}>{statusLabel(detail.status)}</Chip>
+                <Chip tone={accountKindVariant(detail.kind)}>{kindLabel(detail.kind)}</Chip>
+                {planChip && detail.planType ? (
+                  <Chip tone={planChip.tone}>{detail.planType}</Chip>
                 ) : null}
-                {detail.duplicateInfo ? <Badge variant="warning">{duplicateLabel}</Badge> : null}
+                {detail.duplicateInfo ? <Chip tone="warning">{duplicateLabel}</Chip> : null}
               </div>
               {detail.duplicateInfo ? (
                 <Alert variant="warning">

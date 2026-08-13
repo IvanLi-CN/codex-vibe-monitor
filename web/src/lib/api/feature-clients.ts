@@ -103,6 +103,7 @@ export {
   normalizeForwardProxyLatencyTestStreamEvent,
   refreshForwardProxySubscriptions,
   reloginUpstreamAccount,
+  resetPromptCacheConversationAffinity,
   resetUpstreamAccountModelRouting,
   rotateExternalApiKey,
   syncUpstreamAccount,

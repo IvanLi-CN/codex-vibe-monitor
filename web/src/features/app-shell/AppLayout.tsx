@@ -10,6 +10,7 @@ import {
 } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
 import { useAppVersion } from "../../hooks/useAppVersion";
@@ -704,11 +705,15 @@ export function AppLayout() {
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="font-semibold">{t("app.pwa.offline.title")}</span>
-                  <span className="rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium tone-ink-warning">
+                  <Chip
+                    size="compact"
+                    tone={pwaRuntime.shellReady ? "success" : "warning"}
+                    className="px-2 text-xs font-medium"
+                  >
                     {pwaRuntime.shellReady
                       ? t("app.pwa.install.shellReady")
                       : t("app.pwa.install.shellPending")}
-                  </span>
+                  </Chip>
                 </div>
                 <p className="text-sm text-base-content/78">
                   {pwaRuntime.shellReady

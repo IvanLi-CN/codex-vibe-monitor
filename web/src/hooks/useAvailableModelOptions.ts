@@ -15,7 +15,7 @@ function dedupeModels(values: string[]) {
 
 export function extractAvailableModelOptions(settings: SettingsPayload | null) {
   if (!settings) return [];
-  return dedupeModels(settings.proxy.models ?? []);
+  return dedupeModels([...(settings.proxy.models ?? []), ...(settings.proxy.imageModels ?? [])]);
 }
 
 export function useAvailableModelOptions(enabled = true) {

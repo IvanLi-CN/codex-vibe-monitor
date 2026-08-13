@@ -1462,6 +1462,7 @@ pub(crate) fn normalize_group_account_routing_rule(
         upstream_429_retry_enabled,
         upstream_429_max_retries,
         available_models: normalize_available_models(available_models, "availableModels")?,
+        available_models_mode: available_models_defined.then_some(AvailableModelsMode::Allowlist),
         available_models_defined,
         status_change_reasons: default_status_change_reasons(),
         timeouts: None,
@@ -1691,14 +1692,25 @@ pub(crate) fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
 }
 
 pub(crate) fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
+    parse_string_array_json_with_invalid(raw).0
+}
+
+pub(crate) fn parse_string_array_json_with_invalid(raw: Option<&str>) -> (Vec<String>, bool) {
     let Some(raw) = raw else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
-    serde_json::from_str::<Vec<String>>(raw)
-        .unwrap_or_default()
+    let parsed = match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(parsed) => parsed,
+        Err(_) => return (Vec::new(), true),
+    };
+    let invalid_entry = parsed
+        .iter()
+        .any(|value| normalize_optional_text(Some(value.clone())).is_none());
+    let normalized = parsed
         .into_iter()
         .filter_map(|value| normalize_optional_text(Some(value)))
-        .collect()
+        .collect();
+    (normalized, invalid_entry)
 }
 
 pub(crate) fn encode_string_array_json(values: &[String]) -> Result<String> {
@@ -1706,6 +1718,8 @@ pub(crate) fn encode_string_array_json(values: &[String]) -> Result<String> {
 }
 
 pub(crate) fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
+    let (available_models, available_models_invalid) =
+        parse_string_array_json_with_invalid(row.available_models_json.as_deref());
     AccountTagSummary {
         id: row.tag_id,
         name: row.name.clone(),
@@ -1722,8 +1736,9 @@ pub(crate) fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSum
                 decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
                 decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
             ),
-            available_models: parse_string_array_json(row.available_models_json.as_deref()),
+            available_models,
         },
+        available_models_invalid,
         system_key: row.system_key.clone(),
         protected: row.protected != 0,
     }
@@ -1838,6 +1853,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
+    policy_available_models_mode: Option<&str>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -1880,8 +1896,24 @@ pub(crate) fn group_routing_rule_from_columns(
                 .map(decode_group_upstream_429_max_retries)
                 .unwrap_or(legacy_upstream_429_max_retries),
         ),
-        available_models: parse_string_array_json(policy_available_models_json),
-        available_models_defined: policy_available_models_json.is_some(),
+        available_models: if policy_available_models_json
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            Vec::new()
+        } else {
+            parse_string_array_json(policy_available_models_json)
+        },
+        available_models_mode: if policy_available_models_json
+            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
+        {
+            Some(AvailableModelsMode::Allowlist)
+        } else {
+            policy_available_models_mode
+                .map(|value| AvailableModelsMode::from_str(Some(value)))
+                .or_else(|| policy_available_models_json.map(|_| AvailableModelsMode::Allowlist))
+        },
+        available_models_defined: policy_available_models_json.is_some()
+            || policy_available_models_mode.is_some(),
         status_change_reasons: status_change_reasons_from_columns(
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
@@ -1925,6 +1957,8 @@ pub(crate) async fn load_group_routing_rule(
         policy_upstream_429_retry_enabled: Option<i64>,
         policy_upstream_429_max_retries: Option<i64>,
         policy_available_models_json: Option<String>,
+        #[sqlx(default)]
+        policy_available_models_mode: Option<String>,
         policy_status_change_upstream_http_401: Option<i64>,
         policy_status_change_upstream_http_402: Option<i64>,
         policy_status_change_upstream_http_403: Option<i64>,
@@ -1959,6 +1993,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -1987,7 +2022,7 @@ pub(crate) async fn load_group_routing_rule(
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None,
+            None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -2011,6 +2046,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
         row.policy_status_change_upstream_http_401,
         row.policy_status_change_upstream_http_402,
         row.policy_status_change_upstream_http_403,

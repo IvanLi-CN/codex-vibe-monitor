@@ -1,6 +1,6 @@
 import type { TagFastModeRewriteMode, TagPriorityTier, TagRoutingRule } from "./api";
 
-export type RoutingRuleBadgeVariant = "default" | "info" | "accent" | "secondary" | "warning";
+export type RoutingRuleChipTone = "primary" | "info" | "accent" | "secondary" | "warning";
 
 type PriorityTierLabels = {
   priorityPrimary: string;
@@ -16,14 +16,14 @@ type FastModeRewriteLabels = {
   fastModeForceRemove: string;
 };
 
-export function priorityTierBadgeVariant(priorityTier?: TagPriorityTier): RoutingRuleBadgeVariant {
-  if (priorityTier === "primary") return "default";
+export function priorityTierChipTone(priorityTier?: TagPriorityTier): RoutingRuleChipTone {
+  if (priorityTier === "primary") return "primary";
   if (priorityTier === "no_new") return "warning";
   if (priorityTier === "fallback") return "warning";
   return "secondary";
 }
 
-export function priorityTierBadgeLabel(
+export function priorityTierChipLabel(
   priorityTier: TagPriorityTier | undefined,
   labels: PriorityTierLabels,
 ): string {
@@ -33,16 +33,16 @@ export function priorityTierBadgeLabel(
   return labels.priorityNormal;
 }
 
-export function fastModeRewriteBadgeVariant(
+export function fastModeRewriteChipTone(
   fastModeRewriteMode?: TagFastModeRewriteMode,
-): RoutingRuleBadgeVariant {
+): RoutingRuleChipTone {
   if (fastModeRewriteMode === "fill_missing") return "info";
-  if (fastModeRewriteMode === "force_add") return "default";
+  if (fastModeRewriteMode === "force_add") return "primary";
   if (fastModeRewriteMode === "force_remove") return "warning";
   return "secondary";
 }
 
-export function fastModeRewriteBadgeLabel(
+export function fastModeRewriteChipLabel(
   fastModeRewriteMode: TagFastModeRewriteMode | undefined,
   labels: FastModeRewriteLabels,
 ): string {
@@ -52,7 +52,7 @@ export function fastModeRewriteBadgeLabel(
   return labels.fastModeKeepOriginal;
 }
 
-export type ActiveRoutingPolicyBadgeLabels = {
+export type ActiveRoutingPolicyChipLabels = {
   policyPriorityPrimary?: string;
   policyPriorityFallback?: string;
   policyFastFillMissing?: string;
@@ -65,25 +65,25 @@ export type ActiveRoutingPolicyBadgeLabels = {
   policyRetry?: (count: number) => string;
 };
 
-export type ActiveRoutingPolicyBadge = {
+export type ActiveRoutingPolicyChip = {
   key: string;
   label: string;
   title?: string;
-  variant: RoutingRuleBadgeVariant;
+  variant: RoutingRuleChipTone;
 };
 
-export function resolveActiveRoutingPolicyBadges(
+export function resolveActiveRoutingPolicyChips(
   rule: TagRoutingRule | null | undefined,
-  labels: ActiveRoutingPolicyBadgeLabels = {},
-): ActiveRoutingPolicyBadge[] {
+  labels: ActiveRoutingPolicyChipLabels = {},
+): ActiveRoutingPolicyChip[] {
   if (!rule) return [];
-  const badges: ActiveRoutingPolicyBadge[] = [];
+  const badges: ActiveRoutingPolicyChip[] = [];
 
   if (rule.priorityTier === "primary") {
     badges.push({
       key: "priority-primary",
       label: labels.policyPriorityPrimary ?? "主力",
-      variant: "default",
+      variant: "primary",
     });
   } else if (rule.priorityTier === "fallback") {
     badges.push({
@@ -103,7 +103,7 @@ export function resolveActiveRoutingPolicyBadges(
     badges.push({
       key: "fast-add",
       label: labels.policyFastForceAdd ?? "Fast",
-      variant: "default",
+      variant: "primary",
     });
   } else if (rule.fastModeRewriteMode === "force_remove") {
     badges.push({

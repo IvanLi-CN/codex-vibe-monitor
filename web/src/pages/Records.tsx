@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { Chip } from "../components/ui/chip";
 import { DateTimeRangeField } from "../components/ui/date-time-range-field";
 import {
   FilterableCombobox,
@@ -40,7 +41,6 @@ import {
   RECORDS_PAGE_SIZE_OPTIONS,
   validateInvocationRecordsDraft,
 } from "../lib/invocationRecords";
-import { cn } from "../lib/utils";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 const inputClassName =
@@ -907,9 +907,13 @@ export default function RecordsPage() {
             >
               <AppIcon name="tag-outline" className="h-4 w-4" aria-hidden />
               <span>{t("records.filters.open")}</span>
-              <span className="min-w-5 rounded-full bg-base-200 px-1.5 py-0.5 text-center text-xs tabular-nums text-base-content/70">
+              <Chip
+                size="compact"
+                tone="secondary"
+                className="min-w-5 px-1.5 py-0.5 text-center text-xs tabular-nums"
+              >
                 {activeFilterChips.length}
-              </span>
+              </Chip>
             </Button>
           </div>
 
@@ -920,29 +924,41 @@ export default function RecordsPage() {
           >
             {activeFilterChips.map((chip) =>
               chip.clearKeys?.length ? (
-                <button
+                <Chip
+                  asChild
+                  size="default"
+                  tone="secondary"
                   key={chip.id}
-                  type="button"
-                  onClick={() => handleRemoveActiveFilter(chip.clearKeys!)}
                   data-testid={`records-active-filter-${chip.id}`}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   aria-label={t("records.filters.remove", {
                     label: chip.label,
                   })}
                 >
-                  <span className="truncate">{chip.label}</span>
-                  <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                </button>
+                  <button
+                    type="button"
+                    className="inline-flex max-w-full items-center gap-1.5 text-left text-xs font-medium"
+                    onClick={() => handleRemoveActiveFilter(chip.clearKeys!)}
+                  >
+                    <span className="truncate">{chip.label}</span>
+                    <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  </button>
+                </Chip>
               ) : (
-                <button
+                <Chip
+                  asChild
+                  size="default"
+                  tone="secondary"
                   key={chip.id}
-                  type="button"
-                  onClick={() => setIsFiltersOpen(true)}
                   data-testid={`records-active-filter-${chip.id}`}
-                  className="inline-flex max-w-full items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 py-1 text-left text-xs font-medium text-base-content transition hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
-                  <span className="truncate">{chip.label}</span>
-                </button>
+                  <button
+                    type="button"
+                    className="inline-flex max-w-full items-center text-left text-xs font-medium"
+                    onClick={() => setIsFiltersOpen(true)}
+                  >
+                    <span className="truncate">{chip.label}</span>
+                  </button>
+                </Chip>
               ),
             )}
           </div>
@@ -1404,9 +1420,9 @@ export default function RecordsPage() {
               <p className="section-description">{t("records.list.description")}</p>
             </div>
             <div className="flex flex-wrap items-end gap-3">
-              <div className="rounded-full border border-base-300/70 bg-base-100/55 px-3 py-2 text-sm font-medium text-base-content/80">
+              <Chip size="default" tone="secondary" className="px-3 py-2 text-sm font-medium">
                 {t("records.list.totalCount", { count: total })}
-              </div>
+              </Chip>
               <SelectField
                 className="min-w-[7rem]"
                 label={t("records.list.pageSize")}
@@ -1471,21 +1487,22 @@ export default function RecordsPage() {
                 {t("records.list.prev")}
               </Button>
               {visiblePages.map((pageNumber) => (
-                <button
+                <Chip
+                  asChild
+                  size="default"
+                  tone={pageNumber === page ? "primary" : "secondary"}
                   key={pageNumber}
-                  type="button"
-                  className={cn(
-                    "inline-flex h-8 min-w-8 items-center justify-center rounded-full border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                    pageNumber === page
-                      ? "border-primary/45 bg-primary/20 text-primary"
-                      : "border-base-300/70 bg-base-100/60 text-base-content/75 hover:bg-base-200/70",
-                  )}
                   aria-current={pageNumber === page ? "page" : undefined}
-                  onClick={() => void setPage(pageNumber)}
-                  disabled={pageNumber === page || tableLoading}
                 >
-                  {pageNumber}
-                </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 min-w-8 items-center justify-center px-3 text-sm font-medium"
+                    onClick={() => void setPage(pageNumber)}
+                    disabled={pageNumber === page || tableLoading}
+                  >
+                    {pageNumber}
+                  </button>
+                </Chip>
               ))}
               <Button
                 type="button"

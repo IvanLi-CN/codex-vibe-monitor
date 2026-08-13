@@ -9793,6 +9793,8 @@ impl SubscriptionTopic {
                         page: Some(1),
                         page_size: Some(SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT),
                         info_type: info_type.clone(),
+                        routing_scope: None,
+                        routing_model: None,
                     }),
                 )
                 .await?;
@@ -17008,6 +17010,7 @@ mod tests {
             encrypted_owner_account_id: Some(11),
             encrypted_owner_account_name: Some("Owner account".to_string()),
             encrypted_owner_group_name: Some("Owner group".to_string()),
+            sticky_routes: Vec::new(),
             timeouts: RoutingTimeoutSettings::default(),
             timeout_field_sources: RoutingTimeoutFieldSources {
                 responses_first_byte_timeout_secs: "root".to_string(),
@@ -17021,6 +17024,7 @@ mod tests {
             image_tool_rewrite_mode: None,
             codex_imagegen_rewrite_mode: None,
             available_models: None,
+            available_models_mode: None,
             forward_proxy_key: None,
             forward_proxy_keys: Vec::new(),
             policy_field_sources: PromptCacheConversationPolicyFieldSources {
@@ -17029,6 +17033,7 @@ mod tests {
                 image_tool_rewrite_mode: "root".to_string(),
                 codex_imagegen_rewrite_mode: "root".to_string(),
                 available_models: "root".to_string(),
+                available_models_mode: "root".to_string(),
                 forward_proxy_key: "root".to_string(),
             },
             updated_at: None,

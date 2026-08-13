@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -8,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import {
   Command,
   CommandEmpty,
@@ -22,6 +22,7 @@ import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Switch } from "../../components/ui/switch";
 import type {
+  AvailableModelsMode,
   CodexImagegenRewriteMode,
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
@@ -46,7 +47,7 @@ import {
   type RoutingTimeoutFieldKey,
 } from "../../lib/poolRoutingTimeouts";
 import { requestCompressionAlgorithmLabel } from "../../lib/requestCompression";
-import { fastModeRewriteBadgeLabel, priorityTierBadgeLabel } from "../../lib/tagRoutingRule";
+import { fastModeRewriteChipLabel, priorityTierChipLabel } from "../../lib/tagRoutingRule";
 import {
   countEnabledStatusChangeReasons,
   resolveStatusChangeReasonFieldSources,
@@ -156,9 +157,9 @@ interface EffectiveProxyBindingConfig {
 
 export interface EffectiveRoutingRuleCardRowValueOverride {
   value?: string;
-  valueBadges?: string[] | null;
+  valueChips?: string[] | null;
   valueField?: EditablePolicyField | null;
-  valueVariant?: BadgeVariant;
+  valueVariant?: ChipTone;
   editor?: ReactNode;
 }
 
@@ -200,6 +201,11 @@ interface EffectiveRoutingRuleCardProps {
     requestCompressionDeflate: string;
     requestCompressionZstd: string;
     availableModelsInherited?: string;
+    availableModelsMode?: string;
+    availableModelsAllowlist?: string;
+    availableModelsDenylist?: string;
+    availableModelsAllowed?: string;
+    availableModelsDenied?: string;
     availableModelsNoneAllowed?: string;
     availableModelsEmpty?: string;
     availableModelsField?: string;
@@ -303,6 +309,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
       availableModels: [],
+      availableModelsMode: "denylist",
       systemDeniedModels: [],
       statusChangeReasons: resolveStatusChangeReasons(null),
       statusChangeReasonFieldSources: resolveStatusChangeReasonFieldSources(null),
@@ -346,7 +353,7 @@ function sourceLabel(source: string, labels: EffectiveRoutingRuleCardProps["labe
 
 function sourceVariant(source: string) {
   return source === "account" || source === "conversation"
-    ? "default"
+    ? "primary"
     : source === "tag"
       ? "accent"
       : source === "group"
@@ -354,7 +361,7 @@ function sourceVariant(source: string) {
         : "secondary";
 }
 
-type BadgeVariant = React.ComponentProps<typeof Badge>["variant"];
+type ChipTone = React.ComponentProps<typeof Chip>["tone"];
 
 function statusChangeDisabledValue(labels: EffectiveRoutingRuleCardProps["labels"]) {
   return labels.statusChangeReasonDisabledValue ?? "Evidence only";
@@ -364,7 +371,7 @@ function valueVariant(
   field: EditablePolicyField | null,
   value: string,
   labels: EffectiveRoutingRuleCardProps["labels"],
-): BadgeVariant {
+): ChipTone {
   if (field && statusChangeReasonFromFieldKey(field)) {
     return value === statusChangeDisabledValue(labels) ? "success" : "warning";
   }
@@ -376,25 +383,25 @@ function valueVariant(
   }
   if (field === "priorityTier") {
     if (value === (labels.priorityNoNew ?? "No new")) return "warning";
-    if (value === labels.priorityPrimary) return "default";
+    if (value === labels.priorityPrimary) return "primary";
     if (value === labels.priorityFallback) return "warning";
     return "info";
   }
   if (field === "fastModeRewriteMode") {
-    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return "default";
+    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return "primary";
     if (value === labels.fastModeFillMissing) return "info";
     return "secondary";
   }
   if (field === "imageToolRewriteMode") {
     if (value === labels.imageToolForceAdd || value === labels.imageToolForceRemove)
-      return "default";
+      return "primary";
     if (value === labels.imageToolFillMissing) return "info";
     return "secondary";
   }
   if (field === "requestCompressionAlgorithm") {
     if (value === labels.requestCompressionIdentity) return "success";
     if (value === labels.requestCompressionFollow) return "info";
-    return "default";
+    return "primary";
   }
   if (field === "concurrencyLimit") {
     return value === (labels.concurrencyUnlimited ?? "Concurrency unlimited")
@@ -413,7 +420,7 @@ function valueVariant(
         ? "warning"
         : "success";
     }
-    return "default";
+    return "primary";
   }
   if (field == null && value === (labels.systemDeniedModelsEmpty ?? "None")) {
     return "success";
@@ -421,7 +428,7 @@ function valueVariant(
   return field == null ? "warning" : "secondary";
 }
 
-function ValueBadge({
+function ValueChip({
   field,
   value,
   labels,
@@ -430,19 +437,19 @@ function ValueBadge({
   field: EditablePolicyField | null;
   value: string;
   labels: EffectiveRoutingRuleCardProps["labels"];
-  variantOverride?: BadgeVariant;
+  variantOverride?: ChipTone;
 }) {
   return (
-    <Badge
+    <Chip
       className="min-w-0 max-w-full justify-self-start whitespace-normal break-words text-left leading-5"
-      variant={variantOverride ?? valueVariant(field, value, labels)}
+      tone={variantOverride ?? valueVariant(field, value, labels)}
     >
       {value}
-    </Badge>
+    </Chip>
   );
 }
 
-function ValueBadgeList({
+function ValueChipList({
   field,
   values,
   labels,
@@ -451,12 +458,12 @@ function ValueBadgeList({
   field: EditablePolicyField | null;
   values: string[];
   labels: EffectiveRoutingRuleCardProps["labels"];
-  variantOverride?: BadgeVariant;
+  variantOverride?: ChipTone;
 }) {
   return (
     <div className="flex min-w-0 flex-wrap gap-2 justify-self-start">
       {values.map((value) => (
-        <ValueBadge
+        <ValueChip
           key={value}
           field={field}
           value={value}
@@ -485,18 +492,19 @@ function ProxyBindingChips({
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       {items.map((item) => (
-        <span
+        <Chip
           key={item.key}
-          className={cn(
-            "inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border px-2.5 py-1 text-xs",
+          size="default"
+          tone={
             item.tone === "direct"
-              ? "border-primary/40 bg-primary/10 text-primary"
+              ? "primary"
               : item.tone === "missing"
-                ? "border-error/35 bg-error/15 text-error"
+                ? "error"
                 : item.tone === "available"
-                  ? "border-success/35 bg-success/15 text-success"
-                  : "border-base-300 bg-base-200/70 text-base-content/85",
-          )}
+                  ? "success"
+                  : "secondary"
+          }
+          className="min-w-0 max-w-full gap-2 px-2.5 py-1 text-xs"
         >
           <span className="max-w-56 truncate font-medium">{item.label}</span>
           {item.status ? <span className="shrink-0 text-current/70">{item.status}</span> : null}
@@ -514,7 +522,7 @@ function ProxyBindingChips({
               x
             </button>
           ) : null}
-        </span>
+        </Chip>
       ))}
     </div>
   );
@@ -618,9 +626,19 @@ function normalizeModelIds(values: string[]) {
   return normalized;
 }
 
-function availableModelsSourceDeniesAll(source: EffectiveRoutingRuleSource | undefined) {
+function availableModelsSourceDeniesAll(
+  source: EffectiveRoutingRuleSource | undefined,
+  mode?: AvailableModelsMode,
+  defined?: boolean,
+) {
   return (
-    source === "group" || source === "tag" || source === "account" || source === "conversation"
+    mode === "allowlist" &&
+    defined !== false &&
+    (source === "root" ||
+      source === "group" ||
+      source === "tag" ||
+      source === "account" ||
+      source === "conversation")
   );
 }
 
@@ -799,9 +817,27 @@ export function EffectiveRoutingRuleCard({
   };
 
   const availableModelsValue = normalizeModelIds(resolvedRule.availableModels ?? []);
+  const availableModelsSource = fieldSources.availableModels;
+  const availableModelsMode =
+    resolvedRule.availableModelsMode ??
+    (availableModelsSource === "group" ||
+    availableModelsSource === "tag" ||
+    availableModelsSource === "account" ||
+    availableModelsSource === "conversation"
+      ? "allowlist"
+      : "denylist");
+  const availableModelsDefined =
+    resolvedRule.availableModelsDefined ?? resolvedRule.availableModelsMode == null;
   const updateAvailableModels = (nextModels: string[]) => {
     changeField("availableModels", {
       availableModels: normalizeModelIds(nextModels),
+      availableModelsMode,
+    });
+  };
+  const updateAvailableModelsMode = (nextMode: AvailableModelsMode) => {
+    changeField("availableModels", {
+      availableModels: availableModelsValue,
+      availableModelsMode: nextMode,
     });
   };
   const appendAvailableModel = (model: string) => {
@@ -849,7 +885,7 @@ export function EffectiveRoutingRuleCard({
       key: "priorityTier" as const,
       field: "priorityTier" as const,
       label: labels.fieldPriority ?? "Priority",
-      value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
+      value: priorityTierChipLabel(resolvedRule.priorityTier, labels),
       source: fieldSources.priorityTier,
       clearPayload: { priorityTier: null },
       editor: (
@@ -903,7 +939,7 @@ export function EffectiveRoutingRuleCard({
       key: "fastModeRewriteMode" as const,
       field: "fastModeRewriteMode" as const,
       label: labels.fieldFastMode ?? "FAST mode",
-      value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
+      value: fastModeRewriteChipLabel(resolvedRule.fastModeRewriteMode, labels),
       source: fieldSources.fastModeRewriteMode,
       clearPayload: { fastModeRewriteMode: null },
       editor: (
@@ -1058,23 +1094,37 @@ export function EffectiveRoutingRuleCard({
     {
       key: "availableModels" as const,
       field: "availableModels" as const,
-      label: labels.fieldAvailableModels ?? "Available models",
+      label:
+        availableModelsSource === "conversation"
+          ? (labels.fieldAvailableModels ?? "Available models")
+          : availableModelsMode === "allowlist"
+            ? (labels.availableModelsAllowed ?? labels.fieldAvailableModels ?? "Allowed models")
+            : (labels.availableModelsDenied ?? labels.fieldAvailableModels ?? "Denied models"),
       value:
         availableModelsValue.length > 0
-          ? availableModelsValue.join(", ")
-          : availableModelsSourceDeniesAll(fieldSources.availableModels)
+          ? `${availableModelsMode === "allowlist" ? (labels.availableModelsAllowlist ?? "Allowlist") : (labels.availableModelsDenylist ?? "Denylist")}: ${availableModelsValue.join(", ")}`
+          : availableModelsSourceDeniesAll(
+                fieldSources.availableModels,
+                availableModelsMode,
+                availableModelsDefined,
+              )
             ? (labels.availableModelsNoneAllowed ?? "No models allowed")
             : (labels.availableModelsInherited ?? "Inherited / unrestricted"),
       source: fieldSources.availableModels ?? "root",
-      valueBadges: availableModelsValue.length > 0 ? availableModelsValue : null,
-      clearPayload: { availableModels: null },
+      valueChips: availableModelsValue.length > 0 ? availableModelsValue : null,
+      clearPayload: { availableModels: null, availableModelsMode: null },
       editor: (
         <AvailableModelsEditor
           value={availableModelsValue}
+          mode={availableModelsMode}
           options={availableModelOptions}
           inputValue={availableModelInput}
           emptyValueLabel={
-            availableModelsSourceDeniesAll(fieldSources.availableModels)
+            availableModelsSourceDeniesAll(
+              fieldSources.availableModels,
+              availableModelsMode,
+              availableModelsDefined,
+            )
               ? (labels.availableModelsNoneAllowed ?? "No models allowed")
               : (labels.availableModelsInherited ?? "Inherited / unrestricted")
           }
@@ -1083,6 +1133,7 @@ export function EffectiveRoutingRuleCard({
           onInputChange={setAvailableModelInput}
           onAdd={appendAvailableModel}
           onChange={updateAvailableModels}
+          onModeChange={updateAvailableModelsMode}
         />
       ),
     },
@@ -1095,7 +1146,7 @@ export function EffectiveRoutingRuleCard({
           ? resolvedRule.systemDeniedModels.join(", ")
           : (labels.systemDeniedModelsEmpty ?? "None"),
       source: fieldSources.systemDeniedModels ?? "root",
-      valueBadges:
+      valueChips:
         resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
           ? resolvedRule.systemDeniedModels
           : null,
@@ -1110,7 +1161,7 @@ export function EffectiveRoutingRuleCard({
           ...row,
           displayField: row.field,
           displayValue: row.value,
-          displayValueBadges: row.valueBadges,
+          displayValueChips: row.valueChips,
           displayValueVariant: undefined,
           displayEditor: row.editor,
         };
@@ -1119,7 +1170,7 @@ export function EffectiveRoutingRuleCard({
         ...row,
         displayField: override.valueField ?? row.field,
         displayValue: override.value ?? row.value,
-        displayValueBadges: override.valueBadges ?? row.valueBadges,
+        displayValueChips: override.valueChips ?? row.valueChips,
         displayValueVariant: override.valueVariant,
         displayEditor: override.editor ?? row.editor,
       };
@@ -1210,27 +1261,24 @@ export function EffectiveRoutingRuleCard({
                           }
                         />
                       </span>
-                      {row.displayValueBadges ? (
-                        <ValueBadgeList
+                      {row.displayValueChips ? (
+                        <ValueChipList
                           field={row.displayField}
-                          values={row.displayValueBadges}
+                          values={row.displayValueChips}
                           labels={labels}
                           variantOverride={row.displayValueVariant}
                         />
                       ) : (
-                        <ValueBadge
+                        <ValueChip
                           field={row.displayField}
                           value={row.displayValue}
                           labels={labels}
                           variantOverride={row.displayValueVariant}
                         />
                       )}
-                      <Badge
-                        className="w-fit sm:justify-self-end"
-                        variant={sourceVariant(row.source)}
-                      >
+                      <Chip className="w-fit sm:justify-self-end" tone={sourceVariant(row.source)}>
                         {sourceLabel(row.source, labels)}
-                      </Badge>
+                      </Chip>
                       {editable && row.field ? (
                         <Button
                           type="button"
@@ -1265,27 +1313,53 @@ export function EffectiveRoutingRuleCard({
                     </div>
                     {expanded && row.field ? (
                       <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                        <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                          <p className="text-sm font-semibold text-base-content">
-                            <PolicyFieldLabel
-                              label={row.label}
-                              hint={
-                                row.key === "imageToolRewriteMode"
-                                  ? labels.imageToolRewriteHint
-                                  : row.key === "codexImagegenRewriteMode"
-                                    ? labels.codexImagegenRewriteHint
-                                    : undefined
-                              }
-                            />
-                          </p>
-                          <div className="min-w-0 sm:col-span-3">{row.displayEditor}</div>
+                        <div
+                          className={cn(
+                            "grid grid-cols-1 gap-y-2 sm:items-center sm:gap-x-3",
+                            row.key === "availableModels"
+                              ? "sm:grid-cols-1"
+                              : "sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem]",
+                          )}
+                        >
+                          {row.key !== "availableModels" ? (
+                            <p className="text-sm font-semibold text-base-content">
+                              <PolicyFieldLabel
+                                label={row.label}
+                                hint={
+                                  row.key === "imageToolRewriteMode"
+                                    ? labels.imageToolRewriteHint
+                                    : row.key === "codexImagegenRewriteMode"
+                                      ? labels.codexImagegenRewriteHint
+                                      : undefined
+                                }
+                              />
+                            </p>
+                          ) : null}
+                          <div
+                            className={cn(
+                              "min-w-0",
+                              row.key !== "availableModels" && "sm:col-span-3",
+                            )}
+                          >
+                            {row.displayEditor}
+                          </div>
                           {busy ? (
-                            <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs text-base-content/60",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {labels.overrideSaving ?? "Saving..."}
                             </p>
                           ) : null}
                           {error ? (
-                            <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                            <p
+                              className={cn(
+                                "text-xs font-medium text-error",
+                                row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
+                              )}
+                            >
                               {error}
                             </p>
                           ) : null}
@@ -1308,12 +1382,12 @@ export function EffectiveRoutingRuleCard({
                       labels={proxyBindings.labels}
                       disabled={proxyBindings.busy || proxyBindings.disabled}
                     />
-                    <Badge
+                    <Chip
                       className="w-fit sm:justify-self-end"
-                      variant={sourceVariant(proxyBindingsSource)}
+                      tone={sourceVariant(proxyBindingsSource)}
                     >
                       {sourceLabel(proxyBindingsSource, labels)}
-                    </Badge>
+                    </Chip>
                     <Button
                       type="button"
                       size="icon"
@@ -1383,16 +1457,16 @@ export function EffectiveRoutingRuleCard({
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
                     <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
-                    <ValueBadge field={row.field} value={row.value} labels={labels} />
+                    <ValueChip field={row.field} value={row.value} labels={labels} />
                     <div className="min-w-0 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-base-content/65">
                         {activeOverride
                           ? (labels.timeoutOverrideValue ?? "Account override")
                           : (labels.timeoutInheritedValue ?? "Inherited")}
                       </span>
-                      <Badge className="w-fit" variant={sourceVariant(row.source)}>
+                      <Chip className="w-fit" tone={sourceVariant(row.source)}>
                         {sourceLabel(row.source, labels)}
-                      </Badge>
+                      </Chip>
                     </div>
                     {isEditable ? (
                       <Button
@@ -1517,12 +1591,12 @@ export function EffectiveRoutingRuleCard({
                     {labels.statusChangeReasonResetAction ?? "Reset"}
                   </Button>
                 ) : null}
-                <Badge variant="secondary" className="w-fit">
+                <Chip tone="secondary" className="w-fit">
                   {labels.statusChangeReasonSummary?.(
                     totalEnabledStatusChangeReasons,
                     STATUS_CHANGE_REASON_CODES.length,
                   ) ?? `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
-                </Badge>
+                </Chip>
               </div>
             </div>
             <div className="mt-3 grid gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
@@ -1577,9 +1651,9 @@ export function EffectiveRoutingRuleCard({
                 <span className="text-sm text-base-content/60">{labels.noTags}</span>
               ) : (
                 resolvedRule.sourceTagNames.map((name) => (
-                  <Badge key={name} variant="secondary">
+                  <Chip key={name} tone="secondary">
                     {name}
-                  </Badge>
+                  </Chip>
                 ))
               )}
             </div>
@@ -1661,9 +1735,9 @@ function ConcurrencyInlineEditor({
         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
           {currentLabel}
         </span>
-        <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2.5 py-1 text-sm font-semibold text-base-content">
+        <Chip size="default" tone="secondary" className="px-2.5 py-1 text-sm font-semibold">
           {displayValue}
-        </span>
+        </Chip>
       </div>
       <input
         type="range"
@@ -1711,6 +1785,7 @@ function RetryInlineEditor({ retries, disabled, labels, onChange }: RetryInlineE
 
 interface AvailableModelsEditorProps {
   value: string[];
+  mode: AvailableModelsMode;
   options: string[];
   inputValue: string;
   emptyValueLabel: string;
@@ -1719,10 +1794,12 @@ interface AvailableModelsEditorProps {
   onInputChange: (value: string) => void;
   onAdd: (value: string) => void;
   onChange: (value: string[]) => void;
+  onModeChange: (value: AvailableModelsMode) => void;
 }
 
 function AvailableModelsEditor({
   value,
+  mode,
   options,
   inputValue,
   emptyValueLabel,
@@ -1731,6 +1808,7 @@ function AvailableModelsEditor({
   onInputChange,
   onAdd,
   onChange,
+  onModeChange,
 }: AvailableModelsEditorProps) {
   const trimmedInput = inputValue.trim();
   const canAdd = trimmedInput.length > 0 && !value.includes(trimmedInput);
@@ -1753,128 +1831,170 @@ function AvailableModelsEditor({
   };
 
   const triggerTitle = value.length > 0 ? value.join(", ") : emptyValueLabel;
+  const currentModeLabel =
+    mode === "allowlist"
+      ? (labels.availableModelsAllowlist ?? "Allowlist")
+      : (labels.availableModelsDenylist ?? "Denylist");
+  const nextMode = mode === "allowlist" ? "denylist" : "allowlist";
+  const nextModeLabel =
+    nextMode === "allowlist"
+      ? (labels.availableModelsAllowlist ?? "Allowlist")
+      : (labels.availableModelsDenylist ?? "Denylist");
+  const modeToggleLabel = `${currentModeLabel} -> ${nextModeLabel}`;
 
   return (
     <div className="min-w-[18rem]">
-      <Popover
-        open={disabled ? false : open}
-        onOpenChange={(nextOpen) => {
-          if (disabled) {
-            setOpen(false);
-            return;
-          }
-          setOpen(nextOpen);
-          if (!nextOpen) {
-            onInputChange("");
-          }
-        }}
-      >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            role="combobox"
-            aria-expanded={open}
-            aria-label={labels.fieldAvailableModels ?? "Available models"}
+      <div className="flex flex-col gap-2 min-[769px]:flex-row min-[769px]:items-center">
+        <Button
+          type="button"
+          variant="outline"
+          data-testid="available-models-mode-toggle"
+          aria-pressed={mode === "allowlist"}
+          aria-label={modeToggleLabel}
+          title={modeToggleLabel}
+          disabled={disabled}
+          onClick={() => onModeChange(nextMode)}
+          className="hidden h-9 w-auto shrink-0 gap-1.5 rounded-md px-3 min-[769px]:inline-flex"
+        >
+          <span>{currentModeLabel}</span>
+          <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
+        </Button>
+        <div className="min-[769px]:hidden">
+          <PolicyInlineOptionGroup<AvailableModelsMode>
+            ariaLabel={
+              labels.availableModelsMode ?? labels.fieldAvailableModels ?? "Available models mode"
+            }
+            value={mode}
             disabled={disabled}
-            title={triggerTitle}
-            className={cn(
-              "flex w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
-              "hover:border-primary/35",
-              disabled && "cursor-not-allowed opacity-60",
-            )}
-          >
-            <AppIcon
-              name="tag-outline"
-              className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55"
-              aria-hidden
-            />
-            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              {value.length > 0 ? (
-                value.map((model) => (
-                  <Badge
-                    key={model}
-                    variant="secondary"
-                    className="max-w-full rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-primary"
-                  >
-                    <span className="truncate">
-                      {labels.availableModelsCustomLabel?.(model) ?? model}
-                    </span>
-                  </Badge>
-                ))
-              ) : (
-                <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
-              )}
-            </span>
-            <AppIcon
-              name="chevron-down"
-              className="h-4 w-4 shrink-0 text-base-content/45"
-              aria-hidden
-            />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
-          <Command shouldFilter={false}>
-            <CommandInput
-              value={inputValue}
-              placeholder={
-                labels.availableModelsPlaceholder ?? labels.availableModelsAddCustom ?? "Add model"
+            options={[
+              { value: "allowlist", label: labels.availableModelsAllowlist ?? "Allowlist" },
+              { value: "denylist", label: labels.availableModelsDenylist ?? "Denylist" },
+            ]}
+            onChange={onModeChange}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <Popover
+            open={disabled ? false : open}
+            onOpenChange={(nextOpen) => {
+              if (disabled) {
+                setOpen(false);
+                return;
               }
-              onValueChange={onInputChange}
-            />
-            <CommandList>
-              {canAdd ? (
-                <>
-                  <CommandGroup>
-                    <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
-                      <AppIcon
-                        name="plus-circle-outline"
-                        className="mr-2 h-4 w-4 text-primary"
-                        aria-hidden
-                      />
-                      <span className="truncate">{trimmedInput}</span>
-                    </CommandItem>
-                  </CommandGroup>
-                  <CommandSeparator />
-                </>
-              ) : null}
-              {filteredOptions.length === 0 ? (
-                <CommandEmpty>{labels.availableModelsEmpty ?? "No matching models"}</CommandEmpty>
-              ) : (
-                <CommandGroup>
-                  {filteredOptions.map((model) => {
-                    const active = selectedValueSet.has(model);
-                    return (
-                      <CommandItem
-                        key={model}
-                        value={model}
-                        disabled={disabled}
-                        onSelect={() =>
-                          onChange(
-                            active ? value.filter((item) => item !== model) : [...value, model],
-                          )
-                        }
-                      >
-                        <AppIcon
-                          name="check"
-                          className={cn(
-                            "mr-2 h-4 w-4 text-primary transition-opacity",
-                            active ? "opacity-100" : "opacity-0",
-                          )}
-                          aria-hidden
-                        />
+              setOpen(nextOpen);
+              if (!nextOpen) {
+                onInputChange("");
+              }
+            }}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                role="combobox"
+                aria-expanded={open}
+                aria-label={labels.fieldAvailableModels ?? "Available models"}
+                disabled={disabled}
+                title={triggerTitle}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+                  "hover:border-primary/35",
+                  disabled && "cursor-not-allowed opacity-60",
+                )}
+              >
+                <AppIcon
+                  name="tag-outline"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55"
+                  aria-hidden
+                />
+                <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  {value.length > 0 ? (
+                    value.map((model) => (
+                      <Chip key={model} tone="secondary" className="max-w-full px-2.5 py-1">
                         <span className="truncate">
                           {labels.availableModelsCustomLabel?.(model) ?? model}
                         </span>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              )}
-            </CommandList>
-          </Command>
-        </PopoverContent>
-      </Popover>
+                      </Chip>
+                    ))
+                  ) : (
+                    <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
+                  )}
+                </span>
+                <AppIcon
+                  name="chevron-down"
+                  className="h-4 w-4 shrink-0 text-base-content/45"
+                  aria-hidden
+                />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  value={inputValue}
+                  placeholder={
+                    labels.availableModelsPlaceholder ??
+                    labels.availableModelsAddCustom ??
+                    "Add model"
+                  }
+                  onValueChange={onInputChange}
+                />
+                <CommandList>
+                  {canAdd ? (
+                    <>
+                      <CommandGroup>
+                        <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
+                          <AppIcon
+                            name="plus-circle-outline"
+                            className="mr-2 h-4 w-4 text-primary"
+                            aria-hidden
+                          />
+                          <span className="truncate">{trimmedInput}</span>
+                        </CommandItem>
+                      </CommandGroup>
+                      <CommandSeparator />
+                    </>
+                  ) : null}
+                  {filteredOptions.length === 0 ? (
+                    <CommandEmpty>
+                      {labels.availableModelsEmpty ?? "No matching models"}
+                    </CommandEmpty>
+                  ) : (
+                    <CommandGroup>
+                      {filteredOptions.map((model) => {
+                        const active = selectedValueSet.has(model);
+                        return (
+                          <CommandItem
+                            key={model}
+                            value={model}
+                            disabled={disabled}
+                            onSelect={() =>
+                              onChange(
+                                active ? value.filter((item) => item !== model) : [...value, model],
+                              )
+                            }
+                          >
+                            <AppIcon
+                              name="check"
+                              className={cn(
+                                "mr-2 h-4 w-4 text-primary transition-opacity",
+                                active ? "opacity-100" : "opacity-0",
+                              )}
+                              aria-hidden
+                            />
+                            <span className="truncate">
+                              {labels.availableModelsCustomLabel?.(model) ?? model}
+                            </span>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  )}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
     </div>
   );
 }

@@ -16,9 +16,12 @@ pub(crate) fn intersect_available_models(
 pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
+    let has_editable_tags = tags
+        .iter()
+        .any(|tag| !tag.protected && tag.system_key.is_none());
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
-    let mut priority_tier = if tags.is_empty() {
+    let mut priority_tier = if !has_editable_tags {
         TagPriorityTier::Normal
     } else {
         TagPriorityTier::Primary
@@ -39,22 +42,27 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
     for tag in tags {
         source_tag_ids.push(tag.id);
         source_tag_names.push(tag.name.clone());
-        allow_cut_out &= tag.routing_rule.allow_cut_out;
-        allow_cut_in &= tag.routing_rule.allow_cut_in;
-        priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
-        if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
-            < fast_mode_rewrite_mode.merge_rank()
-        {
-            fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
+        if !tag.protected && tag.system_key.is_none() {
+            allow_cut_out &= tag.routing_rule.allow_cut_out;
+            allow_cut_in &= tag.routing_rule.allow_cut_in;
+            priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
+            if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
+                < fast_mode_rewrite_mode.merge_rank()
+            {
+                fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
+            }
+            concurrency_limit =
+                merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
+            if tag.routing_rule.upstream_429_retry_enabled {
+                upstream_429_retry_enabled = true;
+                upstream_429_max_retries =
+                    upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
+            }
         }
-        concurrency_limit =
-            merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
-        if tag.routing_rule.upstream_429_retry_enabled {
-            upstream_429_retry_enabled = true;
-            upstream_429_max_retries =
-                upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
-        }
-        if !tag.routing_rule.available_models.is_empty() {
+        if tag.available_models_invalid {
+            tag_available_models_defined = true;
+            available_models = Some(Vec::new());
+        } else if !tag.routing_rule.available_models.is_empty() {
             tag_available_models_defined = true;
             available_models = Some(match available_models.take() {
                 Some(current) => {
@@ -74,7 +82,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         }
     }
 
-    let field_source = if tags.is_empty() { "root" } else { "tag" }.to_string();
+    let field_source = if has_editable_tags { "tag" } else { "root" }.to_string();
     let available_models_source = if tag_available_models_defined {
         "tag"
     } else {
@@ -102,7 +110,9 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             upstream_429_max_retries,
         ),
         available_models: available_models.unwrap_or_default(),
+        available_models_mode: AvailableModelsMode::Allowlist,
         available_models_defined: tag_available_models_defined,
+        tag_available_models: None,
         status_change_reasons,
         status_change_reason_field_sources,
         system_denied_models: system_denied_models.into_iter().collect(),
@@ -119,6 +129,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             concurrency_limit: field_source.clone(),
             upstream_429_retry: field_source.clone(),
             available_models: available_models_source,
+            available_models_mode: "root".to_string(),
             system_denied_models: system_denied_models_source,
         },
         timeouts: RoutingTimeoutSettings::default(),
@@ -150,6 +161,8 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_available_models_mode: Option<String>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -185,6 +198,8 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<String>,
+    #[sqlx(default)]
+    policy_available_models_mode: Option<String>,
     policy_status_change_upstream_http_401: Option<i64>,
     policy_status_change_upstream_http_402: Option<i64>,
     policy_status_change_upstream_http_403: Option<i64>,
@@ -294,6 +309,32 @@ pub(crate) fn apply_root_codex_imagegen_rewrite_mode(
     rule.field_sources.codex_imagegen_rewrite_mode = "root".to_string();
 }
 
+pub(crate) fn apply_root_available_models(
+    rule: &mut EffectiveRoutingRule,
+    models_json: Option<&str>,
+    mode: Option<&str>,
+) {
+    let (parsed_models, invalid_models_json) = parse_string_array_json_with_invalid(models_json);
+    let mode = mode
+        .map(|value| AvailableModelsMode::from_str(Some(value)))
+        .unwrap_or(AvailableModelsMode::Denylist);
+    rule.available_models = if invalid_models_json {
+        Vec::new()
+    } else {
+        parsed_models
+    };
+    rule.available_models_mode = if invalid_models_json {
+        AvailableModelsMode::Allowlist
+    } else {
+        mode
+    };
+    rule.available_models_defined = invalid_models_json
+        || matches!(mode, AvailableModelsMode::Allowlist)
+        || models_json.is_some_and(|value| value.trim() != "[]" && !value.trim().is_empty());
+    rule.field_sources.available_models = "root".to_string();
+    rule.field_sources.available_models_mode = "root".to_string();
+}
+
 pub(crate) fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
@@ -309,6 +350,7 @@ pub(crate) fn apply_routing_policy_override(
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
     available_models_json: Option<&str>,
+    available_models_mode: Option<&str>,
 ) {
     if let Some(allow_cut_out) = allow_cut_out {
         rule.field_sources.allow_cut_out = source.to_string();
@@ -370,11 +412,28 @@ pub(crate) fn apply_routing_policy_override(
                 .unwrap_or_default(),
         );
     }
-    if let Some(available_models_json) = available_models_json {
-        let available_models = parse_string_array_json(Some(available_models_json));
+    if available_models_json.is_some() || available_models_mode.is_some() {
+        let (parsed_models, invalid_models_json) =
+            parse_string_array_json_with_invalid(available_models_json);
+        let available_models = if invalid_models_json {
+            Vec::new()
+        } else if available_models_json.is_some() {
+            parsed_models
+        } else {
+            rule.available_models.clone()
+        };
+        let mode = available_models_mode
+            .map(|value| AvailableModelsMode::from_str(Some(value)))
+            .unwrap_or(AvailableModelsMode::Allowlist);
         rule.field_sources.available_models = source.to_string();
         rule.available_models = available_models;
         rule.available_models_defined = true;
+        rule.available_models_mode = if invalid_models_json {
+            AvailableModelsMode::Allowlist
+        } else {
+            mode
+        };
+        rule.field_sources.available_models_mode = source.to_string();
     }
 }
 
@@ -403,6 +462,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -462,6 +522,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
             policy_available_models_json,
+            policy_available_models_mode,
             policy_status_change_upstream_http_401,
             policy_status_change_upstream_http_402,
             policy_status_change_upstream_http_403,
@@ -515,6 +576,7 @@ pub(crate) fn apply_group_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
     );
     if row.policy_concurrency_limit.is_none() && row.concurrency_limit > 0 {
         rule.field_sources.concurrency_limit = "group".to_string();
@@ -613,6 +675,7 @@ pub(crate) fn apply_tag_layer_routing_policy(
     rule: &mut EffectiveRoutingRule,
     tag_rule: &EffectiveRoutingRule,
 ) {
+    let has_editable_tag_policy = tag_rule.field_sources.allow_cut_out == "tag";
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
     let inherited_image_tool_rewrite_mode_source =
         rule.field_sources.image_tool_rewrite_mode.clone();
@@ -623,26 +686,36 @@ pub(crate) fn apply_tag_layer_routing_policy(
     let inherited_request_compression_algorithm_source =
         rule.field_sources.request_compression_algorithm.clone();
     let inherited_available_models = rule.available_models.clone();
+    let inherited_available_models_mode = rule.available_models_mode;
     let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
+    let inherited_available_models_mode_source = rule.field_sources.available_models_mode.clone();
     let inherited_status_change_reasons = rule.status_change_reasons.clone();
     let inherited_status_change_reason_field_sources =
         rule.status_change_reason_field_sources.clone();
     let inherited_timeouts = rule.timeouts.clone();
     let inherited_timeout_field_sources = rule.timeout_field_sources.clone();
-    rule.allow_cut_out = tag_rule.allow_cut_out;
-    rule.allow_cut_in = tag_rule.allow_cut_in;
-    rule.priority_tier = tag_rule.priority_tier;
-    rule.fast_mode_rewrite_mode = tag_rule.fast_mode_rewrite_mode;
-    rule.concurrency_limit = tag_rule.concurrency_limit;
-    rule.upstream_429_retry_enabled = tag_rule.upstream_429_retry_enabled;
-    rule.upstream_429_max_retries = if tag_rule.upstream_429_retry_enabled {
-        tag_rule.upstream_429_max_retries
-    } else {
-        0
-    };
-    rule.available_models =
-        if tag_rule.available_models_defined && inherited_available_models_defined {
+    if has_editable_tag_policy {
+        rule.allow_cut_out = tag_rule.allow_cut_out;
+        rule.allow_cut_in = tag_rule.allow_cut_in;
+        rule.priority_tier = tag_rule.priority_tier;
+        rule.fast_mode_rewrite_mode = tag_rule.fast_mode_rewrite_mode;
+        rule.concurrency_limit = tag_rule.concurrency_limit;
+        rule.upstream_429_retry_enabled = tag_rule.upstream_429_retry_enabled;
+        rule.upstream_429_max_retries = if tag_rule.upstream_429_retry_enabled {
+            tag_rule.upstream_429_max_retries
+        } else {
+            0
+        };
+    }
+    if tag_rule.available_models_defined {
+        rule.tag_available_models = Some(tag_rule.available_models.clone());
+    }
+    if tag_rule.available_models_defined
+        && !(inherited_available_models_mode == AvailableModelsMode::Denylist
+            && inherited_available_models_defined)
+    {
+        rule.available_models = if inherited_available_models_defined {
             intersect_available_models(
                 inherited_available_models.clone(),
                 &tag_rule.available_models,
@@ -650,12 +723,23 @@ pub(crate) fn apply_tag_layer_routing_policy(
         } else {
             tag_rule.available_models.clone()
         };
-    rule.available_models_defined =
-        inherited_available_models_defined || tag_rule.available_models_defined;
+        rule.available_models_defined = true;
+    } else {
+        rule.available_models = inherited_available_models.clone();
+        rule.available_models_defined = inherited_available_models_defined;
+    }
     rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
-    rule.field_sources = tag_rule.field_sources.clone();
+    if has_editable_tag_policy {
+        rule.field_sources = tag_rule.field_sources.clone();
+    } else {
+        rule.field_sources.available_models = tag_rule.field_sources.available_models.clone();
+        rule.field_sources.available_models_mode =
+            tag_rule.field_sources.available_models_mode.clone();
+        rule.field_sources.system_denied_models =
+            tag_rule.field_sources.system_denied_models.clone();
+    }
     rule.status_change_reasons = inherited_status_change_reasons;
     rule.status_change_reason_field_sources = inherited_status_change_reason_field_sources;
     rule.timeouts = tag_rule.timeouts.clone();
@@ -669,10 +753,23 @@ pub(crate) fn apply_tag_layer_routing_policy(
         inherited_request_compression_algorithm_source;
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
+        rule.available_models_mode = inherited_available_models_mode;
         rule.available_models_defined = inherited_available_models_defined;
         rule.field_sources.available_models = inherited_available_models_source;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
+    } else if tag_rule.available_models_defined
+        && !(inherited_available_models_mode == AvailableModelsMode::Denylist
+            && inherited_available_models_defined)
+    {
+        rule.available_models_mode = tag_rule.available_models_mode;
+        rule.field_sources.available_models_mode = "tag".to_string();
+    } else if tag_rule.available_models_defined {
+        rule.field_sources.available_models = inherited_available_models_source;
+        rule.available_models_mode = inherited_available_models_mode;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
+        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
     }
     if tag_rule
         .timeouts
@@ -728,6 +825,7 @@ pub(crate) fn apply_account_routing_policy_override(
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
         row.policy_available_models_json.as_deref(),
+        row.policy_available_models_mode.as_deref(),
     );
     apply_status_change_reason_override(
         rule,

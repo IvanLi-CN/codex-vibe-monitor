@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, within } from "storybook/test";
+import { Chip } from "../../components/ui/chip";
 import { UpdateAvailableBanner, type UpdateAvailableBannerProps } from "./UpdateAvailableBanner";
 
 function ThemeRoot({
@@ -37,15 +38,15 @@ function DenseRows() {
             <div className="min-w-0">
               <p className="truncate font-semibold text-base-content">{`ora.success.${index + 1}@mail-tw.707079.xyz`}</p>
               <div className="mt-2 flex gap-2 text-[11px]">
-                <span className="rounded-full border border-success/35 bg-success/14 px-2 py-1 text-success">
+                <Chip tone="success" className="px-2 py-1 text-[11px]">
                   启用
-                </span>
-                <span className="rounded-full border border-info/35 bg-info/14 px-2 py-1 text-info">
+                </Chip>
+                <Chip tone="info" className="px-2 py-1 text-[11px]">
                   工作 1
-                </span>
-                <span className="rounded-full border border-base-300/70 bg-base-100/38 px-2 py-1">
+                </Chip>
+                <Chip tone="secondary" className="px-2 py-1 text-[11px]">
                   OAuth
-                </span>
+                </Chip>
               </div>
             </div>
             <p className="font-mono text-base-content/74">{`同步 03/25 17:1${index}`}</p>

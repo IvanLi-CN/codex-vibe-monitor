@@ -1765,12 +1765,12 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
             name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 1, 1, 'primary', 'force_remove', 0, 0, 0, '[]', ?3, ?3)
+        ) VALUES (?1, ?2, 0, 1, 1, 'primary', 'force_remove', 0, 0, 0, '[]', ?3, ?3)
         RETURNING id
         "#,
     )
     .bind("force-remove-primary")
-    .bind("test:force-remove-primary")
+    .bind(None::<String>)
     .bind(&now_iso)
     .fetch_one(&state.pool)
     .await
@@ -1786,12 +1786,12 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
             name, system_key, protected, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
             upstream_429_max_retries, available_models_json, created_at, updated_at
-        ) VALUES (?1, ?2, 1, 1, 1, 'normal', 'fill_missing', 0, 0, 0, '[]', ?3, ?3)
+        ) VALUES (?1, ?2, 0, 1, 1, 'normal', 'fill_missing', 0, 0, 0, '[]', ?3, ?3)
         RETURNING id
         "#,
     )
     .bind("fill-missing-normal")
-    .bind("test:fill-missing-normal")
+    .bind(None::<String>)
     .bind(&now_iso)
     .fetch_one(&state.pool)
     .await

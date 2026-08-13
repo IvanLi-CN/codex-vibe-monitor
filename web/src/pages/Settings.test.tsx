@@ -283,6 +283,8 @@ describe("Settings forward proxy table", () => {
 
     expect(saveRouting).toHaveBeenCalledTimes(1);
     expect(saveRouting).toHaveBeenCalledWith({
+      availableModels: [],
+      availableModelsMode: "denylist",
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",

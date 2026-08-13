@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
+import { Chip } from "./chip";
 import { InfoTooltip } from "./info-tooltip";
 import { InlineChartTooltipSurface } from "./inline-chart-tooltip";
 import { MotherSwitchUndoToast, SystemNotificationProvider } from "./system-notifications";
@@ -145,20 +146,17 @@ function OverlayGallery({ theme }: { theme: "vibe-light" | "vibe-dark" }) {
                         open
                         content="This tooltip now uses the same shared frosted surface tokens as the rest of the overlay family."
                       >
-                        <button
-                          type="button"
-                          className="rounded-full border border-primary/35 bg-primary/12 px-3 py-2 font-medium text-primary"
-                        >
-                          Shared tooltip
-                        </button>
+                        <Chip asChild tone="primary" className="px-3 py-2 font-medium">
+                          <button type="button">Shared tooltip</button>
+                        </Chip>
                       </Tooltip>
-                      <div className="inline-flex items-center gap-2 rounded-full border border-warning/35 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning">
+                      <Chip tone="warning" className="gap-2 px-3 py-2 text-xs font-semibold">
                         <span>17 条新数据</span>
                         <InfoTooltip
                           label="Explain shared overlay surface"
                           content="Pinned info tooltips should feel like the same frosted family instead of a separate semi-transparent bubble."
                         />
-                      </div>
+                      </Chip>
                     </div>
                   </div>
                 </NoiseCard>

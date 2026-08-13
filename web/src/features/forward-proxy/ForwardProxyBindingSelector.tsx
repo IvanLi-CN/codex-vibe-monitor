@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Chip } from "../../components/ui/chip";
 import type { ForwardProxyBindingNode } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
@@ -79,14 +80,16 @@ function ProxyOptionTrafficChart({
   return (
     <div className="flex w-full flex-col justify-center gap-0.5 sm:min-w-[15.5rem] sm:max-w-[15.5rem] sm:self-center">
       <div className="flex h-4 items-center justify-between gap-2">
-        <span
+        <Chip
+          size="micro"
+          tone="secondary"
           role="img"
-          className="inline-flex h-4 min-w-[2.25rem] shrink-0 items-center justify-center rounded-md border border-base-300/80 bg-base-100/75 px-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/55 whitespace-nowrap"
+          className="h-4 min-w-[2.25rem] justify-center px-1.5 text-[9px] uppercase tracking-[0.12em]"
           title={label}
           aria-label={label}
         >
           {windowBadgeLabel}
-        </span>
+        </Chip>
         <div className="flex items-center gap-1.5 text-[10px] font-semibold leading-none tabular-nums">
           <span
             role="img"
@@ -268,26 +271,40 @@ export function ForwardProxyBindingSelector({
                         {node.displayName}
                       </span>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <span className="shrink-0 rounded-md border border-base-300/80 bg-base-200/65 px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-[0.08em] text-base-content/68">
+                        <Chip
+                          size="micro"
+                          tone="secondary"
+                          className="shrink-0 px-1.5 font-mono uppercase tracking-[0.08em]"
+                        >
                           {node.protocolLabel}
-                        </span>
+                        </Chip>
                         {node.identityHint ? (
-                          <span
-                            className="shrink-0 rounded-md border border-base-300/80 bg-base-100/80 px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-[0.08em] text-base-content/55"
+                          <Chip
+                            size="micro"
+                            tone="neutral"
+                            className="shrink-0 px-1.5 font-mono tracking-[0.08em]"
                             title={node.identityHint}
                           >
                             {node.identityHint}
-                          </span>
+                          </Chip>
                         ) : null}
                         {badgeLabel ? (
-                          <span className="shrink-0 rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
+                          <Chip
+                            size="micro"
+                            tone={node.missing ? "error" : "warning"}
+                            className="shrink-0 px-2 uppercase tracking-[0.08em]"
+                          >
                             {badgeLabel}
-                          </span>
+                          </Chip>
                         ) : null}
                         {node.penalized ? (
-                          <span className="shrink-0 rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
+                          <Chip
+                            size="micro"
+                            tone="warning"
+                            className="shrink-0 px-2 uppercase tracking-[0.08em]"
+                          >
                             {labels?.penalized ?? "Penalized"}
-                          </span>
+                          </Chip>
                         ) : null}
                       </div>
                     </div>

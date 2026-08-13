@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import type { TranslationKey } from "../../i18n";
@@ -32,10 +32,7 @@ import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ModelIdentity } from "../shared/ModelIdentity";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
-import {
-  getReasoningEffortTone,
-  REASONING_EFFORT_TONE_CLASSNAMES,
-} from "./invocation-table-reasoning";
+import { getReasoningEffortTone } from "./invocation-table-reasoning";
 import { PoolAttemptRecordCard } from "./PoolAttemptRecordCard";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
 
@@ -211,26 +208,34 @@ export function formatDetailTimestamp(value: string | null | undefined) {
   return parsed.toISOString().replace(".000Z", "Z").replace("T", " ");
 }
 
-export function renderReasoningEffortBadge(value: string) {
+export function renderReasoningEffortChip(value: string) {
   const displayValue = formatReasoningEffort(value);
   if (displayValue === FALLBACK_CELL) {
     return <span className="font-mono text-sm text-base-content/70">{FALLBACK_CELL}</span>;
   }
 
   const tone = getReasoningEffortTone(displayValue);
+  const chipTone =
+    tone === "minimal" || tone === "low"
+      ? "info"
+      : tone === "medium"
+        ? "primary"
+        : tone === "high" || tone === "xhigh"
+          ? "warning"
+          : tone === "max" || tone === "ultra"
+            ? "error"
+            : "neutral";
 
   return (
-    <Badge
-      variant="secondary"
-      className={cn(
-        "max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]",
-        REASONING_EFFORT_TONE_CLASSNAMES[tone],
-      )}
+    <Chip
+      size="compact"
+      tone={chipTone}
+      className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
       title={displayValue}
       data-reasoning-effort-tone={tone}
     >
       <span className="block max-w-full truncate whitespace-nowrap">{displayValue}</span>
-    </Badge>
+    </Chip>
   );
 }
 
@@ -324,7 +329,7 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
   );
 }
 
-export function renderInvocationModelBadge(
+export function renderInvocationModelChip(
   value: string,
   options: {
     t: Translator;
@@ -481,7 +486,7 @@ export function renderEndpointSummary(
   if (
     endpointDisplay.kind === "raw" ||
     endpointDisplay.labelKey == null ||
-    endpointDisplay.badgeVariant == null
+    endpointDisplay.chipTone == null
   ) {
     return renderEndpointRawPath(endpointDisplay.endpointValue, className);
   }
@@ -492,8 +497,9 @@ export function renderEndpointSummary(
       : endpointDisplay.endpointValue;
 
   return (
-    <Badge
-      variant={endpointDisplay.badgeVariant}
+    <Chip
+      size="compact"
+      tone={endpointDisplay.chipTone}
       className={cn(
         "invocation-endpoint-badge max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]",
         className,
@@ -505,7 +511,7 @@ export function renderEndpointSummary(
       <span className="block max-w-full truncate whitespace-nowrap">
         {t(endpointDisplay.labelKey)}
       </span>
-    </Badge>
+    </Chip>
   );
 }
 
@@ -515,11 +521,11 @@ function formatFailureClassValue(
 ): ReactNode {
   switch (failureClass) {
     case "service_failure":
-      return <Badge variant="error">{t("records.filters.failureClass.service")}</Badge>;
+      return <Chip tone="error">{t("records.filters.failureClass.service")}</Chip>;
     case "client_failure":
-      return <Badge variant="warning">{t("records.filters.failureClass.client")}</Badge>;
+      return <Chip tone="warning">{t("records.filters.failureClass.client")}</Chip>;
     case "client_abort":
-      return <Badge variant="secondary">{t("records.filters.failureClass.abort")}</Badge>;
+      return <Chip tone="secondary">{t("records.filters.failureClass.abort")}</Chip>;
     default:
       return FALLBACK_CELL;
   }
@@ -528,9 +534,9 @@ function formatFailureClassValue(
 function formatActionableValue(value: ApiInvocation["isActionable"], t: Translator) {
   if (typeof value !== "boolean") return FALLBACK_CELL;
   return (
-    <Badge variant={value ? "warning" : "secondary"}>
+    <Chip tone={value ? "warning" : "secondary"}>
       {value ? t("table.details.actionableYes") : t("table.details.actionableNo")}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -579,30 +585,30 @@ function renderCompactionKindValue(
   t: Translator,
 ) {
   if (value === "compact") {
-    return <Badge variant="info">{t("table.endpoint.compactBadge")}</Badge>;
+    return <Chip tone="orange">{t("table.endpoint.compactBadge")}</Chip>;
   }
   if (value === "remote_v2") {
-    return <Badge variant="info">{t("table.endpoint.remoteV2Badge")}</Badge>;
+    return <Chip tone="violet">{t("table.endpoint.remoteV2Badge")}</Chip>;
   }
   return FALLBACK_CELL;
 }
 
-export function renderImageIntentBadge(
+export function renderImageIntentChip(
   imageIntentDisplay: InvocationImageIntentDisplay,
   t: Translator,
   className?: string,
 ) {
   if (
-    !imageIntentDisplay.showsBadge ||
-    imageIntentDisplay.badgeVariant == null ||
+    !imageIntentDisplay.showsChip ||
+    imageIntentDisplay.chipTone == null ||
     imageIntentDisplay.badgeLabelKey == null
   ) {
     return null;
   }
 
   return (
-    <Badge
-      variant={imageIntentDisplay.badgeVariant}
+    <Chip
+      tone={imageIntentDisplay.chipTone}
       className={cn(
         "max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]",
         className,
@@ -613,7 +619,7 @@ export function renderImageIntentBadge(
       <span className="block max-w-full truncate whitespace-nowrap">
         {t(imageIntentDisplay.badgeLabelKey)}
       </span>
-    </Badge>
+    </Chip>
   );
 }
 
@@ -622,9 +628,9 @@ function renderImageIntentValue(imageIntentDisplay: InvocationImageIntentDisplay
     return FALLBACK_CELL;
   }
 
-  return imageIntentDisplay.showsBadge ? (
+  return imageIntentDisplay.showsChip ? (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
-      {renderImageIntentBadge(imageIntentDisplay, t)}
+      {renderImageIntentChip(imageIntentDisplay, t)}
       <span className="font-mono text-xs text-base-content/70">
         {t(imageIntentDisplay.detailLabelKey)}
       </span>
@@ -760,9 +766,9 @@ export function buildInvocationDetailViewModel({
   const detailLevel = normalizeDetailLevel(record.detailLevel);
   const detailPrunedAtValue = formatDetailTimestamp(record.detailPrunedAt);
   const detailPruneReasonValue = formatOptionalText(record.detailPruneReason);
-  const detailLevelBadgeLabel =
+  const detailLevelChipLabel =
     detailLevel === "structured_only" ? detailLabels.structuredOnly : detailLabels.full;
-  const detailLevelBadgeVariant = detailLevel === "structured_only" ? "warning" : "secondary";
+  const detailLevelChipTone = detailLevel === "structured_only" ? "warning" : "secondary";
   const detailNotice = detailLevel === "structured_only" ? detailLabels.structuredHint : null;
   const detailPrunedSummary =
     detailLevel === "structured_only" && detailPrunedAtValue !== FALLBACK_CELL
@@ -811,7 +817,7 @@ export function buildInvocationDetailViewModel({
     {
       key: "responseModel",
       label: t("table.details.responseModel"),
-      value: renderInvocationModelBadge(responseModelValue, {
+      value: renderInvocationModelChip(responseModelValue, {
         t,
         hasMismatch: modelDisplay.hasMismatch,
         title: responseModelValue,
@@ -892,7 +898,7 @@ export function buildInvocationDetailViewModel({
     {
       key: "reasoningEffort",
       label: t("table.details.reasoningEffort"),
-      value: renderReasoningEffortBadge(reasoningEffortValue),
+      value: renderReasoningEffortChip(reasoningEffortValue),
     },
     {
       key: "reasoningTokens",
@@ -948,16 +954,16 @@ export function buildInvocationDetailViewModel({
       key: "detailLevel",
       label: detailLabels.level,
       value: (
-        <Badge
-          variant={detailLevelBadgeVariant}
+        <Chip
+          tone={detailLevelChipTone}
           className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
           title={detailLevelTooltip}
           data-testid="invocation-detail-level-badge"
         >
           <span className="block max-w-full truncate whitespace-nowrap">
-            {detailLevelBadgeLabel}
+            {detailLevelChipLabel}
           </span>
-        </Badge>
+        </Chip>
       ),
     },
     {
@@ -1558,12 +1564,14 @@ function renderPoolAttemptsContent(
         {loadedSummaryParts.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 md:justify-end">
             {loadedSummaryParts.map((part) => (
-              <span
+              <Chip
+                size="compact"
+                tone="secondary"
                 key={part}
-                className="rounded-full border border-base-300/70 bg-base-200/58 px-2 py-1 text-[11px] font-medium text-base-content/70"
+                className="px-2 py-1 text-[11px] font-medium"
               >
                 {part}
-              </span>
+              </Chip>
             ))}
           </div>
         ) : null}
@@ -1658,7 +1666,7 @@ function renderPoolAttemptsContent(
                           <span className="text-sm font-semibold">
                             {t("table.poolAttempts.terminal.title")}
                           </span>
-                          <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                          <Chip tone={statusMeta.variant}>{t(statusMeta.key)}</Chip>
                         </div>
                         <p className="mt-1 max-w-3xl text-sm text-base-content/75">
                           {t(
@@ -1669,9 +1677,9 @@ function renderPoolAttemptsContent(
                         </p>
                       </div>
                     </div>
-                    <Badge variant="secondary" className="w-fit">
+                    <Chip tone="secondary" className="w-fit">
                       {t("table.poolAttempts.terminal.notDispatched")}
-                    </Badge>
+                    </Chip>
                   </div>
                   <div className="grid gap-2 p-3 text-sm md:grid-cols-2 xl:grid-cols-3">
                     <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">

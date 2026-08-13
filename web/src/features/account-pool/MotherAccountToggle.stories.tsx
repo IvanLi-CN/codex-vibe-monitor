@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
-import { MotherAccountBadge, MotherAccountToggle } from "./MotherAccountToggle";
+import { Chip } from "../../components/ui/chip";
+import { MotherAccountChip, MotherAccountToggle } from "./MotherAccountToggle";
 
 const noop = () => undefined;
 
@@ -51,10 +52,10 @@ function OverviewGallery() {
           <ThemePanel key={panel.theme} theme={panel.theme} title={panel.title}>
             <div className="space-y-5">
               <div className="flex flex-wrap items-center gap-3">
-                <MotherAccountBadge label="母号" />
-                <div className="inline-flex rounded-full border border-base-300/75 bg-base-100 px-3 py-1.5 text-xs text-base-content/68">
+                <MotherAccountChip label="母号" />
+                <Chip tone="secondary" className="px-3 py-1.5 text-xs">
                   与普通状态标签并排时也能单独识别
-                </div>
+                </Chip>
               </div>
               <div className="grid gap-4">
                 <div className="rounded-[1.25rem] border border-base-300/70 bg-base-100 p-4">
@@ -105,7 +106,7 @@ function ToggleHarness({ iconOnly = false }: { iconOnly?: boolean }) {
     <StorySurface>
       <div className="max-w-lg rounded-[1.4rem] border border-base-300/70 bg-base-100/78 p-5">
         <div className="mb-4 flex items-center gap-3">
-          <MotherAccountBadge label="母号" />
+          <MotherAccountChip label="母号" />
           <span className="text-sm text-base-content/72">点击切换后应立即更新高对比状态。</span>
         </div>
         <div className="space-y-4">
@@ -136,7 +137,7 @@ const meta = {
   title: "Account Pool/Components/Mother Account Toggle",
   component: MotherAccountToggle,
   subcomponents: {
-    MotherAccountBadge,
+    MotherAccountChip,
   },
   tags: ["autodocs"],
   parameters: {

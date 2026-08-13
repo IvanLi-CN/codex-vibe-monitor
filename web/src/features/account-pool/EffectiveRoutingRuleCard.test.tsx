@@ -215,6 +215,26 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain("Inherited / unrestricted");
   });
 
+  it("shows deny-all copy for an empty root allowlist", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: [],
+          availableModelsMode: "allowlist",
+          availableModelsDefined: true,
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "root",
+          },
+        })}
+        labels={labels}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("No models allowed");
+    expect(document.body.textContent).not.toContain("Inherited / unrestricted");
+  });
+
   it("renders rule values as semantic badges without the blocking summary strip", () => {
     render(
       <EffectiveRoutingRuleCard
@@ -235,7 +255,7 @@ describe("EffectiveRoutingRuleCard", () => {
       />,
     );
 
-    const blockedValues = Array.from(document.querySelectorAll('[class*="bg-warning"]')).map(
+    const blockedValues = Array.from(document.querySelectorAll(".chip-tone-warning")).map(
       (node) => node.textContent,
     );
     expect(blockedValues).toContain("No new");
@@ -243,7 +263,7 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(blockedValues).toContain("Cut-in blocked");
     expect(blockedValues).toContain("No new");
 
-    const forceAddBadge = Array.from(document.querySelectorAll('[class*="bg-primary"]')).find(
+    const forceAddBadge = Array.from(document.querySelectorAll(".chip-tone-primary")).find(
       (node) => node.textContent === "Force add",
     );
     expect(forceAddBadge).toBeTruthy();
@@ -516,6 +536,47 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(trigger?.textContent).toContain("gpt-5.4-mini");
     expect(document.body.textContent).not.toContain("Add gpt-5.5");
     expect(document.body.textContent).not.toContain("Add gpt-5.4-mini");
+  });
+
+  it("keeps the desktop mode toggle beside the selector and preserves selected models", () => {
+    const onChange = vi.fn();
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.4-mini"],
+          availableModelsMode: "denylist",
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "account",
+          },
+        })}
+        labels={{
+          ...labels,
+          availableModelsAllowlist: "Allowlist",
+          availableModelsDenylist: "Denylist",
+        }}
+        editablePolicy={{ onChange }}
+      />,
+    );
+
+    const modeToggle = document.querySelector<HTMLButtonElement>(
+      'button[data-testid="available-models-mode-toggle"]',
+    );
+    expect(modeToggle).not.toBeNull();
+    expect(modeToggle?.textContent).toContain("Denylist");
+    expect(modeToggle?.classList.contains("hidden")).toBe(true);
+    expect(modeToggle?.classList.contains("min-[769px]:inline-flex")).toBe(true);
+    expect(modeToggle?.parentElement?.className).toContain("min-[769px]:items-center");
+    expect((document.body.textContent?.match(/Available models/g) ?? []).length).toBe(1);
+
+    act(() => {
+      modeToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith("availableModels", {
+      availableModels: ["gpt-5.4-mini"],
+      availableModelsMode: "allowlist",
+    });
   });
 
   it("renders status change reasons with their resolved source and evidence-only state", () => {

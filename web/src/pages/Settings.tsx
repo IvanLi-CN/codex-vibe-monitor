@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Alert } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Chip } from "../components/ui/chip";
 import { Input } from "../components/ui/input";
 import { SelectField } from "../components/ui/select-field";
 import { Switch } from "../components/ui/switch";
@@ -14,6 +14,7 @@ import { AppIcon } from "../features/shared/AppIcon";
 import { useSettings } from "../hooks/useSettings";
 import { useTranslation } from "../i18n";
 import {
+  type AvailableModelsMode,
   createForwardProxyNodeLatencyTestEventSource,
   createForwardProxyNodesLatencyTestEventSource,
   type ForwardProxyLatencyTestNodeProgress,
@@ -53,6 +54,8 @@ type RoutingDraft = {
   requestCompressionAlgorithm: RequestCompressionAlgorithm;
   requestCompressionLevelPreset: RequestCompressionLevelPreset;
   codexImagegenRewriteMode: import("../lib/api").CodexImagegenRewriteMode;
+  availableModels: string[];
+  availableModelsMode: AvailableModelsMode;
   responsesFirstByteTimeoutSecs: string;
   compactFirstByteTimeoutSecs: string;
   imageFirstByteTimeoutSecs: string;
@@ -254,6 +257,8 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     requestCompressionAlgorithm: routing.requestCompressionAlgorithm ?? "identity",
     requestCompressionLevelPreset: routing.requestCompressionLevelPreset ?? "balanced",
     codexImagegenRewriteMode: routing.codexImagegenRewriteMode ?? "keep_original",
+    availableModels: routing.availableModels ?? [],
+    availableModelsMode: routing.availableModelsMode ?? "denylist",
     responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
     imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),
@@ -274,7 +279,7 @@ function parsePositiveInteger(raw: string): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function sourceBadgeVariant(source: string): "success" | "warning" | "secondary" {
+function sourceChipTone(source: string): "success" | "warning" | "secondary" {
   if (source === "official") return "success";
   if (source === "temporary") return "warning";
   return "secondary";
@@ -743,6 +748,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
       requestCompressionLevelPreset: routingDraft.requestCompressionLevelPreset,
       codexImagegenRewriteMode: routingDraft.codexImagegenRewriteMode,
+      availableModels: routingDraft.availableModels,
+      availableModelsMode: routingDraft.availableModelsMode,
       timeouts: parsedTimeouts,
     };
 
@@ -1602,23 +1609,30 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               : t("settings.forwardProxy.latency.tooltipTesting")
             : t("settings.forwardProxy.latency.tooltipIdle");
     const button = (
-      <Button
-        type="button"
-        size="sm"
-        variant={state.status === "ready" ? "secondary" : "ghost"}
-        className={cn(
-          "h-7 min-w-[4.5rem] rounded-full px-2.5 font-mono text-[11px] tabular-nums",
-          state.status === "ready" ? "border border-success/35 bg-success/12 text-success" : "",
-          state.status === "failed" ? "border border-error/35 bg-error/10 text-error" : "",
-          state.status === "testing" ? "border border-info/35 bg-info/10 text-info" : "",
-        )}
-        disabled={disabled}
+      <Chip
+        asChild
+        size="mailbox"
+        tone={
+          state.status === "ready"
+            ? "success"
+            : state.status === "failed"
+              ? "error"
+              : state.status === "testing"
+                ? "info"
+                : "secondary"
+        }
         title={title}
         aria-label={t("settings.forwardProxy.latency.ariaLabel", { node: node.displayName })}
-        onClick={() => startForwardProxyLatencyTest([node.key])}
       >
-        {label}
-      </Button>
+        <button
+          type="button"
+          className="h-7 min-w-[4.5rem] px-2.5 font-mono text-[11px] tabular-nums"
+          disabled={disabled}
+          onClick={() => startForwardProxyLatencyTest([node.key])}
+        >
+          {label}
+        </button>
+      </Chip>
     );
     if (!progress || state.status === "idle") return button;
 
@@ -1765,9 +1779,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         {t("settings.proxy.encryptedOwnerRoutingHint")}
                       </div>
                     </div>
-                    <Badge variant="secondary" className="shrink-0">
+                    <Chip tone="secondary" className="shrink-0">
                       {t("settings.autoSaved")}
-                    </Badge>
+                    </Chip>
                   </div>
 
                   <div className="surface-subtle rounded-lg p-3.5">
@@ -1790,8 +1804,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           aria-label={t("settings.proxy.encryptedOwnerRoutingLabel")}
                           onCheckedChange={() => handleToggleEncryptedOwnerRouting()}
                         />
-                        <Badge
-                          variant={
+                        <Chip
+                          tone={
                             currentProxy.encryptedSessionOwnerRoutingEnabled
                               ? "success"
                               : "secondary"
@@ -1800,7 +1814,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           {currentProxy.encryptedSessionOwnerRoutingEnabled
                             ? t("settings.proxy.websocketEnabled")
                             : t("settings.proxy.websocketDisabled")}
-                        </Badge>
+                        </Chip>
                       </div>
                     </div>
                   </div>
@@ -1816,9 +1830,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         {t("settings.proxy.websocketRuntimeHint")}
                       </div>
                     </div>
-                    <Badge variant="secondary" className="shrink-0">
+                    <Chip tone="secondary" className="shrink-0">
                       {t("settings.autoSaved")}
-                    </Badge>
+                    </Chip>
                   </div>
 
                   <div className="grid gap-3 xl:grid-cols-2">
@@ -1842,11 +1856,11 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             aria-label={t("settings.proxy.websocketDownstreamLabel")}
                             onCheckedChange={() => handleToggleWebsocketDownstream()}
                           />
-                          <Badge variant={currentProxy.websocketEnabled ? "success" : "secondary"}>
+                          <Chip tone={currentProxy.websocketEnabled ? "success" : "secondary"}>
                             {currentProxy.websocketEnabled
                               ? t("settings.proxy.websocketEnabled")
                               : t("settings.proxy.websocketDisabled")}
-                          </Badge>
+                          </Chip>
                         </div>
                       </div>
                     </div>
@@ -1871,15 +1885,15 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             aria-label={t("settings.proxy.websocketUpstreamLabel")}
                             onCheckedChange={() => handleToggleWebsocketUpstream()}
                           />
-                          <Badge
-                            variant={
+                          <Chip
+                            tone={
                               currentProxy.upstreamWebsocketDefaultEnabled ? "success" : "secondary"
                             }
                           >
                             {currentProxy.upstreamWebsocketDefaultEnabled
                               ? t("settings.proxy.websocketEnabled")
                               : t("settings.proxy.websocketDisabled")}
-                          </Badge>
+                          </Chip>
                         </div>
                       </div>
                     </div>
@@ -1896,9 +1910,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         {t("settings.proxy.bodyLoggingHint")}
                       </div>
                     </div>
-                    <Badge variant="secondary" className="shrink-0">
+                    <Chip tone="secondary" className="shrink-0">
                       {t("settings.autoSaved")}
-                    </Badge>
+                    </Chip>
                   </div>
 
                   <div className="grid gap-3 xl:grid-cols-2">
@@ -1919,15 +1933,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             aria-label={t("settings.proxy.requestBodyLoggingLabel")}
                             onCheckedChange={() => handleToggleRequestBodyLogging()}
                           />
-                          <Badge
-                            variant={
-                              currentProxy.requestBodyLoggingEnabled ? "success" : "secondary"
-                            }
+                          <Chip
+                            tone={currentProxy.requestBodyLoggingEnabled ? "success" : "secondary"}
                           >
                             {currentProxy.requestBodyLoggingEnabled
                               ? t("settings.proxy.websocketEnabled")
                               : t("settings.proxy.websocketDisabled")}
-                          </Badge>
+                          </Chip>
                         </div>
                       </div>
                     </div>
@@ -1949,15 +1961,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             aria-label={t("settings.proxy.responseBodyLoggingLabel")}
                             onCheckedChange={() => handleToggleResponseBodyLogging()}
                           />
-                          <Badge
-                            variant={
-                              currentProxy.responseBodyLoggingEnabled ? "success" : "secondary"
-                            }
+                          <Chip
+                            tone={currentProxy.responseBodyLoggingEnabled ? "success" : "secondary"}
                           >
                             {currentProxy.responseBodyLoggingEnabled
                               ? t("settings.proxy.websocketEnabled")
                               : t("settings.proxy.websocketDisabled")}
-                          </Badge>
+                          </Chip>
                         </div>
                       </div>
                     </div>
@@ -2036,6 +2046,14 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onCodexImagegenRewriteModeChange={(value) =>
                   updateRoutingDraft({ codexImagegenRewriteMode: value })
                 }
+                availableModelOptions={[
+                  ...(settings?.proxy.models ?? []),
+                  ...(settings?.proxy.imageModels ?? []),
+                ]}
+                onAvailableModelsChange={(value) => updateRoutingDraft({ availableModels: value })}
+                onAvailableModelsModeChange={(value) =>
+                  updateRoutingDraft({ availableModelsMode: value })
+                }
                 onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
                 onSave={() => void saveRoutingDefaults()}
               />
@@ -2104,12 +2122,12 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           <div className="text-sm font-semibold text-base-content">
                             {entry.model || t("settings.pricing.columns.model")}
                           </div>
-                          <Badge
-                            variant={sourceBadgeVariant(entry.source)}
+                          <Chip
+                            tone={sourceChipTone(entry.source)}
                             className="inline-flex min-w-[5rem] justify-center"
                           >
                             {entry.source}
-                          </Badge>
+                          </Chip>
                         </div>
                         <Button
                           type="button"
@@ -2330,12 +2348,12 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             />
                           </td>
                           <td className={cn(pricingTableBodyCellClass, "whitespace-nowrap")}>
-                            <Badge
-                              variant={sourceBadgeVariant(entry.source)}
+                            <Chip
+                              tone={sourceChipTone(entry.source)}
                               className="inline-flex min-w-[5rem] justify-center"
                             >
                               {entry.source}
-                            </Badge>
+                            </Chip>
                           </td>
                           <td
                             className={cn(

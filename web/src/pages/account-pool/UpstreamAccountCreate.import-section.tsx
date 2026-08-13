@@ -2,8 +2,8 @@
 
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
@@ -144,9 +144,9 @@ export function UpstreamAccountCreateImportSection() {
         {importFiles.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-2">
             {importFiles.map((item: any) => (
-              <Badge key={item.sourceId} variant="secondary" className="max-w-full">
+              <Chip key={item.sourceId} tone="secondary" className="max-w-full">
                 <span className="truncate">{item.fileName}</span>
-              </Badge>
+              </Chip>
             ))}
           </div>
         ) : null}

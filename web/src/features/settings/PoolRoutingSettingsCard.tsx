@@ -1,5 +1,4 @@
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -8,10 +7,12 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
 import type {
+  AvailableModelsMode,
   CodexImagegenRewriteMode,
   RequestCompressionAlgorithm,
   RequestCompressionLevelPreset,
@@ -20,6 +21,12 @@ import {
   requestCompressionAlgorithmLabel,
   requestCompressionLevelPresetLabel,
 } from "../../lib/requestCompression";
+import {
+  MultiSelectFilterCombobox,
+  type MultiSelectFilterOption,
+} from "../account-pool/MultiSelectFilterCombobox";
+import { PolicyInlineOptionGroup } from "../account-pool/PolicyInlineOptionGroup";
+import { AppIcon } from "../shared/AppIcon";
 
 type RoutingTimeoutFieldKey =
   | "responsesFirstByteTimeoutSecs"
@@ -33,6 +40,8 @@ type PoolRoutingSettingsCardProps = {
     requestCompressionAlgorithm: RequestCompressionAlgorithm;
     requestCompressionLevelPreset: RequestCompressionLevelPreset;
     codexImagegenRewriteMode: CodexImagegenRewriteMode;
+    availableModels: string[];
+    availableModelsMode: AvailableModelsMode;
     responsesFirstByteTimeoutSecs: string;
     compactFirstByteTimeoutSecs: string;
     imageFirstByteTimeoutSecs: string;
@@ -46,6 +55,9 @@ type PoolRoutingSettingsCardProps = {
   onAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
   onLevelPresetChange: (value: RequestCompressionLevelPreset) => void;
   onCodexImagegenRewriteModeChange: (value: CodexImagegenRewriteMode) => void;
+  availableModelOptions: string[];
+  onAvailableModelsChange: (value: string[]) => void;
+  onAvailableModelsModeChange: (value: AvailableModelsMode) => void;
   onTimeoutChange: (key: RoutingTimeoutFieldKey, value: string) => void;
   onSave: () => void;
 };
@@ -59,6 +71,9 @@ export function PoolRoutingSettingsCard({
   onAlgorithmChange,
   onLevelPresetChange,
   onCodexImagegenRewriteModeChange,
+  availableModelOptions,
+  onAvailableModelsChange,
+  onAvailableModelsModeChange,
   onTimeoutChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
@@ -102,14 +117,34 @@ export function PoolRoutingSettingsCard({
       value: draft.compactStreamTimeoutSecs,
     },
   ];
-  const statusBadgeText = !writesEnabled
+  const availableModelComboboxOptions: MultiSelectFilterOption[] = Array.from(
+    new Set([...availableModelOptions, ...draft.availableModels]),
+  ).map((value) => ({
+    value,
+    label: value.startsWith("gpt-image") ? `Image · ${value}` : value,
+  }));
+  const statusChipText = !writesEnabled
     ? t("settings.routing.readOnly")
     : busy
       ? t("settings.saving")
       : canSave
         ? t("settings.routing.unsaved")
         : t("settings.routing.saved");
-  const statusBadgeVariant = !writesEnabled ? "secondary" : canSave ? "warning" : "success";
+  const statusChipTone = !writesEnabled ? "secondary" : canSave ? "warning" : "success";
+  const availableModelsModeLabel =
+    draft.availableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const nextAvailableModelsMode =
+    draft.availableModelsMode === "allowlist" ? "denylist" : "allowlist";
+  const nextAvailableModelsModeLabel =
+    nextAvailableModelsMode === "allowlist"
+      ? t("settings.routing.models.allowlist")
+      : t("settings.routing.models.denylist");
+  const availableModelsModeToggleLabel = t("settings.routing.models.toggle", {
+    current: availableModelsModeLabel,
+    next: nextAvailableModelsModeLabel,
+  });
 
   return (
     <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
@@ -119,9 +154,9 @@ export function PoolRoutingSettingsCard({
             <CardTitle>{t("settings.routing.title")}</CardTitle>
             <CardDescription>{t("settings.routing.description")}</CardDescription>
           </div>
-          <Badge variant={statusBadgeVariant} className="shrink-0">
-            {statusBadgeText}
-          </Badge>
+          <Chip tone={statusChipTone} className="shrink-0">
+            {statusChipText}
+          </Chip>
         </div>
       </CardHeader>
 
@@ -222,6 +257,58 @@ export function PoolRoutingSettingsCard({
               onCodexImagegenRewriteModeChange(value as CodexImagegenRewriteMode)
             }
           />
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+          <div className="space-y-1">
+            <div className="font-medium leading-snug">{t("settings.routing.models.title")}</div>
+            <div className="text-sm leading-snug text-base-content/70">
+              {t("settings.routing.models.description")}
+            </div>
+          </div>
+          <div className="flex flex-col gap-3 min-[769px]:flex-row min-[769px]:items-center">
+            <div className="w-full min-[769px]:w-auto min-[769px]:shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={draft.availableModelsMode === "allowlist"}
+                aria-label={availableModelsModeToggleLabel}
+                title={availableModelsModeToggleLabel}
+                disabled={!writesEnabled || busy}
+                data-mode={draft.availableModelsMode}
+                onClick={() => onAvailableModelsModeChange(nextAvailableModelsMode)}
+                className="hidden h-9 w-auto gap-1.5 rounded-md px-3 min-[769px]:inline-flex"
+              >
+                <span>{availableModelsModeLabel}</span>
+                <AppIcon name="compare-horizontal" className="h-4 w-4" aria-hidden />
+              </Button>
+              <div className="min-[769px]:hidden">
+                <PolicyInlineOptionGroup<AvailableModelsMode>
+                  ariaLabel={t("settings.routing.models.mode")}
+                  value={draft.availableModelsMode}
+                  disabled={!writesEnabled || busy}
+                  options={[
+                    { value: "allowlist", label: t("settings.routing.models.allowlist") },
+                    { value: "denylist", label: t("settings.routing.models.denylist") },
+                  ]}
+                  onChange={onAvailableModelsModeChange}
+                />
+              </div>
+            </div>
+            <div className="min-w-0 flex-1">
+              <MultiSelectFilterCombobox
+                options={availableModelComboboxOptions}
+                value={draft.availableModels}
+                onValueChange={onAvailableModelsChange}
+                disabled={!writesEnabled || busy}
+                placeholder={t("settings.routing.models.empty")}
+                searchPlaceholder={t("settings.routing.models.search")}
+                emptyLabel={t("settings.routing.models.empty")}
+                clearLabel={t("settings.routing.models.clear")}
+                ariaLabel={t("settings.routing.models.title")}
+              />
+            </div>
+          </div>
         </div>
 
         <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">

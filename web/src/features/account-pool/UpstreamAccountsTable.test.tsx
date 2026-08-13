@@ -9,8 +9,8 @@ import type {
   UpstreamAccountSummary,
 } from "../../lib/api";
 import {
-  resolveRosterActionableStatusBadges,
-  resolveRosterSummaryStatusBadges,
+  resolveRosterActionableStatusChips,
+  resolveRosterSummaryStatusChips,
   resolveRoutingBlockCountdown,
   UpstreamAccountsTable,
 } from "./UpstreamAccountsTable";
@@ -319,13 +319,13 @@ describe("UpstreamAccountsTable", () => {
     };
 
     expect(
-      resolveRosterSummaryStatusBadges(syncingItem, labels).map((badge) => badge.label),
+      resolveRosterSummaryStatusChips(syncingItem, labels).map((badge) => badge.label),
     ).toEqual(["Enabled", "Syncing"]);
     expect(
-      resolveRosterSummaryStatusBadges(syncingHealthItem, labels).map((badge) => badge.label),
+      resolveRosterSummaryStatusChips(syncingHealthItem, labels).map((badge) => badge.label),
     ).toEqual(["Enabled", "Syncing", "Needs reauth"]);
     expect(
-      resolveRosterSummaryStatusBadges(degradedHealthItem, labels).map((badge) => badge.label),
+      resolveRosterSummaryStatusChips(degradedHealthItem, labels).map((badge) => badge.label),
     ).toEqual(["Enabled", "Upstream unavailable"]);
   });
 
@@ -349,7 +349,7 @@ describe("UpstreamAccountsTable", () => {
       effectiveRoutingRule: defaultEffectiveRoutingRule,
     };
 
-    expect(resolveRosterActionableStatusBadges(unavailableItem, labels)).toEqual([]);
+    expect(resolveRosterActionableStatusChips(unavailableItem, labels)).toEqual([]);
   });
 
   it("renders active routing policy badges with compact labels", () => {
@@ -540,7 +540,7 @@ describe("UpstreamAccountsTable", () => {
     expect(html).toContain("Mother");
     expect(html).toContain("team");
     expect(html).toContain('data-plan="team"');
-    expect(html).toContain("upstream-plan-badge");
+    expect(html).toContain("chip-tone-info");
     expect(html).toContain("vip");
     expect(html).toContain("burst-safe");
     expect(html).toContain("prod-apac");
@@ -1270,11 +1270,7 @@ describe("UpstreamAccountsTable", () => {
       },
     ]);
 
-    const badges = Array.from(
-      document.body.querySelectorAll<HTMLElement>(
-        "div.inline-flex.items-center.rounded-full.border",
-      ),
-    );
+    const badges = Array.from(document.body.querySelectorAll<HTMLElement>(".chip"));
     const compactSupportBadge = badges.find(
       (node) => node.textContent?.trim() === "Compact unsupported",
     );
@@ -1283,9 +1279,9 @@ describe("UpstreamAccountsTable", () => {
     expect(compactSupportBadge?.getAttribute("title")).toBe("Compact preview channel unavailable");
     expect(overflowBadge?.getAttribute("title")).toBe("sticky-pool, rotating");
     expect(
-      document.body.querySelector('span[title="Compact preview channel unavailable"]'),
-    ).toBeNull();
-    expect(document.body.querySelector('span[title="sticky-pool, rotating"]')).toBeNull();
+      document.body.querySelector('span.chip[title="Compact preview channel unavailable"]'),
+    ).not.toBeNull();
+    expect(document.body.querySelector('span.chip[title="sticky-pool, rotating"]')).not.toBeNull();
   });
 
   it("omits compact-supported badges from the roster chips", () => {

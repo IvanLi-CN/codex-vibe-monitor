@@ -15,12 +15,12 @@ type InvocationPhaseSource = Pick<
   | "tUpstreamStreamMs"
 >;
 
-export type InvocationPhaseBadgeVariant = "warning" | "info" | "secondary";
+export type InvocationPhaseChipTone = "warning" | "info" | "secondary";
 
 export interface InvocationPhaseDisplay {
   phase: InvocationLivePhase;
   labelKey: TranslationKey;
-  badgeVariant: InvocationPhaseBadgeVariant;
+  chipTone: InvocationPhaseChipTone;
 }
 
 export const EMPTY_INVOCATION_PHASE_COUNTS: InvocationPhaseCounts = {
@@ -71,20 +71,20 @@ export function getInvocationPhaseDisplay(phase: InvocationLivePhase): Invocatio
     return {
       phase,
       labelKey: "table.status.responding",
-      badgeVariant: "secondary",
+      chipTone: "secondary",
     };
   }
   if (phase === "requesting") {
     return {
       phase,
       labelKey: "table.status.requesting",
-      badgeVariant: "info",
+      chipTone: "info",
     };
   }
   return {
     phase,
     labelKey: "table.status.queued",
-    badgeVariant: "warning",
+    chipTone: "warning",
   };
 }
 
