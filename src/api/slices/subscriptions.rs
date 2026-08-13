@@ -578,11 +578,18 @@ impl DashboardDeliveryTopologyCounters {
         let parallel_work_cadence = self
             .parallel_work_cadence_miss_count
             .load(Ordering::Relaxed);
+        let activity_cadence = current_cadence
+            .saturating_add(network_cadence)
+            .saturating_add(terminal_cadence);
         let current_and_terminal_cadence = current_cadence.saturating_add(terminal_cadence);
         let mut health = DashboardHotTopicsHealthSnapshot {
             state: String::new(),
-            activity: topic(counters.activity, current_cadence, recovery.activity),
-            summary: topic(counters.summary, current_cadence, recovery.summary),
+            activity: topic(counters.activity, activity_cadence, recovery.activity),
+            summary: topic(
+                counters.summary,
+                current_and_terminal_cadence,
+                recovery.summary,
+            ),
             network_timeseries: topic(
                 counters.network_timeseries,
                 network_cadence,
@@ -5776,6 +5783,9 @@ impl SubscriptionHub {
                     });
                 }
                 ParallelWorkSchedule::Reconcile => {
+                    // Account gaps are recovered from a dirty last-good frame, not by the
+                    // in-memory hot materializer. Recovery health reports that state directly;
+                    // this background rebaseline delay is therefore not a hot cadence miss.
                     let hub = state.subscription_hub.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
@@ -13473,6 +13483,30 @@ mod tests {
         assert_eq!(health.timeseries.cadence_miss_count, 5);
         assert_eq!(health.timeseries.state, "degraded");
         assert_eq!(health.state, "degraded");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_activity_and_summary_slice_dependencies() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            network: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 5,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.activity.cadence_miss_count, 12);
+        assert_eq!(health.activity.state, "degraded");
+        assert_eq!(health.summary.cadence_miss_count, 7);
+        assert_eq!(health.summary.state, "degraded");
     }
 
     #[tokio::test]
