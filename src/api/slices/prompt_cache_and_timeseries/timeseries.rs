@@ -195,6 +195,8 @@ async fn load_timeseries_minute_projection_v2(
             .map_err(|err| ApiError::from(anyhow!("invalid v2 minute aggregate: {err}")))?;
         // Keep the sample payloads independently addressable so a corrupt aggregate payload
         // cannot silently turn an exact P95 into a histogram approximation.
+        aggregate.total_latency_values = serde_json::from_str(&row.total_latency_samples_json)
+            .map_err(|err| ApiError::from(anyhow!("invalid v2 total-latency samples: {err}")))?;
         aggregate.first_byte_ttfb_values = serde_json::from_str(&row.first_byte_samples_json)
             .map_err(|err| ApiError::from(anyhow!("invalid v2 first-byte samples: {err}")))?;
         aggregate.first_response_byte_total_values =
@@ -244,7 +246,8 @@ async fn store_timeseries_minute_projection_v2(
     for minute in (minute_start..minute_end).step_by(60_usize) {
         let aggregate = by_minute.remove(&minute).unwrap_or_default();
         let aggregate_json = serde_json::to_string(&aggregate).map_err(ApiError::from)?;
-        let total_latency_samples_json = "[]";
+        let total_latency_samples_json =
+            serde_json::to_string(&aggregate.total_latency_values).map_err(ApiError::from)?;
         let first_byte_samples_json =
             serde_json::to_string(&aggregate.first_byte_ttfb_values).map_err(ApiError::from)?;
         let first_response_byte_total_samples_json =
@@ -375,6 +378,547 @@ fn add_pending_timeseries_deltas(
     Ok(applied)
 }
 
+fn timeseries_topic_uses_hourly_rollup_baseline(
+    _params: &TimeseriesQuery,
+    reporting_tz: Tz,
+    range_window: &RangeWindow,
+    bucket_seconds: i64,
+    invocation_max_days: u64,
+) -> Result<bool, ApiError> {
+    if bucket_seconds < 3_600 {
+        return Ok(false);
+    }
+    let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, range_window);
+    let needs_historical_rollups =
+        range_window.start < shanghai_retention_cutoff(invocation_max_days);
+    if !tz_is_hour_aligned && needs_historical_rollups {
+        return Err(ApiError::bad_request(anyhow!(
+            "unsupported timeZone for historical hourly timeseries: {reporting_tz}; historical hourly buckets require whole-hour UTC offsets"
+        )));
+    }
+    Ok(tz_is_hour_aligned)
+}
+
+/// DB-backed baseline for an open dashboard timeseries topic. Live publication only mutates
+/// this state with terminal deltas and overlays the in-memory runtime snapshot.
+#[derive(Debug)]
+pub(crate) struct TimeseriesTopicMaterializedBase {
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    range_spec: String,
+    bucket_selection: TimeseriesBucketSelection,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    snapshot_id: i64,
+    terminal_sequence: u64,
+    aggregates: BTreeMap<i64, BucketAggregate>,
+}
+
+impl TimeseriesTopicMaterializedBase {
+    pub(crate) async fn build(
+        state: &AppState,
+        params: &TimeseriesQuery,
+    ) -> Result<Self, ApiError> {
+        // Hold the terminal writer behind a SQLite write reservation while capturing both the
+        // durable baseline and the in-memory terminal watermark. A row ID is not a version: a
+        // terminal write can replace an older running row without advancing the row cursor.
+        let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let reconcile_guard = reconcile_gate.lock().await;
+        let barrier = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        drop(reconcile_guard);
+
+        let build_result = Self::build_from_stable_persistence(state, params).await;
+        let (pending_terminal_deltas, terminal_sequence) = {
+            let cache = state.dashboard_activity_snapshot_cache.lock().await;
+            (
+                cache
+                    .read_model
+                    .pending_terminal_deltas
+                    .iter()
+                    .filter(|delta| delta.persisted_row_id.is_none())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                cache.read_model.next_terminal_sequence,
+            )
+        };
+        if build_result.is_ok() {
+            barrier.commit().await?;
+        } else {
+            barrier.rollback().await?;
+        }
+
+        let mut base = build_result?;
+        base.apply_terminal_slice(Some(&DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas: pending_terminal_deltas,
+        }));
+        // All durable terminal records in the baseline and every pending record replayed above
+        // are covered by this watermark. Future terminal slices may therefore safely reconcile
+        // an older persisted row exactly once.
+        base.terminal_sequence = base.terminal_sequence.max(terminal_sequence);
+        Ok(base)
+    }
+
+    async fn build_from_stable_persistence(
+        state: &AppState,
+        params: &TimeseriesQuery,
+    ) -> Result<Self, ApiError> {
+        let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+        let source_scope = resolve_default_source_scope(&state.pool).await?;
+        let range_window = resolve_range_window(&params.range, reporting_tz)?;
+        let bucket_selection = resolve_timeseries_bucket_selection(
+            params,
+            &range_window,
+            state.config.invocation_max_days,
+        )?;
+        let bucket_seconds = bucket_selection.bucket_seconds;
+        let start = range_window.start;
+        let end = range_window.end;
+        let (snapshot_id, mut aggregates) = if timeseries_topic_uses_hourly_rollup_baseline(
+            params,
+            reporting_tz,
+            &range_window,
+            bucket_seconds,
+            state.config.invocation_max_days,
+        )? {
+            let baseline = match params.upstream_account_id {
+                Some(upstream_account_id) => {
+                    build_timeseries_account_hourly_rollup_baseline(
+                        state,
+                        reporting_tz,
+                        source_scope,
+                        &range_window,
+                        &bucket_selection,
+                        upstream_account_id,
+                    )
+                    .await?
+                }
+                None => {
+                    build_timeseries_hourly_rollup_baseline(
+                        state,
+                        reporting_tz,
+                        source_scope,
+                        &range_window,
+                        &bucket_selection,
+                        false,
+                    )
+                    .await?
+                }
+            };
+            (baseline.snapshot_id, baseline.aggregates)
+        } else {
+            let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+            let use_minute_projection = bucket_seconds < 3_600
+                && range_window.duration <= ChronoDuration::days(1)
+                && state
+                    .terminal_projection_hub
+                    .timeseries_coverage_invalidation_pending()
+                    .is_none();
+            let aggregates = if use_minute_projection {
+                if let Some((minute_aggregates, projection_cursor)) =
+                    load_timeseries_minute_projection_v2(
+                        &state.pool,
+                        start,
+                        end,
+                        source_scope,
+                        params.upstream_account_id,
+                    )
+                    .await?
+                {
+                    let mut aggregates = fold_minute_projection_aggregates(
+                        minute_aggregates,
+                        bucket_seconds,
+                        reporting_tz,
+                    )?;
+                    let (full_minute_start_epoch, full_minute_end_epoch) =
+                        complete_minute_bounds(start, end);
+                    let full_minute_start = Utc
+                        .timestamp_opt(full_minute_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| {
+                            anyhow!("invalid materialized timeseries full-minute start")
+                        })?;
+                    let full_minute_end = Utc
+                        .timestamp_opt(full_minute_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| {
+                            anyhow!("invalid materialized timeseries full-minute end")
+                        })?;
+                    let mut records = query_timeseries_topic_baseline_records(
+                        &state.pool,
+                        ExactUtcRange {
+                            start: full_minute_start,
+                            end: full_minute_end,
+                        },
+                        source_scope,
+                        Some(projection_cursor),
+                        snapshot_id,
+                        params.upstream_account_id,
+                    )
+                    .await?;
+                    for (boundary_start, boundary_end) in [
+                        (start, end.min(full_minute_start)),
+                        (start.max(full_minute_end), end),
+                    ] {
+                        if let Some(range) = exact_utc_range(boundary_start, boundary_end)? {
+                            records.extend(
+                                query_timeseries_topic_baseline_records(
+                                    &state.pool,
+                                    range,
+                                    source_scope,
+                                    None,
+                                    snapshot_id,
+                                    params.upstream_account_id,
+                                )
+                                .await?,
+                            );
+                        }
+                    }
+                    add_terminal_timeseries_records(
+                        &mut aggregates,
+                        records,
+                        bucket_seconds,
+                        reporting_tz,
+                    )?;
+                    aggregates
+                } else {
+                    build_exact_timeseries_topic_baseline(
+                        state,
+                        start,
+                        end,
+                        source_scope,
+                        snapshot_id,
+                        params.upstream_account_id,
+                        bucket_seconds,
+                        reporting_tz,
+                        true,
+                    )
+                    .await?
+                }
+            } else {
+                build_exact_timeseries_topic_baseline(
+                    state,
+                    start,
+                    end,
+                    source_scope,
+                    snapshot_id,
+                    params.upstream_account_id,
+                    bucket_seconds,
+                    reporting_tz,
+                    false,
+                )
+                .await?
+            };
+            (snapshot_id, aggregates)
+        };
+
+        fill_timeseries_buckets(&mut aggregates, start, end, bucket_seconds, reporting_tz)?;
+
+        Ok(Self {
+            range_start: start,
+            range_end: end,
+            range_spec: params.range.clone(),
+            bucket_selection,
+            reporting_tz,
+            source_scope,
+            upstream_account_id: params.upstream_account_id,
+            snapshot_id,
+            terminal_sequence: 0,
+            aggregates,
+        })
+    }
+
+    pub(crate) fn requires_window_rebase(&self) -> bool {
+        let Ok(current_range) = resolve_range_window(&self.range_spec, self.reporting_tz) else {
+            return true;
+        };
+        if parse_duration_spec(&self.range_spec).is_ok() {
+            return current_range.start < self.range_start
+                || current_range.start - self.range_start
+                    >= ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64);
+        }
+        current_range.start != self.range_start
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_range_start_for_test(&mut self, range_start: DateTime<Utc>) {
+        self.range_start = range_start;
+    }
+
+    pub(crate) fn apply_terminal_slice(
+        &mut self,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
+    ) {
+        let Some(terminal) = terminal else {
+            return;
+        };
+        for delta in &terminal.deltas {
+            self.apply_terminal_delta(
+                delta.terminal_sequence,
+                delta.persisted_row_id,
+                &delta.timeseries,
+            );
+        }
+    }
+
+    fn apply_terminal_delta(
+        &mut self,
+        terminal_sequence: u64,
+        persisted_row_id: Option<i64>,
+        delta: &TimeseriesTerminalDelta,
+    ) {
+        if terminal_sequence <= self.terminal_sequence {
+            return;
+        }
+        self.terminal_sequence = terminal_sequence;
+        if self.source_scope == InvocationSourceScope::ProxyOnly && delta.source != SOURCE_PROXY {
+            return;
+        }
+        if let Some(row_id) = persisted_row_id {
+            self.snapshot_id = self.snapshot_id.max(row_id);
+        }
+        if self
+            .upstream_account_id
+            .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+        {
+            return;
+        }
+        let Some(occurred) = parse_to_utc_datetime(&delta.occurred_at) else {
+            return;
+        };
+        if occurred < self.range_start || occurred >= Utc::now().max(self.range_end) {
+            return;
+        }
+        let Ok(bucket_epoch) = align_reporting_bucket_epoch(
+            occurred.timestamp(),
+            self.bucket_selection.bucket_seconds,
+            self.reporting_tz,
+        ) else {
+            return;
+        };
+        add_timeseries_terminal_delta_to_aggregate(
+            self.aggregates.entry(bucket_epoch).or_default(),
+            delta,
+        );
+    }
+
+    pub(crate) fn serialize(&self, runtime_records: &[ApiInvocation]) -> Result<Vec<u8>, ApiError> {
+        let end = Utc::now().max(self.range_end);
+        let mut runtime_overlay = BTreeMap::new();
+        overlay_runtime_timeseries_snapshot(
+            &mut runtime_overlay,
+            runtime_records,
+            self.source_scope,
+            self.upstream_account_id,
+            self.range_start,
+            end,
+            self.bucket_selection.bucket_seconds,
+            self.reporting_tz,
+        )?;
+        let Json(response) = build_materialized_timeseries_response(
+            self.range_start,
+            end,
+            self.bucket_selection.bucket_seconds,
+            self.snapshot_id,
+            &self.bucket_selection,
+            &self.aggregates,
+            &runtime_overlay,
+            self.reporting_tz,
+        )?;
+        serde_json::to_vec(&response).map_err(ApiError::from)
+    }
+}
+
+async fn query_timeseries_topic_baseline_records(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    start_after_id: Option<i64>,
+    snapshot_id: i64,
+    upstream_account_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    match upstream_account_id {
+        Some(upstream_account_id) => {
+            query_invocation_aggregate_records_from_live_range_for_account(
+                pool,
+                range,
+                source_scope,
+                start_after_id,
+                Some(snapshot_id),
+                upstream_account_id,
+            )
+            .await
+        }
+        None => {
+            query_invocation_aggregate_records_from_live_range(
+                pool,
+                range,
+                source_scope,
+                start_after_id,
+                Some(snapshot_id),
+            )
+            .await
+        }
+    }
+}
+
+async fn build_exact_timeseries_topic_baseline(
+    state: &AppState,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: Option<i64>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    warm_minute_projection: bool,
+) -> Result<BTreeMap<i64, BucketAggregate>, ApiError> {
+    let records = query_timeseries_topic_baseline_records(
+        &state.pool,
+        ExactUtcRange { start, end },
+        source_scope,
+        None,
+        snapshot_id,
+        upstream_account_id,
+    )
+    .await?;
+    if warm_minute_projection {
+        let pool = state.pool.clone();
+        let projection_records = records.clone();
+        let projection_snapshot_records = projection_records
+            .iter()
+            .filter(|record| {
+                !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+            })
+            .map(timeseries_projection_snapshot_record)
+            .collect::<Vec<_>>();
+        let terminal_projection_hub = state.terminal_projection_hub.clone();
+        let projection_selection = TimeseriesProjectionSelection {
+            source_scope: timeseries_projection_scope(source_scope),
+            upstream_account_id,
+        };
+        tokio::spawn(async move {
+            if let Err(error) = store_timeseries_minute_projection_v2(
+                &pool,
+                start,
+                end,
+                source_scope,
+                upstream_account_id,
+                &projection_records,
+            )
+            .await
+            {
+                debug!(
+                    ?error,
+                    "materialized timeseries minute projection warm write failed"
+                );
+            } else {
+                terminal_projection_hub.mark_timeseries_warm_coverage(
+                    projection_selection,
+                    &projection_snapshot_records,
+                );
+            }
+        });
+    }
+    let mut aggregates = BTreeMap::new();
+    add_terminal_timeseries_records(&mut aggregates, records, bucket_seconds, reporting_tz)?;
+    Ok(aggregates)
+}
+
+fn add_terminal_timeseries_records(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    records: Vec<InvocationAggregateRecord>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(), ApiError> {
+    for record in records {
+        if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+            continue;
+        }
+        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
+        add_exact_record_to_timeseries_aggregate(
+            aggregates.entry(bucket_epoch).or_default(),
+            &record,
+        );
+    }
+    Ok(())
+}
+
+fn fill_timeseries_buckets(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(i64, i64), ApiError> {
+    let fill_start_epoch =
+        align_reporting_bucket_epoch(start.timestamp(), bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = resolve_timeseries_fill_end_epoch(end, bucket_seconds, reporting_tz)?;
+    let mut bucket_cursor = fill_start_epoch;
+    while bucket_cursor < fill_end_epoch {
+        aggregates.entry(bucket_cursor).or_default();
+        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
+    }
+    Ok((fill_start_epoch, fill_end_epoch))
+}
+
+fn overlay_runtime_timeseries_snapshot(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    runtime_records: &[ApiInvocation],
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(), ApiError> {
+    for record in runtime_records {
+        if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+            continue;
+        }
+        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+            || upstream_account_id
+                .is_some_and(|account_id| record.upstream_account_id != Some(account_id))
+        {
+            continue;
+        }
+        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        if occurred < start || occurred >= end {
+            continue;
+        }
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred.timestamp(), bucket_seconds, reporting_tz)?;
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += 1;
+        entry.in_flight_count += 1;
+        entry.in_flight_phase_counts.increment_phase_name(
+            record
+                .live_phase
+                .as_deref()
+                .or_else(|| runtime_invocation_live_phase(record)),
+        );
+        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+        entry.record_first_response_byte_total_sample(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        );
+        entry.record_first_token_sample(record.first_token_ms);
+        entry.total_tokens += record.total_tokens.unwrap_or_default();
+        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        entry.total_cost += record.cost.unwrap_or_default();
+    }
+    Ok(())
+}
+
 fn timeseries_projection_snapshot_record(
     record: &InvocationAggregateRecord,
 ) -> TimeseriesProjectionSnapshotRecord {
@@ -469,6 +1013,9 @@ fn merge_timeseries_bucket_aggregate(target: &mut BucketAggregate, source: Bucke
     target.non_success_cost += source.non_success_cost;
     target.total_latency_sum_ms += source.total_latency_sum_ms;
     target.total_latency_sample_count += source.total_latency_sample_count;
+    target
+        .total_latency_values
+        .extend(source.total_latency_values);
     target.first_byte_ttfb_sum_ms += source.first_byte_ttfb_sum_ms;
     target.first_byte_sample_count += source.first_byte_sample_count;
     target.first_response_byte_total_sum_ms += source.first_response_byte_total_sum_ms;
@@ -540,6 +1087,8 @@ async fn load_timeseries_minute_projection_v2_key_tx(
     }
     let mut aggregate = serde_json::from_str::<BucketAggregate>(&row.aggregate_json)
         .map_err(|err| ApiError::from(anyhow!("invalid v2 minute aggregate: {err}")))?;
+    aggregate.total_latency_values = serde_json::from_str(&row.total_latency_samples_json)
+        .map_err(|err| ApiError::from(anyhow!("invalid v2 total-latency samples: {err}")))?;
     aggregate.first_byte_ttfb_values = serde_json::from_str(&row.first_byte_samples_json)
         .map_err(|err| ApiError::from(anyhow!("invalid v2 first-byte samples: {err}")))?;
     aggregate.first_response_byte_total_values =
@@ -605,7 +1154,7 @@ async fn upsert_timeseries_minute_projection_v2_key_tx(
     .bind(key.source_scope)
     .bind(key.upstream_account_key)
     .bind(serde_json::to_string(aggregate).map_err(ApiError::from)?)
-    .bind("[]")
+    .bind(serde_json::to_string(&aggregate.total_latency_values).map_err(ApiError::from)?)
     .bind(serde_json::to_string(&aggregate.first_byte_ttfb_values).map_err(ApiError::from)?)
     .bind(
         serde_json::to_string(&aggregate.first_response_byte_total_values)
@@ -982,9 +1531,11 @@ mod minute_projection_tests {
         let start = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).single().unwrap();
         let end = Utc.with_ymd_and_hms(2026, 8, 1, 0, 2, 0).single().unwrap();
         let mut first = record(17, "2026-08-01 08:00:12");
+        first.t_total_ms = Some(20.0);
         first.t_upstream_ttfb_ms = Some(10.0);
         first.first_token_ms = Some(11.0);
         let mut second = record(18, "2026-08-01 08:00:30");
+        second.t_total_ms = Some(200.0);
         second.t_upstream_ttfb_ms = Some(100.0);
         second.first_token_ms = Some(101.0);
         let mut in_flight = record(19, "2026-08-01 08:00:40");
@@ -1014,9 +1565,195 @@ mod minute_projection_tests {
         let aggregate = aggregates.get(&minute).expect("first minute aggregate");
         assert_eq!(cursor, 18);
         assert_eq!(aggregate.total_count, 2);
+        let stored_total_latency_samples = sqlx::query_scalar::<_, String>(
+            "SELECT total_latency_samples_json FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+        )
+        .bind(minute)
+        .fetch_one(&pool)
+        .await
+        .expect("stored total-latency samples");
+        assert_eq!(
+            serde_json::from_str::<Vec<f64>>(&stored_total_latency_samples)
+                .expect("total-latency sample JSON"),
+            vec![20.0, 200.0]
+        );
+        assert_eq!(aggregate.total_latency_values, vec![20.0, 200.0]);
         assert_eq!(aggregate.first_byte_ttfb_values, vec![10.0, 100.0]);
         assert_eq!(aggregate.first_token_values, vec![11.0, 101.0]);
         assert_eq!(aggregate.first_byte_p95_ms(), Some(95.5));
+    }
+
+    #[test]
+    fn contract_test_timeseries_topic_materializer_preserves_exact_p95() {
+        let now = Utc::now();
+        let start = now - ChronoDuration::seconds(10);
+        let end = now + ChronoDuration::seconds(60);
+        let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
+        let mut base = TimeseriesTopicMaterializedBase {
+            range_start: start,
+            range_end: end,
+            range_spec: "1m".to_string(),
+            bucket_selection: TimeseriesBucketSelection {
+                bucket_seconds: 60,
+                effective_bucket: "1m".to_string(),
+                available_buckets: vec!["1m".to_string()],
+                bucket_limited_to_daily: false,
+            },
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::All,
+            upstream_account_id: None,
+            snapshot_id: 0,
+            terminal_sequence: 0,
+            aggregates: BTreeMap::new(),
+        };
+        let delta = |ttfb_ms, first_token_ms| TimeseriesTerminalDelta {
+            occurred_at: occurred_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: Some(3),
+            cache_input_tokens: Some(1),
+            cost: Some(0.25),
+            t_total_ms: Some(ttfb_ms * 2.0),
+            t_req_read_ms: Some(1.0),
+            t_req_parse_ms: Some(2.0),
+            t_upstream_connect_ms: Some(3.0),
+            t_upstream_ttfb_ms: Some(ttfb_ms),
+            first_token_ms: Some(first_token_ms),
+        };
+        base.apply_terminal_delta(1, Some(1), &delta(10.0, 10.0));
+        base.apply_terminal_delta(2, Some(2), &delta(100.0, 100.0));
+
+        let payload: serde_json::Value =
+            serde_json::from_slice(&base.serialize(&[]).expect("serialize materialized topic"))
+                .expect("materialized topic JSON");
+        let point = payload["points"]
+            .as_array()
+            .expect("timeseries points")
+            .iter()
+            .find(|point| point["firstByteSampleCount"] == 2)
+            .expect("materialized bucket");
+        assert_eq!(point["firstByteP95Ms"], 95.5);
+        assert_eq!(point["firstResponseByteTotalP95Ms"], 101.5);
+        assert_eq!(point["firstTokenP95Ms"], 95.5);
+        assert_eq!(payload["snapshotId"], 2);
+    }
+
+    #[test]
+    fn timeseries_topic_applies_terminal_replacement_at_snapshot_once() {
+        let now = Utc::now();
+        let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
+        let mut base = TimeseriesTopicMaterializedBase {
+            range_start: now - ChronoDuration::seconds(10),
+            range_end: now + ChronoDuration::seconds(60),
+            range_spec: "1m".to_string(),
+            bucket_selection: TimeseriesBucketSelection {
+                bucket_seconds: 60,
+                effective_bucket: "1m".to_string(),
+                available_buckets: vec!["1m".to_string()],
+                bucket_limited_to_daily: false,
+            },
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::All,
+            upstream_account_id: None,
+            snapshot_id: 17,
+            terminal_sequence: 0,
+            aggregates: BTreeMap::new(),
+        };
+        let delta = TimeseriesTerminalDelta {
+            occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            upstream_account_id: None,
+            status: Some("success".to_string()),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            total_tokens: Some(3),
+            cache_input_tokens: Some(1),
+            cost: Some(0.25),
+            t_total_ms: Some(20.0),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(10.0),
+            first_token_ms: Some(11.0),
+        };
+
+        // A terminal write can replace a running row without changing its SQLite ID.
+        base.apply_terminal_delta(1, Some(17), &delta);
+        base.apply_terminal_delta(1, Some(17), &delta);
+
+        assert_eq!(
+            base.aggregates
+                .values()
+                .map(|aggregate| aggregate.total_count)
+                .sum::<i64>(),
+            1,
+            "the sequence watermark must admit one terminal replacement and reject its replay",
+        );
+        assert_eq!(base.snapshot_id, 17);
+    }
+
+    #[test]
+    fn timeseries_topic_routes_hour_aligned_history_through_rollup_baseline() {
+        let end = Utc::now();
+        let range_window = RangeWindow {
+            start: end - ChronoDuration::days(60),
+            end,
+            display_end: end,
+            duration: ChronoDuration::days(60),
+        };
+        let params = TimeseriesQuery {
+            range: "60d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        };
+
+        assert!(
+            timeseries_topic_uses_hourly_rollup_baseline(
+                &params,
+                Shanghai,
+                &range_window,
+                3_600,
+                7,
+            )
+            .expect("hour-aligned history should use rollups")
+        );
+        let account_params = TimeseriesQuery {
+            range: "60d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        };
+        assert!(
+            timeseries_topic_uses_hourly_rollup_baseline(
+                &account_params,
+                Shanghai,
+                &range_window,
+                3_600,
+                7,
+            )
+            .expect("account-scoped hour-aligned history should use rollups")
+        );
+        let half_hour_tz = "Asia/Kathmandu".parse::<Tz>().expect("valid timezone");
+        assert!(
+            timeseries_topic_uses_hourly_rollup_baseline(
+                &params,
+                half_hour_tz,
+                &range_window,
+                3_600,
+                7,
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1235,27 +1972,22 @@ pub(crate) async fn fetch_timeseries(
     }
     let bucket_seconds = bucket_selection.bucket_seconds;
 
-    if bucket_seconds >= 3_600 {
-        let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, &range_window);
-        let needs_historical_rollups =
-            range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days);
-        if !tz_is_hour_aligned {
-            if needs_historical_rollups {
-                return Err(ApiError::bad_request(anyhow!(
-                    "unsupported timeZone for historical hourly timeseries: {reporting_tz}; historical hourly buckets require whole-hour UTC offsets"
-                )));
-            }
-        } else {
-            return fetch_timeseries_from_hourly_rollups(
-                state,
-                params,
-                reporting_tz,
-                source_scope,
-                range_window,
-                bucket_selection,
-            )
-            .await;
-        }
+    if timeseries_topic_uses_hourly_rollup_baseline(
+        &params,
+        reporting_tz,
+        &range_window,
+        bucket_seconds,
+        state.config.invocation_max_days,
+    )? {
+        return fetch_timeseries_from_hourly_rollups(
+            state,
+            params,
+            reporting_tz,
+            source_scope,
+            range_window,
+            bucket_selection,
+        )
+        .await;
     }
 
     let end_dt = range_window.end;
@@ -2451,6 +3183,63 @@ pub(crate) fn timeseries_point_from_aggregate(
     }
 }
 
+fn build_materialized_timeseries_response(
+    start_dt: DateTime<Utc>,
+    end_dt: DateTime<Utc>,
+    bucket_seconds: i64,
+    snapshot_id: i64,
+    bucket_selection: &TimeseriesBucketSelection,
+    aggregates: &BTreeMap<i64, BucketAggregate>,
+    runtime_overlay: &BTreeMap<i64, BucketAggregate>,
+    reporting_tz: Tz,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let fill_start_epoch =
+        align_reporting_bucket_epoch(start_dt.timestamp(), bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = resolve_timeseries_fill_end_epoch(end_dt, bucket_seconds, reporting_tz)?;
+    let mut points = Vec::new();
+    let mut bucket_epoch = fill_start_epoch;
+    while bucket_epoch < fill_end_epoch {
+        let bucket_end_epoch =
+            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
+        let start = Utc
+            .timestamp_opt(bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let end = Utc
+            .timestamp_opt(bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let point = match (
+            aggregates.get(&bucket_epoch),
+            runtime_overlay.get(&bucket_epoch),
+        ) {
+            (Some(base), Some(overlay)) => {
+                let mut combined = base.clone();
+                merge_timeseries_bucket_aggregate(&mut combined, overlay.clone());
+                timeseries_point_from_aggregate(start, end, &combined)
+            }
+            (Some(base), None) => timeseries_point_from_aggregate(start, end, base),
+            (None, Some(overlay)) => timeseries_point_from_aggregate(start, end, overlay),
+            (None, None) => {
+                timeseries_point_from_aggregate(start, end, &BucketAggregate::default())
+            }
+        };
+        points.push(point);
+        bucket_epoch = bucket_end_epoch;
+    }
+
+    Ok(Json(TimeseriesResponse {
+        range_start: format_utc_iso(start_dt),
+        range_end: format_utc_iso(end_dt),
+        bucket_seconds,
+        snapshot_id,
+        effective_bucket: bucket_selection.effective_bucket.clone(),
+        available_buckets: bucket_selection.available_buckets.clone(),
+        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
+        points,
+    }))
+}
+
 pub(crate) fn build_timeseries_response(
     start_dt: DateTime<Utc>,
     end_dt: DateTime<Utc>,
@@ -2550,10 +3339,25 @@ pub(crate) fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) struct ParallelWorkProjectionBaseline {
+    pub(crate) response: ParallelWorkStatsResponse,
+    pub(crate) bucket_keys: BTreeMap<i64, HashSet<String>>,
+    pub(crate) active_minute_stats: ParallelWorkActiveMinuteStats,
+}
+
 pub(crate) async fn load_parallel_work_stats_response(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
 ) -> Result<ParallelWorkStatsResponse, ApiError> {
+    load_parallel_work_projection_baseline(state, params)
+        .await
+        .map(|baseline| baseline.response)
+}
+
+pub(crate) async fn load_parallel_work_projection_baseline(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+) -> Result<ParallelWorkProjectionBaseline, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
@@ -2594,7 +3398,7 @@ pub(crate) async fn load_parallel_work_stats_response(
         .single()
         .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work fill end epoch")))?;
 
-    let current_counts = if bucket_seconds >= 3_600 {
+    let bucket_keys = if bucket_seconds >= 3_600 {
         let leading_full_bucket_epoch = if fill_start < range_window.start {
             next_reporting_bucket_epoch(fill_start_epoch, bucket_seconds, reporting_tz)?
         } else {
@@ -2651,23 +3455,27 @@ pub(crate) async fn load_parallel_work_stats_response(
         for (bucket_epoch, keys) in tail_bucket_keys {
             bucket_keys.entry(bucket_epoch).or_default().extend(keys);
         }
-        parallel_work_counts_from_key_sets(bucket_keys)
+        bucket_keys
     } else {
-        parallel_work_counts_from_key_sets(
-            query_parallel_work_exact_key_sets(
-                &state.pool,
-                range_window.start,
-                range_window.end,
-                bucket_seconds,
-                reporting_tz,
-                source_scope,
-                upstream_account_id,
-                None,
-                None,
-            )
-            .await?,
+        query_parallel_work_exact_key_sets(
+            &state.pool,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            source_scope,
+            upstream_account_id,
+            None,
+            None,
         )
+        .await?
     };
+    let current_counts = bucket_keys
+        .iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (*bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect::<BTreeMap<_, _>>();
     let conversations = if range_window.duration <= ChronoDuration::hours(24) {
         query_parallel_work_conversation_spans(
             &state.pool,
@@ -2711,11 +3519,15 @@ pub(crate) async fn load_parallel_work_stats_response(
         conversations,
     )?;
 
-    Ok(ParallelWorkStatsResponse {
-        current: current.clone(),
-        minute7d: current.clone(),
-        hour30d: current.clone(),
-        day_all: current,
+    Ok(ParallelWorkProjectionBaseline {
+        response: ParallelWorkStatsResponse {
+            current: current.clone(),
+            minute7d: current.clone(),
+            hour30d: current.clone(),
+            day_all: current,
+        },
+        bucket_keys,
+        active_minute_stats,
     })
 }
 
@@ -2798,14 +3610,19 @@ pub(crate) async fn query_parallel_work_conversation_spans(
     Ok(conversations)
 }
 
-pub(crate) async fn fetch_timeseries_from_hourly_rollups(
-    state: Arc<AppState>,
-    _params: TimeseriesQuery,
+struct TimeseriesHourlyRollupBaseline {
+    snapshot_id: i64,
+    aggregates: BTreeMap<i64, BucketAggregate>,
+}
+
+async fn build_timeseries_hourly_rollup_baseline(
+    state: &AppState,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
-    range_window: RangeWindow,
-    bucket_selection: TimeseriesBucketSelection,
-) -> Result<Json<TimeseriesResponse>, ApiError> {
+    range_window: &RangeWindow,
+    bucket_selection: &TimeseriesBucketSelection,
+    include_runtime: bool,
+) -> Result<TimeseriesHourlyRollupBaseline, ApiError> {
     let bucket_seconds = bucket_selection.bucket_seconds;
     let start_epoch = range_window.start.timestamp();
     let range_plan = build_hourly_rollup_exact_range_plan(
@@ -2938,108 +3755,208 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             merged
         };
     }
-    let db_runtime_records = collect_in_flight_aggregate_records(&exact_records);
+    let db_runtime_records = if include_runtime {
+        collect_in_flight_aggregate_records(&exact_records)
+    } else {
+        HashMap::new()
+    };
     for record in exact_records {
+        if !include_runtime
+            && prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+        {
+            continue;
+        }
         let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
             continue;
         };
         let bucket_epoch =
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += 1;
-            let classification = resolve_failure_classification(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-                record.failure_kind.as_deref(),
-                record.failure_class.as_deref(),
-                record.is_actionable,
-            );
-            let is_success_like = prompt_shared::prompt_invocation_status_is_success_like(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-            ) && classification.failure_class == FailureClass::None;
-            if is_success_like {
-                entry.success_count += 1;
-            } else if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-                entry.in_flight_count += 1;
-                entry
-                    .in_flight_phase_counts
-                    .increment_phase_name(record.live_phase.as_deref());
-            } else if prompt_shared::prompt_invocation_status_counts_toward_terminal_totals(
-                record.status.as_deref(),
-            ) && classification.failure_class != FailureClass::None
-            {
-                entry.failure_count += 1;
-            }
-            let latency_status = if is_success_like {
-                Some("success")
-            } else {
-                record.status.as_deref()
-            };
-            entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-            entry.record_exact_first_response_byte_total_sample(
-                record.t_req_read_ms,
-                record.t_req_parse_ms,
-                record.t_upstream_connect_ms,
-                record.t_upstream_ttfb_ms,
-            );
-            entry.record_first_token_sample(record.first_token_ms);
-            entry.total_tokens += record.total_tokens.unwrap_or_default();
-            entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-            let cost = record.cost.unwrap_or_default();
-            entry.total_cost += cost;
-            if invocation_counts_toward_non_success_usage(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-                record.failure_kind.as_deref(),
-                record.failure_class.as_deref(),
-                record.is_actionable,
-            ) {
-                entry.non_success_cost += cost;
-            }
+            add_exact_record_to_timeseries_aggregate(entry, &record);
         }
     }
 
-    overlay_runtime_timeseries_in_flight(
-        state.as_ref(),
+    if include_runtime {
+        overlay_runtime_timeseries_in_flight(
+            state,
+            &mut aggregates,
+            source_scope,
+            None,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            &db_runtime_records,
+        )?;
+    }
+
+    Ok(TimeseriesHourlyRollupBaseline {
+        snapshot_id,
+        aggregates,
+    })
+}
+
+async fn build_timeseries_account_hourly_rollup_baseline(
+    state: &AppState,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: &RangeWindow,
+    bucket_selection: &TimeseriesBucketSelection,
+    upstream_account_id: i64,
+) -> Result<TimeseriesHourlyRollupBaseline, ApiError> {
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    debug_assert!(bucket_seconds >= 3_600);
+    let range_plan = build_hourly_rollup_exact_range_plan(
+        range_window.start,
+        range_window.end,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    )?;
+    let mut aggregates = BTreeMap::new();
+    fill_timeseries_buckets(
         &mut aggregates,
-        source_scope,
-        None,
         range_window.start,
         range_window.end,
         bucket_seconds,
         reporting_tz,
-        &db_runtime_records,
     )?;
 
-    let mut points = Vec::with_capacity(aggregates.len());
-    for (bucket_epoch, agg) in aggregates {
-        let bucket_end_epoch =
-            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
-        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
-            continue;
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) = {
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        let hourly_rows =
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                query_upstream_account_stats_rollup_range_tx(
+                    tx.as_mut(),
+                    "upstream_account_stats_hourly",
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+        let mut exact_records = Vec::new();
+        let boundary_snapshot_id = rollup_live_cursor.min(snapshot_id);
+        if !range_plan.live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
+            exact_records.extend(
+                query_invocation_exact_records_for_account_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    boundary_snapshot_id,
+                    upstream_account_id,
+                )
+                .await?,
+            );
         }
-        let start = Utc
-            .timestamp_opt(bucket_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        let end = Utc
-            .timestamp_opt(bucket_end_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        points.push(timeseries_point_from_aggregate(start, end, &agg));
-    }
+        let mut archive_overlap_ids = HashSet::new();
+        if rollup_live_cursor < snapshot_id {
+            let tail_range_plan = HourlyRollupExactRangePlan {
+                full_hour_range: None,
+                live_exact_ranges: exact_utc_range(range_window.start, range_window.end)?
+                    .into_iter()
+                    .collect(),
+            };
+            let tail_records = query_invocation_exact_records_tx_for_account(
+                tx.as_mut(),
+                &tail_range_plan,
+                source_scope,
+                snapshot_id,
+                upstream_account_id,
+                rollup_live_cursor,
+            )
+            .await?;
+            archive_overlap_ids.extend(tail_records.iter().map(|record| record.id));
+            exact_records.extend(tail_records);
+        }
+        (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
+    };
 
-    Ok(Json(TimeseriesResponse {
-        range_start: format_utc_iso(range_window.start),
-        range_end: format_utc_iso(range_window.display_end),
+    add_rollup_rows_to_timeseries_aggregates(
+        &mut aggregates,
+        hourly_rows,
         bucket_seconds,
+        reporting_tz,
+    )?;
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+        let archived_start = Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries start epoch"))
+            })?;
+        let archived_end = Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                ApiError::from(anyhow!("invalid account archived timeseries end epoch"))
+            })?;
+        let archived_rows =
+            crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
+                &state.pool,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                source_scope,
+                Some((archived_start, archived_end)),
+                Some(&archive_overlap_ids),
+                upstream_account_id,
+            )
+            .await?;
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            archived_rows,
+            bucket_seconds,
+            reporting_tz,
+        )?;
+    }
+    add_terminal_timeseries_records(&mut aggregates, exact_records, bucket_seconds, reporting_tz)?;
+
+    Ok(TimeseriesHourlyRollupBaseline {
         snapshot_id,
-        effective_bucket: bucket_selection.effective_bucket,
-        available_buckets: bucket_selection.available_buckets,
-        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
-        points,
-    }))
+        aggregates,
+    })
+}
+
+pub(crate) async fn fetch_timeseries_from_hourly_rollups(
+    state: Arc<AppState>,
+    _params: TimeseriesQuery,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let baseline = build_timeseries_hourly_rollup_baseline(
+        state.as_ref(),
+        reporting_tz,
+        source_scope,
+        &range_window,
+        &bucket_selection,
+        true,
+    )
+    .await?;
+    let fill_start_epoch = align_reporting_bucket_epoch(
+        range_window.start.timestamp(),
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    let fill_end_epoch = resolve_timeseries_fill_end_epoch(
+        range_window.end,
+        bucket_selection.bucket_seconds,
+        reporting_tz,
+    )?;
+    build_timeseries_response(
+        range_window.start,
+        range_window.display_end,
+        bucket_selection.bucket_seconds,
+        baseline.snapshot_id,
+        bucket_selection,
+        baseline.aggregates,
+        fill_start_epoch,
+        fill_end_epoch,
+        reporting_tz,
+    )
 }
 
 #[cfg(test)]

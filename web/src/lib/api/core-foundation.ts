@@ -2273,6 +2273,32 @@ export interface RuntimePressureDeliveryHealth {
   networkRecent: RuntimePressureDeliveryTopicHealth;
 }
 
+export interface RuntimePressureDashboardHotTopicHealth {
+  topicClass: string;
+  state: string;
+  activeSubscriberCount: number;
+  builderCount: number;
+  genericFallbackBuildCount: number;
+  livePathDbReadCount: number;
+  materializationCount: number;
+  serializationCount: number;
+  payloadCloneCount: number;
+  frameReused: number;
+  cadenceMissCount: number;
+  reconnectChurnCount: number;
+}
+
+export interface RuntimePressureDashboardHotTopicsHealth {
+  state: string;
+  activity: RuntimePressureDashboardHotTopicHealth;
+  summary: RuntimePressureDashboardHotTopicHealth;
+  networkTimeseries: RuntimePressureDashboardHotTopicHealth;
+  networkRecent: RuntimePressureDashboardHotTopicHealth;
+  workingConversations: RuntimePressureDashboardHotTopicHealth;
+  parallelWork: RuntimePressureDashboardHotTopicHealth;
+  timeseries: RuntimePressureDashboardHotTopicHealth;
+}
+
 export interface RuntimePressureRequestPipelineHealth {
   mode: string;
   lastSnapshotKind: string;
@@ -2321,6 +2347,7 @@ export interface RuntimePressureHealth {
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
+  dashboardHotTopics?: RuntimePressureDashboardHotTopicsHealth;
   requestPipeline?: RuntimePressureRequestPipelineHealth;
   eventBus?: RuntimePressureEventBusHealth;
   backfill?: RuntimePressureBackfillHealth;
@@ -4292,6 +4319,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const requestPipeline = payload.requestPipeline as Record<string, unknown> | undefined;
   const eventBus = payload.eventBus as Record<string, unknown> | undefined;
   const backfill = payload.backfill as Record<string, unknown> | undefined;
+  const dashboardHotTopics = payload.dashboardHotTopics as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
@@ -4313,6 +4341,23 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       skippedCount: number(topic.skippedCount),
       businessPayloadCount: number(topic.businessPayloadCount),
       jsonOverlayCount: number(topic.jsonOverlayCount),
+    };
+  };
+  const normalizeHotTopic = (raw: unknown): RuntimePressureDashboardHotTopicHealth => {
+    const topic = (raw ?? {}) as Record<string, unknown>;
+    return {
+      topicClass: optionalString(topic.topicClass) ?? "unknown",
+      state: optionalString(topic.state) ?? "unknown",
+      activeSubscriberCount: number(topic.activeSubscriberCount),
+      builderCount: number(topic.builderCount),
+      genericFallbackBuildCount: number(topic.genericFallbackBuildCount),
+      livePathDbReadCount: number(topic.livePathDbReadCount),
+      materializationCount: number(topic.materializationCount),
+      serializationCount: number(topic.serializationCount),
+      payloadCloneCount: number(topic.payloadCloneCount),
+      frameReused: number(topic.frameReused),
+      cadenceMissCount: number(topic.cadenceMissCount),
+      reconnectChurnCount: number(topic.reconnectChurnCount),
     };
   };
   return {
@@ -4388,6 +4433,18 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       networkTimeseries: normalizeDeliveryTopic(delivery.networkTimeseries),
       networkRecent: normalizeDeliveryTopic(delivery.networkRecent),
     },
+    dashboardHotTopics: dashboardHotTopics
+      ? {
+          state: optionalString(dashboardHotTopics.state) ?? "unknown",
+          activity: normalizeHotTopic(dashboardHotTopics.activity),
+          summary: normalizeHotTopic(dashboardHotTopics.summary),
+          networkTimeseries: normalizeHotTopic(dashboardHotTopics.networkTimeseries),
+          networkRecent: normalizeHotTopic(dashboardHotTopics.networkRecent),
+          workingConversations: normalizeHotTopic(dashboardHotTopics.workingConversations),
+          parallelWork: normalizeHotTopic(dashboardHotTopics.parallelWork),
+          timeseries: normalizeHotTopic(dashboardHotTopics.timeseries),
+        }
+      : undefined,
     requestPipeline: requestPipeline
       ? {
           mode: optionalString(requestPipeline.mode) ?? "unknown",

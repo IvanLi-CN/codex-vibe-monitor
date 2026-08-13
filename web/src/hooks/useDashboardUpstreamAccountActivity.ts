@@ -142,13 +142,12 @@ export function resolveUpstreamAccountRecentPreviewLimit(
 function buildDashboardActivityTopic(
   range: string,
   includeAccounts: boolean,
-  recentInvocationLimit: number,
   includeRecent: boolean,
 ) {
   return buildTopicDescriptor("dashboard.activity.current", {
     range,
     timeZone: getBrowserTimeZone(),
-    recentLimit: clampRecentInvocationLimit(recentInvocationLimit),
+    recentLimit: DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
     includeAccounts,
     includeRecent,
   });
@@ -278,9 +277,9 @@ export function useDashboardActivitySnapshot(
   const topic = useMemo(
     () =>
       enabled && !useHttp
-        ? buildDashboardActivityTopic(range, includeAccounts, recentInvocationLimit, includeRecent)
+        ? buildDashboardActivityTopic(range, includeAccounts, includeRecent)
         : null,
-    [enabled, includeAccounts, includeRecent, range, recentInvocationLimit, useHttp],
+    [enabled, includeAccounts, includeRecent, range, useHttp],
   );
   const sseState = useSubscriptionTopic<DashboardActivityResponse>(topic, topic != null);
   const httpState = useHttpDashboardActivitySnapshot(
@@ -291,7 +290,18 @@ export function useDashboardActivitySnapshot(
     includeRecent,
   );
 
-  const data = useHttp ? httpState.data : sseState.data;
+  const sourceData = useHttp ? httpState.data : sseState.data;
+  const visibleRecentLimit = clampRecentInvocationLimit(recentInvocationLimit);
+  const data = useMemo(() => {
+    if (!sourceData?.accounts || !includeRecent) return sourceData;
+    return {
+      ...sourceData,
+      accounts: sourceData.accounts.map((account) => ({
+        ...account,
+        recentInvocations: account.recentInvocations.slice(0, visibleRecentLimit),
+      })),
+    };
+  }, [includeRecent, sourceData, visibleRecentLimit]);
   const isLoading = useHttp ? httpState.isLoading : sseState.isLoading;
   const isRefreshing = useHttp
     ? httpState.isRefreshing

@@ -151,7 +151,7 @@ pub(crate) fn invocation_point_is_success(
             .eq_ignore_ascii_case("none")
 }
 
-pub(super) fn invocation_point_outcome(
+pub(crate) fn invocation_point_outcome(
     status: Option<&str>,
     error_message: Option<&str>,
     downstream_error_message: Option<&str>,

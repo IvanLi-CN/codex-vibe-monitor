@@ -133,7 +133,35 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 
 ## Visual Evidence
 
-PR: none
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1660x900
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: System/SystemWorkspace/StatusHotTopicsHotDbRead
+state: hot-db-read
+evidence_note: System Status renders all seven Dashboard hot topics and marks parallel work degraded when the mock reports three live-path database reads.
+
+PR: include
+![System Status Dashboard hot topics desktop hot DB read](./assets/system-status-hot-topics-desktop.jpg)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 393x852
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: System/SystemWorkspace/StatusHotTopicsCadenceMiss
+state: cadence-miss
+evidence_note: The mobile System Status layout keeps every topic and the activity cadence miss readable at the source-managed mobile viewport.
+
+PR: include
+![System Status Dashboard hot topics mobile cadence miss](./assets/system-status-hot-topics-mobile.jpg)
 
 ## Related PRs
 

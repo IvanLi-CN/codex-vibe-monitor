@@ -167,7 +167,13 @@ function createResponse(inProgressCount: number): DashboardActivityResponse {
         uploadBytesPerSecond: 0,
         downloadBytesPerSecond: 0,
         effectiveRoutingRule: { source: "none" } as never,
-        recentInvocations: [],
+        recentInvocations: Array.from({ length: 16 }, (_, index) => ({
+          invokeId: `invoke-${index}`,
+          occurredAt: `2026-07-16T10:${String(59 - index).padStart(2, "0")}:00Z`,
+          status: "success",
+          totalTokens: index,
+          cost: 0,
+        })),
       },
     ],
   } as DashboardActivityResponse;
@@ -181,6 +187,9 @@ function Probe({ range }: { range: string }) {
       <div data-testid="total">{String(snapshot.data?.summary.stats.totalCount ?? 0)}</div>
       <div data-testid="accounts">{String(snapshot.data?.accounts?.length ?? 0)}</div>
       <div data-testid="recent-limit">{String(snapshot.recentInvocationLimit)}</div>
+      <div data-testid="visible-recent-count">
+        {String(snapshot.data?.accounts?.[0]?.recentInvocations.length ?? 0)}
+      </div>
       <div data-testid="loading">{snapshot.isLoading ? "true" : "false"}</div>
     </div>
   );
@@ -196,7 +205,7 @@ describe("useDashboardActivitySnapshot", () => {
       topic: "dashboard.activity.current",
       params: expect.objectContaining({
         range: "today",
-        recentLimit: "8",
+        recentLimit: "16",
         includeAccounts: "true",
         includeRecent: "true",
       }),
@@ -205,6 +214,8 @@ describe("useDashboardActivitySnapshot", () => {
     expect(text("total")).toBe("5");
     expect(text("accounts")).toBe("1");
     expect(text("recent-limit")).toBe("6");
+    expect(topicMocks.state.data?.accounts?.[0]?.recentInvocations).toHaveLength(16);
+    expect(text("visible-recent-count")).toBe("8");
   });
 
   it("falls back to HTTP for the closed yesterday window", async () => {

@@ -427,7 +427,7 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) points: Vec<TimeseriesPoint>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsResponse {
     pub(crate) current: ParallelWorkWindowResponse,
@@ -965,7 +965,7 @@ pub(crate) enum PromptCacheConversationImplicitFilterKind {
     CappedTo50,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationResponse {
     pub(crate) prompt_cache_key: String,
@@ -1013,7 +1013,7 @@ pub(crate) struct PromptCacheConversationManualBindingResponse {
     pub(crate) upstream_account_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) id: i64,
@@ -1069,7 +1069,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) t_total_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationUpstreamAccountResponse {
     pub(crate) upstream_account_id: Option<i64>,
@@ -1081,7 +1081,7 @@ pub(crate) struct PromptCacheConversationUpstreamAccountResponse {
     pub(crate) last_activity_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationRequestPointResponse {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
@@ -1218,6 +1218,9 @@ pub(crate) struct DashboardActivitySnapshotCacheEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivityTerminalDelta {
     pub(crate) terminal_sequence: u64,
+    /// Keeps the exact timeseries classification and latency samples available to the
+    /// dashboard topic materializers without reloading an invocation from SQLite.
+    pub(crate) timeseries: TimeseriesTerminalDelta,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) source: String,
@@ -2060,7 +2063,7 @@ pub(crate) struct TimeseriesQuery {
     pub(crate) upstream_account_id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsQuery {
     #[serde(default = "default_range")]

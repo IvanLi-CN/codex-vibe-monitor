@@ -37,6 +37,10 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 const PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE: Duration = Duration::from_millis(50);
 const PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
 const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
@@ -213,6 +217,10 @@ impl SerializedTopicFrame {
 pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) active_subscriber_count: u64,
     pub(crate) builder_count: u64,
+    #[serde(skip)]
+    pub(crate) generic_fallback_build_count: u64,
+    #[serde(skip)]
+    pub(crate) live_path_db_read_count: u64,
     pub(crate) materialization_count: u64,
     pub(crate) serialization_count: u64,
     pub(crate) payload_clone_count: u64,
@@ -221,6 +229,8 @@ pub(crate) struct DashboardTopicTopologyCounterSnapshot {
     pub(crate) cursor_advanced: u64,
     pub(crate) lagged_count: u64,
     pub(crate) skipped_count: u64,
+    #[serde(skip)]
+    pub(crate) reconnect_churn_count: u64,
     pub(crate) business_payload_count: u64,
     pub(crate) json_overlay_count: u64,
 }
@@ -232,12 +242,111 @@ pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
     pub(crate) summary: DashboardTopicTopologyCounterSnapshot,
     pub(crate) network_timeseries: DashboardTopicTopologyCounterSnapshot,
     pub(crate) network_recent: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) working_conversations: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) parallel_work: DashboardTopicTopologyCounterSnapshot,
+    #[serde(skip)]
+    pub(crate) timeseries: DashboardTopicTopologyCounterSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscriptionTopicClass {
+    HotProjection,
+    ClosedSnapshot,
+    BoundedColdHydrate,
+}
+
+impl SubscriptionTopicClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HotProjection => "hot_projection",
+            Self::ClosedSnapshot => "closed_snapshot",
+            Self::BoundedColdHydrate => "bounded_cold_hydrate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardHotTopicHealthSnapshot {
+    pub(crate) topic_class: String,
+    pub(crate) state: String,
+    pub(crate) active_subscriber_count: u64,
+    pub(crate) builder_count: u64,
+    pub(crate) generic_fallback_build_count: u64,
+    pub(crate) live_path_db_read_count: u64,
+    pub(crate) materialization_count: u64,
+    pub(crate) serialization_count: u64,
+    pub(crate) payload_clone_count: u64,
+    pub(crate) frame_reused: u64,
+    pub(crate) cadence_miss_count: u64,
+    pub(crate) reconnect_churn_count: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardHotTopicsHealthSnapshot {
+    pub(crate) state: String,
+    pub(crate) activity: DashboardHotTopicHealthSnapshot,
+    pub(crate) summary: DashboardHotTopicHealthSnapshot,
+    pub(crate) network_timeseries: DashboardHotTopicHealthSnapshot,
+    pub(crate) network_recent: DashboardHotTopicHealthSnapshot,
+    pub(crate) working_conversations: DashboardHotTopicHealthSnapshot,
+    pub(crate) parallel_work: DashboardHotTopicHealthSnapshot,
+    pub(crate) timeseries: DashboardHotTopicHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DashboardHotTopicRecoveryState {
+    degraded: bool,
+    deferred: bool,
+}
+
+impl DashboardHotTopicRecoveryState {
+    fn merge(&mut self, other: Self) {
+        self.degraded |= other.degraded;
+        self.deferred |= other.deferred;
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardHotTopicRecoveryHealth {
+    activity: DashboardHotTopicRecoveryState,
+    summary: DashboardHotTopicRecoveryState,
+    network_timeseries: DashboardHotTopicRecoveryState,
+    network_recent: DashboardHotTopicRecoveryState,
+    working_conversations: DashboardHotTopicRecoveryState,
+    parallel_work: DashboardHotTopicRecoveryState,
+    timeseries: DashboardHotTopicRecoveryState,
+}
+
+impl DashboardHotTopicRecoveryHealth {
+    fn record(&mut self, topic: &SubscriptionTopic, state: DashboardHotTopicRecoveryState) {
+        let target = match topic {
+            SubscriptionTopic::DashboardActivityCurrent { .. } => &mut self.activity,
+            SubscriptionTopic::SummaryCurrent { .. } => &mut self.summary,
+            SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. } => {
+                &mut self.network_timeseries
+            }
+            SubscriptionTopic::DashboardNetworkRecentCurrent => &mut self.network_recent,
+            SubscriptionTopic::DashboardWorkingConversationsCurrent { .. } => {
+                &mut self.working_conversations
+            }
+            SubscriptionTopic::ParallelWorkCurrent { .. } => &mut self.parallel_work,
+            SubscriptionTopic::TimeseriesOpenWindow { .. } => &mut self.timeseries,
+            _ => return,
+        };
+        target.merge(state);
+    }
 }
 
 #[derive(Debug, Default)]
 struct DashboardTopicTopologyCounters {
     active_subscriber_count: AtomicU64,
     builder_count: AtomicU64,
+    generic_fallback_build_count: AtomicU64,
+    live_path_db_read_count: AtomicU64,
     materialization_count: AtomicU64,
     serialization_count: AtomicU64,
     payload_clone_count: AtomicU64,
@@ -246,6 +355,7 @@ struct DashboardTopicTopologyCounters {
     cursor_advanced: AtomicU64,
     lagged_count: AtomicU64,
     skipped_count: AtomicU64,
+    reconnect_churn_count: AtomicU64,
     business_payload_count: AtomicU64,
     json_overlay_count: AtomicU64,
 }
@@ -255,6 +365,8 @@ impl DashboardTopicTopologyCounters {
         DashboardTopicTopologyCounterSnapshot {
             active_subscriber_count: self.active_subscriber_count.load(Ordering::Relaxed),
             builder_count: self.builder_count.load(Ordering::Relaxed),
+            generic_fallback_build_count: self.generic_fallback_build_count.load(Ordering::Relaxed),
+            live_path_db_read_count: self.live_path_db_read_count.load(Ordering::Relaxed),
             materialization_count: self.materialization_count.load(Ordering::Relaxed),
             serialization_count: self.serialization_count.load(Ordering::Relaxed),
             payload_clone_count: self.payload_clone_count.load(Ordering::Relaxed),
@@ -263,6 +375,7 @@ impl DashboardTopicTopologyCounters {
             cursor_advanced: self.cursor_advanced.load(Ordering::Relaxed),
             lagged_count: self.lagged_count.load(Ordering::Relaxed),
             skipped_count: self.skipped_count.load(Ordering::Relaxed),
+            reconnect_churn_count: self.reconnect_churn_count.load(Ordering::Relaxed),
             business_payload_count: self.business_payload_count.load(Ordering::Relaxed),
             json_overlay_count: self.json_overlay_count.load(Ordering::Relaxed),
         }
@@ -271,6 +384,9 @@ impl DashboardTopicTopologyCounters {
     #[cfg(test)]
     fn reset(&self) {
         self.builder_count.store(0, Ordering::Relaxed);
+        self.generic_fallback_build_count
+            .store(0, Ordering::Relaxed);
+        self.live_path_db_read_count.store(0, Ordering::Relaxed);
         self.materialization_count.store(0, Ordering::Relaxed);
         self.serialization_count.store(0, Ordering::Relaxed);
         self.payload_clone_count.store(0, Ordering::Relaxed);
@@ -279,6 +395,7 @@ impl DashboardTopicTopologyCounters {
         self.cursor_advanced.store(0, Ordering::Relaxed);
         self.lagged_count.store(0, Ordering::Relaxed);
         self.skipped_count.store(0, Ordering::Relaxed);
+        self.reconnect_churn_count.store(0, Ordering::Relaxed);
         self.business_payload_count.store(0, Ordering::Relaxed);
         self.json_overlay_count.store(0, Ordering::Relaxed);
     }
@@ -290,6 +407,11 @@ struct DashboardDeliveryTopologyCounters {
     summary: DashboardTopicTopologyCounters,
     network_timeseries: DashboardTopicTopologyCounters,
     network_recent: DashboardTopicTopologyCounters,
+    working_conversations: DashboardTopicTopologyCounters,
+    parallel_work: DashboardTopicTopologyCounters,
+    timeseries: DashboardTopicTopologyCounters,
+    working_conversations_cadence_miss_count: AtomicU64,
+    parallel_work_cadence_miss_count: AtomicU64,
 }
 
 impl DashboardDeliveryTopologyCounters {
@@ -299,6 +421,9 @@ impl DashboardDeliveryTopologyCounters {
             "stats.summary.current" => Some(&self.summary),
             "dashboard.network-timeseries.window" => Some(&self.network_timeseries),
             "dashboard.network-recent.current" => Some(&self.network_recent),
+            "dashboard.working-conversations.current" => Some(&self.working_conversations),
+            "stats.parallel-work.current" => Some(&self.parallel_work),
+            "stats.timeseries.open-window" => Some(&self.timeseries),
             _ => None,
         }
     }
@@ -311,10 +436,18 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
-    fn record_builder(&self, topic_name: &str) {
+    fn record_materialization(&self, topic_name: &str, generic_fallback: bool) {
         if let Some(topic) = self.for_topic(topic_name) {
             topic.builder_count.fetch_add(1, Ordering::Relaxed);
             topic.materialization_count.fetch_add(1, Ordering::Relaxed);
+            if generic_fallback {
+                topic
+                    .generic_fallback_build_count
+                    .fetch_add(1, Ordering::Relaxed);
+                topic
+                    .live_path_db_read_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -355,6 +488,12 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
+    fn record_reconnect_churn(&self, topic_name: &str) {
+        if let Some(topic) = self.for_topic(topic_name) {
+            topic.reconnect_churn_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn record_business_payload(&self, topic_name: &str) {
         if let Some(topic) = self.for_topic(topic_name) {
             topic.business_payload_count.fetch_add(1, Ordering::Relaxed);
@@ -367,13 +506,134 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
+    fn record_cadence_miss(&self, topic_name: &str) {
+        let counter = match topic_name {
+            "dashboard.working-conversations.current" => {
+                &self.working_conversations_cadence_miss_count
+            }
+            "stats.parallel-work.current" => &self.parallel_work_cadence_miss_count,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         DashboardDeliveryTopologyCounterSnapshot {
             activity: self.activity.snapshot(),
             summary: self.summary.snapshot(),
             network_timeseries: self.network_timeseries.snapshot(),
             network_recent: self.network_recent.snapshot(),
+            working_conversations: self.working_conversations.snapshot(),
+            parallel_work: self.parallel_work.snapshot(),
+            timeseries: self.timeseries.snapshot(),
         }
+    }
+
+    fn hot_topic_health(
+        &self,
+        projection: DashboardRuntimeTopologyCounterSnapshot,
+        recovery: DashboardHotTopicRecoveryHealth,
+    ) -> DashboardHotTopicsHealthSnapshot {
+        let counters = self.snapshot();
+        let topic = |counter: DashboardTopicTopologyCounterSnapshot,
+                     cadence_miss_count: u64,
+                     recovery: DashboardHotTopicRecoveryState| {
+            let degraded = recovery.degraded
+                || counter.generic_fallback_build_count > 0
+                || counter.live_path_db_read_count > 0
+                || counter.reconnect_churn_count > 0
+                || counter.lagged_count > 0
+                || counter.skipped_count > 0
+                || counter.payload_clone_count > 0
+                || counter.json_overlay_count > 0
+                || cadence_miss_count > 0;
+            DashboardHotTopicHealthSnapshot {
+                topic_class: SubscriptionTopicClass::HotProjection.as_str().to_string(),
+                state: if degraded {
+                    "degraded"
+                } else if recovery.deferred {
+                    "deferred"
+                } else {
+                    "healthy"
+                }
+                .to_string(),
+                active_subscriber_count: counter.active_subscriber_count,
+                builder_count: counter.builder_count,
+                generic_fallback_build_count: counter.generic_fallback_build_count,
+                live_path_db_read_count: counter.live_path_db_read_count,
+                materialization_count: counter.materialization_count,
+                serialization_count: counter.serialization_count,
+                payload_clone_count: counter.payload_clone_count,
+                frame_reused: counter.frame_reused,
+                cadence_miss_count,
+                reconnect_churn_count: counter.reconnect_churn_count,
+            }
+        };
+        let current_cadence = projection.current.cadence_miss_count;
+        let network_cadence = projection.network.cadence_miss_count;
+        let terminal_cadence = projection.terminal.cadence_miss_count;
+        let working_conversations_cadence = self
+            .working_conversations_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let parallel_work_cadence = self
+            .parallel_work_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let activity_cadence = current_cadence
+            .saturating_add(network_cadence)
+            .saturating_add(terminal_cadence);
+        let current_and_terminal_cadence = current_cadence.saturating_add(terminal_cadence);
+        let mut health = DashboardHotTopicsHealthSnapshot {
+            state: String::new(),
+            activity: topic(counters.activity, activity_cadence, recovery.activity),
+            summary: topic(
+                counters.summary,
+                current_and_terminal_cadence,
+                recovery.summary,
+            ),
+            network_timeseries: topic(
+                counters.network_timeseries,
+                network_cadence,
+                recovery.network_timeseries,
+            ),
+            network_recent: topic(
+                counters.network_recent,
+                network_cadence,
+                recovery.network_recent,
+            ),
+            working_conversations: topic(
+                counters.working_conversations,
+                working_conversations_cadence,
+                recovery.working_conversations,
+            ),
+            parallel_work: topic(
+                counters.parallel_work,
+                parallel_work_cadence,
+                recovery.parallel_work,
+            ),
+            timeseries: topic(
+                counters.timeseries,
+                current_and_terminal_cadence,
+                recovery.timeseries,
+            ),
+        };
+        let states = [
+            health.activity.state.as_str(),
+            health.summary.state.as_str(),
+            health.network_timeseries.state.as_str(),
+            health.network_recent.state.as_str(),
+            health.working_conversations.state.as_str(),
+            health.parallel_work.state.as_str(),
+            health.timeseries.state.as_str(),
+        ];
+        health.state = if states.contains(&"degraded") {
+            "degraded"
+        } else if states.contains(&"deferred") {
+            "deferred"
+        } else {
+            "healthy"
+        }
+        .to_string();
+        health
     }
 
     fn has_degraded_signal(&self) -> bool {
@@ -383,6 +643,9 @@ impl DashboardDeliveryTopologyCounters {
             snapshot.summary,
             snapshot.network_timeseries,
             snapshot.network_recent,
+            snapshot.working_conversations,
+            snapshot.parallel_work,
+            snapshot.timeseries,
         ]
         .into_iter()
         .any(|topic| {
@@ -390,6 +653,9 @@ impl DashboardDeliveryTopologyCounters {
                 || topic.skipped_count > 0
                 || topic.payload_clone_count > 0
                 || topic.json_overlay_count > 0
+                || topic.generic_fallback_build_count > 0
+                || topic.live_path_db_read_count > 0
+                || topic.reconnect_churn_count > 0
         })
     }
 
@@ -399,6 +665,13 @@ impl DashboardDeliveryTopologyCounters {
         self.summary.reset();
         self.network_timeseries.reset();
         self.network_recent.reset();
+        self.working_conversations.reset();
+        self.parallel_work.reset();
+        self.timeseries.reset();
+        self.working_conversations_cadence_miss_count
+            .store(0, Ordering::Relaxed);
+        self.parallel_work_cadence_miss_count
+            .store(0, Ordering::Relaxed);
     }
 }
 
@@ -420,6 +693,7 @@ pub(crate) struct PromptCacheTopicProjectionHealthSnapshot {
     pub(crate) coalesced_event_count: u64,
     pub(crate) full_hydration_count: u64,
     pub(crate) bounded_key_hydration_count: u64,
+    pub(crate) bounded_cold_recovery_topic_count: u64,
     pub(crate) live_path_db_read_count: u64,
     pub(crate) baseline_age_ms: u64,
     pub(crate) response_source: String,
@@ -456,6 +730,9 @@ struct SubscriptionHubState {
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
+    prompt_cache_prebaseline_key_hydrations: HashMap<String, BTreeSet<String>>,
+    parallel_work_prebaseline_mutations:
+        HashMap<String, BTreeMap<String, RuntimeInvocationMutation>>,
     runtime_topic_recovery_generation: u64,
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
@@ -480,9 +757,13 @@ struct CachedSubscriptionTopic {
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
+    parallel_work_refresh_scheduled: bool,
     prompt_cache_refresh_scheduled: bool,
     prompt_cache_reconcile_scheduled: bool,
+    prompt_cache_key_hydration_scheduled: bool,
     prompt_cache_pending_records: BTreeMap<String, PromptCacheTopicDelta>,
+    prompt_cache_pending_key_hydrations: BTreeSet<String>,
+    prompt_cache_candidate_refill_required: bool,
     prompt_cache_applied_terminal_ids: HashSet<String>,
     prompt_cache_coalesced_event_count: u64,
     prompt_cache_full_hydration_count: u64,
@@ -518,6 +799,7 @@ enum RuntimeTopicDependency {
     PromptCacheProjection,
     PromptCacheWindow,
     PromptCacheStickyWindow,
+    DashboardWorkingConversationsProjection,
     Attempt(String),
     Binding(String),
     HistoryPromptCacheKey(String),
@@ -525,7 +807,7 @@ enum RuntimeTopicDependency {
     StickyRoute(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct PromptCacheTopicDelta {
     row_id: i64,
     identity: String,
@@ -544,8 +826,29 @@ struct PromptCacheTopicDelta {
     preview: Option<PromptCacheConversationInvocationPreviewResponse>,
 }
 
+fn prompt_cache_hydration_changed_pending_keys(
+    pending_at_hydration_start: &BTreeMap<String, PromptCacheTopicDelta>,
+    pending_after_hydration: &BTreeMap<String, PromptCacheTopicDelta>,
+    hydration_keys: &[String],
+) -> BTreeSet<String> {
+    pending_after_hydration
+        .iter()
+        .filter_map(|(identity, record)| {
+            let key = record.prompt_cache_key.as_deref()?;
+            (hydration_keys.iter().any(|candidate| candidate == key)
+                && pending_at_hydration_start.get(identity) != Some(record))
+            .then(|| key.to_string())
+        })
+        .collect()
+}
+
 struct PromptCacheBaselineBuild {
     baseline_row_id: i64,
+    persisted_identities: HashSet<String>,
+    runtime_overlay_terminal_identities: HashSet<String>,
+}
+
+struct ParallelWorkBaselineBuild {
     persisted_identities: HashSet<String>,
 }
 
@@ -670,6 +973,546 @@ struct DashboardSummaryMaterializerState {
     range_start: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug)]
+struct DashboardParallelWorkMaterializerState {
+    response: ParallelWorkStatsResponse,
+    baseline_response: ParallelWorkStatsResponse,
+    bucket_keys: BTreeMap<i64, HashSet<String>>,
+    baseline_bucket_keys: BTreeMap<i64, HashSet<String>>,
+    minute_keys: BTreeMap<i64, HashSet<String>>,
+    baseline_minute_keys: BTreeMap<i64, HashSet<String>>,
+    active_minute_stats: ParallelWorkActiveMinuteStats,
+    baseline_active_minute_stats: ParallelWorkActiveMinuteStats,
+    baseline_complete_minute_start_epoch: i64,
+    baseline_complete_minute_end_epoch: i64,
+    baseline_row_id: i64,
+    range: String,
+    reporting_tz: Tz,
+    upstream_account_id: Option<i64>,
+    conversations_enabled: bool,
+    baseline_identities: HashSet<String>,
+    applied_identities: HashSet<String>,
+    runtime_mutations: BTreeMap<String, RuntimeInvocationMutation>,
+    revision: u64,
+}
+
+#[derive(Debug, Default)]
+struct ParallelWorkMutationOutcome {
+    changed: bool,
+    needs_account_reconcile: bool,
+}
+
+impl DashboardParallelWorkMaterializerState {
+    fn apply_runtime_mutation(
+        &mut self,
+        mutation: &RuntimeInvocationMutation,
+    ) -> ParallelWorkMutationOutcome {
+        let identity = format!(
+            "{}\0{}",
+            mutation.identity.invoke_id, mutation.identity.occurred_at
+        );
+        if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+            if self.runtime_mutations.remove(&identity).is_none() {
+                return ParallelWorkMutationOutcome::default();
+            }
+            self.applied_identities.remove(&identity);
+            self.rebuild_runtime_overlay();
+            return ParallelWorkMutationOutcome {
+                changed: true,
+                needs_account_reconcile: false,
+            };
+        }
+        if !matches!(
+            mutation.kind,
+            RuntimeMutationKind::RuntimeUpsert
+                | RuntimeMutationKind::TerminalCommitted
+                | RuntimeMutationKind::Recovery
+        ) {
+            return ParallelWorkMutationOutcome::default();
+        }
+        if let Some(account_id) = self.upstream_account_id
+            && mutation.upstream_account_id != Some(account_id)
+        {
+            return ParallelWorkMutationOutcome {
+                changed: false,
+                needs_account_reconcile: mutation.upstream_account_id.is_none()
+                    && mutation.prompt_cache_key.is_some(),
+            };
+        }
+        if self.baseline_identities.contains(&identity) {
+            return ParallelWorkMutationOutcome::default();
+        }
+        if mutation
+            .row_id
+            .is_some_and(|row_id| row_id <= self.baseline_row_id)
+        {
+            return ParallelWorkMutationOutcome::default();
+        };
+        if self.applied_identities.contains(&identity) {
+            return ParallelWorkMutationOutcome::default();
+        }
+
+        let changed = self.apply_runtime_overlay(mutation);
+        if changed {
+            self.applied_identities.insert(identity.clone());
+            self.runtime_mutations.insert(identity, mutation.clone());
+            self.revision = self.revision.saturating_add(1);
+        }
+        ParallelWorkMutationOutcome {
+            changed,
+            needs_account_reconcile: false,
+        }
+    }
+
+    fn replay_runtime_mutations(
+        &mut self,
+        mutations: &BTreeMap<String, RuntimeInvocationMutation>,
+    ) -> bool {
+        let mut changed = false;
+        for mutation in mutations.values() {
+            changed |= self.apply_runtime_mutation(mutation).changed;
+        }
+        changed
+    }
+
+    fn apply_runtime_overlay(&mut self, mutation: &RuntimeInvocationMutation) -> bool {
+        self.apply_runtime_overlay_at(mutation, Utc::now())
+    }
+
+    fn apply_runtime_overlay_at(
+        &mut self,
+        mutation: &RuntimeInvocationMutation,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(prompt_cache_key) = mutation.prompt_cache_key.as_ref() else {
+            return false;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&mutation.identity.occurred_at) else {
+            return false;
+        };
+        if parse_to_utc_datetime(&self.response.current.range_start)
+            .is_none_or(|range_start| occurred_at < range_start)
+        {
+            return false;
+        }
+
+        let active_minute_stats_changed = self.refresh_active_minute_stats_at(now);
+
+        let bucket_seconds = self.response.current.bucket_seconds;
+        let Ok(bucket_start_epoch) = align_reporting_bucket_epoch(
+            occurred_at.timestamp(),
+            bucket_seconds,
+            self.reporting_tz,
+        ) else {
+            return false;
+        };
+        let bucket_changed = self
+            .bucket_keys
+            .entry(bucket_start_epoch)
+            .or_default()
+            .insert(prompt_cache_key.clone());
+        let minute_start_epoch = occurred_at.timestamp().div_euclid(60) * 60;
+        let minute_keys = self.minute_keys.entry(minute_start_epoch).or_default();
+        let minute_changed = minute_keys.insert(prompt_cache_key.clone());
+        let minute_is_complete = minute_start_epoch >= self.baseline_complete_minute_start_epoch
+            && minute_start_epoch < now.timestamp().div_euclid(60) * 60;
+        if minute_changed
+            && minute_is_complete
+            && let Some(active_minute_count) = self.active_minute_stats.active_minute_count
+        {
+            let previous_minute_key_count = minute_keys.len() as i64 - 1;
+            self.active_minute_stats.active_minute_count =
+                Some(active_minute_count + i64::from(previous_minute_key_count == 0));
+            self.active_minute_stats.parallel_count_sum += 1;
+        }
+
+        let overlay = ParallelWorkRuntimeOverlay {
+            occurred_at,
+            prompt_cache_key,
+            bucket_start_epoch,
+            bucket_changed,
+            minute_changed,
+            conversations_enabled: self.conversations_enabled,
+            reporting_tz: self.reporting_tz,
+            bucket_keys: &self.bucket_keys,
+            active_minute_stats: self.active_minute_stats,
+        };
+        let mut changed = active_minute_stats_changed;
+        for window in [
+            &mut self.response.current,
+            &mut self.response.minute7d,
+            &mut self.response.hour30d,
+            &mut self.response.day_all,
+        ] {
+            changed |= apply_parallel_work_runtime_overlay(window, &overlay);
+        }
+        changed
+    }
+
+    fn projected_active_minute_stats_at(
+        &self,
+        now: DateTime<Utc>,
+    ) -> ParallelWorkActiveMinuteStats {
+        let mut stats = self.baseline_active_minute_stats;
+        let Some(mut active_minute_count) = stats.active_minute_count else {
+            return stats;
+        };
+        let current_minute_start = now.timestamp().div_euclid(60) * 60;
+        for (&minute_start_epoch, keys) in &self.minute_keys {
+            if minute_start_epoch < self.baseline_complete_minute_start_epoch
+                || minute_start_epoch >= current_minute_start
+            {
+                continue;
+            }
+            let baseline_keys = self.baseline_minute_keys.get(&minute_start_epoch);
+            let baseline_key_count = baseline_keys.map_or(0, HashSet::len) as i64;
+            let baseline_minute_was_complete =
+                minute_start_epoch < self.baseline_complete_minute_end_epoch;
+            if !baseline_minute_was_complete && baseline_key_count > 0 {
+                active_minute_count += 1;
+                stats.parallel_count_sum += baseline_key_count;
+            }
+            let runtime_key_count = keys
+                .iter()
+                .filter(|key| !baseline_keys.is_some_and(|keys| keys.contains(*key)))
+                .count() as i64;
+            if runtime_key_count == 0 {
+                continue;
+            }
+            if baseline_key_count == 0 {
+                active_minute_count += 1;
+            }
+            stats.parallel_count_sum += runtime_key_count;
+        }
+        stats.active_minute_count = Some(active_minute_count);
+        stats
+    }
+
+    fn refresh_active_minute_stats_at(&mut self, now: DateTime<Utc>) -> bool {
+        let stats = self.projected_active_minute_stats_at(now);
+        if stats == self.active_minute_stats {
+            return false;
+        }
+        self.active_minute_stats = stats;
+        for window in [
+            &mut self.response.current,
+            &mut self.response.minute7d,
+            &mut self.response.hour30d,
+            &mut self.response.day_all,
+        ] {
+            window.active_minute_count = stats.active_minute_count;
+            window.avg_count = stats.average();
+        }
+        true
+    }
+
+    fn rebuild_runtime_overlay(&mut self) {
+        self.response = self.baseline_response.clone();
+        self.bucket_keys = self.baseline_bucket_keys.clone();
+        self.minute_keys = self.baseline_minute_keys.clone();
+        self.active_minute_stats = self.baseline_active_minute_stats;
+        self.applied_identities.clear();
+        let runtime_mutations = self.runtime_mutations.clone();
+        for (identity, mutation) in runtime_mutations {
+            if self.apply_runtime_overlay(&mutation) {
+                self.applied_identities.insert(identity);
+            }
+        }
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    fn requires_rolling_rebase(&self) -> bool {
+        let Some(base_range_start) = parse_to_utc_datetime(&self.response.current.range_start)
+        else {
+            return true;
+        };
+        let Ok(current_range) = resolve_range_window(&self.range, self.reporting_tz) else {
+            return true;
+        };
+        rolling_dashboard_window_requires_rebase(Some(base_range_start), Some(current_range.start))
+            || self.projected_active_minute_stats_at(Utc::now()) != self.active_minute_stats
+    }
+}
+
+#[derive(Debug)]
+struct ParallelWorkRuntimeOverlay<'a> {
+    occurred_at: DateTime<Utc>,
+    prompt_cache_key: &'a str,
+    bucket_start_epoch: i64,
+    bucket_changed: bool,
+    minute_changed: bool,
+    conversations_enabled: bool,
+    reporting_tz: Tz,
+    bucket_keys: &'a BTreeMap<i64, HashSet<String>>,
+    active_minute_stats: ParallelWorkActiveMinuteStats,
+}
+
+fn apply_parallel_work_runtime_overlay(
+    window: &mut ParallelWorkWindowResponse,
+    overlay: &ParallelWorkRuntimeOverlay<'_>,
+) -> bool {
+    let Some(range_start) = parse_to_utc_datetime(&window.range_start) else {
+        return false;
+    };
+    if overlay.occurred_at < range_start {
+        return false;
+    }
+
+    let mut changed = false;
+    if overlay.bucket_changed {
+        changed |= refresh_parallel_work_points(
+            window,
+            overlay.bucket_start_epoch,
+            overlay.reporting_tz,
+            overlay.bucket_keys,
+        );
+    }
+
+    if overlay.conversations_enabled {
+        let bucket_seconds = window.bucket_seconds;
+        let effective_time_zone = window.effective_time_zone.clone();
+        let conversation_changed = apply_parallel_work_conversation_overlay(
+            &mut window.conversations,
+            overlay.prompt_cache_key,
+            overlay.occurred_at,
+            bucket_seconds,
+            effective_time_zone.as_str(),
+        );
+        changed |= conversation_changed;
+    }
+
+    if overlay.minute_changed {
+        window.active_minute_count = overlay.active_minute_stats.active_minute_count;
+        window.avg_count = overlay.active_minute_stats.average();
+        changed = true;
+    }
+    changed
+}
+
+fn refresh_parallel_work_points(
+    window: &mut ParallelWorkWindowResponse,
+    bucket_start_epoch: i64,
+    reporting_tz: Tz,
+    bucket_keys: &BTreeMap<i64, HashSet<String>>,
+) -> bool {
+    let mut changed = false;
+    if let Some(point) = window.points.iter_mut().find(|point| {
+        parse_to_utc_datetime(&point.bucket_start)
+            .is_some_and(|start| start.timestamp() == bucket_start_epoch)
+    }) {
+        let next_count = bucket_keys
+            .get(&bucket_start_epoch)
+            .map_or(0, |keys| keys.len() as i64);
+        if point.parallel_count != next_count {
+            point.parallel_count = next_count;
+            changed = true;
+        }
+    } else {
+        let Some(last_point) = window.points.last() else {
+            return false;
+        };
+        let Some(mut cursor) = parse_to_utc_datetime(&last_point.bucket_end) else {
+            return false;
+        };
+        while cursor.timestamp() <= bucket_start_epoch {
+            let Ok(next_epoch) = next_reporting_bucket_epoch(
+                cursor.timestamp(),
+                window.bucket_seconds,
+                reporting_tz,
+            ) else {
+                return changed;
+            };
+            let Some(next) = Utc.timestamp_opt(next_epoch, 0).single() else {
+                return changed;
+            };
+            let parallel_count = bucket_keys
+                .get(&cursor.timestamp())
+                .map_or(0, |keys| keys.len() as i64);
+            window.points.push(ParallelWorkPoint {
+                bucket_start: format_utc_iso(cursor),
+                bucket_end: format_utc_iso(next),
+                parallel_count,
+            });
+            window.range_end = format_utc_iso(next);
+            cursor = next;
+            changed = true;
+        }
+    }
+    if changed {
+        refresh_parallel_work_point_totals(window);
+    }
+    changed
+}
+
+fn refresh_parallel_work_point_totals(window: &mut ParallelWorkWindowResponse) {
+    let mut active_bucket_count = 0_i64;
+    let mut min_count = None;
+    let mut max_count = None;
+    for point in &window.points {
+        if point.parallel_count > 0 {
+            active_bucket_count += 1;
+        }
+        min_count = Some(min_count.map_or(point.parallel_count, |value: i64| {
+            value.min(point.parallel_count)
+        }));
+        max_count = Some(max_count.map_or(point.parallel_count, |value: i64| {
+            value.max(point.parallel_count)
+        }));
+    }
+    window.active_bucket_count = active_bucket_count;
+    window.complete_bucket_count = window.points.len() as i64;
+    window.min_count = min_count;
+    window.max_count = max_count;
+}
+
+fn apply_parallel_work_conversation_overlay(
+    conversations: &mut Vec<ParallelWorkConversation>,
+    prompt_cache_key: &str,
+    occurred_at: DateTime<Utc>,
+    bucket_seconds: i64,
+    effective_time_zone: &str,
+) -> bool {
+    let Ok(reporting_tz) = parse_reporting_tz(Some(effective_time_zone)) else {
+        return false;
+    };
+    let Ok(start_epoch) =
+        align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)
+    else {
+        return false;
+    };
+    let Ok(end_epoch) = next_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)
+    else {
+        return false;
+    };
+    let Some(start) = Utc.timestamp_opt(start_epoch, 0).single() else {
+        return false;
+    };
+    let Some(end) = Utc.timestamp_opt(end_epoch, 0).single() else {
+        return false;
+    };
+
+    if let Some(conversation) = conversations
+        .iter_mut()
+        .find(|conversation| conversation.conversation_id == prompt_cache_key)
+    {
+        conversation.request_count = conversation.request_count.saturating_add(1);
+        if parse_to_utc_datetime(&conversation.start).is_some_and(|current| start < current) {
+            conversation.start = format_utc_iso(start);
+        }
+        if parse_to_utc_datetime(&conversation.end).is_some_and(|current| end > current) {
+            conversation.end = format_utc_iso(end);
+        }
+    } else {
+        conversations.push(ParallelWorkConversation {
+            conversation_id: prompt_cache_key.to_string(),
+            start: format_utc_iso(start),
+            end: format_utc_iso(end),
+            request_count: 1,
+        });
+    }
+    conversations.sort_by(|left, right| {
+        right
+            .end
+            .cmp(&left.end)
+            .then_with(|| right.request_count.cmp(&left.request_count))
+            .then_with(|| left.conversation_id.cmp(&right.conversation_id))
+    });
+    conversations.truncate(80);
+    true
+}
+
+async fn build_dashboard_parallel_work_materializer_state(
+    state: &Arc<AppState>,
+    query: ParallelWorkStatsQuery,
+) -> Result<DashboardParallelWorkMaterializerState, ApiError> {
+    for _ in 0..3 {
+        let mut observer = state.pool.acquire().await?;
+        let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await?;
+        let baseline_row_id =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                .fetch_one(&mut *observer)
+                .await?;
+        let materializer = build_dashboard_parallel_work_materializer_state_at_baseline(
+            state,
+            query.clone(),
+            baseline_row_id,
+        )
+        .await?;
+        let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await?;
+        if version_before == version_after {
+            return Ok(materializer);
+        }
+    }
+    Err(ApiError::from(anyhow!(
+        "parallel-work baseline changed during build"
+    )))
+}
+
+async fn build_dashboard_parallel_work_materializer_state_at_baseline(
+    state: &Arc<AppState>,
+    query: ParallelWorkStatsQuery,
+    baseline_row_id: i64,
+) -> Result<DashboardParallelWorkMaterializerState, ApiError> {
+    let ParallelWorkProjectionBaseline {
+        response,
+        bucket_keys,
+        active_minute_stats,
+    } = load_parallel_work_projection_baseline(state, query.clone()).await?;
+    let current = &response.current;
+    let range_start = parse_to_utc_datetime(&current.range_start)
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work range start")))?;
+    let range_end = parse_to_utc_datetime(&current.range_end)
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work range end")))?;
+    let reporting_tz = parse_reporting_tz(Some(current.effective_time_zone.as_str()))?;
+    let requested_reporting_tz = parse_reporting_tz(query.time_zone.as_deref())?;
+    let conversations_enabled = resolve_range_window(&query.range, requested_reporting_tz)?
+        .duration
+        <= ChronoDuration::hours(24);
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let range_start_epoch = range_start.timestamp();
+    let minute_keys = query_parallel_work_exact_key_sets(
+        &state.pool,
+        range_start,
+        range_end,
+        60,
+        chrono_tz::UTC,
+        source_scope,
+        query.upstream_account_id,
+        None,
+        None,
+    )
+    .await?;
+    Ok(DashboardParallelWorkMaterializerState {
+        baseline_response: response.clone(),
+        response,
+        baseline_bucket_keys: bucket_keys.clone(),
+        bucket_keys,
+        baseline_minute_keys: minute_keys.clone(),
+        minute_keys,
+        baseline_active_minute_stats: active_minute_stats,
+        active_minute_stats,
+        baseline_complete_minute_start_epoch: if range_start_epoch.rem_euclid(60) == 0 {
+            range_start_epoch
+        } else {
+            range_start_epoch.div_euclid(60) * 60 + 60
+        },
+        baseline_complete_minute_end_epoch: range_end.timestamp().div_euclid(60) * 60,
+        baseline_row_id,
+        range: query.range,
+        reporting_tz,
+        upstream_account_id: query.upstream_account_id,
+        conversations_enabled,
+        baseline_identities: HashSet::new(),
+        applied_identities: HashSet::new(),
+        runtime_mutations: BTreeMap::new(),
+        revision: 0,
+    })
+}
+
 impl DashboardSummaryMaterializerState {
     fn new(
         response: StatsResponse,
@@ -683,6 +1526,663 @@ impl DashboardSummaryMaterializerState {
             terminal_sequence,
             range_start,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkingConversationsProjectionUpdate {
+    Unchanged,
+    Changed,
+    NeedsBoundedKeyHydration(BTreeSet<String>),
+    NeedsReconcile,
+}
+
+#[derive(Debug)]
+struct DashboardWorkingConversationsMaterializerState {
+    response: PromptCacheConversationsResponse,
+    page_size: usize,
+    recent_invocation_limit: usize,
+    blocked_binding_filter: Option<PromptCacheConversationBlockedBindingFilter>,
+    baseline_has_more: bool,
+}
+
+impl DashboardWorkingConversationsMaterializerState {
+    fn new(
+        response: PromptCacheConversationsResponse,
+        page_size: i64,
+        recent_invocation_limit: i64,
+        blocked_binding_filter: Option<PromptCacheConversationBlockedBindingFilter>,
+    ) -> Self {
+        let baseline_has_more = response.has_more;
+        Self {
+            response,
+            page_size: page_size.max(0) as usize,
+            recent_invocation_limit: recent_invocation_limit.max(0) as usize,
+            blocked_binding_filter,
+            baseline_has_more,
+        }
+    }
+
+    fn apply_deltas(
+        &mut self,
+        records: &[PromptCacheTopicDelta],
+        applied_terminal_ids: &mut HashSet<String>,
+        baseline_row_id: i64,
+    ) -> Result<WorkingConversationsProjectionUpdate, ApiError> {
+        let now = Utc::now();
+        let mut bounded_hydration_keys = BTreeSet::new();
+        let mut reconcile_required = false;
+        for record in records {
+            let Some(prompt_cache_key) = record.prompt_cache_key.as_deref() else {
+                continue;
+            };
+            if record.is_runtime_removed {
+                continue;
+            }
+            let conversation = self
+                .response
+                .conversations
+                .iter()
+                .find(|conversation| conversation.prompt_cache_key == prompt_cache_key);
+            let conversation_is_visible = conversation.is_some();
+            let Some(preview) = record.preview.as_ref() else {
+                reconcile_required = true;
+                continue;
+            };
+            if !self.matches_blocked_binding_filter(record, preview)
+                || !Self::is_in_working_window(record, now)
+            {
+                if conversation_is_visible {
+                    bounded_hydration_keys.insert(prompt_cache_key.to_string());
+                }
+                continue;
+            }
+            if !conversation_is_visible {
+                // The compact delta carries only the changing invocation. Hydration owns all
+                // historical totals, charts, account and owner metadata for a newly selected
+                // key before it can be applied to the typed projection.
+                bounded_hydration_keys.insert(prompt_cache_key.to_string());
+            } else if conversation.is_some_and(|conversation| {
+                Self::delta_requires_account_hydration(
+                    conversation,
+                    record,
+                    applied_terminal_ids,
+                    baseline_row_id,
+                )
+            }) {
+                // The wire response retains only the top account summaries. Once it is full,
+                // a newly observed account may have historical totals that were omitted from
+                // the response, so only the bounded key hydrate can update it exactly.
+                bounded_hydration_keys.insert(prompt_cache_key.to_string());
+            }
+        }
+        if reconcile_required {
+            return Ok(WorkingConversationsProjectionUpdate::NeedsReconcile);
+        }
+        if !bounded_hydration_keys.is_empty() {
+            return Ok(
+                WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(
+                    bounded_hydration_keys,
+                ),
+            );
+        }
+
+        let mut changed = false;
+
+        for record in records {
+            let Some(prompt_cache_key) = record.prompt_cache_key.as_deref() else {
+                continue;
+            };
+            let conversation_index = self
+                .response
+                .conversations
+                .iter()
+                .position(|conversation| conversation.prompt_cache_key == prompt_cache_key);
+
+            if record.is_runtime_removed {
+                if let Some(index) = conversation_index {
+                    changed |= self.remove_runtime_preview(index, record);
+                }
+                continue;
+            }
+
+            let Some(preview) = record.preview.as_ref() else {
+                unreachable!("bounded hydration preflight must handle incomplete deltas");
+            };
+            if !self.matches_blocked_binding_filter(record, preview)
+                || !Self::is_in_working_window(record, now)
+            {
+                continue;
+            }
+            let conversation_index = conversation_index.expect(
+                "bounded hydration preflight must hydrate a missing working conversation key",
+            );
+
+            let conversation = &mut self.response.conversations[conversation_index];
+            changed |= apply_working_conversation_delta(
+                conversation,
+                record,
+                preview,
+                self.recent_invocation_limit,
+                applied_terminal_ids,
+                baseline_row_id,
+            );
+        }
+
+        if changed {
+            self.refresh_pagination();
+        }
+
+        Ok(if changed {
+            WorkingConversationsProjectionUpdate::Changed
+        } else {
+            WorkingConversationsProjectionUpdate::Unchanged
+        })
+    }
+
+    fn apply_binding(
+        &mut self,
+        prompt_cache_key: &str,
+        binding: &PromptCacheConversationBindingResponse,
+    ) -> Option<bool> {
+        let conversation = self
+            .response
+            .conversations
+            .iter_mut()
+            .find(|conversation| conversation.prompt_cache_key == prompt_cache_key)?;
+        let manual_binding = (binding.binding_kind != "none").then(|| {
+            PromptCacheConversationManualBindingResponse {
+                binding_kind: binding.binding_kind.clone(),
+                group_name: binding.group_name.clone(),
+                upstream_account_id: binding.upstream_account_id,
+                upstream_account_name: binding.upstream_account_name.clone(),
+            }
+        });
+        let changed = conversation.has_encrypted_session_owner
+            != binding.has_encrypted_session_owner
+            || conversation.encrypted_owner_account_id != binding.encrypted_owner_account_id
+            || conversation.encrypted_owner_account_name != binding.encrypted_owner_account_name
+            || conversation.encrypted_owner_group_name != binding.encrypted_owner_group_name
+            || conversation.manual_binding != manual_binding;
+        if changed {
+            conversation.has_encrypted_session_owner = binding.has_encrypted_session_owner;
+            conversation.encrypted_owner_account_id = binding.encrypted_owner_account_id;
+            conversation.encrypted_owner_account_name =
+                binding.encrypted_owner_account_name.clone();
+            conversation.encrypted_owner_group_name = binding.encrypted_owner_group_name.clone();
+            conversation.manual_binding = manual_binding;
+        }
+        Some(changed)
+    }
+
+    fn serialize(&self) -> Result<Vec<u8>, ApiError> {
+        serde_json::to_vec(&self.response).map_err(ApiError::from)
+    }
+
+    fn matches_blocked_binding_filter(
+        &self,
+        record: &PromptCacheTopicDelta,
+        preview: &PromptCacheConversationInvocationPreviewResponse,
+    ) -> bool {
+        let Some(filter) = self.blocked_binding_filter.as_ref() else {
+            return true;
+        };
+        if !filter.is_active() || !record.is_terminal {
+            return !filter.is_active();
+        }
+        let Some(blocked_binding) = preview.blocked_binding.as_ref() else {
+            return false;
+        };
+        filter
+            .upstream_account_id
+            .is_none_or(|account_id| account_id == blocked_binding.upstream_account_id)
+            && filter
+                .constraint_source
+                .is_none_or(|source| source == blocked_binding.constraint_source)
+    }
+
+    fn is_in_working_window(record: &PromptCacheTopicDelta, now: DateTime<Utc>) -> bool {
+        !record.is_terminal
+            || parse_to_utc_datetime(&record.occurred_at).is_some_and(|occurred_at| {
+                occurred_at
+                    >= now
+                        - ChronoDuration::minutes(
+                            SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                        )
+            })
+    }
+
+    fn delta_requires_account_hydration(
+        conversation: &PromptCacheConversationResponse,
+        record: &PromptCacheTopicDelta,
+        applied_terminal_ids: &HashSet<String>,
+        baseline_row_id: i64,
+    ) -> bool {
+        let already_terminal = applied_terminal_ids.contains(&record.identity)
+            || (record.row_id > 0 && record.row_id <= baseline_row_id);
+        if !record.is_terminal
+            || already_terminal
+            || conversation.upstream_accounts.len()
+                < PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT
+        {
+            return false;
+        }
+        let account_group_key = resolve_prompt_cache_upstream_account_group_key(
+            record.upstream_account_id,
+            record.upstream_account_name.as_deref(),
+        );
+        !conversation.upstream_accounts.iter().any(|account| {
+            resolve_prompt_cache_upstream_account_group_key(
+                account.upstream_account_id,
+                account.upstream_account_name.as_deref(),
+            ) == account_group_key
+        })
+    }
+
+    fn delta_is_eligible(&self, record: &PromptCacheTopicDelta, now: DateTime<Utc>) -> bool {
+        !record.is_runtime_removed
+            && record.preview.as_ref().is_some_and(|preview| {
+                self.matches_blocked_binding_filter(record, preview)
+                    && Self::is_in_working_window(record, now)
+            })
+    }
+
+    fn replace_hydrated_conversation(
+        &mut self,
+        prompt_cache_key: &str,
+        hydrated: Option<PromptCacheConversationResponse>,
+    ) -> bool {
+        let existing_index = self
+            .response
+            .conversations
+            .iter()
+            .position(|conversation| conversation.prompt_cache_key == prompt_cache_key);
+        let changed = match (existing_index, hydrated) {
+            (Some(index), Some(hydrated)) => {
+                if self.response.conversations[index] == hydrated {
+                    false
+                } else {
+                    self.response.conversations[index] = hydrated;
+                    true
+                }
+            }
+            (Some(index), None) => {
+                self.response.conversations.remove(index);
+                true
+            }
+            (None, Some(hydrated)) => {
+                self.response.conversations.push(hydrated);
+                true
+            }
+            (None, None) => false,
+        };
+        if changed {
+            self.refresh_pagination();
+        }
+        changed
+    }
+
+    fn set_total_matched(&mut self, total_matched: i64) -> bool {
+        if self.response.total_matched == Some(total_matched) {
+            return false;
+        }
+        self.response.total_matched = Some(total_matched);
+        self.refresh_pagination();
+        true
+    }
+
+    fn visible_keys(&self) -> HashSet<String> {
+        self.response
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.clone())
+            .collect()
+    }
+
+    fn refresh_pagination(&mut self) {
+        // The cold baseline owns continuation cursor semantics. Live deltas may reorder the
+        // active display page, but they never manufacture a cursor for that changed ordering:
+        // such a cursor would be applied to the original database snapshot and skip or repeat
+        // rows. Fresh page-size subscriptions establish a new baseline when needed.
+        sort_working_conversation_responses(&mut self.response.conversations);
+        let overflowed = self.response.conversations.len() > self.page_size;
+        self.response.conversations.truncate(self.page_size);
+        self.response.has_more = self.baseline_has_more
+            || overflowed
+            || self.response.total_matched.is_some_and(|total_matched| {
+                total_matched > self.response.conversations.len() as i64
+            });
+        for conversation in &mut self.response.conversations {
+            conversation.cursor = None;
+        }
+        self.response.next_cursor = None;
+    }
+
+    fn remove_runtime_preview(
+        &mut self,
+        conversation_index: usize,
+        record: &PromptCacheTopicDelta,
+    ) -> bool {
+        let conversation = &mut self.response.conversations[conversation_index];
+        let before = conversation.recent_invocations.len();
+        conversation.recent_invocations.retain(|preview| {
+            preview.invoke_id != record.invoke_id
+                || !working_timestamp_cmp(&preview.occurred_at, &record.occurred_at).is_eq()
+        });
+        if conversation.recent_invocations.len() == before {
+            return false;
+        }
+
+        conversation.last_in_flight_at = working_conversation_latest_in_flight_at(conversation);
+        conversation.blocked_binding = conversation
+            .recent_invocations
+            .iter()
+            .find_map(|preview| preview.blocked_binding.clone());
+        if let Some(last_activity_at) = working_conversation_latest_activity_at(conversation) {
+            conversation.last_activity_at = last_activity_at;
+        }
+
+        if conversation.request_count == 0
+            && let Some(first_preview) = conversation.recent_invocations.last()
+        {
+            conversation.created_at = first_preview.occurred_at.clone();
+        }
+
+        if conversation.request_count == 0 && conversation.recent_invocations.is_empty() {
+            self.response.conversations.remove(conversation_index);
+            if let Some(total_matched) = self.response.total_matched.as_mut() {
+                *total_matched = total_matched.saturating_sub(1);
+            }
+        }
+        true
+    }
+
+    fn expire(&mut self, now: DateTime<Utc>) -> bool {
+        let activity_cutoff = now
+            - ChronoDuration::minutes(SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES);
+        let request_cutoff = now - ChronoDuration::hours(24);
+        let before = self.response.conversations.len();
+        self.response.conversations.retain(|conversation| {
+            conversation.last_in_flight_at.is_some()
+                || parse_to_utc_datetime(&conversation.last_activity_at)
+                    .is_some_and(|last_activity_at| last_activity_at >= activity_cutoff)
+        });
+        let removed = before.saturating_sub(self.response.conversations.len());
+        if removed > 0
+            && let Some(total_matched) = self.response.total_matched.as_mut()
+        {
+            *total_matched = total_matched.saturating_sub(removed as i64);
+        }
+        let mut changed = removed > 0;
+        for conversation in &mut self.response.conversations {
+            let before = conversation.last24h_requests.len();
+            conversation.last24h_requests.retain(|point| {
+                parse_to_utc_datetime(&point.occurred_at)
+                    .is_some_and(|occurred_at| occurred_at >= request_cutoff)
+            });
+            changed |= conversation.last24h_requests.len() != before;
+            let mut cumulative_tokens = 0_i64;
+            for point in &mut conversation.last24h_requests {
+                cumulative_tokens = cumulative_tokens.saturating_add(point.request_tokens);
+                point.cumulative_tokens = cumulative_tokens;
+            }
+        }
+        if changed {
+            self.refresh_pagination();
+        }
+        changed
+    }
+}
+
+fn apply_working_conversation_delta(
+    conversation: &mut PromptCacheConversationResponse,
+    record: &PromptCacheTopicDelta,
+    preview: &PromptCacheConversationInvocationPreviewResponse,
+    recent_invocation_limit: usize,
+    applied_terminal_ids: &mut HashSet<String>,
+    baseline_row_id: i64,
+) -> bool {
+    let mut changed = false;
+    if let Some(index) = conversation.recent_invocations.iter().position(|existing| {
+        existing.invoke_id == preview.invoke_id && existing.occurred_at == preview.occurred_at
+    }) {
+        if conversation.recent_invocations[index] != *preview {
+            conversation.recent_invocations[index] = preview.clone();
+            changed = true;
+        }
+    } else {
+        conversation.recent_invocations.push(preview.clone());
+        changed = true;
+    }
+    conversation.recent_invocations.sort_by(|left, right| {
+        working_timestamp_cmp(&right.occurred_at, &left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    if conversation.recent_invocations.len() > recent_invocation_limit {
+        conversation
+            .recent_invocations
+            .truncate(recent_invocation_limit);
+    }
+
+    changed |= update_string_if_newer(&mut conversation.last_activity_at, &record.occurred_at);
+    changed |= update_string_if_earlier(&mut conversation.created_at, &record.occurred_at);
+
+    let already_terminal = applied_terminal_ids.contains(&record.identity)
+        || (record.row_id > 0 && record.row_id <= baseline_row_id);
+    if record.is_terminal && !already_terminal {
+        applied_terminal_ids.insert(record.identity.clone());
+        apply_working_conversation_terminal_delta(conversation, record, preview);
+        changed = true;
+    }
+    if !record.is_terminal {
+        changed |= update_option_if_newer(&mut conversation.last_in_flight_at, &record.occurred_at);
+    } else {
+        let latest_in_flight = working_conversation_latest_in_flight_at(conversation);
+        if conversation.last_in_flight_at != latest_in_flight {
+            conversation.last_in_flight_at = latest_in_flight;
+            changed = true;
+        }
+    }
+
+    let blocked_binding = conversation
+        .recent_invocations
+        .iter()
+        .find_map(|candidate| candidate.blocked_binding.clone());
+    if conversation.blocked_binding != blocked_binding {
+        conversation.blocked_binding = blocked_binding;
+        changed = true;
+    }
+    changed
+}
+
+fn working_conversation_latest_in_flight_at(
+    conversation: &PromptCacheConversationResponse,
+) -> Option<String> {
+    conversation
+        .recent_invocations
+        .iter()
+        .filter(|preview| {
+            !prompt_invocation_status_counts_toward_terminal_totals(Some(&preview.status))
+        })
+        .map(|preview| preview.occurred_at.clone())
+        .max_by(|left, right| working_timestamp_cmp(left, right))
+}
+
+fn working_conversation_latest_activity_at(
+    conversation: &PromptCacheConversationResponse,
+) -> Option<String> {
+    conversation.recent_invocations.iter().fold(
+        conversation.last_terminal_at.clone(),
+        |latest, preview| match latest {
+            Some(latest) if !working_timestamp_cmp(&preview.occurred_at, &latest).is_gt() => {
+                Some(latest)
+            }
+            _ => Some(preview.occurred_at.clone()),
+        },
+    )
+}
+
+fn apply_working_conversation_terminal_delta(
+    conversation: &mut PromptCacheConversationResponse,
+    record: &PromptCacheTopicDelta,
+    preview: &PromptCacheConversationInvocationPreviewResponse,
+) {
+    conversation.request_count = conversation.request_count.saturating_add(1);
+    conversation.total_tokens = conversation
+        .total_tokens
+        .saturating_add(record.request_tokens.max(0));
+    conversation.total_cost += record.cost;
+    update_option_if_newer(&mut conversation.last_terminal_at, &record.occurred_at);
+
+    let account_group_key = resolve_prompt_cache_upstream_account_group_key(
+        record.upstream_account_id,
+        record.upstream_account_name.as_deref(),
+    );
+    let account_index = conversation
+        .upstream_accounts
+        .iter()
+        .position(|account| {
+            resolve_prompt_cache_upstream_account_group_key(
+                account.upstream_account_id,
+                account.upstream_account_name.as_deref(),
+            ) == account_group_key
+        })
+        .unwrap_or_else(|| {
+            conversation
+                .upstream_accounts
+                .push(PromptCacheConversationUpstreamAccountResponse {
+                    upstream_account_id: record.upstream_account_id,
+                    upstream_account_name: record.upstream_account_name.clone(),
+                    request_count: 0,
+                    total_tokens: 0,
+                    total_cost: 0.0,
+                    last_activity_at: record.occurred_at.clone(),
+                });
+            conversation.upstream_accounts.len() - 1
+        });
+    let account = &mut conversation.upstream_accounts[account_index];
+    if account.upstream_account_id.is_none() && record.upstream_account_id.is_some() {
+        account.upstream_account_id = record.upstream_account_id;
+    }
+    if account.upstream_account_name.is_none() && record.upstream_account_name.is_some() {
+        account.upstream_account_name = record.upstream_account_name.clone();
+    }
+    account.request_count = account.request_count.saturating_add(1);
+    account.total_tokens = account
+        .total_tokens
+        .saturating_add(record.request_tokens.max(0));
+    account.total_cost += record.cost;
+    update_string_if_newer(&mut account.last_activity_at, &record.occurred_at);
+    conversation.upstream_accounts.sort_by(|left, right| {
+        working_timestamp_cmp(&right.last_activity_at, &left.last_activity_at)
+            .then_with(|| {
+                resolve_prompt_cache_upstream_account_label(
+                    right.upstream_account_name.as_deref(),
+                    right.upstream_account_id,
+                )
+                .cmp(&resolve_prompt_cache_upstream_account_label(
+                    left.upstream_account_name.as_deref(),
+                    left.upstream_account_id,
+                ))
+            })
+            .then_with(|| {
+                right
+                    .upstream_account_id
+                    .unwrap_or(i64::MIN)
+                    .cmp(&left.upstream_account_id.unwrap_or(i64::MIN))
+            })
+            .then_with(|| right.total_tokens.cmp(&left.total_tokens))
+            .then_with(|| right.request_count.cmp(&left.request_count))
+    });
+    conversation
+        .upstream_accounts
+        .truncate(PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT);
+
+    let outcome = invocation_point_outcome(
+        Some(&record.status),
+        preview.error_message.as_deref(),
+        preview.downstream_error_message.as_deref(),
+        preview.failure_kind.as_deref(),
+        preview.failure_class.as_deref(),
+    )
+    .to_string();
+    conversation
+        .last24h_requests
+        .push(PromptCacheConversationRequestPointResponse {
+            occurred_at: record.occurred_at.clone(),
+            status: if record.status.trim().is_empty() {
+                "unknown".to_string()
+            } else {
+                record.status.clone()
+            },
+            is_success: outcome == "success",
+            outcome,
+            request_tokens: record.request_tokens.max(0),
+            cumulative_tokens: 0,
+        });
+    conversation
+        .last24h_requests
+        .sort_by(|left, right| working_timestamp_cmp(&left.occurred_at, &right.occurred_at));
+    let mut cumulative_tokens = 0_i64;
+    for point in &mut conversation.last24h_requests {
+        cumulative_tokens = cumulative_tokens.saturating_add(point.request_tokens);
+        point.cumulative_tokens = cumulative_tokens;
+    }
+}
+
+fn sort_working_conversation_responses(conversations: &mut [PromptCacheConversationResponse]) {
+    conversations.sort_by(|left, right| {
+        working_timestamp_cmp(
+            working_conversation_sort_anchor(right),
+            working_conversation_sort_anchor(left),
+        )
+        .then_with(|| working_timestamp_cmp(&right.created_at, &left.created_at))
+        .then_with(|| right.prompt_cache_key.cmp(&left.prompt_cache_key))
+    });
+}
+
+fn working_conversation_sort_anchor(conversation: &PromptCacheConversationResponse) -> &str {
+    resolve_working_conversation_sort_anchor(
+        conversation.last_terminal_at.as_deref(),
+        conversation.last_in_flight_at.as_deref(),
+        &conversation.created_at,
+    )
+}
+
+fn working_timestamp_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    match (parse_to_utc_datetime(left), parse_to_utc_datetime(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        _ => left.cmp(right),
+    }
+}
+
+fn update_string_if_newer(current: &mut String, candidate: &str) -> bool {
+    if working_timestamp_cmp(candidate, current).is_gt() {
+        *current = candidate.to_string();
+        true
+    } else {
+        false
+    }
+}
+
+fn update_string_if_earlier(current: &mut String, candidate: &str) -> bool {
+    if working_timestamp_cmp(candidate, current).is_lt() {
+        *current = candidate.to_string();
+        true
+    } else {
+        false
+    }
+}
+
+fn update_option_if_newer(current: &mut Option<String>, candidate: &str) -> bool {
+    if current
+        .as_deref()
+        .is_none_or(|existing| working_timestamp_cmp(candidate, existing).is_gt())
+    {
+        *current = Some(candidate.to_string());
+        true
+    } else {
+        false
     }
 }
 
@@ -706,6 +2206,16 @@ enum DashboardTopicMaterializer {
     },
     NetworkRecent {
         base: Arc<DashboardRecentNetworkWindowResponse>,
+    },
+    Timeseries {
+        base: Arc<StdMutex<TimeseriesTopicMaterializedBase>>,
+        runtime: Arc<RuntimeProjectionHub>,
+    },
+    ParallelWork {
+        base: Arc<StdMutex<DashboardParallelWorkMaterializerState>>,
+    },
+    WorkingConversations {
+        state: Arc<StdMutex<DashboardWorkingConversationsMaterializerState>>,
     },
 }
 
@@ -760,6 +2270,25 @@ impl DashboardTopicMaterializer {
                 network_revision: Some(slice.revision),
                 terminal_revision: None,
             }),
+            Self::Timeseries { .. } if current.is_some() || terminal.is_some() => {
+                Some(DashboardTopicRevision {
+                    base_revision,
+                    current_revision: current.map(|slice| slice.revision),
+                    network_revision: None,
+                    terminal_revision: terminal.map(|slice| slice.revision),
+                })
+            }
+            Self::ParallelWork { base } => Some(DashboardTopicRevision {
+                base_revision,
+                current_revision: Some(
+                    base.lock()
+                        .expect("parallel-work materializer state lock")
+                        .revision,
+                ),
+                network_revision: None,
+                terminal_revision: None,
+            }),
+            Self::WorkingConversations { .. } => None,
             _ => None,
         }
     }
@@ -802,7 +2331,17 @@ impl DashboardTopicMaterializer {
                     (_, base_start, current_start) => base_start != current_start,
                 }
             }
-            Self::NetworkTimeseries { .. } | Self::NetworkRecent { .. } => false,
+            Self::Timeseries { base, .. } => base
+                .lock()
+                .expect("timeseries materializer state lock")
+                .requires_window_rebase(),
+            Self::ParallelWork { base } => base
+                .lock()
+                .expect("parallel-work materializer state lock")
+                .requires_rolling_rebase(),
+            Self::NetworkTimeseries { .. }
+            | Self::NetworkRecent { .. }
+            | Self::WorkingConversations { .. } => false,
         }
     }
 
@@ -885,6 +2424,22 @@ impl DashboardTopicMaterializer {
                 serde_json::to_vec(&DashboardNetworkRecentPayload { base, network })
                     .map_err(ApiError::from)
             }
+            Self::Timeseries { base, runtime } => {
+                let mut base = base.lock().expect("timeseries materializer state lock");
+                base.apply_terminal_slice(terminal);
+                base.serialize(&runtime.snapshot())
+            }
+            Self::ParallelWork { base } => serde_json::to_vec(
+                &base
+                    .lock()
+                    .expect("parallel-work materializer state lock")
+                    .response,
+            )
+            .map_err(ApiError::from),
+            Self::WorkingConversations { state } => state
+                .lock()
+                .expect("working conversations materializer state lock")
+                .serialize(),
         }
     }
 }
@@ -1318,6 +2873,7 @@ impl SubscriptionHub {
                 cached.topic,
                 SubscriptionTopic::PromptCacheWindow { .. }
                     | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                    | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
             )
         });
         let mut snapshot = PromptCacheTopicProjectionHealthSnapshot {
@@ -1348,10 +2904,13 @@ impl SubscriptionHub {
             snapshot.bounded_key_hydration_count = snapshot
                 .bounded_key_hydration_count
                 .saturating_add(cached.prompt_cache_bounded_key_hydration_count);
+            if active && cached.prompt_cache_response_source == "database_bounded_key_hydrate" {
+                snapshot.bounded_cold_recovery_topic_count =
+                    snapshot.bounded_cold_recovery_topic_count.saturating_add(1);
+            }
             snapshot.live_path_db_read_count = snapshot
                 .live_path_db_read_count
-                .saturating_add(cached.prompt_cache_full_hydration_count.saturating_sub(1))
-                .saturating_add(cached.prompt_cache_bounded_key_hydration_count);
+                .saturating_add(cached.prompt_cache_full_hydration_count.saturating_sub(1));
             snapshot.baseline_age_ms = snapshot.baseline_age_ms.max(
                 cached
                     .prompt_cache_baseline_at
@@ -1375,6 +2934,10 @@ impl SubscriptionHub {
         }
         snapshot.recovery_state = if snapshot.failed_or_stale_topic_count > 0 {
             "failed_or_stale"
+        } else if snapshot.live_path_db_read_count > 0 {
+            "hot_db_read"
+        } else if snapshot.bounded_cold_recovery_topic_count > 0 {
+            "bounded_cold_recovery"
         } else if snapshot.pressure_deferred_topic_count > 0 {
             "pressure_deferred"
         } else {
@@ -1437,8 +3000,61 @@ impl SubscriptionHub {
         self.serialization_count.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    async fn dashboard_topic_uses_typed_materializer(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        self.state
+            .lock()
+            .await
+            .topics
+            .get(&topic_key)
+            .is_some_and(|cached| cached.dashboard_materializer.is_some())
+    }
+
     pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         self.dashboard_topology_counters.snapshot()
+    }
+
+    pub(crate) async fn dashboard_hot_topic_health(
+        &self,
+        projection: DashboardRuntimeTopologyCounterSnapshot,
+    ) -> DashboardHotTopicsHealthSnapshot {
+        let recovery = {
+            let guard = self.state.lock().await;
+            let mut recovery = DashboardHotTopicRecoveryHealth::default();
+            for (topic_key, cached) in &guard.topics {
+                if cached.topic.class() != SubscriptionTopicClass::HotProjection
+                    || guard
+                        .active_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                {
+                    continue;
+                }
+                let recovery_pending = guard.runtime_topic_recovery_queued.contains(topic_key)
+                    || cached.runtime_topic_recovery_retry_at.is_some();
+                let deferred = matches!(
+                    cached.topic,
+                    SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+                ) && (cached.prompt_cache_pressure_deferred
+                    || cached.prompt_cache_reconcile_required
+                    || !cached.prompt_cache_pending_key_hydrations.is_empty());
+                recovery.record(
+                    &cached.topic,
+                    DashboardHotTopicRecoveryState {
+                        degraded: cached.dirty || recovery_pending,
+                        deferred,
+                    },
+                );
+            }
+            recovery
+        };
+        self.dashboard_topology_counters
+            .hot_topic_health(projection, recovery)
     }
 
     pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
@@ -1657,6 +3273,7 @@ impl SubscriptionHub {
         let owns_dashboard_live = topics.iter().any(|topic| {
             topic.uses_dashboard_activity_live_overlay()
                 || topic.uses_summary_live_overlay()
+                || topic.uses_timeseries_live_projection()
                 || topic.uses_dashboard_network_live_snapshot()
         });
         let topic_keys = topics
@@ -1728,6 +3345,7 @@ impl SubscriptionHub {
                 cached.topic.name() == topic_name
                     && (cached.topic.uses_dashboard_activity_live_overlay()
                         || cached.topic.uses_summary_live_overlay()
+                        || cached.topic.uses_timeseries_live_projection()
                         || cached.topic.uses_dashboard_network_live_snapshot())
             });
         guard.dashboard_live_subscriber_count = guard
@@ -1797,6 +3415,10 @@ impl SubscriptionHub {
                         Self::release_active_topic_dependencies(&mut guard, &topic_key, &topic);
                     }
                     guard.prompt_cache_prebaseline_records.remove(&topic_key);
+                    guard
+                        .prompt_cache_prebaseline_key_hydrations
+                        .remove(&topic_key);
+                    guard.parallel_work_prebaseline_mutations.remove(&topic_key);
                     guard.runtime_topic_recovery_generation =
                         guard.runtime_topic_recovery_generation.saturating_add(1);
                     let recovery_generation = guard.runtime_topic_recovery_generation;
@@ -1813,6 +3435,7 @@ impl SubscriptionHub {
                             cached.topic,
                             SubscriptionTopic::PromptCacheWindow { .. }
                                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                                | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                         ) {
                             cached.prompt_cache_pending_records.clear();
                             cached.prompt_cache_applied_terminal_ids.clear();
@@ -1999,6 +3622,10 @@ impl SubscriptionHub {
                     });
                 }
                 Err(reason) => {
+                    if resume_cursor.is_some() {
+                        self.dashboard_topology_counters
+                            .record_reconnect_churn(topic.name());
+                    }
                     tracing::debug!(
                         topic_key,
                         miss_reason = reason.as_str(),
@@ -2173,6 +3800,91 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: &SubscriptionTopic,
     ) -> Result<(BuiltSubscriptionTopicPayload, PromptCacheBaselineBuild), ApiError> {
+        if let SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size,
+            recent_invocation_limit,
+            blocked_binding_upstream_account_id,
+            blocked_binding_constraint_source,
+        } = topic
+        {
+            let mut transaction = state.pool.begin().await?;
+            let baseline_row_id =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(transaction.as_mut())
+                    .await?;
+            let snapshot_at = Utc::now();
+            let blocked_binding_filter = PromptCacheConversationBlockedBindingFilter {
+                upstream_account_id: *blocked_binding_upstream_account_id,
+                constraint_source: *blocked_binding_constraint_source,
+            };
+            let blocked_binding_filter = blocked_binding_filter
+                .is_active()
+                .then_some(blocked_binding_filter);
+            let (response, runtime_overlay_terminal_identities) = build_prompt_cache_conversations_response_for_request_with_runtime_overlay_terminal_identities_on_connection(
+                state.as_ref(),
+                PromptCacheConversationsRequest {
+                    selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                        SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                    ),
+                    detail_level: PromptCacheConversationDetailLevel::Full,
+                    recent_invocation_limit: Some(*recent_invocation_limit),
+                    page_size: Some(*page_size),
+                    cursor: None,
+                    snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+                    blocked_binding_filter: blocked_binding_filter.clone(),
+                },
+                transaction.as_mut(),
+                snapshot_at,
+                Some(baseline_row_id),
+            )
+            .await?;
+            let payload = BuiltSubscriptionTopicPayload::Dashboard(
+                DashboardTopicMaterializer::WorkingConversations {
+                    state: Arc::new(StdMutex::new(
+                        DashboardWorkingConversationsMaterializerState::new(
+                            response,
+                            *page_size,
+                            *recent_invocation_limit,
+                            blocked_binding_filter,
+                        ),
+                    )),
+                },
+            );
+            let candidate_identities = {
+                let guard = self.state.lock().await;
+                let topic_key = topic.cache_key()?;
+                guard
+                    .prompt_cache_prebaseline_records
+                    .get(&topic_key)
+                    .into_iter()
+                    .flat_map(|records| records.values())
+                    .chain(
+                        guard
+                            .topics
+                            .get(&topic_key)
+                            .into_iter()
+                            .flat_map(|cached| cached.prompt_cache_pending_records.values()),
+                    )
+                    .map(|delta| delta.identity.clone())
+                    .collect::<HashSet<_>>()
+            };
+            let persisted_identities = load_persisted_invocation_identities(
+                transaction.as_mut(),
+                &candidate_identities,
+                baseline_row_id,
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok((
+                payload,
+                PromptCacheBaselineBuild {
+                    baseline_row_id,
+                    persisted_identities,
+                    runtime_overlay_terminal_identities,
+                },
+            ));
+        }
+
         for _ in 0..3 {
             let mut observer = state.pool.acquire().await?;
             let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
@@ -2201,7 +3913,7 @@ impl SubscriptionHub {
                     .map(|delta| delta.identity.clone())
                     .collect::<HashSet<_>>()
             };
-            let persisted_identities = load_persisted_prompt_cache_identities(
+            let persisted_identities = load_persisted_invocation_identities(
                 &mut observer,
                 &candidate_identities,
                 baseline_row_id,
@@ -2216,12 +3928,81 @@ impl SubscriptionHub {
                     PromptCacheBaselineBuild {
                         baseline_row_id,
                         persisted_identities,
+                        runtime_overlay_terminal_identities: HashSet::new(),
                     },
                 ));
             }
         }
         Err(ApiError::from(anyhow!(
             "prompt cache baseline changed during build"
+        )))
+    }
+
+    async fn build_parallel_work_consistent_baseline(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) -> Result<(BuiltSubscriptionTopicPayload, ParallelWorkBaselineBuild), ApiError> {
+        for _ in 0..3 {
+            let mut observer = state.pool.acquire().await?;
+            let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            let baseline_row_id =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(&mut *observer)
+                    .await?;
+            let payload = topic.build_cached_payload(state.clone()).await?;
+            let candidate_identities = {
+                let guard = self.state.lock().await;
+                let topic_key = topic.cache_key()?;
+                let mut identities = guard
+                    .parallel_work_prebaseline_mutations
+                    .get(&topic_key)
+                    .into_iter()
+                    .flat_map(|mutations| mutations.values())
+                    .map(|mutation| {
+                        format!(
+                            "{}\0{}",
+                            mutation.identity.invoke_id, mutation.identity.occurred_at
+                        )
+                    })
+                    .collect::<HashSet<_>>();
+                if let Some(DashboardTopicMaterializer::ParallelWork { base }) = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| cached.dashboard_materializer.as_ref())
+                {
+                    identities.extend(
+                        base.lock()
+                            .expect("parallel-work materializer state lock")
+                            .runtime_mutations
+                            .keys()
+                            .cloned(),
+                    );
+                }
+                identities
+            };
+            let persisted_identities = load_persisted_invocation_identities(
+                &mut observer,
+                &candidate_identities,
+                baseline_row_id,
+            )
+            .await?;
+            let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+                .fetch_one(&mut *observer)
+                .await?;
+            if version_before == version_after {
+                return Ok((
+                    payload,
+                    ParallelWorkBaselineBuild {
+                        persisted_identities,
+                    },
+                ));
+            }
+        }
+        Err(ApiError::from(anyhow!(
+            "parallel-work baseline changed during build"
         )))
     }
 
@@ -2240,6 +4021,11 @@ impl SubscriptionHub {
             topic,
             SubscriptionTopic::PromptCacheWindow { .. }
                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+        );
+        let is_open_parallel_work_topic = matches!(
+            &topic,
+            SubscriptionTopic::ParallelWorkCurrent { range, .. } if range != "yesterday"
         );
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
@@ -2263,18 +4049,27 @@ impl SubscriptionHub {
         } else {
             (None, false)
         };
-        let (mut built_payload, prompt_cache_build) = if is_prompt_cache_topic {
+        let (mut built_payload, prompt_cache_build, parallel_work_build) = if is_prompt_cache_topic
+        {
             let (payload, build) = self
                 .build_prompt_cache_consistent_baseline(state.clone(), &topic)
                 .await?;
-            (payload, Some(build))
+            (payload, Some(build), None)
+        } else if is_open_parallel_work_topic {
+            let (payload, build) = self
+                .build_parallel_work_consistent_baseline(state.clone(), &topic)
+                .await?;
+            (payload, None, Some(build))
         } else {
-            (topic.build_cached_payload(state.clone()).await?, None)
+            (topic.build_cached_payload(state.clone()).await?, None, None)
         };
-        self.dashboard_topology_counters
-            .record_builder(topic.name());
+        self.dashboard_topology_counters.record_materialization(
+            topic.name(),
+            matches!(&built_payload, BuiltSubscriptionTopicPayload::Json(_))
+                && topic.is_unmigrated_dashboard_hot_projection(),
+        );
 
-        let (cached, dispatch) = {
+        let (cached, dispatch, initial_hydration, initial_reconcile) = {
             let mut guard = self.state.lock().await;
             if require_active_owner {
                 let active = guard
@@ -2314,8 +4109,57 @@ impl SubscriptionHub {
             {
                 apply_topic_live_overlay_to_payload(state.as_ref(), &topic, payload, &live)?;
             }
+            if let BuiltSubscriptionTopicPayload::Dashboard(
+                DashboardTopicMaterializer::ParallelWork { base },
+            ) = &built_payload
+            {
+                let baseline_identities = parallel_work_build
+                    .as_ref()
+                    .map(|build| build.persisted_identities.clone())
+                    .unwrap_or_default();
+                let mut replay = guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|cached| match cached.dashboard_materializer.as_ref() {
+                        Some(DashboardTopicMaterializer::ParallelWork { base }) => Some(
+                            base.lock()
+                                .expect("parallel-work materializer state lock")
+                                .runtime_mutations
+                                .clone(),
+                        ),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let mut pending = guard
+                    .parallel_work_prebaseline_mutations
+                    .remove(&topic_key)
+                    .unwrap_or_default();
+                replay.append(&mut pending);
+                let mut base = base.lock().expect("parallel-work materializer state lock");
+                base.baseline_identities = baseline_identities;
+                let mut unresolved = BTreeMap::new();
+                for (identity, mutation) in &replay {
+                    if base
+                        .apply_runtime_mutation(mutation)
+                        .needs_account_reconcile
+                    {
+                        unresolved.insert(identity.clone(), mutation.clone());
+                    }
+                }
+                if !unresolved.is_empty() {
+                    guard
+                        .parallel_work_prebaseline_mutations
+                        .entry(topic_key.clone())
+                        .or_default()
+                        .extend(unresolved);
+                }
+            }
             let mut prompt_cache_pending = guard
                 .prompt_cache_prebaseline_records
+                .remove(&topic_key)
+                .unwrap_or_default();
+            let prebaseline_working_hydration_keys = guard
+                .prompt_cache_prebaseline_key_hydrations
                 .remove(&topic_key)
                 .unwrap_or_default();
             if let Some(existing) = guard.topics.get_mut(&topic_key) {
@@ -2333,19 +4177,62 @@ impl SubscriptionHub {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let mut prompt_cache_applied_terminal_ids = HashSet::new();
-            if let BuiltSubscriptionTopicPayload::Json(payload) = &mut built_payload
-                && !prompt_cache_replay.is_empty()
-            {
-                apply_prompt_cache_records_to_payload(
-                    &topic,
-                    payload,
-                    &prompt_cache_replay,
-                    &mut prompt_cache_applied_terminal_ids,
-                    prompt_cache_build
-                        .as_ref()
-                        .map_or(0, |build| build.baseline_row_id),
-                )?;
+            let mut prompt_cache_applied_terminal_ids = prompt_cache_build
+                .as_ref()
+                .map(|build| build.runtime_overlay_terminal_identities.clone())
+                .unwrap_or_default();
+            let mut deferred_working_replay = Vec::new();
+            let mut deferred_working_hydration_keys = prebaseline_working_hydration_keys;
+            let mut deferred_working_reconcile = false;
+            if !prompt_cache_replay.is_empty() {
+                let baseline_row_id = prompt_cache_build
+                    .as_ref()
+                    .map_or(0, |build| build.baseline_row_id);
+                match &mut built_payload {
+                    BuiltSubscriptionTopicPayload::Json(payload) => {
+                        apply_prompt_cache_records_to_payload(
+                            &topic,
+                            payload,
+                            &prompt_cache_replay,
+                            &mut prompt_cache_applied_terminal_ids,
+                            baseline_row_id,
+                        )?;
+                    }
+                    BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::WorkingConversations { state },
+                    ) => {
+                        let update = state
+                            .lock()
+                            .expect("working conversations materializer state lock")
+                            .apply_deltas(
+                                &prompt_cache_replay,
+                                &mut prompt_cache_applied_terminal_ids,
+                                baseline_row_id,
+                            )?;
+                        match update {
+                            WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(
+                                keys,
+                            ) => {
+                                // The cursor-consistent base is valid, but its compact replay
+                                // cannot represent this key exactly. Commit the base and retain
+                                // every replay record so the bounded hydrator can replace just
+                                // the affected key without losing an initial live mutation.
+                                deferred_working_replay = prompt_cache_replay;
+                                deferred_working_hydration_keys = keys;
+                            }
+                            WorkingConversationsProjectionUpdate::NeedsReconcile => {
+                                // An incomplete delta cannot be proven safe to apply. Preserve
+                                // it on the committed cache and use the existing bounded
+                                // recovery path rather than failing setup after removing it.
+                                deferred_working_replay = prompt_cache_replay;
+                                deferred_working_reconcile = true;
+                            }
+                            WorkingConversationsProjectionUpdate::Changed
+                            | WorkingConversationsProjectionUpdate::Unchanged => {}
+                        }
+                    }
+                    BuiltSubscriptionTopicPayload::Dashboard(_) => {}
+                }
             }
             let serialized_payload = built_payload.serialize(
                 guard.dashboard_current_slice.as_deref(),
@@ -2356,16 +4243,18 @@ impl SubscriptionHub {
             let current_slice = guard.dashboard_current_slice.clone();
             let network_slice = guard.dashboard_network_slice.clone();
             let terminal_slice = guard.dashboard_terminal_slice.clone();
-            if let Some(existing) = guard.topics.get_mut(&topic_key) {
+            if deferred_working_replay.is_empty()
+                && let Some(existing) = guard.topics.get_mut(&topic_key)
+            {
                 if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
                     && existing.dirty
                     && existing.dashboard_materializer.is_some()
                     && refreshed_dashboard_materializer.is_some()
                 {
-                    existing.dirty = false;
-                    existing.refresh_scheduled = false;
-                    existing.runtime_topic_recovery_retry_at = None;
-                    existing.snapshot_built_at = Instant::now();
+                    reuse_unchanged_cached_topic(existing, &serialized_payload)
+                        .expect("matching dashboard payload must reuse the cached topic");
+                    self.dashboard_topology_counters
+                        .record_frame_reused(topic.name());
                     existing.dashboard_materializer = refreshed_dashboard_materializer.clone();
                     existing.dashboard_base_revision = existing.cursor;
                     existing.dashboard_materialized_revision = refreshed_dashboard_materializer
@@ -2379,19 +4268,24 @@ impl SubscriptionHub {
                             )
                         });
                     existing.snapshot_payload = built_payload.snapshot_payload();
+                    if let Some(build) = &prompt_cache_build {
+                        finish_prompt_cache_baseline_reuse(
+                            existing,
+                            build,
+                            &prompt_cache_applied_terminal_ids,
+                        );
+                    }
                     return Ok(Some(existing.clone()));
                 }
                 if reuse_unchanged_cached_topic(existing, &serialized_payload).is_some() {
                     self.dashboard_topology_counters
                         .record_frame_reused(topic.name());
                     if let Some(build) = &prompt_cache_build {
-                        existing.prompt_cache_full_hydration_count =
-                            existing.prompt_cache_full_hydration_count.saturating_add(1);
-                        existing.prompt_cache_baseline_at = Some(Instant::now());
-                        existing.prompt_cache_baseline_row_id = build.baseline_row_id;
-                        existing.prompt_cache_response_source = "database_reconcile";
-                        existing.prompt_cache_applied_terminal_ids =
-                            prompt_cache_applied_terminal_ids;
+                        finish_prompt_cache_baseline_reuse(
+                            existing,
+                            build,
+                            &prompt_cache_applied_terminal_ids,
+                        );
                     }
                     return Ok(Some(existing.clone()));
                 }
@@ -2423,6 +4317,17 @@ impl SubscriptionHub {
                         guard.dashboard_terminal_slice.as_deref(),
                     )
                 });
+            let had_key_hydration_scheduled = guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|entry| entry.prompt_cache_key_hydration_scheduled);
+            let had_reconcile_scheduled = guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|entry| entry.prompt_cache_reconcile_scheduled);
+            let schedule_initial_hydration =
+                !deferred_working_hydration_keys.is_empty() && !had_key_hydration_scheduled;
+            let schedule_initial_reconcile = deferred_working_reconcile && !had_reconcile_scheduled;
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -2442,7 +4347,7 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .is_some_and(|entry| entry.conversation_overview_refresh_pending),
-                dirty: false,
+                dirty: deferred_working_reconcile,
                 runtime_topic_recovery_generation: guard
                     .topics
                     .get(&topic_key)
@@ -2466,19 +4371,26 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.summary_retry_backoff_ms),
+                parallel_work_refresh_scheduled: false,
                 prompt_cache_refresh_scheduled: guard
                     .topics
                     .get(&topic_key)
                     .is_some_and(|entry| entry.prompt_cache_refresh_scheduled),
-                prompt_cache_reconcile_scheduled: guard
-                    .topics
-                    .get(&topic_key)
-                    .is_some_and(|entry| entry.prompt_cache_reconcile_scheduled),
-                prompt_cache_pending_records: BTreeMap::new(),
+                prompt_cache_reconcile_scheduled: had_reconcile_scheduled
+                    || deferred_working_reconcile,
+                prompt_cache_key_hydration_scheduled: had_key_hydration_scheduled
+                    || !deferred_working_hydration_keys.is_empty(),
+                prompt_cache_pending_records: deferred_working_replay
+                    .into_iter()
+                    .map(|record| (record.identity.clone(), record))
+                    .collect(),
+                prompt_cache_pending_key_hydrations: deferred_working_hydration_keys,
+                prompt_cache_candidate_refill_required: false,
                 prompt_cache_applied_terminal_ids: if matches!(
                     topic,
                     SubscriptionTopic::PromptCacheWindow { .. }
                         | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                        | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                 ) {
                     prompt_cache_applied_terminal_ids
                 } else {
@@ -2511,7 +4423,7 @@ impl SubscriptionHub {
                 } else {
                     "initial_baseline"
                 },
-                prompt_cache_reconcile_required: false,
+                prompt_cache_reconcile_required: deferred_working_reconcile,
                 prompt_cache_pressure_deferred: false,
                 latest_live_snapshot: guard
                     .topics
@@ -2550,7 +4462,12 @@ impl SubscriptionHub {
             }
             guard.topics.insert(topic_key.clone(), next.clone());
             let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame });
-            (next, dispatch)
+            (
+                next,
+                dispatch,
+                schedule_initial_hydration.then(|| topic.clone()),
+                schedule_initial_reconcile.then(|| topic.clone()),
+            )
         };
 
         tracing::debug!(
@@ -2570,6 +4487,12 @@ impl SubscriptionHub {
                 fanout_receivers = self.broadcaster.receiver_count(),
                 "subscription topic live event dispatched"
             );
+        }
+        if let Some(topic) = initial_hydration {
+            Self::spawn_dashboard_working_conversation_key_hydration(state.clone(), topic);
+        }
+        if let Some(topic) = initial_reconcile {
+            Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
         }
 
         Ok(Some(cached))
@@ -2641,6 +4564,27 @@ impl SubscriptionHub {
             let network = guard.dashboard_network_slice.clone();
             let terminal = guard.dashboard_terminal_slice.clone();
             mark_dashboard_terminal_window_rebase_topics(&mut guard);
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
+    async fn materialize_dashboard_parallel_work(&self) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            for cached in guard.topics.values_mut() {
+                if matches!(
+                    &cached.dashboard_materializer,
+                    Some(DashboardTopicMaterializer::ParallelWork { .. })
+                ) {
+                    cached.parallel_work_refresh_scheduled = false;
+                }
+            }
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
             let pending = collect_pending_dashboard_topic_materializations(&mut guard);
             (pending, current, network, terminal)
         };
@@ -2720,7 +4664,7 @@ impl SubscriptionHub {
 
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
-                .record_builder(pending.topic_name);
+                .record_materialization(pending.topic_name, false);
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
@@ -2814,8 +4758,26 @@ impl SubscriptionHub {
             // the DB-backed topic builder.
             if work.topic.uses_summary_live_overlay()
                 || work.topic.uses_dashboard_activity_live_overlay()
+                || work.topic.uses_timeseries_live_projection()
                 || work.topic.uses_dashboard_network_live_snapshot()
             {
+                continue;
+            }
+            if work.topic.uses_parallel_work_live_projection() {
+                if let Err(err) = self
+                    .schedule_parallel_work_topic_projection(
+                        state.clone(),
+                        work.topic.clone(),
+                        &mutations,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %work.topic.name(),
+                        "failed to schedule parallel-work runtime projection"
+                    );
+                }
                 continue;
             }
             if work.topic.uses_summary_topic_refresh() && work.terminal_event_count > 0 {
@@ -2900,6 +4862,7 @@ impl SubscriptionHub {
                     cached.topic,
                     SubscriptionTopic::PromptCacheWindow { .. }
                         | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                        | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                 ) {
                     // Prompt Cache keeps its last-good frame. Its server-push reconciler performs
                     // the bounded cold rebuild later instead of doing a full window build from
@@ -2934,6 +4897,7 @@ impl SubscriptionHub {
             &topic,
             SubscriptionTopic::PromptCacheWindow { .. }
                 | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
         ) {
             if self
                 .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
@@ -2975,6 +4939,7 @@ impl SubscriptionHub {
                         topic,
                         SubscriptionTopic::PromptCacheWindow { .. }
                             | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                            | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                     )
                 {
                     return None;
@@ -3025,6 +4990,7 @@ impl SubscriptionHub {
                 cached.topic,
                 SubscriptionTopic::PromptCacheWindow { .. }
                     | SubscriptionTopic::PromptCacheStickyWindow { .. }
+                    | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
             ) {
                 continue;
             }
@@ -3099,17 +5065,23 @@ impl SubscriptionHub {
                 return;
             }
             for topic in topics {
-                if let Err(err) = self
+                match self
                     .refresh_topic_if_active(state.clone(), topic.clone(), true)
                     .await
                 {
-                    self.defer_runtime_topic_recovery_retry(&topic).await;
-                    warn!(
-                        ?err,
-                        topic = %topic.name(),
-                        recovery = "dirty_last_good",
-                        "bounded runtime mutation recovery retained last-good topic frame"
-                    );
+                    Err(err) => {
+                        self.defer_runtime_topic_recovery_retry(&topic).await;
+                        warn!(
+                            ?err,
+                            topic = %topic.name(),
+                            recovery = "dirty_last_good",
+                            "bounded runtime mutation recovery retained last-good topic frame"
+                        );
+                    }
+                    Ok(_) if self.parallel_work_reconcile_pending(&topic).await => {
+                        self.defer_runtime_topic_recovery_retry(&topic).await;
+                    }
+                    Ok(_) => {}
                 }
             }
             tokio::task::yield_now().await;
@@ -3120,7 +5092,15 @@ impl SubscriptionHub {
         let Ok(topic_key) = topic.cache_key() else {
             return RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF;
         };
-        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+        let mut guard = self.state.lock().await;
+        let has_pending_mutations = guard
+            .parallel_work_prebaseline_mutations
+            .get(&topic_key)
+            .is_some_and(|mutations| !mutations.is_empty());
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            if has_pending_mutations {
+                cached.dirty = true;
+            }
             cached.runtime_topic_recovery_retry_at =
                 Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
         }
@@ -3306,6 +5286,61 @@ impl SubscriptionHub {
                 warn!(?err, topic = %topic.name(), "failed to apply dashboard network slice");
             }
         }
+    }
+}
+
+fn buffer_parallel_work_prebaseline_mutations(
+    state: &mut SubscriptionHubState,
+    topic_key: &str,
+    mutations: &[SequencedRuntimeMutation],
+) {
+    let pending_is_empty = {
+        let pending = state
+            .parallel_work_prebaseline_mutations
+            .entry(topic_key.to_string())
+            .or_default();
+        for mutation in mutations {
+            let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+                continue;
+            };
+            let identity = format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            );
+            if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+                pending.remove(&identity);
+            } else {
+                pending.insert(identity, mutation.clone());
+            }
+        }
+        pending.is_empty()
+    };
+    if pending_is_empty {
+        state.parallel_work_prebaseline_mutations.remove(topic_key);
+    }
+}
+
+fn remove_parallel_work_prebaseline_mutations(
+    state: &mut SubscriptionHubState,
+    topic_key: &str,
+    mutations: &[SequencedRuntimeMutation],
+) {
+    let Some(pending) = state.parallel_work_prebaseline_mutations.get_mut(topic_key) else {
+        return;
+    };
+    for mutation in mutations {
+        let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+            continue;
+        };
+        if mutation.kind == RuntimeMutationKind::RuntimeRemoved {
+            pending.remove(&format!(
+                "{}\0{}",
+                mutation.identity.invoke_id, mutation.identity.occurred_at
+            ));
+        }
+    }
+    if pending.is_empty() {
+        state.parallel_work_prebaseline_mutations.remove(topic_key);
     }
 }
 
@@ -3615,6 +5650,227 @@ impl SubscriptionHub {
         Ok(())
     }
 
+    async fn schedule_parallel_work_topic_projection(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        mutations: &[SequencedRuntimeMutation],
+    ) -> Result<(), ApiError> {
+        enum ParallelWorkSchedule {
+            None,
+            Materialize(Instant),
+            Reconcile,
+        }
+
+        let topic_key = topic.cache_key()?;
+        loop {
+            let materializer = {
+                let mut guard = self.state.lock().await;
+                let active = guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default();
+                if active == 0 {
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                    }
+                    return Ok(());
+                }
+                if !guard.topics.contains_key(&topic_key) {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if guard.topics[&topic_key].dirty {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                let cached = guard
+                    .topics
+                    .get_mut(&topic_key)
+                    .expect("cached topic exists");
+                let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+                    cached.dashboard_materializer.as_ref()
+                else {
+                    return Ok(());
+                };
+                base.clone()
+            };
+
+            let outcome = {
+                let mut base = materializer
+                    .lock()
+                    .expect("parallel-work materializer state lock");
+                let mut outcome = ParallelWorkMutationOutcome::default();
+                for mutation in mutations {
+                    let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
+                        continue;
+                    };
+                    let mutation_outcome = base.apply_runtime_mutation(mutation);
+                    outcome.changed |= mutation_outcome.changed;
+                    outcome.needs_account_reconcile |= mutation_outcome.needs_account_reconcile;
+                }
+                outcome
+            };
+
+            let schedule = {
+                let mut guard = self.state.lock().await;
+                let active = guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default();
+                if active == 0 {
+                    if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                        cached.dirty = true;
+                    }
+                    return Ok(());
+                }
+                remove_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                if !guard.topics.contains_key(&topic_key) {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if guard.topics[&topic_key].dirty {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                    return Ok(());
+                }
+                if outcome.needs_account_reconcile {
+                    buffer_parallel_work_prebaseline_mutations(&mut guard, &topic_key, mutations);
+                }
+                let cached = guard
+                    .topics
+                    .get_mut(&topic_key)
+                    .expect("cached topic exists");
+                if !matches!(
+                    cached.dashboard_materializer.as_ref(),
+                    Some(DashboardTopicMaterializer::ParallelWork { base }) if Arc::ptr_eq(base, &materializer)
+                ) {
+                    None
+                } else if outcome.needs_account_reconcile {
+                    if cached.parallel_work_refresh_scheduled {
+                        Some(ParallelWorkSchedule::None)
+                    } else {
+                        cached.dirty = true;
+                        cached.parallel_work_refresh_scheduled = true;
+                        Some(ParallelWorkSchedule::Reconcile)
+                    }
+                } else if !outcome.changed || cached.parallel_work_refresh_scheduled {
+                    Some(ParallelWorkSchedule::None)
+                } else {
+                    cached.parallel_work_refresh_scheduled = true;
+                    Some(ParallelWorkSchedule::Materialize(Instant::now()))
+                }
+            };
+            let Some(schedule) = schedule else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            match schedule {
+                ParallelWorkSchedule::None => {}
+                ParallelWorkSchedule::Materialize(scheduled_at) => {
+                    let hub = state.subscription_hub.clone();
+                    tokio::spawn(async move {
+                        let deadline = scheduled_at + PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE;
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                        if Instant::now().saturating_duration_since(deadline)
+                            > PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE
+                        {
+                            hub.dashboard_topology_counters
+                                .record_cadence_miss("stats.parallel-work.current");
+                        }
+                        hub.materialize_dashboard_parallel_work().await;
+                    });
+                }
+                ParallelWorkSchedule::Reconcile => {
+                    // Account gaps are recovered from a dirty last-good frame, not by the
+                    // in-memory hot materializer. Recovery health reports that state directly;
+                    // this background rebaseline delay is therefore not a hot cadence miss.
+                    let hub = state.subscription_hub.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
+                        let result = hub
+                            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                            .await;
+                        if let Err(err) = result {
+                            warn!(
+                                ?err,
+                                topic = %topic.name(),
+                                "failed to reconcile account-scoped parallel-work projection"
+                            );
+                            hub.schedule_parallel_work_reconcile_retry(state, &topic)
+                                .await;
+                        } else if hub.parallel_work_reconcile_pending(&topic).await {
+                            hub.schedule_parallel_work_reconcile_retry(state, &topic)
+                                .await;
+                        }
+                    });
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    async fn schedule_parallel_work_reconcile_retry(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let recovery_scheduled = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default()
+                > 0;
+            let has_pending_mutations = guard
+                .parallel_work_prebaseline_mutations
+                .get(&topic_key)
+                .is_some_and(|mutations| !mutations.is_empty());
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return;
+            };
+            cached.parallel_work_refresh_scheduled = false;
+            if has_pending_mutations {
+                cached.dirty = true;
+            }
+            if !active {
+                return;
+            }
+            cached.runtime_topic_recovery_retry_at =
+                Some(Instant::now() + RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF);
+            if guard.runtime_topic_recovery_running {
+                false
+            } else {
+                guard.runtime_topic_recovery_running = true;
+                true
+            }
+        };
+        if recovery_scheduled {
+            let hub = state.subscription_hub.clone();
+            tokio::spawn(async move {
+                hub.run_runtime_topic_recovery(state).await;
+            });
+        }
+        self.runtime_topic_recovery_notify.notify_one();
+    }
+
+    async fn parallel_work_reconcile_pending(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        self.state
+            .lock()
+            .await
+            .parallel_work_prebaseline_mutations
+            .get(&topic_key)
+            .is_some_and(|mutations| !mutations.is_empty())
+    }
+
     async fn schedule_prompt_cache_topic_projection(
         &self,
         state: Arc<AppState>,
@@ -3624,10 +5880,19 @@ impl SubscriptionHub {
         // Prompt Cache topics therefore never allocate preview data or read runtime state.
         let active_topic_keys = {
             let guard = self.state.lock().await;
-            Self::active_topic_keys_for_dependency(
+            let mut topic_keys = Self::active_topic_keys_for_dependency(
                 &guard,
                 &RuntimeTopicDependency::PromptCacheProjection,
-            )
+            );
+            topic_keys.extend(Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::DashboardWorkingConversationsProjection,
+            ));
+            topic_keys
+                .into_iter()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
         };
         if active_topic_keys.is_empty() {
             return;
@@ -3635,6 +5900,8 @@ impl SubscriptionHub {
 
         let mut records = Vec::new();
         let mut reconcile_required = false;
+        let mut working_key_hydration_keys = BTreeSet::new();
+        let mut working_reconcile_required = false;
         for mutation in mutations {
             let RuntimeMutation::Invocation(mutation) = &mutation.mutation else {
                 continue;
@@ -3657,9 +5924,24 @@ impl SubscriptionHub {
                 runtime_projection.as_ref(),
             ) {
                 Ok(Some(record)) => records.push(record),
-                Ok(None) => reconcile_required = true,
+                Ok(None) => {
+                    reconcile_required = true;
+                    // A terminal can leave the runtime store immediately after P1 assigns its
+                    // durable row id. Working conversations can recover that one durable key
+                    // exactly; treating it as a generic gap would needlessly rebuild the whole
+                    // active window.
+                    if mutation.is_terminal
+                        && mutation.row_id.is_some_and(|row_id| row_id > 0)
+                        && let Some(prompt_cache_key) = mutation.prompt_cache_key.as_deref()
+                    {
+                        working_key_hydration_keys.insert(prompt_cache_key.to_string());
+                    } else {
+                        working_reconcile_required = true;
+                    }
+                }
                 Err(err) => {
                     reconcile_required = true;
+                    working_reconcile_required = true;
                     warn!(?err, "failed to build active prompt cache topic delta");
                 }
             }
@@ -3668,9 +5950,10 @@ impl SubscriptionHub {
             return;
         }
 
-        let (scheduled, reconciles) = {
+        let (scheduled, key_hydrations, reconciles) = {
             let mut guard = self.state.lock().await;
             let mut scheduled = Vec::new();
+            let mut key_hydrations = Vec::new();
             let mut reconciles = Vec::new();
             for topic_key in active_topic_keys {
                 let Some(topic) = guard.active_topics.get(&topic_key).cloned() else {
@@ -3680,15 +5963,34 @@ impl SubscriptionHub {
                     if !records.is_empty() {
                         let pending = guard
                             .prompt_cache_prebaseline_records
-                            .entry(topic_key)
+                            .entry(topic_key.clone())
                             .or_default();
                         for record in &records {
                             pending.insert(record.identity.clone(), record.clone());
                         }
                     }
+                    if matches!(
+                        topic,
+                        SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+                    ) && !working_key_hydration_keys.is_empty()
+                    {
+                        guard
+                            .prompt_cache_prebaseline_key_hydrations
+                            .entry(topic_key)
+                            .or_default()
+                            .extend(working_key_hydration_keys.iter().cloned());
+                    }
                     continue;
                 };
-                let requires_bounded_reconcile = reconcile_required || cached.dirty;
+                let is_working_conversations = matches!(
+                    topic,
+                    SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+                );
+                let requires_bounded_reconcile = if is_working_conversations {
+                    working_reconcile_required || cached.dirty
+                } else {
+                    reconcile_required || cached.dirty
+                };
                 if requires_bounded_reconcile {
                     cached.dirty = true;
                     cached.prompt_cache_reconcile_required = true;
@@ -3700,6 +6002,15 @@ impl SubscriptionHub {
                     // Do not append a later delta to that stale frame; one active selection is
                     // rebuilt asynchronously from its bounded cold source instead.
                     continue;
+                }
+                if is_working_conversations && !working_key_hydration_keys.is_empty() {
+                    cached
+                        .prompt_cache_pending_key_hydrations
+                        .extend(working_key_hydration_keys.iter().cloned());
+                    if !cached.prompt_cache_key_hydration_scheduled {
+                        cached.prompt_cache_key_hydration_scheduled = true;
+                        key_hydrations.push(topic.clone());
+                    }
                 }
                 if records.is_empty() {
                     continue;
@@ -3724,14 +6035,21 @@ impl SubscriptionHub {
                     scheduled.push(topic);
                 }
             }
-            (scheduled, reconciles)
+            (scheduled, key_hydrations, reconciles)
         };
 
         for topic in scheduled {
             let hub = state.subscription_hub.clone();
             let state = state.clone();
+            let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
             tokio::spawn(async move {
-                tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                if Instant::now().saturating_duration_since(deadline)
+                    > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+                {
+                    hub.dashboard_topology_counters
+                        .record_cadence_miss(topic.name());
+                }
                 if let Err(err) = hub
                     .materialize_prompt_cache_topic(state.clone(), &topic)
                     .await
@@ -3750,6 +6068,9 @@ impl SubscriptionHub {
                     }
                 }
             });
+        }
+        for topic in key_hydrations {
+            Self::spawn_dashboard_working_conversation_key_hydration(state.clone(), topic);
         }
         for topic in reconciles {
             Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
@@ -3841,19 +6162,376 @@ impl SubscriptionHub {
         let Ok(topic_key) = topic.cache_key() else {
             return;
         };
-        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key)
-            && cached.dirty
-        {
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
             cached.prompt_cache_pressure_deferred = pressure_deferred;
         }
     }
 
-    async fn materialize_prompt_cache_topic(
+    fn spawn_prompt_cache_topic_materialization(state: Arc<AppState>, topic: SubscriptionTopic) {
+        let hub = state.subscription_hub.clone();
+        let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
+        tokio::spawn(async move {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            if Instant::now().saturating_duration_since(deadline)
+                > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+            {
+                hub.dashboard_topology_counters
+                    .record_cadence_miss(topic.name());
+            }
+            if let Err(err) = hub
+                .materialize_prompt_cache_topic(state.clone(), &topic)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = topic.name(),
+                    response_source = "last_good",
+                    "prompt cache in-memory topic materialization failed"
+                );
+                if hub
+                    .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                    .await
+                {
+                    SubscriptionHub::spawn_prompt_cache_topic_reconcile(state, topic);
+                }
+            }
+        });
+    }
+
+    fn spawn_dashboard_working_conversation_key_hydration(
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+    ) {
+        let hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            loop {
+                let gate = crate::db_pressure::global_db_pressure_gate();
+                let observed_eligibility = gate.eligibility_generation();
+                match gate.try_begin_background("dashboard_working_conversation_key_hydrate") {
+                    Ok(_permit) => {
+                        if let Err(err) = hub
+                            .hydrate_dashboard_working_conversation_keys(state.clone(), &topic)
+                            .await
+                        {
+                            warn!(
+                                ?err,
+                                topic = topic.name(),
+                                response_source = "last_good",
+                                "bounded dashboard working conversation hydrate failed"
+                            );
+                            hub.finish_dashboard_working_conversation_key_hydration(&topic)
+                                .await;
+                            if hub
+                                .mark_prompt_cache_topic_dirty_and_schedule_reconcile(&topic)
+                                .await
+                            {
+                                SubscriptionHub::spawn_prompt_cache_topic_reconcile(
+                                    state.clone(),
+                                    topic,
+                                );
+                            }
+                        }
+                        return;
+                    }
+                    Err(reason) => {
+                        hub.set_prompt_cache_pressure_deferred(&topic, true).await;
+                        tracing::debug!(
+                            topic = %topic.name(),
+                            hydrate_outcome = "pressure_deferred",
+                            defer_reason = %reason,
+                            "dashboard working conversation key hydrate deferred"
+                        );
+                        tokio::select! {
+                            _ = wait_for_prompt_cache_reconcile_eligibility(
+                                gate,
+                                observed_eligibility,
+                                reason,
+                            ) => {}
+                            _ = state.shutdown.cancelled() => {
+                                hub.finish_dashboard_working_conversation_key_hydration(&topic)
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    async fn finish_dashboard_working_conversation_key_hydration(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        if let Some(cached) = self.state.lock().await.topics.get_mut(&topic_key) {
+            cached.prompt_cache_key_hydration_scheduled = false;
+        }
+    }
+
+    async fn hydrate_dashboard_working_conversation_keys(
         &self,
-        _state: Arc<AppState>,
+        state: Arc<AppState>,
         topic: &SubscriptionTopic,
     ) -> Result<(), ApiError> {
         let topic_key = topic.cache_key()?;
+        let Some((
+            pending_keys,
+            pending_records_at_hydration_start,
+            candidate_refill_required,
+            page_size,
+            recent_invocation_limit,
+            blocked_binding_filter,
+            visible_keys,
+        )) = ({
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            if active == 0 || cached.dirty {
+                cached.prompt_cache_key_hydration_scheduled = false;
+                None
+            } else {
+                let Some(DashboardTopicMaterializer::WorkingConversations { state }) =
+                    cached.dashboard_materializer.as_ref()
+                else {
+                    cached.prompt_cache_key_hydration_scheduled = false;
+                    return Ok(());
+                };
+                let working_state = state.clone();
+                let state = working_state
+                    .lock()
+                    .expect("working conversations materializer state lock");
+                Some((
+                    cached.prompt_cache_pending_key_hydrations.clone(),
+                    cached.prompt_cache_pending_records.clone(),
+                    cached.prompt_cache_candidate_refill_required,
+                    state.page_size,
+                    state.recent_invocation_limit,
+                    state.blocked_binding_filter.clone(),
+                    state.visible_keys(),
+                ))
+            }
+        })
+        else {
+            return Ok(());
+        };
+
+        let range_end = Utc::now();
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let source_scope = resolve_default_source_scope(&state.pool).await?;
+        let candidate_keys = if candidate_refill_required {
+            query_working_prompt_cache_conversation_candidate_keys(
+                state.as_ref(),
+                source_scope,
+                range_end,
+                &range_start_bound,
+                page_size as i64,
+                blocked_binding_filter.as_ref(),
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let mut hydration_keys = pending_keys;
+        hydration_keys.extend(
+            candidate_keys
+                .into_iter()
+                .filter(|key| !visible_keys.contains(key)),
+        );
+        let hydration_keys = hydration_keys
+            .into_iter()
+            .take(SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT)
+            .collect::<Vec<_>>();
+        let mut hydrated = Vec::with_capacity(hydration_keys.len());
+        for prompt_cache_key in &hydration_keys {
+            let response = hydrate_working_prompt_cache_conversation_for_key(
+                state.as_ref(),
+                source_scope,
+                prompt_cache_key,
+                range_end,
+                &range_start_bound,
+                recent_invocation_limit as i64,
+                blocked_binding_filter.as_ref(),
+            )
+            .await?;
+            hydrated.push((prompt_cache_key.clone(), response));
+        }
+        let hydrated_visible_keys = hydrated
+            .iter()
+            .filter_map(|(prompt_cache_key, response)| {
+                response.as_ref().map(|_| prompt_cache_key.clone())
+            })
+            .collect::<HashSet<_>>();
+        let total_matched = query_working_prompt_cache_conversation_total_matched(
+            state.as_ref(),
+            source_scope,
+            range_end,
+            &range_start_bound,
+            blocked_binding_filter.as_ref(),
+            &hydrated_visible_keys,
+        )
+        .await?;
+
+        let (dispatch, next_hydration, next_materialization, recovery) = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            if active == 0 || cached.dirty {
+                cached.prompt_cache_key_hydration_scheduled = false;
+                return Ok(());
+            }
+            let Some(DashboardTopicMaterializer::WorkingConversations { state: current }) =
+                cached.dashboard_materializer.as_ref()
+            else {
+                cached.prompt_cache_key_hydration_scheduled = false;
+                return Ok(());
+            };
+            let current = current.clone();
+            let mut projection = current
+                .lock()
+                .expect("working conversations materializer state lock");
+            let now = Utc::now();
+            let changed_pending_keys = prompt_cache_hydration_changed_pending_keys(
+                &pending_records_at_hydration_start,
+                &cached.prompt_cache_pending_records,
+                &hydration_keys,
+            );
+            let unresolved_eligible_delta = hydrated.iter().any(|(prompt_cache_key, response)| {
+                response.is_none()
+                    && cached.prompt_cache_pending_records.values().any(|record| {
+                        record.prompt_cache_key.as_deref() == Some(prompt_cache_key.as_str())
+                            && projection.delta_is_eligible(record, now)
+                    })
+            });
+            if !changed_pending_keys.is_empty() {
+                // A newer delta for an already-hydrated key is not represented by this bounded
+                // snapshot. Retry that same key immediately instead of making the whole working
+                // selection dirty and delaying exact recovery to the 60-second full cadence.
+                cached
+                    .prompt_cache_pending_key_hydrations
+                    .extend(changed_pending_keys);
+                cached.prompt_cache_key_hydration_scheduled = true;
+                cached.prompt_cache_pressure_deferred = false;
+                (None, Some(cached.topic.clone()), None, None)
+            } else if unresolved_eligible_delta {
+                // A bounded snapshot can race a just-arrived runtime delta or omit an eligible
+                // one. Retain the last-good frame and recover instead of clearing a delta that
+                // was not proven to be represented by the hydrate result.
+                cached.dirty = true;
+                cached.prompt_cache_reconcile_required = true;
+                cached.prompt_cache_key_hydration_scheduled = false;
+                cached.prompt_cache_pressure_deferred = false;
+                let recovery = (!cached.prompt_cache_reconcile_scheduled).then(|| {
+                    cached.prompt_cache_reconcile_scheduled = true;
+                    cached.topic.clone()
+                });
+                (None, None, None, recovery)
+            } else {
+                let mut changed = false;
+                for (prompt_cache_key, response) in hydrated {
+                    // The bounded database/runtime hydrate includes every pending record for
+                    // this key, so dropping those records avoids both double-application and a
+                    // later full-window reconcile solely for terminal de-duplication bookkeeping.
+                    cached.prompt_cache_pending_records.retain(|_, record| {
+                        record.prompt_cache_key.as_deref() != Some(prompt_cache_key.as_str())
+                    });
+                    cached
+                        .prompt_cache_pending_key_hydrations
+                        .remove(&prompt_cache_key);
+                    changed |=
+                        projection.replace_hydrated_conversation(&prompt_cache_key, response);
+                }
+                changed |= projection.set_total_matched(total_matched);
+                let desired_visible_count = usize::try_from(total_matched.max(0))
+                    .unwrap_or(usize::MAX)
+                    .min(projection.page_size);
+                cached.prompt_cache_candidate_refill_required =
+                    projection.visible_keys().len() < desired_visible_count;
+                cached.prompt_cache_bounded_key_hydration_count = cached
+                    .prompt_cache_bounded_key_hydration_count
+                    .saturating_add(hydration_keys.len() as u64);
+                cached.prompt_cache_pressure_deferred = false;
+                cached.prompt_cache_key_hydration_scheduled = false;
+                let next_hydration = (!cached.prompt_cache_pending_key_hydrations.is_empty()
+                    || cached.prompt_cache_candidate_refill_required)
+                    .then(|| {
+                        cached.prompt_cache_key_hydration_scheduled = true;
+                        cached.topic.clone()
+                    });
+                let next_materialization = (!cached.prompt_cache_pending_records.is_empty()
+                    && !cached.prompt_cache_refresh_scheduled)
+                    .then(|| {
+                        cached.prompt_cache_refresh_scheduled = true;
+                        cached.topic.clone()
+                    });
+                let dispatch = if changed {
+                    let next_cursor = cached.cursor.saturating_add(1);
+                    self.dashboard_topology_counters
+                        .record_materialization(cached.topic.name(), false);
+                    let frame = Arc::new(self.serialize_frame(
+                        cached.descriptor.clone(),
+                        topic_key.clone(),
+                        cached.schema_epoch.clone(),
+                        next_cursor,
+                        projection.serialize()?,
+                    )?);
+                    let retained_bytes = frame.retained_bytes();
+                    cached.cursor = next_cursor;
+                    cached.snapshot_frame = frame.clone();
+                    cached.snapshot_bytes = frame.payload_bytes.len();
+                    cached.replay_events.push_back(ReplayableTopicEvent {
+                        frame: frame.clone(),
+                        bytes: retained_bytes,
+                        emitted_at: Utc::now(),
+                    });
+                    cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+                    cached.prompt_cache_response_source = "database_bounded_key_hydrate";
+                    prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+                    Some(SubscriptionDispatchEvent { frame })
+                } else {
+                    None
+                };
+                (dispatch, next_hydration, next_materialization, None)
+            }
+        };
+        if let Some(dispatch) = dispatch {
+            let _ = self.broadcaster.send(dispatch);
+        }
+        if let Some(topic) = next_hydration {
+            Self::spawn_dashboard_working_conversation_key_hydration(state.clone(), topic);
+        }
+        if let Some(topic) = next_materialization {
+            Self::spawn_prompt_cache_topic_materialization(state.clone(), topic);
+        }
+        if let Some(topic) = recovery {
+            Self::spawn_prompt_cache_topic_reconcile(state, topic);
+        }
+        Ok(())
+    }
+
+    async fn materialize_prompt_cache_topic(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let mut bounded_hydration_topic = None;
         let dispatch = {
             let mut guard = self.state.lock().await;
             let active = guard
@@ -3875,61 +6553,123 @@ impl SubscriptionHub {
             if records.is_empty() {
                 return Ok(());
             }
-            let applied = match apply_prompt_cache_records_to_payload(
-                topic,
-                &mut cached.snapshot_payload,
-                &records,
-                &mut cached.prompt_cache_applied_terminal_ids,
-                cached.prompt_cache_baseline_row_id,
-            ) {
-                Ok(applied) => applied,
-                Err(err) => {
-                    for record in records {
-                        cached
-                            .prompt_cache_pending_records
-                            .insert(record.identity.clone(), record);
+            let working_state = match cached.dashboard_materializer.as_ref() {
+                Some(DashboardTopicMaterializer::WorkingConversations { state }) => {
+                    Some(state.clone())
+                }
+                _ => None,
+            };
+            let is_working_conversations = working_state.is_some();
+            let applied = if let Some(working_state) = working_state.as_ref() {
+                let update = working_state
+                    .lock()
+                    .expect("working conversations materializer state lock")
+                    .apply_deltas(
+                        &records,
+                        &mut cached.prompt_cache_applied_terminal_ids,
+                        cached.prompt_cache_baseline_row_id,
+                    )?;
+                match update {
+                    WorkingConversationsProjectionUpdate::Unchanged => Some(false),
+                    WorkingConversationsProjectionUpdate::Changed => Some(true),
+                    WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(keys) => {
+                        for record in &records {
+                            cached
+                                .prompt_cache_pending_records
+                                .insert(record.identity.clone(), record.clone());
+                        }
+                        cached.prompt_cache_pending_key_hydrations.extend(keys);
+                        if !cached.prompt_cache_key_hydration_scheduled {
+                            cached.prompt_cache_key_hydration_scheduled = true;
+                            bounded_hydration_topic = Some(cached.topic.clone());
+                        }
+                        None
                     }
-                    return Err(err);
+                    WorkingConversationsProjectionUpdate::NeedsReconcile => {
+                        for record in &records {
+                            cached
+                                .prompt_cache_pending_records
+                                .insert(record.identity.clone(), record.clone());
+                        }
+                        return Err(ApiError::from(anyhow!(
+                            "working conversations projection requires bounded reconcile"
+                        )));
+                    }
+                }
+            } else {
+                match apply_prompt_cache_records_to_payload(
+                    topic,
+                    &mut cached.snapshot_payload,
+                    &records,
+                    &mut cached.prompt_cache_applied_terminal_ids,
+                    cached.prompt_cache_baseline_row_id,
+                ) {
+                    Ok(applied) => Some(applied),
+                    Err(err) => {
+                        for record in &records {
+                            cached
+                                .prompt_cache_pending_records
+                                .insert(record.identity.clone(), record.clone());
+                        }
+                        return Err(err);
+                    }
                 }
             };
-            if !applied {
-                return Ok(());
+            if applied != Some(true) {
+                None
+            } else {
+                let next_cursor = cached.cursor.saturating_add(1);
+                if is_working_conversations {
+                    self.dashboard_topology_counters
+                        .record_materialization(topic.name(), false);
+                }
+                let serialized_payload = if let Some(working_state) = working_state {
+                    working_state
+                        .lock()
+                        .expect("working conversations materializer state lock")
+                        .serialize()?
+                } else {
+                    serde_json::to_vec(&cached.snapshot_payload)?
+                };
+                let frame = Arc::new(self.serialize_frame(
+                    cached.descriptor.clone(),
+                    topic_key.clone(),
+                    cached.schema_epoch.clone(),
+                    next_cursor,
+                    serialized_payload,
+                )?);
+                let retained_bytes = frame.retained_bytes();
+                cached.cursor = next_cursor;
+                cached.snapshot_frame = frame.clone();
+                cached.snapshot_bytes = frame.payload_bytes.len();
+                cached.replay_events.push_back(ReplayableTopicEvent {
+                    frame: frame.clone(),
+                    bytes: retained_bytes,
+                    emitted_at: Utc::now(),
+                });
+                cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+                cached.prompt_cache_response_source = "memory";
+                prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+                tracing::debug!(
+                    topic = topic.name(),
+                    response_source = "memory",
+                    coalesced_event_count = records.len(),
+                    live_path_db_read_count = 0_u64,
+                    baseline_age_ms = cached
+                        .prompt_cache_baseline_at
+                        .map(|started| started.elapsed().as_millis() as u64)
+                        .unwrap_or_default(),
+                    "prompt cache topic materialized from active projection"
+                );
+                Some(SubscriptionDispatchEvent { frame })
             }
-            let next_cursor = cached.cursor.saturating_add(1);
-            let serialized_payload = serde_json::to_vec(&cached.snapshot_payload)?;
-            let frame = Arc::new(self.serialize_frame(
-                cached.descriptor.clone(),
-                topic_key.clone(),
-                cached.schema_epoch.clone(),
-                next_cursor,
-                serialized_payload,
-            )?);
-            let retained_bytes = frame.retained_bytes();
-            cached.cursor = next_cursor;
-            cached.snapshot_frame = frame.clone();
-            cached.snapshot_bytes = frame.payload_bytes.len();
-            cached.replay_events.push_back(ReplayableTopicEvent {
-                frame: frame.clone(),
-                bytes: retained_bytes,
-                emitted_at: Utc::now(),
-            });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
-            cached.prompt_cache_response_source = "memory";
-            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            tracing::debug!(
-                topic = topic.name(),
-                response_source = "memory",
-                coalesced_event_count = records.len(),
-                live_path_db_read_count = 0_u64,
-                baseline_age_ms = cached
-                    .prompt_cache_baseline_at
-                    .map(|started| started.elapsed().as_millis() as u64)
-                    .unwrap_or_default(),
-                "prompt cache topic materialized from active projection"
-            );
-            SubscriptionDispatchEvent { frame }
         };
-        let _ = self.broadcaster.send(dispatch);
+        if let Some(topic) = bounded_hydration_topic {
+            Self::spawn_dashboard_working_conversation_key_hydration(state, topic);
+        }
+        if let Some(dispatch) = dispatch {
+            let _ = self.broadcaster.send(dispatch);
+        }
         Ok(())
     }
 
@@ -3944,6 +6684,78 @@ impl SubscriptionHub {
                     || cached.dirty
                     || !cached.prompt_cache_applied_terminal_ids.is_empty()
             })
+    }
+
+    async fn expire_dashboard_working_conversations_projection(
+        &self,
+        state: Arc<AppState>,
+        topic_key: &str,
+    ) -> Result<(), ApiError> {
+        let mut bounded_hydration_topic = None;
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(topic_key) else {
+                return Ok(());
+            };
+            if cached.dirty {
+                return Ok(());
+            }
+            let Some(DashboardTopicMaterializer::WorkingConversations { state }) =
+                cached.dashboard_materializer.as_ref()
+            else {
+                return Ok(());
+            };
+            let state = state.clone();
+            let changed = state
+                .lock()
+                .expect("working conversations materializer state lock")
+                .expire(Utc::now());
+            if !changed {
+                return Ok(());
+            }
+            // Expiring an item can uncover a persisted candidate outside this page. Refill only
+            // the bounded active page rather than rebuilding the entire working selection.
+            cached.prompt_cache_candidate_refill_required = true;
+            if !cached.prompt_cache_key_hydration_scheduled {
+                cached.prompt_cache_key_hydration_scheduled = true;
+                bounded_hydration_topic = Some(cached.topic.clone());
+            }
+            let next_cursor = cached.cursor.saturating_add(1);
+            self.dashboard_topology_counters
+                .record_materialization(cached.topic.name(), false);
+            let frame = Arc::new(
+                self.serialize_frame(
+                    cached.descriptor.clone(),
+                    topic_key.to_string(),
+                    cached.schema_epoch.clone(),
+                    next_cursor,
+                    state
+                        .lock()
+                        .expect("working conversations materializer state lock")
+                        .serialize()?,
+                )?,
+            );
+            let retained_bytes = frame.retained_bytes();
+            cached.cursor = next_cursor;
+            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = frame.payload_bytes.len();
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                frame: frame.clone(),
+                bytes: retained_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.prompt_cache_response_source = "memory";
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            Some(SubscriptionDispatchEvent { frame })
+        };
+        if let Some(dispatch) = dispatch {
+            let _ = self.broadcaster.send(dispatch);
+        }
+        if let Some(topic) = bounded_hydration_topic {
+            Self::spawn_dashboard_working_conversation_key_hydration(state, topic);
+        }
+        Ok(())
     }
 
     async fn expire_prompt_cache_topic_window(&self, topic_key: &str) -> Result<(), ApiError> {
@@ -4067,31 +6879,35 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         prompt_cache_key: &str,
     ) -> Result<(), ApiError> {
-        let has_active_prompt_cache_window = {
+        let active_topic_keys = {
             let guard = self.state.lock().await;
-            !Self::active_topic_keys_for_dependency(
+            let mut topic_keys = Self::active_topic_keys_for_dependency(
                 &guard,
                 &RuntimeTopicDependency::PromptCacheWindow,
-            )
-            .is_empty()
+            );
+            topic_keys.extend(Self::active_topic_keys_for_dependency(
+                &guard,
+                &RuntimeTopicDependency::DashboardWorkingConversationsProjection,
+            ));
+            topic_keys
+                .into_iter()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
         };
-        if !has_active_prompt_cache_window {
+        if active_topic_keys.is_empty() {
             return Ok(());
         }
-        let binding = serde_json::to_value(
-            load_prompt_cache_conversation_binding_response_for_key(
-                state.as_ref(),
-                prompt_cache_key.to_string(),
-            )
-            .await?,
-        )?;
+        let binding = load_prompt_cache_conversation_binding_response_for_key(
+            state.as_ref(),
+            prompt_cache_key.to_string(),
+        )
+        .await?;
         let mut dispatches = Vec::new();
         let mut reconciles = Vec::new();
+        let mut key_hydrations = Vec::new();
+        let mut binding_payload = None;
         let mut guard = self.state.lock().await;
-        let active_topic_keys = Self::active_topic_keys_for_dependency(
-            &guard,
-            &RuntimeTopicDependency::PromptCacheWindow,
-        );
         for topic_key in active_topic_keys {
             if guard
                 .active_subscribers
@@ -4113,31 +6929,77 @@ impl SubscriptionHub {
                 }
                 continue;
             }
-            cached.prompt_cache_bounded_key_hydration_count = cached
-                .prompt_cache_bounded_key_hydration_count
-                .saturating_add(1);
-            let Some(changed) = patch_prompt_cache_binding_payload(
-                &mut cached.snapshot_payload,
-                prompt_cache_key,
-                &binding,
-            ) else {
-                cached.prompt_cache_reconcile_required = true;
-                if !cached.prompt_cache_reconcile_scheduled {
-                    cached.prompt_cache_reconcile_scheduled = true;
-                    reconciles.push(cached.topic.clone());
+            let working_state = match cached.dashboard_materializer.as_ref() {
+                Some(DashboardTopicMaterializer::WorkingConversations { state }) => {
+                    Some(state.clone())
                 }
-                continue;
+                _ => None,
+            };
+            let is_working_conversations = working_state.is_some();
+            if !is_working_conversations {
+                cached.prompt_cache_bounded_key_hydration_count = cached
+                    .prompt_cache_bounded_key_hydration_count
+                    .saturating_add(1);
+            }
+            let changed = if let Some(working_state) = working_state.as_ref() {
+                let Some(changed) = working_state
+                    .lock()
+                    .expect("working conversations materializer state lock")
+                    .apply_binding(prompt_cache_key, &binding)
+                else {
+                    cached
+                        .prompt_cache_pending_key_hydrations
+                        .insert(prompt_cache_key.to_string());
+                    cached.prompt_cache_candidate_refill_required = true;
+                    if !cached.prompt_cache_key_hydration_scheduled {
+                        cached.prompt_cache_key_hydration_scheduled = true;
+                        key_hydrations.push(cached.topic.clone());
+                    }
+                    continue;
+                };
+                changed
+            } else {
+                if binding_payload.is_none() {
+                    binding_payload = Some(serde_json::to_value(&binding)?);
+                }
+                let Some(changed) = patch_prompt_cache_binding_payload(
+                    &mut cached.snapshot_payload,
+                    prompt_cache_key,
+                    binding_payload
+                        .as_ref()
+                        .expect("serialized binding payload"),
+                ) else {
+                    cached.prompt_cache_reconcile_required = true;
+                    if !cached.prompt_cache_reconcile_scheduled {
+                        cached.prompt_cache_reconcile_scheduled = true;
+                        reconciles.push(cached.topic.clone());
+                    }
+                    continue;
+                };
+                changed
             };
             if !changed {
                 continue;
             }
             let next_cursor = cached.cursor.saturating_add(1);
+            if is_working_conversations {
+                self.dashboard_topology_counters
+                    .record_materialization(cached.topic.name(), false);
+            }
+            let serialized_payload = if let Some(working_state) = working_state {
+                working_state
+                    .lock()
+                    .expect("working conversations materializer state lock")
+                    .serialize()?
+            } else {
+                serde_json::to_vec(&cached.snapshot_payload)?
+            };
             let frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 topic_key.clone(),
                 cached.schema_epoch.clone(),
                 next_cursor,
-                serde_json::to_vec(&cached.snapshot_payload)?,
+                serialized_payload,
             )?);
             let retained_bytes = frame.retained_bytes();
             cached.cursor = next_cursor;
@@ -4159,6 +7021,9 @@ impl SubscriptionHub {
         }
         for topic in reconciles {
             Self::spawn_prompt_cache_topic_reconcile(state.clone(), topic);
+        }
+        for topic in key_hydrations {
+            Self::spawn_dashboard_working_conversation_key_hydration(state.clone(), topic);
         }
         Ok(())
     }
@@ -4876,7 +7741,7 @@ fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value:
     object.insert(key.to_string(), value);
 }
 
-async fn load_persisted_prompt_cache_identities(
+async fn load_persisted_invocation_identities(
     conn: &mut sqlx::SqliteConnection,
     identities: &HashSet<String>,
     baseline_row_id: i64,
@@ -4892,16 +7757,18 @@ async fn load_persisted_prompt_cache_identities(
         );
         query.push_bind(baseline_row_id);
         query.push(" AND (");
-        let mut separated = query.separated(" OR ");
-        for (invoke_id, occurred_at) in chunk {
-            separated
+        for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(invoke_id = ")
                 .push_bind(*invoke_id)
                 .push(" AND occurred_at = ")
                 .push_bind(*occurred_at)
                 .push(")");
         }
-        separated.push_unseparated(")");
+        query.push(")");
         for (invoke_id, occurred_at) in query
             .build_query_as::<(String, String)>()
             .fetch_all(&mut *conn)
@@ -5871,6 +8738,7 @@ async fn run_server_push_topic_loop(
         topic,
         SubscriptionTopic::PromptCacheWindow { .. }
             | SubscriptionTopic::PromptCacheStickyWindow { .. }
+            | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
     ) {
         let mut interval = tokio::time::interval(PROMPT_CACHE_TOPIC_RECONCILE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -5885,7 +8753,16 @@ async fn run_server_push_topic_loop(
                     if hub.stop_server_push_task_if_idle(&topic_key).await {
                         break;
                     }
-                    if let Err(err) = hub.expire_prompt_cache_topic_window(&topic_key).await {
+                    let expiry_result = if matches!(
+                        &topic,
+                        SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+                    ) {
+                        hub.expire_dashboard_working_conversations_projection(state.clone(), &topic_key)
+                            .await
+                    } else {
+                        hub.expire_prompt_cache_topic_window(&topic_key).await
+                    };
+                    if let Err(err) = expiry_result {
                         warn!(?err, topic = %topic.name(), "failed to expire prompt cache topic window");
                     }
                     if !hub.prompt_cache_reconcile_required(&topic_key).await {
@@ -6077,6 +8954,9 @@ pub(crate) async fn topic_sse_stream(
                     | "stats.summary.current"
                     | "dashboard.network-timeseries.window"
                     | "dashboard.network-recent.current"
+                    | "dashboard.working-conversations.current"
+                    | "stats.parallel-work.current"
+                    | "stats.timeseries.open-window"
             )
         })
         .map(str::to_string)
@@ -6098,6 +8978,7 @@ pub(crate) async fn topic_sse_stream(
     if selected_topics.iter().any(|topic| {
         topic.uses_dashboard_activity_live_overlay()
             || topic.uses_summary_live_overlay()
+            || topic.uses_timeseries_live_projection()
             || topic.uses_dashboard_network_live_snapshot()
     }) {
         ensure_dashboard_activity_live_snapshot_producer(state.as_ref());
@@ -6186,11 +9067,55 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
+    fn class(&self) -> SubscriptionTopicClass {
+        match self {
+            Self::DashboardActivityCurrent { range, .. } => {
+                if range == "yesterday" {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::SummaryCurrent { window, .. } => {
+                if matches!(window.as_str(), "yesterday" | "previous7d") {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. } => {
+                if range == "yesterday" {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::DashboardNetworkTimeseriesWindow { .. }
+            | Self::DashboardNetworkRecentCurrent
+            | Self::DashboardWorkingConversationsCurrent { .. } => {
+                SubscriptionTopicClass::HotProjection
+            }
+            Self::AppVersion
+            | Self::QuotaCurrent
+            | Self::InvocationWindow { .. }
+            | Self::InvocationHistoryWindow { .. }
+            | Self::InvocationHistoryOverview { .. }
+            | Self::PromptCacheConversationBindingCurrent { .. }
+            | Self::PromptCacheConversationOperationsWindow { .. }
+            | Self::PromptCacheWindow { .. }
+            | Self::PromptCacheStickyWindow { .. }
+            | Self::ForwardProxyLive
+            | Self::InvocationPoolAttempts { .. } => SubscriptionTopicClass::BoundedColdHydrate,
+        }
+    }
+
     fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
             || matches!(
                 self,
-                Self::PromptCacheWindow { .. } | Self::PromptCacheStickyWindow { .. }
+                Self::PromptCacheWindow { .. }
+                    | Self::PromptCacheStickyWindow { .. }
+                    | Self::DashboardWorkingConversationsCurrent { .. }
             )
             || (mode == RuntimeProjectionMode::Legacy
                 && matches!(self, Self::DashboardNetworkRecentCurrent))
@@ -6211,12 +9136,32 @@ impl SubscriptionTopic {
         )
     }
 
+    fn uses_timeseries_live_projection(&self) -> bool {
+        matches!(self, Self::TimeseriesOpenWindow { range, .. } if range != "yesterday")
+    }
+
     fn uses_summary_topic_refresh(&self) -> bool {
         self.uses_summary_live_overlay()
     }
 
     fn uses_conversation_overview_refresh(&self) -> bool {
         matches!(self, Self::InvocationHistoryOverview { .. })
+    }
+
+    fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
+        false
+    }
+
+    fn uses_parallel_work_live_projection(&self) -> bool {
+        matches!(self, Self::ParallelWorkCurrent { range, .. } if range != "yesterday")
+    }
+
+    fn is_closed_dashboard_hot_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. }
+                if range == "yesterday"
+        )
     }
 
     fn uses_dashboard_network_live_snapshot(&self) -> bool {
@@ -6244,6 +9189,9 @@ impl SubscriptionTopic {
                 RuntimeTopicDependency::PromptCacheProjection,
                 RuntimeTopicDependency::PromptCacheStickyWindow,
             ],
+            Self::DashboardWorkingConversationsCurrent { .. } => {
+                vec![RuntimeTopicDependency::DashboardWorkingConversationsProjection]
+            }
             Self::PromptCacheConversationBindingCurrent { scope }
             | Self::PromptCacheConversationOperationsWindow { scope, .. } => {
                 vec![RuntimeTopicDependency::Binding(
@@ -6266,8 +9214,7 @@ impl SubscriptionTopic {
                     ],
                 }
             }
-            Self::DashboardWorkingConversationsCurrent { .. }
-            | Self::InvocationWindow { .. }
+            Self::InvocationWindow { .. }
             | Self::TimeseriesOpenWindow { .. }
             | Self::ParallelWorkCurrent { .. }
             | Self::ForwardProxyLive => vec![RuntimeTopicDependency::Invocation],
@@ -6298,17 +9245,25 @@ impl SubscriptionTopic {
             }),
             "dashboard.network-recent.current" => Ok(Self::DashboardNetworkRecentCurrent),
             "dashboard.working-conversations.current" => {
-                Ok(Self::DashboardWorkingConversationsCurrent {
-                    page_size: parse_i64_param(
+                let page_size =
+                    normalize_prompt_cache_conversation_page_size(Some(parse_i64_param(
                         params,
                         "pageSize",
                         Some(SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE),
-                    )?,
-                    recent_invocation_limit: parse_i64_param(
-                        params,
-                        "recentInvocationLimit",
-                        Some(SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT),
-                    )?,
+                    )?))?
+                    .unwrap_or(SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE);
+                let recent_invocation_limit =
+                    normalize_prompt_cache_conversation_recent_invocation_limit(Some(
+                        parse_i64_param(
+                            params,
+                            "recentInvocationLimit",
+                            Some(SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT),
+                        )?,
+                    ))?
+                    .unwrap_or(SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT);
+                Ok(Self::DashboardWorkingConversationsCurrent {
+                    page_size,
+                    recent_invocation_limit,
                     blocked_binding_upstream_account_id: parse_optional_i64_param(
                         params,
                         "blockedBindingUpstreamAccountId",
@@ -6700,7 +9655,7 @@ impl SubscriptionTopic {
     fn is_affected_by_runtime_mutation(&self, mutation: &RuntimeMutation) -> bool {
         match mutation {
             RuntimeMutation::Invocation(mutation) => {
-                if self.is_closed_summary_topic() {
+                if self.is_closed_summary_topic() || self.is_closed_dashboard_hot_snapshot() {
                     return false;
                 }
                 match self {
@@ -6871,6 +9826,31 @@ impl SubscriptionTopic {
                         },
                     ));
                 }
+                Self::TimeseriesOpenWindow {
+                    range,
+                    time_zone,
+                    bucket,
+                    settlement_hour,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    let base = TimeseriesTopicMaterializedBase::build(
+                        state.as_ref(),
+                        &TimeseriesQuery {
+                            range: range.clone(),
+                            bucket: bucket.clone(),
+                            settlement_hour: *settlement_hour,
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Timeseries {
+                            base: Arc::new(StdMutex::new(base)),
+                            runtime: state.proxy_runtime_invocations.clone(),
+                        },
+                    ));
+                }
                 Self::DashboardNetworkTimeseriesWindow {
                     range,
                     time_zone,
@@ -6901,6 +9881,69 @@ impl SubscriptionTopic {
                     return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                         DashboardTopicMaterializer::NetworkRecent {
                             base: Arc::new(response),
+                        },
+                    ));
+                }
+                Self::ParallelWorkCurrent {
+                    range,
+                    time_zone,
+                    bucket,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    let base = build_dashboard_parallel_work_materializer_state(
+                        &state,
+                        ParallelWorkStatsQuery {
+                            range: range.clone(),
+                            bucket: bucket.clone(),
+                            time_zone: Some(time_zone.clone()),
+                            upstream_account_id: *upstream_account_id,
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::ParallelWork {
+                            base: Arc::new(StdMutex::new(base)),
+                        },
+                    ));
+                }
+                Self::DashboardWorkingConversationsCurrent {
+                    page_size,
+                    recent_invocation_limit,
+                    blocked_binding_upstream_account_id,
+                    blocked_binding_constraint_source,
+                } => {
+                    let blocked_binding_filter = PromptCacheConversationBlockedBindingFilter {
+                        upstream_account_id: *blocked_binding_upstream_account_id,
+                        constraint_source: *blocked_binding_constraint_source,
+                    };
+                    let blocked_binding_filter = blocked_binding_filter
+                        .is_active()
+                        .then_some(blocked_binding_filter);
+                    let response = build_prompt_cache_conversations_response_for_request(
+                        state.as_ref(),
+                        PromptCacheConversationsRequest {
+                            selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                                SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                            ),
+                            detail_level: PromptCacheConversationDetailLevel::Full,
+                            recent_invocation_limit: Some(*recent_invocation_limit),
+                            page_size: Some(*page_size),
+                            cursor: None,
+                            snapshot_at: None,
+                            blocked_binding_filter: blocked_binding_filter.clone(),
+                        },
+                    )
+                    .await?;
+                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::WorkingConversations {
+                            state: Arc::new(StdMutex::new(
+                                DashboardWorkingConversationsMaterializerState::new(
+                                    response,
+                                    *page_size,
+                                    *recent_invocation_limit,
+                                    blocked_binding_filter,
+                                ),
+                            )),
                         },
                     ));
                 }
@@ -7313,8 +10356,24 @@ fn reuse_unchanged_cached_topic(
     // proves reconciliation completed, so do not keep scheduling the same cold hydration.
     existing.prompt_cache_reconcile_required = false;
     existing.prompt_cache_pressure_deferred = false;
+    existing.prompt_cache_pending_key_hydrations.clear();
+    existing.prompt_cache_candidate_refill_required = false;
+    existing.prompt_cache_key_hydration_scheduled = false;
     existing.snapshot_built_at = Instant::now();
     Some(existing.clone())
+}
+
+fn finish_prompt_cache_baseline_reuse(
+    existing: &mut CachedSubscriptionTopic,
+    build: &PromptCacheBaselineBuild,
+    applied_terminal_ids: &HashSet<String>,
+) {
+    existing.prompt_cache_full_hydration_count =
+        existing.prompt_cache_full_hydration_count.saturating_add(1);
+    existing.prompt_cache_baseline_at = Some(Instant::now());
+    existing.prompt_cache_baseline_row_id = build.baseline_row_id;
+    existing.prompt_cache_response_source = "database_reconcile";
+    existing.prompt_cache_applied_terminal_ids = applied_terminal_ids.clone();
 }
 
 fn prune_replay_window(events: &mut VecDeque<ReplayableTopicEvent>, total_bytes: &mut usize) {
@@ -7945,6 +11004,76 @@ mod tests {
                 .pressure_deferred_topic_count,
             1
         );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_live_db_reads_degrade_aggregate_health() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        cached.prompt_cache_full_hydration_count = 2;
+        cached.prompt_cache_bounded_key_hydration_count = 1;
+        hub.state.lock().await.topics.insert(topic_key, cached);
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register working conversation owner");
+
+        let health = crate::load_runtime_pressure_health(state.as_ref()).await;
+        assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 1);
+        assert_eq!(health.prompt_cache_projection.recovery_state, "hot_db_read");
+        assert_eq!(health.state, "degraded");
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_bounded_cold_recovery_defers_aggregate_health() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+        cached.prompt_cache_full_hydration_count = 1;
+        cached.prompt_cache_bounded_key_hydration_count = 1;
+        cached.prompt_cache_response_source = "database_bounded_key_hydrate";
+        hub.state.lock().await.topics.insert(topic_key, cached);
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register working conversation owner");
+
+        let health = crate::load_runtime_pressure_health(state.as_ref()).await;
+        assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 0);
+        assert_eq!(
+            health
+                .prompt_cache_projection
+                .bounded_cold_recovery_topic_count,
+            1
+        );
+        assert_eq!(
+            health.prompt_cache_projection.recovery_state,
+            "bounded_cold_recovery"
+        );
+        assert_eq!(health.state, "deferred");
         drop(lease);
     }
 
@@ -8583,6 +11712,35 @@ mod tests {
                 topic: "dashboard.network-recent.current".to_string(),
                 params: BTreeMap::new(),
             },
+            SubscriptionTopicDescriptor {
+                topic: "dashboard.working-conversations.current".to_string(),
+                params: BTreeMap::from([
+                    ("pageSize".to_string(), "20".to_string()),
+                    ("recentInvocationLimit".to_string(), "16".to_string()),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.parallel-work.current".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "1d".to_string()),
+                    ("bucket".to_string(), "1m".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
+            SubscriptionTopicDescriptor {
+                topic: "stats.timeseries.open-window".to_string(),
+                params: BTreeMap::from([
+                    ("range".to_string(), "1d".to_string()),
+                    ("bucket".to_string(), "1m".to_string()),
+                    (
+                        "timeZone".to_string(),
+                        SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                    ),
+                ]),
+            },
         ]
     }
 
@@ -8684,18 +11842,37 @@ mod tests {
 
     async fn collect_dashboard_runtime_topology_sse_events(
         response: Response,
+        required_working_keys: &[&str],
     ) -> BTreeMap<String, Value> {
         let expected = [
             "dashboard.activity.current",
             "stats.summary.current",
             "dashboard.network-timeseries.window",
             "dashboard.network-recent.current",
+            "dashboard.working-conversations.current",
+            "stats.parallel-work.current",
+            "stats.timeseries.open-window",
         ];
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut stream = response.into_body().into_data_stream();
         let mut buffered = Vec::new();
-        let mut events = BTreeMap::new();
-        while events.len() < expected.len() {
+        let mut events: BTreeMap<String, Value> = BTreeMap::new();
+        loop {
+            let working_keys_ready = events
+                .get("dashboard.working-conversations.current")
+                .and_then(|envelope| envelope.pointer("/payload/conversations"))
+                .and_then(Value::as_array)
+                .map(|conversations| {
+                    required_working_keys.iter().all(|required_key| {
+                        conversations.iter().any(|conversation| {
+                            conversation["promptCacheKey"].as_str() == Some(required_key)
+                        })
+                    })
+                })
+                .unwrap_or(required_working_keys.is_empty());
+            if events.len() == expected.len() && working_keys_ready {
+                break;
+            }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
@@ -8794,16 +11971,46 @@ mod tests {
                 topic.name(),
             );
         }
+        for topic in &topics {
+            let expected_typed_materializer = matches!(
+                topic.name(),
+                "dashboard.activity.current"
+                    | "stats.summary.current"
+                    | "dashboard.network-timeseries.window"
+                    | "dashboard.network-recent.current"
+                    | "stats.timeseries.open-window"
+                    | "stats.parallel-work.current"
+                    | "dashboard.working-conversations.current"
+            );
+            assert_eq!(
+                state
+                    .subscription_hub
+                    .dashboard_topic_uses_typed_materializer(topic)
+                    .await,
+                expected_typed_materializer,
+                "typed materializer seam must report the current implementation for {}",
+                topic.name(),
+            );
+        }
         {
             let guard = state.subscription_hub.state.lock().await;
+            let working_topic_key = topics
+                .iter()
+                .find(|topic| topic.name() == "dashboard.working-conversations.current")
+                .expect("working conversations topic")
+                .cache_key()
+                .expect("working conversations topic key");
             assert_eq!(
-                guard.server_push_subscribers.len(),
-                0,
-                "network topics must not start subscription-owned cadence tasks",
+                guard
+                    .server_push_subscribers
+                    .get(&working_topic_key)
+                    .copied(),
+                Some(2),
+                "working conversations owns its bounded expiry and reconcile cadence",
             );
             assert!(
-                guard.server_push_tasks.is_empty(),
-                "network topics must be driven by the shared projection cadence",
+                guard.server_push_tasks.contains(&working_topic_key),
+                "working conversations must retain its bounded expiry task",
             );
         }
         spawn_subscription_broadcast_listener(state.clone());
@@ -8827,6 +12034,22 @@ mod tests {
         state
             .proxy_runtime_invocations
             .upsert(dashboard_runtime_topology_live_record(&occurred_at));
+        let current_capture = state
+            .proxy_runtime_invocations
+            .capture_memory_snapshot()
+            .expect("capture deterministic Dashboard current slice");
+        assert!(current_capture.changed);
+        state
+            .subscription_hub
+            .handle_internal_broadcast(
+                state.clone(),
+                BroadcastPayload::DashboardCurrentSlice {
+                    slice: Box::new(DashboardCurrentProjectionSlice::from(
+                        &current_capture.snapshot,
+                    )),
+                },
+            )
+            .await;
         let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
         terminal.id = 748_003;
         terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
@@ -8868,29 +12091,268 @@ mod tests {
             4096,
             Utc::now() - ChronoDuration::seconds(1),
         );
-        crate::api::slices::error_distribution_and_sse::schedule_dashboard_activity_live_snapshot(
-            state.as_ref(),
-        );
-        crate::api::slices::error_distribution_and_sse::schedule_dashboard_network_projection(
-            state.as_ref(),
-        );
+        let network_capture = state
+            .proxy_runtime_invocations
+            .capture_network_slice()
+            .expect("capture deterministic Dashboard network slice");
+        assert!(network_capture.changed);
         state
             .subscription_hub
-            .refresh_topic(
+            .handle_internal_broadcast(
                 state.clone(),
-                topics.last().expect("network recent topic").clone(),
-                true,
+                BroadcastPayload::DashboardNetworkSlice {
+                    slice: Box::new(network_capture.slice),
+                },
             )
+            .await;
+        let mut fallback = terminal.clone();
+        fallback.id = 748_004;
+        fallback.invoke_id = "dashboard-runtime-topology-fallback".to_string();
+        // Parallel-work only reports completed buckets, so place the live mutation in the
+        // previous minute while still applying it after both subscriptions are established.
+        fallback.occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        fallback.created_at = fallback.occurred_at.clone();
+        fallback.prompt_cache_key = Some("dashboard-runtime-topology-fallback".to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(fallback.id)
+        .bind(fallback.invoke_id.as_str())
+        .bind(fallback.occurred_at.as_str())
+        .bind(fallback.source.as_str())
+        .bind("success")
+        .bind(42_i64)
+        .bind(0.25_f64)
+        .bind(
+            json!({
+                "promptCacheKey": fallback.prompt_cache_key.as_deref(),
+                "upstreamAccountId": fallback.upstream_account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist generic fallback benchmark invocation");
+        let mut second_parallel_work = fallback.clone();
+        second_parallel_work.id = 748_005;
+        second_parallel_work.invoke_id =
+            "dashboard-runtime-topology-second-parallel-work".to_string();
+        second_parallel_work.prompt_cache_key =
+            Some("dashboard-runtime-topology-second".to_string());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(second_parallel_work.id)
+        .bind(second_parallel_work.invoke_id.as_str())
+        .bind(second_parallel_work.occurred_at.as_str())
+        .bind(second_parallel_work.source.as_str())
+        .bind("success")
+        .bind(42_i64)
+        .bind(0.25_f64)
+        .bind(
+            json!({
+                "promptCacheKey": second_parallel_work.prompt_cache_key.as_deref(),
+                "upstreamAccountId": second_parallel_work.upstream_account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist second parallel-work benchmark invocation");
+        let mut parallel_work_mutations = Vec::with_capacity(10_000);
+        parallel_work_mutations.push(SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::invocation(&fallback, RuntimeMutationKind::RuntimeUpsert),
+        });
+        parallel_work_mutations.push(SequencedRuntimeMutation {
+            sequence: 2,
+            mutation: RuntimeMutation::invocation(
+                &second_parallel_work,
+                RuntimeMutationKind::RuntimeUpsert,
+            ),
+        });
+        parallel_work_mutations.extend((3..=10_000).map(|sequence| SequencedRuntimeMutation {
+            sequence,
+            mutation: RuntimeMutation::invocation(&fallback, RuntimeMutationKind::RuntimeUpsert),
+        }));
+        state.proxy_runtime_invocations.upsert(fallback.clone());
+        state
+            .subscription_hub
+            .handle_runtime_mutation_batch(state.clone(), parallel_work_mutations)
+            .await;
+        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE * 2).await;
+        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let projected_parallel = {
+            let guard = state.subscription_hub.state.lock().await;
+            guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")]
+                .snapshot_frame
+                .payload_value()
+        };
+        let exact_parallel = load_parallel_work_stats_response(
+            &state,
+            ParallelWorkStatsQuery {
+                range: "1d".to_string(),
+                bucket: Some("1m".to_string()),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                upstream_account_id: None,
+            },
+        )
+        .await
+        .expect("build exact parallel-work response");
+        let fallback_occurred_at =
+            parse_to_utc_datetime(&fallback.occurred_at).expect("parse fallback timestamp");
+        let fallback_bucket_start = format_utc_iso(
+            Utc.timestamp_opt(fallback_occurred_at.timestamp().div_euclid(60) * 60, 0)
+                .single()
+                .expect("construct fallback minute"),
+        );
+        let projected_point = projected_parallel["current"]["points"]
+            .as_array()
+            .and_then(|points| {
+                points.iter().find(|point| {
+                    point["bucketStart"].as_str() == Some(fallback_bucket_start.as_str())
+                })
+            })
+            .expect("projected fallback point");
+        let exact_point = exact_parallel
+            .current
+            .points
+            .iter()
+            .find(|point| point.bucket_start == fallback_bucket_start)
+            .expect("exact fallback point");
+        assert_eq!(
+            projected_point["parallelCount"],
+            json!(exact_point.parallel_count),
+            "runtime projection must preserve the exact distinct-key bucket count"
+        );
+        let projected_conversation = projected_parallel["current"]["conversations"]
+            .as_array()
+            .and_then(|conversations| {
+                conversations.iter().find(|conversation| {
+                    conversation["conversationId"].as_str() == fallback.prompt_cache_key.as_deref()
+                })
+            })
+            .expect("projected fallback conversation");
+        let exact_conversation = exact_parallel
+            .current
+            .conversations
+            .iter()
+            .find(|conversation| {
+                Some(conversation.conversation_id.as_str()) == fallback.prompt_cache_key.as_deref()
+            })
+            .expect("exact fallback conversation");
+        assert_eq!(
+            projected_conversation,
+            &serde_json::to_value(exact_conversation).expect("serialize exact conversation"),
+            "runtime projection must preserve the exact conversation span"
+        );
+        let delivery_before_reconnect = state.subscription_hub.dashboard_topology_counters();
+        for topic in [
+            delivery_before_reconnect.activity,
+            delivery_before_reconnect.summary,
+            delivery_before_reconnect.network_timeseries,
+            delivery_before_reconnect.network_recent,
+            delivery_before_reconnect.working_conversations,
+            delivery_before_reconnect.parallel_work,
+            delivery_before_reconnect.timeseries,
+        ] {
+            assert_eq!(
+                topic.active_subscriber_count, 2,
+                "the live Dashboard topology must retain two subscribers before reconnect"
+            );
+            assert_eq!(
+                topic.reconnect_churn_count, 0,
+                "runtime mutations must not create reconnect churn"
+            );
+        }
+        let resume = {
+            let guard = state.subscription_hub.state.lock().await;
+            topics
+                .iter()
+                .map(|topic| {
+                    let topic_key = topic.cache_key().expect("Dashboard topic key");
+                    let cached = guard
+                        .topics
+                        .get(&topic_key)
+                        .expect("cached Dashboard topic");
+                    SubscriptionResumeCursor {
+                        topic_key,
+                        cursor: cached.cursor,
+                        schema_epoch: cached.schema_epoch.clone(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let resumed = state
+            .subscription_hub
+            .prepare_connection(state.clone(), descriptors, resume)
             .await
-            .expect("emit one deterministic network recent frame");
+            .expect("reconnect Dashboard topology with cursors");
+        assert!(resumed.initial.is_empty());
+        assert!(
+            resumed
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.disposition == TopicInitDisposition::ResumeCaughtUp),
+            "same-cursor reconnect must not rebuild the Dashboard bundle"
+        );
         let (first_frames, second_frames) = tokio::join!(
-            collect_dashboard_runtime_topology_sse_events(first_response),
-            collect_dashboard_runtime_topology_sse_events(second_response),
+            collect_dashboard_runtime_topology_sse_events(
+                first_response,
+                &[
+                    "dashboard-runtime-topology-fallback",
+                    "dashboard-runtime-topology-second",
+                ],
+            ),
+            collect_dashboard_runtime_topology_sse_events(
+                second_response,
+                &[
+                    "dashboard-runtime-topology-fallback",
+                    "dashboard-runtime-topology-second",
+                ],
+            ),
         );
         state.shutdown.cancel();
         assert_eq!(
             first_frames, second_frames,
             "both SSE owners should receive the same serialized live frames",
+        );
+        let working_payload = first_frames
+            .get("dashboard.working-conversations.current")
+            .and_then(|envelope| envelope.get("payload"))
+            .expect("working conversations live payload");
+        assert_eq!(working_payload["totalMatched"], json!(2));
+        let working_keys = working_payload["conversations"]
+            .as_array()
+            .expect("working conversations array")
+            .iter()
+            .filter_map(|conversation| conversation["promptCacheKey"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(working_keys.contains("dashboard-runtime-topology-fallback"));
+        assert!(
+            working_keys.contains("dashboard-runtime-topology-second"),
+            "a durable terminal missing from runtime store must hydrate its selected key"
         );
         let first_observations = state
             .subscription_hub
@@ -8905,6 +12367,9 @@ mod tests {
             "stats.summary.current",
             "dashboard.network-timeseries.window",
             "dashboard.network-recent.current",
+            "dashboard.working-conversations.current",
+            "stats.parallel-work.current",
+            "stats.timeseries.open-window",
         ] {
             let first_owner_frames = first_observations
                 .get(topic)
@@ -8978,6 +12443,9 @@ mod tests {
             delivery.summary,
             delivery.network_timeseries,
             delivery.network_recent,
+            delivery.working_conversations,
+            delivery.parallel_work,
+            delivery.timeseries,
         ] {
             assert_eq!(
                 topic.business_payload_count, 0,
@@ -8991,13 +12459,16 @@ mod tests {
                 topic.materialization_count >= 1,
                 "each active Dashboard topic should materialize an immutable frame"
             );
-            assert_eq!(topic.active_subscriber_count, 2);
             assert_eq!(topic.builder_count, topic.materialization_count);
             assert!(topic.frame_bytes_count > 0);
             assert_eq!(topic.cursor_advanced, topic.serialization_count);
             assert!(topic.frame_reused > 0);
             assert_eq!(topic.lagged_count, 0);
             assert_eq!(topic.skipped_count, 0);
+            assert_eq!(
+                topic.reconnect_churn_count, 0,
+                "a cursor-continuous resume is not reconnect churn"
+            );
         }
         for topic in [delivery.activity, delivery.summary] {
             assert_eq!(
@@ -9019,6 +12490,1142 @@ mod tests {
                 "network topic materialization must borrow its typed base"
             );
         }
+        assert_eq!(
+            delivery.timeseries.serialization_count, delivery.timeseries.materialization_count,
+            "each materialized timeseries revision should serialize exactly once"
+        );
+        assert_eq!(
+            delivery.timeseries.payload_clone_count, 0,
+            "timeseries topic materialization must retain typed aggregates"
+        );
+        for topic in [
+            delivery.activity,
+            delivery.summary,
+            delivery.network_timeseries,
+            delivery.network_recent,
+            delivery.timeseries,
+            delivery.working_conversations,
+            delivery.parallel_work,
+        ] {
+            assert_eq!(topic.generic_fallback_build_count, 0);
+            assert_eq!(topic.live_path_db_read_count, 0);
+        }
+        assert!(
+            !state
+                .subscription_hub
+                .dashboard_delivery_has_degraded_signal(),
+            "typed Dashboard topics must remain healthy on the in-memory live path"
+        );
+    }
+
+    #[test]
+    fn parallel_work_projection_extends_rolling_window_with_live_bucket() {
+        let current_bucket = Utc::now().timestamp().div_euclid(60) * 60;
+        let initial_start = Utc
+            .timestamp_opt(current_bucket - 120, 0)
+            .single()
+            .expect("construct initial point start");
+        let initial_end = Utc
+            .timestamp_opt(current_bucket - 60, 0)
+            .single()
+            .expect("construct initial point end");
+        let live_end = Utc
+            .timestamp_opt(current_bucket + 60, 0)
+            .single()
+            .expect("construct live point end");
+        let mut window = ParallelWorkWindowResponse {
+            range_start: format_utc_iso(initial_start),
+            range_end: format_utc_iso(initial_end),
+            bucket_seconds: 60,
+            complete_bucket_count: 1,
+            active_bucket_count: 0,
+            active_minute_count: Some(0),
+            min_count: Some(0),
+            max_count: Some(0),
+            avg_count: None,
+            effective_time_zone: chrono_tz::UTC.to_string(),
+            time_zone_fallback: false,
+            points: vec![ParallelWorkPoint {
+                bucket_start: format_utc_iso(initial_start),
+                bucket_end: format_utc_iso(initial_end),
+                parallel_count: 0,
+            }],
+            conversations: Vec::new(),
+        };
+        let bucket_keys =
+            BTreeMap::from([(current_bucket, HashSet::from(["live-key".to_string()]))]);
+
+        assert!(refresh_parallel_work_points(
+            &mut window,
+            current_bucket,
+            chrono_tz::UTC,
+            &bucket_keys,
+        ));
+        assert_eq!(window.range_end, format_utc_iso(live_end));
+        assert_eq!(window.complete_bucket_count, 3);
+        assert_eq!(
+            window.points.last().map(|point| point.parallel_count),
+            Some(1)
+        );
+    }
+
+    fn parallel_work_materializer_state(
+        range: &str,
+        range_start: DateTime<Utc>,
+        baseline_row_id: i64,
+        upstream_account_id: Option<i64>,
+    ) -> DashboardParallelWorkMaterializerState {
+        let range_end = range_start + ChronoDuration::minutes(1);
+        let window = ParallelWorkWindowResponse {
+            range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            bucket_seconds: 60,
+            complete_bucket_count: 1,
+            active_bucket_count: 0,
+            active_minute_count: Some(0),
+            min_count: Some(0),
+            max_count: Some(0),
+            avg_count: None,
+            effective_time_zone: chrono_tz::UTC.to_string(),
+            time_zone_fallback: false,
+            points: vec![ParallelWorkPoint {
+                bucket_start: format_utc_iso(range_start),
+                bucket_end: format_utc_iso(range_end),
+                parallel_count: 0,
+            }],
+            conversations: vec![ParallelWorkConversation {
+                conversation_id: "baseline-key".to_string(),
+                start: format_utc_iso(range_start),
+                end: format_utc_iso(range_end),
+                request_count: 1,
+            }],
+        };
+        let response = ParallelWorkStatsResponse {
+            current: window.clone(),
+            minute7d: window.clone(),
+            hour30d: window.clone(),
+            day_all: window,
+        };
+        let range_start_epoch = range_start.timestamp();
+        DashboardParallelWorkMaterializerState {
+            baseline_response: response.clone(),
+            response,
+            baseline_bucket_keys: BTreeMap::new(),
+            bucket_keys: BTreeMap::new(),
+            baseline_minute_keys: BTreeMap::new(),
+            minute_keys: BTreeMap::new(),
+            baseline_active_minute_stats: ParallelWorkActiveMinuteStats::default(),
+            active_minute_stats: ParallelWorkActiveMinuteStats::default(),
+            baseline_complete_minute_start_epoch: if range_start_epoch.rem_euclid(60) == 0 {
+                range_start_epoch
+            } else {
+                range_start_epoch.div_euclid(60) * 60 + 60
+            },
+            baseline_complete_minute_end_epoch: range_end.timestamp().div_euclid(60) * 60,
+            baseline_row_id,
+            range: range.to_string(),
+            reporting_tz: chrono_tz::UTC,
+            upstream_account_id,
+            conversations_enabled: true,
+            baseline_identities: HashSet::new(),
+            applied_identities: HashSet::new(),
+            runtime_mutations: BTreeMap::new(),
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn parallel_work_projection_excludes_incomplete_current_minute_from_average() {
+        let now = Utc::now();
+        let current_minute_start = now.timestamp().div_euclid(60) * 60;
+        let occurred_at = Utc
+            .timestamp_opt(current_minute_start + 1, 0)
+            .single()
+            .expect("construct current incomplete minute");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        assert!(state.apply_runtime_overlay_at(
+            &RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "current-minute-invoke",
+                    format_utc_iso(occurred_at),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("current-minute-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            },
+            now,
+        ));
+        assert_eq!(state.active_minute_stats, active_minute_stats);
+        assert_eq!(state.response.current.active_minute_count, Some(4));
+        assert_eq!(state.response.current.avg_count, Some(3.0));
+    }
+
+    #[test]
+    fn parallel_work_projection_promotes_closed_runtime_minutes_on_next_overlay() {
+        let minute_start = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("construct minute start");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            minute_start - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        let first = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "completed-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(1)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("completed-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(state.apply_runtime_overlay_at(&first, minute_start + ChronoDuration::seconds(30)));
+        assert_eq!(state.active_minute_stats, active_minute_stats);
+
+        let next_minute = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "next-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(61)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("next-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(
+            state
+                .apply_runtime_overlay_at(&next_minute, minute_start + ChronoDuration::seconds(90))
+        );
+        assert_eq!(
+            state.active_minute_stats,
+            ParallelWorkActiveMinuteStats {
+                active_minute_count: Some(5),
+                parallel_count_sum: 13,
+            }
+        );
+        assert_eq!(state.response.current.avg_count, Some(2.6));
+    }
+
+    #[test]
+    fn parallel_work_projection_promotes_persisted_current_minute_after_boundary() {
+        let minute_start = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("construct minute start");
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            minute_start - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let active_minute_stats = ParallelWorkActiveMinuteStats {
+            active_minute_count: Some(4),
+            parallel_count_sum: 12,
+        };
+        state.baseline_active_minute_stats = active_minute_stats;
+        state.active_minute_stats = active_minute_stats;
+        state.baseline_complete_minute_end_epoch = minute_start.timestamp();
+        state.baseline_minute_keys.insert(
+            minute_start.timestamp(),
+            HashSet::from(["persisted-current-minute-key".to_string()]),
+        );
+        state.minute_keys = state.baseline_minute_keys.clone();
+        for window in [
+            &mut state.response.current,
+            &mut state.response.minute7d,
+            &mut state.response.hour30d,
+            &mut state.response.day_all,
+        ] {
+            window.active_minute_count = Some(4);
+            window.avg_count = Some(3.0);
+        }
+
+        let next_minute = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "next-minute-invoke",
+                format_utc_iso(minute_start + ChronoDuration::seconds(61)),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("next-minute-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(
+            state
+                .apply_runtime_overlay_at(&next_minute, minute_start + ChronoDuration::seconds(90))
+        );
+        assert_eq!(
+            state.active_minute_stats,
+            ParallelWorkActiveMinuteStats {
+                active_minute_count: Some(5),
+                parallel_count_sum: 13,
+            }
+        );
+        assert_eq!(state.response.current.avg_count, Some(2.6));
+    }
+
+    #[test]
+    fn parallel_work_projection_skips_rows_already_in_its_cold_baseline() {
+        let occurred_at = Utc::now() - ChronoDuration::seconds(30);
+        let mut state = parallel_work_materializer_state("1d", occurred_at, 42, None);
+        let outcome = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "baseline-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::TerminalCommitted,
+            row_id: Some(42),
+            is_terminal: true,
+            prompt_cache_key: Some("baseline-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+
+        assert!(!outcome.changed);
+        assert_eq!(state.response.current.conversations[0].request_count, 1);
+    }
+
+    #[test]
+    fn parallel_work_projection_requires_typed_reconcile_for_unknown_account_fallback() {
+        let occurred_at = Utc::now() - ChronoDuration::seconds(30);
+        let mut state = parallel_work_materializer_state("1d", occurred_at, 0, Some(77));
+        let outcome = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "fallback-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: Some(43),
+            is_terminal: false,
+            prompt_cache_key: Some("account-fallback-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+
+        assert!(!outcome.changed);
+        assert!(outcome.needs_account_reconcile);
+    }
+
+    #[test]
+    fn parallel_work_projection_rebases_moving_ranges() {
+        let state = parallel_work_materializer_state(
+            "1d",
+            Utc::now() - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+
+        assert!(state.requires_rolling_rebase());
+    }
+
+    #[test]
+    fn parallel_work_projection_removes_runtime_only_work_immediately() {
+        let occurred_at = Utc::now();
+        let mut state = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let identity =
+            RuntimeInvocationIdentity::new("runtime-only-invoke", format_utc_iso(occurred_at));
+        let upsert = RuntimeInvocationMutation {
+            identity: identity.clone(),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("runtime-only-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(state.apply_runtime_mutation(&upsert).changed);
+        assert!(
+            state
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "runtime-only-key" })
+        );
+
+        let removed = state.apply_runtime_mutation(&RuntimeInvocationMutation {
+            identity,
+            kind: RuntimeMutationKind::RuntimeRemoved,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: None,
+            sticky_key: None,
+            upstream_account_id: None,
+        });
+        assert!(removed.changed);
+        assert!(
+            !state
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "runtime-only-key" })
+        );
+        assert_eq!(
+            state
+                .response
+                .current
+                .points
+                .iter()
+                .map(|point| point.parallel_count)
+                .sum::<i64>(),
+            0
+        );
+    }
+
+    #[test]
+    fn parallel_work_projection_replays_runtime_entries_after_rebase() {
+        let occurred_at = Utc::now();
+        let mut old = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "rebase-race-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("rebase-race-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(old.apply_runtime_mutation(&mutation).changed);
+
+        let mut rebased = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(1),
+            0,
+            None,
+        );
+        assert!(rebased.replay_runtime_mutations(&old.runtime_mutations));
+        assert!(
+            rebased
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| { conversation.conversation_id == "rebase-race-key" })
+        );
+    }
+
+    #[test]
+    fn parallel_work_projection_skips_runtime_entries_already_in_rebased_baseline() {
+        let occurred_at = Utc::now();
+        let mut old = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(2),
+            0,
+            None,
+        );
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "persisted-rebase-invoke",
+                format_utc_iso(occurred_at),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("persisted-rebase-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        assert!(old.apply_runtime_mutation(&mutation).changed);
+
+        let mut rebased = parallel_work_materializer_state(
+            "1d",
+            occurred_at - ChronoDuration::minutes(1),
+            0,
+            None,
+        );
+        for window in [
+            &mut rebased.response.current,
+            &mut rebased.response.minute7d,
+            &mut rebased.response.hour30d,
+            &mut rebased.response.day_all,
+        ] {
+            window.conversations = vec![ParallelWorkConversation {
+                conversation_id: "persisted-rebase-key".to_string(),
+                start: format_utc_iso(occurred_at),
+                end: format_utc_iso(occurred_at + ChronoDuration::minutes(1)),
+                request_count: 1,
+            }];
+        }
+        rebased.baseline_response = rebased.response.clone();
+        rebased.baseline_identities.insert(format!(
+            "{}\0{}",
+            mutation.identity.invoke_id, mutation.identity.occurred_at
+        ));
+
+        assert!(!rebased.replay_runtime_mutations(&old.runtime_mutations));
+        assert_eq!(rebased.response.current.conversations[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_reconcile_failure_schedules_runtime_recovery_retry() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: Some(77),
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        {
+            let mut guard = hub.state.lock().await;
+            let cached = guard.topics.get_mut(&topic_key).expect("cached topic");
+            cached.dirty = true;
+            cached.parallel_work_refresh_scheduled = true;
+        }
+
+        hub.schedule_parallel_work_reconcile_retry(state.clone(), &topic)
+            .await;
+
+        let guard = hub.state.lock().await;
+        let cached = guard.topics.get(&topic_key).expect("cached topic");
+        assert!(cached.dirty);
+        assert!(!cached.parallel_work_refresh_scheduled);
+        assert!(cached.runtime_topic_recovery_retry_at.is_some());
+        assert!(guard.runtime_topic_recovery_running);
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_replays_mutations_buffered_before_cold_baseline() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        let occurred_at = format_utc_iso(Utc::now());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new("prebaseline-invoke", occurred_at),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("prebaseline-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation before initial baseline");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.prepare_connection(state, vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build and replay parallel-work baseline");
+        let guard = hub.state.lock().await;
+        let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+            guard.topics[&topic_key].dashboard_materializer.as_ref()
+        else {
+            panic!("parallel-work topic must use a typed materializer");
+        };
+        assert!(
+            base.lock()
+                .expect("parallel-work materializer state lock")
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| conversation.conversation_id == "prebaseline-key")
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_discards_prebaseline_mutations_after_last_owner_leaves() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let mut lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "released-prebaseline-invoke",
+                    format_utc_iso(Utc::now()),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("released-prebaseline-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation before initial baseline");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        let topic_keys = std::mem::take(&mut lease.topic_keys);
+        let topic_names = std::mem::take(&mut lease.topic_names);
+        hub.release_topic_subscribers(topic_keys, topic_names, lease.owns_dashboard_live)
+            .await;
+        drop(lease);
+
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.schedule_parallel_work_topic_projection(state, topic, &mutations)
+            .await
+            .expect("ignore mutation after final owner release");
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_retains_unknown_account_mutation_through_reconcile() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: Some(77),
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        let mutation = RuntimeInvocationMutation {
+            identity: RuntimeInvocationIdentity::new(
+                "unknown-account-invoke",
+                format_utc_iso(Utc::now()),
+            ),
+            kind: RuntimeMutationKind::RuntimeUpsert,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: Some("unknown-account-key".to_string()),
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(mutation.clone()),
+        }];
+
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("schedule unknown-account reconcile");
+        hub.refresh_topic_if_active(state.clone(), topic.clone(), true)
+            .await
+            .expect("reconcile unknown-account baseline");
+
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .get(&topic_key)
+                .is_some_and(|pending| pending.contains_key(&format!(
+                    "{}\0{}",
+                    mutation.identity.invoke_id, mutation.identity.occurred_at
+                )))
+        );
+
+        let removed = RuntimeInvocationMutation {
+            identity: mutation.identity.clone(),
+            kind: RuntimeMutationKind::RuntimeRemoved,
+            row_id: None,
+            is_terminal: false,
+            prompt_cache_key: None,
+            sticky_key: None,
+            upstream_account_id: None,
+        };
+        let removals = [SequencedRuntimeMutation {
+            sequence: 2,
+            mutation: RuntimeMutation::Invocation(removed),
+        }];
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic, &removals)
+            .await
+            .expect("discard removed unknown-account mutation");
+
+        assert!(
+            !hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn parallel_work_projection_replays_mutations_buffered_while_rebasing() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("parallel-work topic key");
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register parallel-work owner");
+        hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build initial parallel-work baseline");
+        {
+            let mut guard = hub.state.lock().await;
+            guard
+                .topics
+                .get_mut(&topic_key)
+                .expect("cached topic")
+                .dirty = true;
+        }
+
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "rebase-buffered-invoke",
+                    format_utc_iso(Utc::now()),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("rebase-buffered-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }];
+        hub.schedule_parallel_work_topic_projection(state.clone(), topic.clone(), &mutations)
+            .await
+            .expect("buffer mutation while rebase is in flight");
+        assert!(
+            hub.state
+                .lock()
+                .await
+                .parallel_work_prebaseline_mutations
+                .contains_key(&topic_key)
+        );
+
+        hub.refresh_topic_if_active(state, topic, true)
+            .await
+            .expect("rebuild parallel-work baseline")
+            .expect("active owner receives rebuilt topic");
+        let guard = hub.state.lock().await;
+        let Some(DashboardTopicMaterializer::ParallelWork { base }) =
+            guard.topics[&topic_key].dashboard_materializer.as_ref()
+        else {
+            panic!("parallel-work topic must retain a typed materializer");
+        };
+        assert!(
+            base.lock()
+                .expect("parallel-work materializer state lock")
+                .response
+                .current
+                .conversations
+                .iter()
+                .any(|conversation| conversation.conversation_id == "rebase-buffered-key")
+        );
+        drop(guard);
+        drop(lease);
+    }
+
+    #[test]
+    fn dashboard_delivery_reconnect_churn_is_degraded() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_reconnect_churn("dashboard.working-conversations.current");
+
+        assert!(counters.has_degraded_signal());
+    }
+
+    #[test]
+    fn dashboard_topic_classification_is_exhaustive_for_live_closed_and_cold_topics() {
+        let hot = [
+            SubscriptionTopic::DashboardActivityCurrent {
+                range: "today".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                recent_limit: 16,
+                include_accounts: true,
+                include_recent: true,
+            },
+            SubscriptionTopic::DashboardWorkingConversationsCurrent {
+                page_size: 16,
+                recent_invocation_limit: 16,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::TimeseriesOpenWindow {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                settlement_hour: None,
+                upstream_account_id: None,
+            },
+        ];
+        for topic in hot {
+            assert_eq!(topic.class(), SubscriptionTopicClass::HotProjection);
+        }
+
+        for topic in [
+            SubscriptionTopic::DashboardActivityCurrent {
+                range: "yesterday".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                recent_limit: 16,
+                include_accounts: true,
+                include_recent: true,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "yesterday".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+        ] {
+            assert_eq!(topic.class(), SubscriptionTopicClass::ClosedSnapshot);
+        }
+
+        assert_eq!(
+            SubscriptionTopic::InvocationWindow {
+                limit: 50,
+                model: None,
+                status: None,
+            }
+            .class(),
+            SubscriptionTopicClass::BoundedColdHydrate,
+        );
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_reports_fallback_db_cadence_and_churn() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_materialization("stats.parallel-work.current", true);
+        counters.record_reconnect_churn("dashboard.working-conversations.current");
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            current: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.activity.cadence_miss_count, 2);
+        assert_eq!(health.parallel_work.generic_fallback_build_count, 1);
+        assert_eq!(health.parallel_work.live_path_db_read_count, 1);
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.working_conversations.reconnect_churn_count, 1);
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.timeseries.topic_class, "hot_projection");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_cadence_misses_to_each_materializer() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_cadence_miss("dashboard.working-conversations.current");
+        counters.record_cadence_miss("stats.parallel-work.current");
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            current: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 2,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.working_conversations.cadence_miss_count, 1);
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.cadence_miss_count, 1);
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.cadence_miss_count, 5);
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_activity_and_summary_slice_dependencies() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            network: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 5,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.activity.cadence_miss_count, 12);
+        assert_eq!(health.activity.state, "degraded");
+        assert_eq!(health.summary.cadence_miss_count, 7);
+        assert_eq!(health.summary.state, "degraded");
+    }
+
+    #[tokio::test]
+    async fn dashboard_hot_topic_health_marks_cursor_gap_last_good_as_degraded() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topics = vec![
+            SubscriptionTopic::DashboardWorkingConversationsCurrent {
+                page_size: 20,
+                recent_invocation_limit: 16,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::TimeseriesOpenWindow {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                settlement_hour: None,
+                upstream_account_id: None,
+            },
+        ];
+        {
+            let mut guard = hub.state.lock().await;
+            for topic in &topics {
+                guard.topics.insert(
+                    topic.cache_key().expect("hot topic key"),
+                    seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+                );
+            }
+            // Keep the recovery worker parked so the health snapshot observes dirty last-good.
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register hot topic owners");
+
+        hub.mark_runtime_mutation_gap_and_recover(state, 4, "cursor_gap")
+            .await;
+        let health = hub
+            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default())
+            .await;
+
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+        drop(lease);
+    }
+
+    #[test]
+    fn hot_fallback_metrics_exclude_closed_dashboard_snapshots() {
+        let closed_activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let closed_summary = SubscriptionTopic::SummaryCurrent {
+            window: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let closed_parallel = SubscriptionTopic::ParallelWorkCurrent {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let closed_timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "yesterday".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let open_parallel = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let open_timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let mutation = RuntimeMutation::invocation(
+            &dashboard_runtime_topology_live_record("2026-08-11 12:00:00"),
+            RuntimeMutationKind::RuntimeUpsert,
+        );
+
+        for topic in [
+            &closed_activity,
+            &closed_summary,
+            &closed_parallel,
+            &closed_timeseries,
+        ] {
+            assert!(!topic.is_unmigrated_dashboard_hot_projection());
+        }
+        assert!(!open_parallel.is_unmigrated_dashboard_hot_projection());
+        assert!(!open_timeseries.is_unmigrated_dashboard_hot_projection());
+        assert!(!closed_parallel.is_affected_by_runtime_mutation(&mutation));
+        assert!(!closed_timeseries.is_affected_by_runtime_mutation(&mutation));
+        assert!(open_parallel.is_affected_by_runtime_mutation(&mutation));
+        assert!(open_timeseries.is_affected_by_runtime_mutation(&mutation));
     }
 
     #[tokio::test]
@@ -9815,6 +14422,13 @@ mod tests {
             limit: None,
             upstream_account_id: None,
         };
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
         let activity_materializer = activity
             .build_cached_payload(state.clone())
             .await
@@ -9822,11 +14436,17 @@ mod tests {
             .dashboard_materializer()
             .expect("activity typed materializer");
         let summary_materializer = summary
-            .build_cached_payload(state)
+            .build_cached_payload(state.clone())
             .await
             .expect("build summary base")
             .dashboard_materializer()
             .expect("summary typed materializer");
+        let timeseries_materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build timeseries base")
+            .dashboard_materializer()
+            .expect("timeseries typed materializer");
 
         assert!(
             !activity_materializer.requires_terminal_window_rebase(),
@@ -9835,6 +14455,10 @@ mod tests {
         assert!(
             !summary_materializer.requires_terminal_window_rebase(),
             "a freshly built duration base must wait for the reconcile boundary",
+        );
+        assert!(
+            !timeseries_materializer.requires_terminal_window_rebase(),
+            "a freshly built timeseries base must wait for the reconcile boundary",
         );
 
         let DashboardTopicMaterializer::Activity { base, .. } = &activity_materializer else {
@@ -9849,9 +14473,20 @@ mod tests {
         base.lock()
             .expect("summary materializer state lock")
             .range_start = Some(Utc::now() - ChronoDuration::days(2));
+        let DashboardTopicMaterializer::Timeseries { base, .. } = &timeseries_materializer else {
+            panic!("expected timeseries materializer");
+        };
+        base.lock()
+            .expect("timeseries materializer state lock")
+            .set_range_start_for_test(
+                Utc::now()
+                    - ChronoDuration::days(1)
+                    - ChronoDuration::seconds(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64),
+            );
 
         assert!(activity_materializer.requires_terminal_window_rebase());
         assert!(summary_materializer.requires_terminal_window_rebase());
+        assert!(timeseries_materializer.requires_terminal_window_rebase());
     }
 
     #[tokio::test]
@@ -10368,6 +15003,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeseries_topic_base_preserves_pending_terminal_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "dashboard-runtime-timeseries-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accepted pending terminal delta");
+
+        let timeseries = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        let materializer = timeseries
+            .build_cached_payload(state)
+            .await
+            .expect("build terminal-consistent timeseries base")
+            .dashboard_materializer()
+            .expect("typed timeseries materializer");
+        let initial_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(None, None, None)
+                .expect("serialize materialized timeseries base"),
+        )
+        .expect("timeseries payload JSON");
+
+        assert_eq!(
+            initial_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the typed baseline must include the terminal delta before SQLite persistence",
+        );
+
+        let replayed_payload: Value = serde_json::from_slice(
+            &materializer
+                .serialize(
+                    None,
+                    None,
+                    Some(&DashboardTerminalProjectionSlice {
+                        revision: 1,
+                        deltas: vec![delta],
+                    }),
+                )
+                .expect("skip the terminal delta already folded into the base"),
+        )
+        .expect("timeseries replay payload JSON");
+        assert_eq!(
+            replayed_payload["points"]
+                .as_array()
+                .expect("timeseries points")
+                .iter()
+                .map(|point| point["totalCount"].as_i64().unwrap_or_default())
+                .sum::<i64>(),
+            1,
+            "the sequence watermark must reject the pending terminal replay",
+        );
+    }
+
+    #[tokio::test]
     async fn summary_materializer_skips_terminal_delta_already_folded_into_base() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -10570,9 +15281,13 @@ mod tests {
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
+            parallel_work_refresh_scheduled: false,
             prompt_cache_refresh_scheduled: false,
             prompt_cache_reconcile_scheduled: false,
+            prompt_cache_key_hydration_scheduled: false,
             prompt_cache_pending_records: BTreeMap::new(),
+            prompt_cache_pending_key_hydrations: BTreeSet::new(),
+            prompt_cache_candidate_refill_required: false,
             prompt_cache_applied_terminal_ids: HashSet::new(),
             prompt_cache_coalesced_event_count: 0,
             prompt_cache_full_hydration_count: 0,
@@ -10645,6 +15360,1203 @@ mod tests {
         assert_eq!(
             canonical.params.get("limit").map(String::as_str),
             Some("20")
+        );
+    }
+
+    #[test]
+    fn dashboard_working_conversations_descriptor_enforces_http_pagination_limits() {
+        let descriptor =
+            |page_size: &str, recent_invocation_limit: &str| SubscriptionTopicDescriptor {
+                topic: "dashboard.working-conversations.current".to_string(),
+                params: BTreeMap::from([
+                    ("pageSize".to_string(), page_size.to_string()),
+                    (
+                        "recentInvocationLimit".to_string(),
+                        recent_invocation_limit.to_string(),
+                    ),
+                ]),
+            };
+
+        assert!(SubscriptionTopic::from_descriptor(&descriptor("0", "4")).is_err());
+        assert!(SubscriptionTopic::from_descriptor(&descriptor("101", "4")).is_err());
+        assert!(SubscriptionTopic::from_descriptor(&descriptor("20", "3")).is_err());
+        assert!(SubscriptionTopic::from_descriptor(&descriptor("20", "17")).is_err());
+
+        let valid = descriptor("100", "16");
+        assert_eq!(
+            SubscriptionTopic::from_descriptor(&valid)
+                .expect("valid working conversation descriptor")
+                .descriptor(),
+            valid
+        );
+    }
+
+    #[tokio::test]
+    async fn working_conversations_snapshot_builder_uses_one_transaction_snapshot() {
+        let (state, temp_dir, _) = crate::tests::file_backed_test_state_with_busy_timeout(
+            "working-conversations-snapshot",
+            Duration::from_secs(1),
+        )
+        .await;
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&state.pool)
+            .await
+            .expect("enable concurrent reader and writer fixture");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let insert = |invoke_id: &str, prompt_cache_key: &str| {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, payload, raw_response
+                )
+                VALUES (?1, ?2, 'proxy', 'success', ?3, '{}')
+                "#,
+            )
+            .bind(invoke_id.to_string())
+            .bind(occurred_at.clone())
+            .bind(json!({ "promptCacheKey": prompt_cache_key }).to_string())
+        };
+        insert("baseline-key", "baseline-key")
+            .execute(&state.pool)
+            .await
+            .expect("insert baseline working conversation");
+
+        let mut transaction = state
+            .pool
+            .begin()
+            .await
+            .expect("begin snapshot transaction");
+        let baseline_row_id =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                .fetch_one(transaction.as_mut())
+                .await
+                .expect("read snapshot row ceiling");
+        insert("post-snapshot-key", "post-snapshot-key")
+            .execute(&state.pool)
+            .await
+            .expect("insert post-snapshot working conversation");
+
+        let response = build_prompt_cache_conversations_response_for_request_on_connection(
+            state.as_ref(),
+            PromptCacheConversationsRequest {
+                selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+                detail_level: PromptCacheConversationDetailLevel::Full,
+                recent_invocation_limit: Some(16),
+                page_size: Some(20),
+                cursor: None,
+                snapshot_at: None,
+                blocked_binding_filter: None,
+            },
+            transaction.as_mut(),
+            Utc::now(),
+            Some(baseline_row_id),
+        )
+        .await
+        .expect("build transaction-pinned working response");
+
+        let keys = response
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["baseline-key"]);
+        let cursor = response.conversations[0]
+            .cursor
+            .as_deref()
+            .expect("working conversation cursor");
+        assert_eq!(
+            decode_prompt_cache_conversation_cursor(cursor)
+                .expect("decode working conversation cursor")
+                .3,
+            Some(baseline_row_id)
+        );
+        transaction
+            .commit()
+            .await
+            .expect("commit snapshot transaction");
+        state.pool.close().await;
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_paginated_snapshot_keeps_pre_snapshot_runtime_after_update() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let snapshot_at = Utc::now();
+        let before_snapshot = format_naive(
+            (snapshot_at - ChronoDuration::seconds(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+
+        let mut running = dashboard_runtime_topology_live_record(&before_snapshot);
+        running.id = 0;
+        running.invoke_id = "working-runtime-pre-snapshot-update".to_string();
+        running.status = Some("running".to_string());
+        running.live_phase = Some("streaming".to_string());
+        running.prompt_cache_key = Some("working-runtime-pre-snapshot-update-key".to_string());
+        running.created_at = format_utc_iso_precise(snapshot_at - ChronoDuration::seconds(1));
+        state.proxy_runtime_invocations.upsert(running.clone());
+
+        let mut terminal_update = running;
+        terminal_update.status = Some("success".to_string());
+        terminal_update.live_phase = None;
+        terminal_update.total_tokens = Some(23);
+        terminal_update.created_at =
+            format_utc_iso_precise(snapshot_at + ChronoDuration::minutes(1));
+        state
+            .proxy_runtime_invocations
+            .upsert_terminal(terminal_update);
+
+        let mut post_snapshot = dashboard_runtime_topology_live_record(&format_naive(
+            (snapshot_at + ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ));
+        post_snapshot.id = 0;
+        post_snapshot.invoke_id = "working-runtime-post-snapshot".to_string();
+        post_snapshot.status = Some("success".to_string());
+        post_snapshot.live_phase = None;
+        post_snapshot.prompt_cache_key = Some("working-runtime-post-snapshot-key".to_string());
+        post_snapshot.created_at = format_utc_iso_precise(snapshot_at + ChronoDuration::minutes(1));
+        state.proxy_runtime_invocations.upsert(post_snapshot);
+
+        let response = build_prompt_cache_conversations_response_for_request(
+            state.as_ref(),
+            PromptCacheConversationsRequest {
+                selection: PromptCacheConversationSelection::ActivityWindowMinutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+                detail_level: PromptCacheConversationDetailLevel::Full,
+                recent_invocation_limit: Some(16),
+                page_size: Some(20),
+                cursor: None,
+                snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+                blocked_binding_filter: None,
+            },
+        )
+        .await
+        .expect("build frozen working conversations page");
+
+        assert_eq!(response.total_matched, Some(1));
+        assert_eq!(response.conversations.len(), 1);
+        let conversation = &response.conversations[0];
+        assert_eq!(
+            conversation.prompt_cache_key,
+            "working-runtime-pre-snapshot-update-key"
+        );
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 23);
+        assert_eq!(conversation.recent_invocations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_initial_baseline_preserves_prebaseline_key_for_hydration() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "prebaseline-working-key".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("prebaseline-working-key".to_string());
+        record.total_tokens = Some(37);
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build prebaseline working delta")
+            .expect("working delta");
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        state
+            .subscription_hub
+            .state
+            .lock()
+            .await
+            .prompt_cache_prebaseline_records
+            .entry(topic_key)
+            .or_default()
+            .insert(delta.identity.clone(), delta.clone());
+
+        let cached = state
+            .subscription_hub
+            .refresh_topic(state.clone(), topic, false)
+            .await
+            .expect("initial baseline must defer rather than drop a runtime-only key");
+
+        assert!(
+            cached
+                .prompt_cache_pending_records
+                .contains_key(&delta.identity)
+        );
+        assert!(
+            cached
+                .prompt_cache_pending_key_hydrations
+                .contains("prebaseline-working-key")
+        );
+        assert!(cached.prompt_cache_key_hydration_scheduled);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_initial_baseline_dedupes_runtime_overlay_terminal_replay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "runtime-overlay-pending-terminal".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("runtime-overlay-pending-key".to_string());
+        record.total_tokens = Some(37);
+        record.cost = Some(0.75);
+        state.proxy_runtime_invocations.upsert(record.clone());
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build prebaseline runtime terminal delta")
+            .expect("working runtime terminal delta");
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        state
+            .subscription_hub
+            .state
+            .lock()
+            .await
+            .prompt_cache_prebaseline_records
+            .entry(topic_key)
+            .or_default()
+            .insert(delta.identity.clone(), delta);
+
+        let cached = state
+            .subscription_hub
+            .refresh_topic(state.clone(), topic, false)
+            .await
+            .expect("initial baseline must not double-count its runtime overlay");
+        let DashboardTopicMaterializer::WorkingConversations {
+            state: materializer,
+        } = cached
+            .dashboard_materializer
+            .as_ref()
+            .expect("typed working materializer")
+        else {
+            panic!("expected typed working conversations materializer");
+        };
+        let materializer = materializer
+            .lock()
+            .expect("working conversations materializer state lock");
+        let conversation = materializer
+            .response
+            .conversations
+            .iter()
+            .find(|conversation| conversation.prompt_cache_key == "runtime-overlay-pending-key")
+            .expect("runtime overlay conversation is present");
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 37);
+        assert!((conversation.total_cost - 0.75).abs() < f64::EPSILON);
+        assert_eq!(conversation.last24h_requests.len(), 1);
+        assert_eq!(conversation.recent_invocations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_initial_baseline_dedupes_persisted_runtime_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "persisted-runtime-overlay-baseline".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("persisted-runtime-overlay-key".to_string());
+        record.upstream_account_id = Some(77);
+        record.upstream_account_name = Some("Persisted Overlay Account".to_string());
+        record.total_tokens = Some(37);
+        record.cost = Some(0.75);
+        state.proxy_runtime_invocations.upsert(record.clone());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, ?2, 'proxy', 'success', 37, 0.75, ?3, '{}')
+            "#,
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(
+            json!({
+                "promptCacheKey": "persisted-runtime-overlay-key",
+                "upstreamAccountId": 77,
+                "upstreamAccountName": "Persisted Overlay Account",
+            })
+            .to_string(),
+        )
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before runtime overlay acknowledgement");
+
+        let cached = state
+            .subscription_hub
+            .refresh_topic(state.clone(), topic, false)
+            .await
+            .expect("initial baseline must dedupe a persisted runtime overlay");
+        let DashboardTopicMaterializer::WorkingConversations {
+            state: materializer,
+        } = cached
+            .dashboard_materializer
+            .as_ref()
+            .expect("typed working materializer")
+        else {
+            panic!("expected typed working conversations materializer");
+        };
+        let materializer = materializer
+            .lock()
+            .expect("working conversations materializer state lock");
+        let conversation = materializer
+            .response
+            .conversations
+            .iter()
+            .find(|conversation| conversation.prompt_cache_key == "persisted-runtime-overlay-key")
+            .expect("persisted runtime overlay conversation is present");
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 37);
+        assert!((conversation.total_cost - 0.75).abs() < f64::EPSILON);
+        assert_eq!(conversation.last24h_requests.len(), 1);
+        assert_eq!(conversation.recent_invocations.len(), 1);
+        assert_eq!(conversation.upstream_accounts.len(), 1);
+        assert_eq!(conversation.upstream_accounts[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_restores_reentered_key_contract() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register working conversations topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build empty working conversations baseline");
+
+        let now = Utc::now();
+        let first_occurred_at = format_naive(
+            (now - ChronoDuration::minutes(2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let second_occurred_at = format_naive(
+            (now - ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        for (invoke_id, occurred_at, total_tokens) in [
+            ("reentered-older", first_occurred_at.as_str(), 11_i64),
+            ("reentered-newer", second_occurred_at.as_str(), 31_i64),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                ) VALUES (?1, ?2, 'proxy', 'success', ?3, 0.25, ?4, '{}')
+                "#,
+            )
+            .bind(invoke_id)
+            .bind(occurred_at)
+            .bind(total_tokens)
+            .bind(
+                json!({
+                    "promptCacheKey": "reentered-key",
+                    "upstreamAccountId": 42,
+                    "upstreamAccountName": "Hydrated Account",
+                })
+                .to_string(),
+            )
+            .execute(&state.pool)
+            .await
+            .expect("persist reentered working conversation history");
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_conversation_bindings (
+                prompt_cache_key, binding_kind, group_name, upstream_account_id, created_at, updated_at
+            ) VALUES ('reentered-key', 'group', 'Bounded Group', NULL, datetime('now'), datetime('now'))
+            "#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("persist reentered key manual binding");
+
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            let cached = guard
+                .topics
+                .get_mut(&topic_key)
+                .expect("cached working conversations topic");
+            cached
+                .prompt_cache_pending_key_hydrations
+                .insert("reentered-key".to_string());
+            cached.prompt_cache_key_hydration_scheduled = true;
+        }
+        state
+            .subscription_hub
+            .hydrate_dashboard_working_conversation_keys(state.clone(), &topic)
+            .await
+            .expect("hydrate reentered key without a full working-window rebuild");
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("hydrated working conversations topic");
+        let DashboardTopicMaterializer::WorkingConversations {
+            state: materializer,
+        } = cached
+            .dashboard_materializer
+            .as_ref()
+            .expect("typed working materializer")
+        else {
+            panic!("expected typed working conversations materializer");
+        };
+        let materializer = materializer
+            .lock()
+            .expect("working conversations materializer state lock");
+        let conversation = materializer
+            .response
+            .conversations
+            .iter()
+            .find(|conversation| conversation.prompt_cache_key == "reentered-key")
+            .expect("bounded hydrate must restore the reentered key");
+        assert_eq!(conversation.request_count, 2);
+        assert_eq!(conversation.total_tokens, 42);
+        assert_eq!(conversation.last24h_requests.len(), 2);
+        assert_eq!(conversation.recent_invocations.len(), 2);
+        assert_eq!(
+            conversation
+                .manual_binding
+                .as_ref()
+                .and_then(|binding| binding.group_name.as_deref()),
+            Some("Bounded Group"),
+            "key hydration must restore manual binding metadata",
+        );
+        assert_eq!(
+            conversation.upstream_accounts[0].upstream_account_id,
+            Some(42),
+            "key hydration must retain account metadata rather than synthesizing a delta-only row",
+        );
+        assert_eq!(cached.prompt_cache_full_hydration_count, 1);
+        assert_eq!(cached.prompt_cache_bounded_key_hydration_count, 1);
+        assert!(cached.prompt_cache_pending_key_hydrations.is_empty());
+        assert!(!cached.prompt_cache_reconcile_required);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_refills_active_page_candidates() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 1,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register working conversations topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build empty working conversations baseline");
+
+        let now = Utc::now();
+        for (invoke_id, prompt_cache_key, occurred_at) in [
+            (
+                "candidate-older",
+                "candidate-older",
+                format_naive(
+                    (now - ChronoDuration::minutes(2))
+                        .with_timezone(&Shanghai)
+                        .naive_local(),
+                ),
+            ),
+            (
+                "candidate-newer",
+                "candidate-newer",
+                format_naive(
+                    (now - ChronoDuration::minutes(1))
+                        .with_timezone(&Shanghai)
+                        .naive_local(),
+                ),
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, total_tokens, payload, raw_response
+                ) VALUES (?1, ?2, 'proxy', 'success', 1, ?3, '{}')
+                "#,
+            )
+            .bind(invoke_id)
+            .bind(occurred_at)
+            .bind(json!({ "promptCacheKey": prompt_cache_key }).to_string())
+            .execute(&state.pool)
+            .await
+            .expect("persist candidate conversation");
+        }
+
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            let cached = guard
+                .topics
+                .get_mut(&topic_key)
+                .expect("cached working conversations topic");
+            cached.prompt_cache_candidate_refill_required = true;
+            cached.prompt_cache_key_hydration_scheduled = true;
+        }
+        state
+            .subscription_hub
+            .hydrate_dashboard_working_conversation_keys(state.clone(), &topic)
+            .await
+            .expect("refill active page candidates with bounded hydration");
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("hydrated working conversations topic");
+        let DashboardTopicMaterializer::WorkingConversations {
+            state: materializer,
+        } = cached
+            .dashboard_materializer
+            .as_ref()
+            .expect("typed working materializer")
+        else {
+            panic!("expected typed working conversations materializer");
+        };
+        let materializer = materializer
+            .lock()
+            .expect("working conversations materializer state lock");
+        assert_eq!(materializer.response.total_matched, Some(2));
+        assert!(materializer.response.has_more);
+        assert_eq!(materializer.response.conversations.len(), 1);
+        assert_eq!(
+            materializer.response.conversations[0].prompt_cache_key, "candidate-newer",
+            "candidate refill must hydrate only the selected active page in sort order",
+        );
+        assert!(!cached.prompt_cache_candidate_refill_required);
+        assert_eq!(cached.prompt_cache_bounded_key_hydration_count, 1);
+        assert_eq!(cached.prompt_cache_full_hydration_count, 1);
+        assert!(!cached.prompt_cache_reconcile_required);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_hydration_keeps_an_unresolved_eligible_delta_for_recovery() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+            page_size: 20,
+            recent_invocation_limit: 16,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        };
+        let _lease = state
+            .subscription_hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register working conversations topic");
+        state
+            .subscription_hub
+            .prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+            .await
+            .expect("build empty working conversations baseline");
+
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.invoke_id = "unresolved-working-hydration".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("unresolved-working-hydration".to_string());
+        let delta = PromptCacheTopicDelta::from_record(&record)
+            .expect("build unresolved working delta")
+            .expect("working delta");
+        let topic_key = topic.cache_key().expect("working conversation topic key");
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            let cached = guard
+                .topics
+                .get_mut(&topic_key)
+                .expect("cached working conversations topic");
+            cached
+                .prompt_cache_pending_records
+                .insert(delta.identity.clone(), delta.clone());
+            cached
+                .prompt_cache_pending_key_hydrations
+                .insert("unresolved-working-hydration".to_string());
+            cached.prompt_cache_key_hydration_scheduled = true;
+        }
+
+        state
+            .subscription_hub
+            .hydrate_dashboard_working_conversation_keys(state.clone(), &topic)
+            .await
+            .expect("attempt bounded key hydration");
+
+        let guard = state.subscription_hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached working conversations topic");
+        assert!(
+            cached.dirty,
+            "an eligible delta absent from the bounded hydration result must enter recovery"
+        );
+        assert!(cached.prompt_cache_reconcile_required);
+        assert!(
+            cached
+                .prompt_cache_pending_records
+                .contains_key(&delta.identity),
+            "recovery must retain the unresolved eligible delta instead of silently dropping it"
+        );
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_keeps_runtime_terminal_details() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let occurred_at = format_naive(range_end.with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "runtime-only-working-hydration".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("runtime-only-working-hydration".to_string());
+        record.upstream_account_id = Some(77);
+        record.upstream_account_name = Some("Runtime Hydration Account".to_string());
+        record.total_tokens = Some(37);
+        record.cost = Some(0.75);
+        state.proxy_runtime_invocations.upsert(record);
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            "runtime-only-working-hydration",
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate runtime-only working conversation")
+        .expect("runtime-only terminal key is selected");
+
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 37);
+        assert_eq!(conversation.last24h_requests.len(), 1);
+        assert_eq!(conversation.last24h_requests[0].request_tokens, 37);
+        assert_eq!(conversation.upstream_accounts.len(), 1);
+        assert_eq!(
+            conversation.upstream_accounts[0].upstream_account_id,
+            Some(77)
+        );
+        assert_eq!(conversation.upstream_accounts[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_dedupes_persisted_runtime_overlay() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let occurred_at = format_naive(range_end.with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "persisted-runtime-overlay-hydration".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("persisted-runtime-overlay-hydration-key".to_string());
+        record.upstream_account_id = Some(78);
+        record.upstream_account_name = Some("Persisted Hydration Account".to_string());
+        record.total_tokens = Some(41);
+        record.cost = Some(0.5);
+        state.proxy_runtime_invocations.upsert(record.clone());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, ?2, 'proxy', 'success', 41, 0.5, ?3, '{}')
+            "#,
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(
+            json!({
+                "promptCacheKey": "persisted-runtime-overlay-hydration-key",
+                "upstreamAccountId": 78,
+                "upstreamAccountName": "Persisted Hydration Account",
+            })
+            .to_string(),
+        )
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before bounded hydration acknowledgement");
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            "persisted-runtime-overlay-hydration-key",
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate persisted runtime overlay working conversation")
+        .expect("persisted runtime overlay key is selected");
+
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 41);
+        assert!((conversation.total_cost - 0.5).abs() < f64::EPSILON);
+        assert_eq!(conversation.last24h_requests.len(), 1);
+        assert_eq!(conversation.recent_invocations.len(), 1);
+        assert_eq!(conversation.upstream_accounts.len(), 1);
+        assert_eq!(conversation.upstream_accounts[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_keeps_runtime_overlay_after_snapshot_boundary()
+    {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let occurred_at = format_naive(range_end.with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "post-snapshot-runtime-overlay-hydration".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        record.prompt_cache_key = Some("post-snapshot-runtime-overlay-hydration-key".to_string());
+        record.upstream_account_id = Some(79);
+        record.upstream_account_name = Some("Post Snapshot Hydration Account".to_string());
+        record.total_tokens = Some(43);
+        record.cost = Some(0.6);
+        state.proxy_runtime_invocations.upsert(record.clone());
+
+        // Simulate P1 committing after the bounded hydrate's durable visibility boundary. The
+        // durable row must not remove the runtime terminal until a matching snapshot can see it.
+        let created_after_snapshot = format_utc_iso_precise(range_end + ChronoDuration::minutes(5));
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+                raw_response, created_at
+            ) VALUES (?1, ?2, 'proxy', 'success', 43, 0.6, ?3, '{}', ?4)
+            "#,
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .bind(
+            json!({
+                "promptCacheKey": "post-snapshot-runtime-overlay-hydration-key",
+                "upstreamAccountId": 79,
+                "upstreamAccountName": "Post Snapshot Hydration Account",
+            })
+            .to_string(),
+        )
+        .bind(created_after_snapshot)
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal beyond bounded hydration snapshot");
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            "post-snapshot-runtime-overlay-hydration-key",
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate post-snapshot persisted runtime overlay")
+        .expect("runtime overlay key is selected");
+
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 43);
+        assert!((conversation.total_cost - 0.6).abs() < f64::EPSILON);
+        assert_eq!(conversation.last24h_requests.len(), 1);
+        assert_eq!(conversation.recent_invocations.len(), 1);
+        assert_eq!(conversation.upstream_accounts.len(), 1);
+        assert_eq!(conversation.upstream_accounts[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_prefers_p1_lifecycle_over_stale_working_set() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let old_occurred_at = format_naive(
+            (range_end - ChronoDuration::minutes(2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let newest_occurred_at = format_naive(
+            (range_end - ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let prompt_cache_key = "p1-before-p2-working-hydration";
+        for (invoke_id, occurred_at, total_tokens) in [
+            ("p1-before-p2-old", old_occurred_at.as_str(), 11_i64),
+            ("p1-before-p2-new", newest_occurred_at.as_str(), 31_i64),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                ) VALUES (?1, ?2, 'proxy', 'success', ?3, 0.25, ?4, '{}')
+                "#,
+            )
+            .bind(invoke_id)
+            .bind(occurred_at)
+            .bind(total_tokens)
+            .bind(json!({ "promptCacheKey": prompt_cache_key }).to_string())
+            .execute(&state.pool)
+            .await
+            .expect("persist terminal before P2 working-set refresh");
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_working_set_live (
+                prompt_cache_key, source_scope_all, source_scope_proxy_only,
+                created_at, last_activity_at, last_terminal_at, sort_anchor_at,
+                request_count, total_tokens, total_cost, updated_at
+            ) VALUES (?1, 1, 1, ?2, ?2, ?2, ?2, 1, 11, 0.25, datetime('now'))
+            ON CONFLICT(prompt_cache_key) DO UPDATE SET
+                source_scope_all = excluded.source_scope_all,
+                source_scope_proxy_only = excluded.source_scope_proxy_only,
+                created_at = excluded.created_at,
+                last_activity_at = excluded.last_activity_at,
+                last_terminal_at = excluded.last_terminal_at,
+                last_in_flight_at = NULL,
+                sort_anchor_at = excluded.sort_anchor_at,
+                request_count = excluded.request_count,
+                total_tokens = excluded.total_tokens,
+                total_cost = excluded.total_cost,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .bind(&old_occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed stale P2 working-set row");
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            prompt_cache_key,
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate a key with P1 ahead of P2")
+        .expect("P1 lifecycle remains selected");
+
+        assert_eq!(conversation.request_count, 2);
+        assert_eq!(conversation.total_tokens, 42);
+        assert_eq!(conversation.recent_invocations.len(), 2);
+        assert_eq!(
+            conversation.last_terminal_at.as_deref(),
+            Some(newest_occurred_at.as_str())
+        );
+        assert_eq!(conversation.last_activity_at, newest_occurred_at);
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_keeps_transient_runtime_records_after_filtering_persisted_terminal()
+     {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let occurred_at = format_naive(range_end.with_timezone(&Shanghai).naive_local());
+        let prompt_cache_key = "bounded-hydration-overlay-filter-key";
+        let mut persisted_terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        persisted_terminal.id = 0;
+        persisted_terminal.invoke_id = "bounded-hydration-persisted-terminal".to_string();
+        persisted_terminal.status = Some("success".to_string());
+        persisted_terminal.live_phase = None;
+        persisted_terminal.prompt_cache_key = Some(prompt_cache_key.to_string());
+        persisted_terminal.upstream_account_id = Some(79);
+        persisted_terminal.upstream_account_name = Some("Bounded Filter Account".to_string());
+        persisted_terminal.total_tokens = Some(41);
+        persisted_terminal.cost = Some(0.5);
+        state
+            .proxy_runtime_invocations
+            .upsert(persisted_terminal.clone());
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, ?2, 'proxy', 'success', 41, 0.5, ?3, '{}')
+            "#,
+        )
+        .bind(&persisted_terminal.invoke_id)
+        .bind(&persisted_terminal.occurred_at)
+        .bind(
+            json!({
+                "promptCacheKey": prompt_cache_key,
+                "upstreamAccountId": 79,
+                "upstreamAccountName": "Bounded Filter Account",
+            })
+            .to_string(),
+        )
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before bounded hydration acknowledgement");
+
+        let mut runtime_terminal = persisted_terminal.clone();
+        runtime_terminal.invoke_id = "bounded-hydration-runtime-terminal".to_string();
+        runtime_terminal.total_tokens = Some(37);
+        runtime_terminal.cost = Some(0.75);
+        state
+            .proxy_runtime_invocations
+            .upsert(runtime_terminal.clone());
+
+        let mut in_flight = persisted_terminal.clone();
+        in_flight.invoke_id = "bounded-hydration-runtime-in-flight".to_string();
+        in_flight.status = Some("running".to_string());
+        in_flight.live_phase = Some("requesting".to_string());
+        in_flight.total_tokens = None;
+        in_flight.cost = None;
+        state.proxy_runtime_invocations.upsert(in_flight.clone());
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            prompt_cache_key,
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate mixed runtime overlay working conversation")
+        .expect("mixed runtime overlay key is selected");
+
+        assert_eq!(conversation.request_count, 3);
+        assert_eq!(conversation.total_tokens, 78);
+        assert!((conversation.total_cost - 1.25).abs() < f64::EPSILON);
+        assert_eq!(conversation.recent_invocations.len(), 3);
+        assert!(
+            conversation
+                .recent_invocations
+                .iter()
+                .any(|preview| preview.invoke_id == runtime_terminal.invoke_id)
+        );
+        assert!(
+            conversation
+                .recent_invocations
+                .iter()
+                .any(|preview| preview.invoke_id == in_flight.invoke_id)
+        );
+        assert!(conversation.last_in_flight_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn working_conversations_bounded_hydration_keeps_old_in_flight_off_the_chart() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_end = Utc::now();
+        let occurred_at = format_naive(
+            (range_end - ChronoDuration::hours(PROMPT_CACHE_CONVERSATION_CHART_MAX_HOURS + 1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 0;
+        record.invoke_id = "old-runtime-working-hydration".to_string();
+        record.prompt_cache_key = Some("old-runtime-working-hydration".to_string());
+        state.proxy_runtime_invocations.upsert(record);
+
+        let source_scope = resolve_default_source_scope(&state.pool)
+            .await
+            .expect("resolve default source scope");
+        let range_start_bound = db_occurred_at_lower_bound(
+            range_end
+                - ChronoDuration::minutes(
+                    SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                ),
+        );
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
+            state.as_ref(),
+            source_scope,
+            "old-runtime-working-hydration",
+            range_end,
+            &range_start_bound,
+            16,
+            None,
+        )
+        .await
+        .expect("hydrate old in-flight working conversation")
+        .expect("old in-flight key remains selected");
+
+        assert!(conversation.last_in_flight_at.is_some());
+        assert!(conversation.last24h_requests.is_empty());
+    }
+
+    #[test]
+    fn working_conversations_hydration_detects_pending_delta_changes_after_snapshot() {
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let delta = |invoke_id: &str| {
+            let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+            record.id = 0;
+            record.invoke_id = invoke_id.to_string();
+            record.status = Some("success".to_string());
+            record.live_phase = None;
+            record.prompt_cache_key = Some("hydration-race-key".to_string());
+            PromptCacheTopicDelta::from_record(&record)
+                .expect("build hydration race delta")
+                .expect("typed hydration race delta")
+        };
+        let initial = delta("hydration-race-initial");
+        let before = BTreeMap::from([(initial.identity.clone(), initial.clone())]);
+        let hydration_keys = vec!["hydration-race-key".to_string()];
+
+        assert!(
+            prompt_cache_hydration_changed_pending_keys(&before, &before, &hydration_keys)
+                .is_empty(),
+            "a stable pending snapshot must not force recovery",
+        );
+
+        let later = delta("hydration-race-later");
+        let mut with_later_identity = before.clone();
+        with_later_identity.insert(later.identity.clone(), later);
+        assert_eq!(
+            prompt_cache_hydration_changed_pending_keys(
+                &before,
+                &with_later_identity,
+                &hydration_keys,
+            ),
+            BTreeSet::from(["hydration-race-key".to_string()]),
+            "a delta added after the hydrate snapshot must retry only its bounded key",
+        );
+
+        let mut transitioned = initial.clone();
+        transitioned.status = "running".to_string();
+        transitioned.is_terminal = false;
+        transitioned.preview.as_mut().expect("typed preview").status = "running".to_string();
+        let with_replaced_identity =
+            BTreeMap::from([(transitioned.identity.clone(), transitioned)]);
+        assert_eq!(
+            prompt_cache_hydration_changed_pending_keys(
+                &before,
+                &with_replaced_identity,
+                &hydration_keys,
+            ),
+            BTreeSet::from(["hydration-race-key".to_string()]),
+            "a same-identity state transition after the hydrate snapshot must retry its key",
         );
     }
 
@@ -11106,6 +17018,12 @@ mod tests {
         let mut cached = seeded_cached_topic(topic, &[], Utc::now());
         cached.refresh_scheduled = true;
         cached.prompt_cache_reconcile_required = true;
+        cached.prompt_cache_pressure_deferred = true;
+        cached
+            .prompt_cache_pending_key_hydrations
+            .insert("pending-key".to_string());
+        cached.prompt_cache_candidate_refill_required = true;
+        cached.prompt_cache_key_hydration_scheduled = true;
         let payload = serde_json::to_vec(&cached.snapshot_payload).expect("cached payload");
 
         let reused = reuse_unchanged_cached_topic(&mut cached, &payload);
@@ -11113,6 +17031,10 @@ mod tests {
         assert!(reused.is_some());
         assert!(!cached.refresh_scheduled);
         assert!(!cached.prompt_cache_reconcile_required);
+        assert!(!cached.prompt_cache_pressure_deferred);
+        assert!(cached.prompt_cache_pending_key_hydrations.is_empty());
+        assert!(!cached.prompt_cache_candidate_refill_required);
+        assert!(!cached.prompt_cache_key_hydration_scheduled);
         cached.refresh_scheduled = true;
         assert!(
             cached.refresh_scheduled,
@@ -11135,6 +17057,35 @@ mod tests {
         assert!(!cached.dirty);
         assert!(!cached.refresh_scheduled);
         assert_eq!(cached.cursor, cursor);
+    }
+
+    #[test]
+    fn reused_prompt_cache_baseline_refreshes_reconciliation_bookkeeping() {
+        let topic = summary_topic();
+        let mut cached = seeded_cached_topic(topic, &[], Utc::now());
+        cached.prompt_cache_full_hydration_count = 4;
+        cached.prompt_cache_baseline_row_id = 12;
+        cached.prompt_cache_response_source = "memory";
+        let applied_terminal_ids = HashSet::from(["invoke\0occurred-at".to_string()]);
+
+        finish_prompt_cache_baseline_reuse(
+            &mut cached,
+            &PromptCacheBaselineBuild {
+                baseline_row_id: 37,
+                persisted_identities: HashSet::new(),
+                runtime_overlay_terminal_identities: HashSet::new(),
+            },
+            &applied_terminal_ids,
+        );
+
+        assert_eq!(cached.prompt_cache_full_hydration_count, 5);
+        assert!(cached.prompt_cache_baseline_at.is_some());
+        assert_eq!(cached.prompt_cache_baseline_row_id, 37);
+        assert_eq!(cached.prompt_cache_response_source, "database_reconcile");
+        assert_eq!(
+            cached.prompt_cache_applied_terminal_ids,
+            applied_terminal_ids
+        );
     }
 
     #[test]
@@ -11217,6 +17168,521 @@ mod tests {
         )
         .expect("deduplicate repeated terminal delta");
         assert_eq!(payload["conversations"][0]["requestCount"], 1);
+    }
+
+    #[test]
+    fn working_conversations_projection_preserves_stateful_runtime_contract() {
+        let now = Utc::now();
+        let make_state = |page_size, recent_invocation_limit, blocked_binding_filter| {
+            DashboardWorkingConversationsMaterializerState::new(
+                PromptCacheConversationsResponse {
+                    range_start: format_utc_iso(
+                        now - ChronoDuration::minutes(
+                            SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                        ),
+                    ),
+                    range_end: format_utc_iso_precise(now),
+                    snapshot_at: Some(format_utc_iso_precise(now)),
+                    selection_mode: PromptCacheConversationSelectionMode::ActivityWindow,
+                    selected_limit: None,
+                    selected_activity_hours: None,
+                    selected_activity_minutes: Some(
+                        SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                    ),
+                    implicit_filter: PromptCacheConversationImplicitFilter {
+                        kind: None,
+                        filtered_count: 0,
+                    },
+                    total_matched: Some(0),
+                    has_more: false,
+                    next_cursor: None,
+                    conversations: Vec::new(),
+                },
+                page_size,
+                recent_invocation_limit,
+                blocked_binding_filter,
+            )
+        };
+        let local_time = |offset_seconds| {
+            format_naive(
+                (now - ChronoDuration::seconds(offset_seconds))
+                    .with_timezone(&Shanghai)
+                    .naive_local(),
+            )
+        };
+        let terminal_delta = |id: i64, invoke_id: &str, prompt_cache_key: &str, offset_seconds| {
+            let mut record = dashboard_runtime_topology_live_record(&local_time(offset_seconds));
+            record.id = id;
+            record.invoke_id = invoke_id.to_string();
+            record.prompt_cache_key = Some(prompt_cache_key.to_string());
+            record.upstream_account_id = None;
+            record.upstream_account_name = None;
+            record.status = Some("success".to_string());
+            record.live_phase = None;
+            record.total_tokens = Some(42);
+            record.cost = Some(0.25);
+            PromptCacheTopicDelta::from_record(&record)
+                .expect("build working terminal delta")
+                .expect("working terminal delta")
+        };
+        let seed_hydrated = |state: &mut DashboardWorkingConversationsMaterializerState,
+                             prompt_cache_key: &str,
+                             occurred_at: &str,
+                             total_matched: i64| {
+            assert!(state.replace_hydrated_conversation(
+                prompt_cache_key,
+                Some(PromptCacheConversationResponse {
+                    prompt_cache_key: prompt_cache_key.to_string(),
+                    request_count: 0,
+                    total_tokens: 0,
+                    total_cost: 0.0,
+                    created_at: occurred_at.to_string(),
+                    last_activity_at: occurred_at.to_string(),
+                    last_terminal_at: None,
+                    last_in_flight_at: None,
+                    cursor: None,
+                    has_encrypted_session_owner: false,
+                    encrypted_owner_account_id: None,
+                    encrypted_owner_account_name: None,
+                    encrypted_owner_group_name: None,
+                    manual_binding: None,
+                    blocked_binding: None,
+                    upstream_accounts: Vec::new(),
+                    recent_invocations: Vec::new(),
+                    last24h_requests: Vec::new(),
+                }),
+            ));
+            assert!(state.set_total_matched(total_matched));
+        };
+
+        let mut projection = make_state(1, 16, None);
+        let baseline_window = (
+            projection.response.range_start.clone(),
+            projection.response.range_end.clone(),
+            projection.response.snapshot_at.clone(),
+        );
+        let mut applied_terminal_ids = HashSet::new();
+        let mut running = dashboard_runtime_topology_live_record(&local_time(30));
+        running.id = 1;
+        running.invoke_id = "runtime-to-terminal".to_string();
+        running.prompt_cache_key = Some("alpha".to_string());
+        running.upstream_account_id = None;
+        running.upstream_account_name = None;
+        let running = PromptCacheTopicDelta::from_record(&running)
+            .expect("build running delta")
+            .expect("running delta");
+        assert_eq!(
+            projection
+                .apply_deltas(std::slice::from_ref(&running), &mut applied_terminal_ids, 0)
+                .expect("missing key requires bounded hydration"),
+            WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(BTreeSet::from([
+                "alpha".to_string()
+            ]))
+        );
+        seed_hydrated(&mut projection, "alpha", &running.occurred_at, 1);
+        assert_eq!(
+            projection
+                .apply_deltas(&[running], &mut applied_terminal_ids, 0)
+                .expect("apply hydrated running delta"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        assert_eq!(
+            (
+                projection.response.range_start.clone(),
+                projection.response.range_end.clone(),
+                projection.response.snapshot_at.clone(),
+            ),
+            baseline_window,
+            "live projection updates must retain the cursor-consistent baseline window"
+        );
+
+        let mut transient = make_state(20, 16, None);
+        let mut transient_ids = HashSet::new();
+        let mut transient_record = dashboard_runtime_topology_live_record(&local_time(25));
+        transient_record.id = 2;
+        transient_record.invoke_id = "runtime-removed".to_string();
+        transient_record.prompt_cache_key = Some("transient".to_string());
+        let transient_upsert = PromptCacheTopicDelta::from_record(&transient_record)
+            .expect("build transient runtime delta")
+            .expect("transient runtime delta");
+        seed_hydrated(
+            &mut transient,
+            "transient",
+            &transient_upsert.occurred_at,
+            1,
+        );
+        assert_eq!(
+            transient
+                .apply_deltas(&[transient_upsert], &mut transient_ids, 0)
+                .expect("apply transient runtime preview"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        let RuntimeMutation::Invocation(transient_removal) =
+            RuntimeMutation::invocation(&transient_record, RuntimeMutationKind::RuntimeRemoved)
+        else {
+            unreachable!("runtime removal must produce an invocation mutation");
+        };
+        let transient_removal =
+            PromptCacheTopicDelta::from_runtime_mutation(&transient_removal, None)
+                .expect("build transient removal delta")
+                .expect("transient removal delta");
+        assert_eq!(
+            transient
+                .apply_deltas(&[transient_removal], &mut transient_ids, 0)
+                .expect("remove transient runtime preview"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        assert!(transient.response.conversations.is_empty());
+        assert_eq!(transient.response.total_matched, Some(0));
+
+        let mut old_in_flight = make_state(20, 16, None);
+        let mut old_in_flight_ids = HashSet::new();
+        let mut old_in_flight_record = dashboard_runtime_topology_live_record(&local_time(16 * 60));
+        old_in_flight_record.id = 3;
+        old_in_flight_record.invoke_id = "long-running".to_string();
+        old_in_flight_record.prompt_cache_key = Some("long-running".to_string());
+        let old_in_flight_delta = PromptCacheTopicDelta::from_record(&old_in_flight_record)
+            .expect("build old in-flight delta")
+            .expect("old in-flight delta");
+        seed_hydrated(
+            &mut old_in_flight,
+            "long-running",
+            &old_in_flight_delta.occurred_at,
+            1,
+        );
+        assert_eq!(
+            old_in_flight
+                .apply_deltas(&[old_in_flight_delta], &mut old_in_flight_ids, 0)
+                .expect("apply old in-flight delta"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        assert_eq!(old_in_flight.response.conversations.len(), 1);
+        assert!(
+            !old_in_flight.expire(now),
+            "in-flight conversations remain in the working set regardless of age"
+        );
+        assert_eq!(old_in_flight.response.conversations.len(), 1);
+
+        let terminal = terminal_delta(1, "runtime-to-terminal", "alpha", 30);
+        assert_eq!(
+            projection
+                .apply_deltas(
+                    std::slice::from_ref(&terminal),
+                    &mut applied_terminal_ids,
+                    0
+                )
+                .expect("replace runtime record with terminal"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        let alpha = projection
+            .response
+            .conversations
+            .iter()
+            .find(|conversation| conversation.prompt_cache_key == "alpha")
+            .expect("alpha conversation");
+        assert_eq!(alpha.request_count, 1);
+        assert_eq!(alpha.total_tokens, 42);
+        assert!(alpha.last_in_flight_at.is_none());
+        assert_eq!(alpha.last24h_requests.len(), 1);
+        assert_eq!(alpha.upstream_accounts[0].upstream_account_id, None);
+        let same_second_terminal = terminal_delta(4, "same-second-terminal", "alpha", 30);
+        assert_eq!(
+            projection
+                .apply_deltas(&[same_second_terminal], &mut applied_terminal_ids, 0)
+                .expect("apply distinct terminal in the same persisted second"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        let alpha = projection
+            .response
+            .conversations
+            .iter()
+            .find(|conversation| conversation.prompt_cache_key == "alpha")
+            .expect("alpha conversation with same-second terminals");
+        assert_eq!(alpha.request_count, 2);
+        assert_eq!(alpha.total_tokens, 84);
+        assert_eq!(alpha.last24h_requests.len(), 2);
+        assert_eq!(
+            alpha
+                .last24h_requests
+                .iter()
+                .map(|point| point.cumulative_tokens)
+                .collect::<Vec<_>>(),
+            vec![42, 84],
+            "distinct invocations in the same persisted second must retain both chart points",
+        );
+        assert_eq!(
+            projection
+                .apply_deltas(&[terminal], &mut applied_terminal_ids, 0)
+                .expect("deduplicate terminal replay"),
+            WorkingConversationsProjectionUpdate::Unchanged
+        );
+        assert_eq!(projection.response.conversations[0].request_count, 2);
+
+        let mut alpha_runtime_record = dashboard_runtime_topology_live_record(&local_time(10));
+        alpha_runtime_record.id = 3;
+        alpha_runtime_record.invoke_id = "alpha-runtime-preview".to_string();
+        alpha_runtime_record.prompt_cache_key = Some("alpha".to_string());
+        let alpha_runtime_preview = PromptCacheTopicDelta::from_record(&alpha_runtime_record)
+            .expect("build alpha runtime preview")
+            .expect("alpha runtime preview");
+        assert_eq!(
+            projection
+                .apply_deltas(&[alpha_runtime_preview], &mut applied_terminal_ids, 0)
+                .expect("apply alpha runtime preview"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        let RuntimeMutation::Invocation(alpha_runtime_removal) =
+            RuntimeMutation::invocation(&alpha_runtime_record, RuntimeMutationKind::RuntimeRemoved)
+        else {
+            unreachable!("runtime removal must produce an invocation mutation");
+        };
+        let alpha_runtime_removal =
+            PromptCacheTopicDelta::from_runtime_mutation(&alpha_runtime_removal, None)
+                .expect("build alpha runtime removal")
+                .expect("alpha runtime removal");
+        let terminal_activity_at = projection.response.conversations[0]
+            .last_terminal_at
+            .clone()
+            .expect("alpha terminal activity");
+        assert_eq!(
+            projection
+                .apply_deltas(&[alpha_runtime_removal], &mut applied_terminal_ids, 0)
+                .expect("remove alpha runtime preview"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        let alpha = &projection.response.conversations[0];
+        assert_eq!(alpha.last_in_flight_at, None);
+        assert_eq!(alpha.last_activity_at, terminal_activity_at);
+
+        let mut account_history = make_state(20, 16, None);
+        let mut account_history_ids = HashSet::new();
+        let account_history_delta =
+            terminal_delta(200, "account-history-base", "account-history", 3);
+        seed_hydrated(
+            &mut account_history,
+            "account-history",
+            &account_history_delta.occurred_at,
+            1,
+        );
+        account_history.response.conversations[0].upstream_accounts = (1..=3)
+            .map(
+                |upstream_account_id| PromptCacheConversationUpstreamAccountResponse {
+                    upstream_account_id: Some(upstream_account_id),
+                    upstream_account_name: Some(format!("Historical {upstream_account_id}")),
+                    request_count: 10,
+                    total_tokens: 100,
+                    total_cost: 1.0,
+                    last_activity_at: account_history_delta.occurred_at.clone(),
+                },
+            )
+            .collect();
+        let mut omitted_account_delta =
+            terminal_delta(201, "omitted-account-live", "account-history", 2);
+        omitted_account_delta.upstream_account_id = Some(4);
+        omitted_account_delta.upstream_account_name = Some("Historical 4".to_string());
+        assert_eq!(
+            account_history
+                .apply_deltas(&[omitted_account_delta], &mut account_history_ids, 0,)
+                .expect("omitted historical account requires bounded hydration"),
+            WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(BTreeSet::from([
+                "account-history".to_string()
+            ]))
+        );
+        assert_eq!(
+            account_history.response.conversations[0]
+                .upstream_accounts
+                .len(),
+            PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT,
+            "a partial live delta must not replace a capped historical account summary",
+        );
+
+        let beta = terminal_delta(2, "newer-terminal", "beta", 5);
+        seed_hydrated(&mut projection, "beta", &beta.occurred_at, 2);
+        assert_eq!(
+            projection
+                .apply_deltas(&[beta], &mut applied_terminal_ids, 0)
+                .expect("apply newer page candidate"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        assert_eq!(projection.response.total_matched, Some(2));
+        assert!(projection.response.has_more);
+        assert_eq!(projection.response.conversations.len(), 1);
+        assert_eq!(
+            projection.response.conversations[0].prompt_cache_key,
+            "beta"
+        );
+        assert!(
+            projection.response.next_cursor.is_none(),
+            "a live page replacement must not manufacture a cursor for the cold baseline"
+        );
+        assert!(
+            projection.response.conversations[0].cursor.is_none(),
+            "a live-only page member has no valid cursor in the cold baseline"
+        );
+
+        let binding = PromptCacheConversationBindingResponse {
+            prompt_cache_key: "beta".to_string(),
+            binding_kind: "upstream_account".to_string(),
+            group_name: None,
+            upstream_account_id: Some(9),
+            upstream_account_name: Some("Pinned account".to_string()),
+            has_encrypted_session_owner: true,
+            encrypted_owner_account_id: Some(11),
+            encrypted_owner_account_name: Some("Owner account".to_string()),
+            encrypted_owner_group_name: Some("Owner group".to_string()),
+            sticky_routes: Vec::new(),
+            timeouts: RoutingTimeoutSettings::default(),
+            timeout_field_sources: RoutingTimeoutFieldSources {
+                responses_first_byte_timeout_secs: "root".to_string(),
+                compact_first_byte_timeout_secs: "root".to_string(),
+                image_first_byte_timeout_secs: "root".to_string(),
+                responses_stream_timeout_secs: "root".to_string(),
+                compact_stream_timeout_secs: "root".to_string(),
+            },
+            allow_switch_upstream: None,
+            fast_mode_rewrite_mode: None,
+            image_tool_rewrite_mode: None,
+            codex_imagegen_rewrite_mode: None,
+            available_models: None,
+            available_models_mode: None,
+            forward_proxy_key: None,
+            forward_proxy_keys: Vec::new(),
+            policy_field_sources: PromptCacheConversationPolicyFieldSources {
+                allow_switch_upstream: "root".to_string(),
+                fast_mode_rewrite_mode: "root".to_string(),
+                image_tool_rewrite_mode: "root".to_string(),
+                codex_imagegen_rewrite_mode: "root".to_string(),
+                available_models: "root".to_string(),
+                available_models_mode: "root".to_string(),
+                forward_proxy_key: "root".to_string(),
+            },
+            updated_at: None,
+        };
+        assert_eq!(projection.apply_binding("beta", &binding), Some(true));
+        let beta = &projection.response.conversations[0];
+        assert_eq!(beta.encrypted_owner_account_id, Some(11));
+        assert_eq!(
+            beta.manual_binding
+                .as_ref()
+                .map(|value| value.upstream_account_id),
+            Some(Some(9))
+        );
+
+        let blocked_filter = PromptCacheConversationBlockedBindingFilter {
+            upstream_account_id: Some(7),
+            constraint_source: Some(BlockedBindingConstraintSource::UpstreamAccountBinding),
+        };
+        let mut filtered = make_state(20, 16, Some(blocked_filter));
+        let mut filtered_ids = HashSet::new();
+        let mut mismatched = terminal_delta(3, "blocked-mismatch", "blocked", 4);
+        mismatched
+            .preview
+            .as_mut()
+            .expect("mismatched preview")
+            .blocked_binding = Some(BlockedBindingDiagnostic {
+            constraint_source: BlockedBindingConstraintSource::UpstreamAccountBinding,
+            upstream_account_id: 8,
+            upstream_account_label: "Other account".to_string(),
+            prompt_cache_key: Some("blocked".to_string()),
+            recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
+        });
+        assert_eq!(
+            filtered
+                .apply_deltas(&[mismatched], &mut filtered_ids, 0)
+                .expect("reject mismatched blocked binding"),
+            WorkingConversationsProjectionUpdate::Unchanged
+        );
+        let mut matched = terminal_delta(4, "blocked-match", "blocked", 3);
+        matched
+            .preview
+            .as_mut()
+            .expect("matched preview")
+            .blocked_binding = Some(BlockedBindingDiagnostic {
+            constraint_source: BlockedBindingConstraintSource::UpstreamAccountBinding,
+            upstream_account_id: 7,
+            upstream_account_label: "Matched account".to_string(),
+            prompt_cache_key: Some("blocked".to_string()),
+            recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
+        });
+        assert_eq!(
+            filtered
+                .apply_deltas(std::slice::from_ref(&matched), &mut filtered_ids, 0)
+                .expect("matching blocked binding requires bounded hydration"),
+            WorkingConversationsProjectionUpdate::NeedsBoundedKeyHydration(BTreeSet::from([
+                "blocked".to_string()
+            ]))
+        );
+        seed_hydrated(&mut filtered, "blocked", &matched.occurred_at, 1);
+        assert_eq!(
+            filtered
+                .apply_deltas(&[matched], &mut filtered_ids, 0)
+                .expect("accept hydrated matching blocked binding"),
+            WorkingConversationsProjectionUpdate::Changed
+        );
+        assert_eq!(filtered.response.conversations.len(), 1);
+
+        let mut recent = make_state(20, 16, None);
+        let mut recent_ids = HashSet::new();
+        for index in 0..17 {
+            let delta = terminal_delta(
+                100 + index,
+                &format!("recent-{index:02}"),
+                "recent",
+                17 - index,
+            );
+            if index == 0 {
+                seed_hydrated(&mut recent, "recent", &delta.occurred_at, 1);
+            }
+            recent
+                .apply_deltas(&[delta], &mut recent_ids, 0)
+                .expect("apply ordered recent terminal");
+        }
+        let recent_conversation = &recent.response.conversations[0];
+        assert_eq!(recent_conversation.recent_invocations.len(), 16);
+        assert_eq!(
+            recent_conversation.recent_invocations[0].invoke_id,
+            "recent-16"
+        );
+        assert_eq!(recent_conversation.request_count, 17);
+        let mut expired = recent_conversation.clone();
+        expired.prompt_cache_key = "expired".to_string();
+        expired.last_activity_at = format_utc_iso(
+            now - ChronoDuration::minutes(
+                SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES + 1,
+            ),
+        );
+        recent.response.conversations.push(expired);
+        *recent
+            .response
+            .total_matched
+            .as_mut()
+            .expect("tracked total") += 1;
+        recent.response.conversations[0].last24h_requests.push(
+            PromptCacheConversationRequestPointResponse {
+                occurred_at: format_utc_iso(now - ChronoDuration::hours(25)),
+                status: "success".to_string(),
+                is_success: true,
+                outcome: "success".to_string(),
+                request_tokens: 1,
+                cumulative_tokens: 43,
+            },
+        );
+        assert!(recent.expire(now));
+        assert!(
+            recent
+                .response
+                .conversations
+                .iter()
+                .all(|conversation| conversation.prompt_cache_key != "expired")
+        );
+        assert_eq!(recent.response.total_matched, Some(1));
+        assert!(
+            recent.response.conversations[0]
+                .last24h_requests
+                .iter()
+                .all(|point| parse_to_utc_datetime(&point.occurred_at)
+                    .is_some_and(|occurred_at| occurred_at >= now - ChronoDuration::hours(24)))
+        );
     }
 
     #[test]

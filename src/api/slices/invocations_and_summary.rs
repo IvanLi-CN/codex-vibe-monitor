@@ -12751,6 +12751,7 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         + record.billing_service_tier.as_ref().map_or(0, String::len);
     DashboardActivityTerminalDelta {
         terminal_sequence: 0,
+        timeseries: TimeseriesTerminalDelta::from(record),
         invoke_id: record.invoke_id.clone(),
         occurred_at: record.occurred_at.clone(),
         source: record.source.clone(),
