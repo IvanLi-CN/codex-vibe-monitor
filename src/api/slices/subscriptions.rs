@@ -250,6 +250,97 @@ pub(crate) struct DashboardDeliveryTopologyCounterSnapshot {
     pub(crate) timeseries: DashboardTopicTopologyCounterSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscriptionTopicClass {
+    HotProjection,
+    ClosedSnapshot,
+    BoundedColdHydrate,
+}
+
+impl SubscriptionTopicClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HotProjection => "hot_projection",
+            Self::ClosedSnapshot => "closed_snapshot",
+            Self::BoundedColdHydrate => "bounded_cold_hydrate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardHotTopicHealthSnapshot {
+    pub(crate) topic_class: String,
+    pub(crate) state: String,
+    pub(crate) active_subscriber_count: u64,
+    pub(crate) builder_count: u64,
+    pub(crate) generic_fallback_build_count: u64,
+    pub(crate) live_path_db_read_count: u64,
+    pub(crate) materialization_count: u64,
+    pub(crate) serialization_count: u64,
+    pub(crate) payload_clone_count: u64,
+    pub(crate) frame_reused: u64,
+    pub(crate) cadence_miss_count: u64,
+    pub(crate) reconnect_churn_count: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardHotTopicsHealthSnapshot {
+    pub(crate) state: String,
+    pub(crate) activity: DashboardHotTopicHealthSnapshot,
+    pub(crate) summary: DashboardHotTopicHealthSnapshot,
+    pub(crate) network_timeseries: DashboardHotTopicHealthSnapshot,
+    pub(crate) network_recent: DashboardHotTopicHealthSnapshot,
+    pub(crate) working_conversations: DashboardHotTopicHealthSnapshot,
+    pub(crate) parallel_work: DashboardHotTopicHealthSnapshot,
+    pub(crate) timeseries: DashboardHotTopicHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DashboardHotTopicRecoveryState {
+    degraded: bool,
+    deferred: bool,
+}
+
+impl DashboardHotTopicRecoveryState {
+    fn merge(&mut self, other: Self) {
+        self.degraded |= other.degraded;
+        self.deferred |= other.deferred;
+    }
+}
+
+#[derive(Debug, Default)]
+struct DashboardHotTopicRecoveryHealth {
+    activity: DashboardHotTopicRecoveryState,
+    summary: DashboardHotTopicRecoveryState,
+    network_timeseries: DashboardHotTopicRecoveryState,
+    network_recent: DashboardHotTopicRecoveryState,
+    working_conversations: DashboardHotTopicRecoveryState,
+    parallel_work: DashboardHotTopicRecoveryState,
+    timeseries: DashboardHotTopicRecoveryState,
+}
+
+impl DashboardHotTopicRecoveryHealth {
+    fn record(&mut self, topic: &SubscriptionTopic, state: DashboardHotTopicRecoveryState) {
+        let target = match topic {
+            SubscriptionTopic::DashboardActivityCurrent { .. } => &mut self.activity,
+            SubscriptionTopic::SummaryCurrent { .. } => &mut self.summary,
+            SubscriptionTopic::DashboardNetworkTimeseriesWindow { .. } => {
+                &mut self.network_timeseries
+            }
+            SubscriptionTopic::DashboardNetworkRecentCurrent => &mut self.network_recent,
+            SubscriptionTopic::DashboardWorkingConversationsCurrent { .. } => {
+                &mut self.working_conversations
+            }
+            SubscriptionTopic::ParallelWorkCurrent { .. } => &mut self.parallel_work,
+            SubscriptionTopic::TimeseriesOpenWindow { .. } => &mut self.timeseries,
+            _ => return,
+        };
+        target.merge(state);
+    }
+}
+
 #[derive(Debug, Default)]
 struct DashboardTopicTopologyCounters {
     active_subscriber_count: AtomicU64,
@@ -319,6 +410,8 @@ struct DashboardDeliveryTopologyCounters {
     working_conversations: DashboardTopicTopologyCounters,
     parallel_work: DashboardTopicTopologyCounters,
     timeseries: DashboardTopicTopologyCounters,
+    working_conversations_cadence_miss_count: AtomicU64,
+    parallel_work_cadence_miss_count: AtomicU64,
 }
 
 impl DashboardDeliveryTopologyCounters {
@@ -413,6 +506,17 @@ impl DashboardDeliveryTopologyCounters {
         }
     }
 
+    fn record_cadence_miss(&self, topic_name: &str) {
+        let counter = match topic_name {
+            "dashboard.working-conversations.current" => {
+                &self.working_conversations_cadence_miss_count
+            }
+            "stats.parallel-work.current" => &self.parallel_work_cadence_miss_count,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         DashboardDeliveryTopologyCounterSnapshot {
             activity: self.activity.snapshot(),
@@ -423,6 +527,113 @@ impl DashboardDeliveryTopologyCounters {
             parallel_work: self.parallel_work.snapshot(),
             timeseries: self.timeseries.snapshot(),
         }
+    }
+
+    fn hot_topic_health(
+        &self,
+        projection: DashboardRuntimeTopologyCounterSnapshot,
+        recovery: DashboardHotTopicRecoveryHealth,
+    ) -> DashboardHotTopicsHealthSnapshot {
+        let counters = self.snapshot();
+        let topic = |counter: DashboardTopicTopologyCounterSnapshot,
+                     cadence_miss_count: u64,
+                     recovery: DashboardHotTopicRecoveryState| {
+            let degraded = recovery.degraded
+                || counter.generic_fallback_build_count > 0
+                || counter.live_path_db_read_count > 0
+                || counter.reconnect_churn_count > 0
+                || counter.lagged_count > 0
+                || counter.skipped_count > 0
+                || counter.payload_clone_count > 0
+                || counter.json_overlay_count > 0
+                || cadence_miss_count > 0;
+            DashboardHotTopicHealthSnapshot {
+                topic_class: SubscriptionTopicClass::HotProjection.as_str().to_string(),
+                state: if degraded {
+                    "degraded"
+                } else if recovery.deferred {
+                    "deferred"
+                } else {
+                    "healthy"
+                }
+                .to_string(),
+                active_subscriber_count: counter.active_subscriber_count,
+                builder_count: counter.builder_count,
+                generic_fallback_build_count: counter.generic_fallback_build_count,
+                live_path_db_read_count: counter.live_path_db_read_count,
+                materialization_count: counter.materialization_count,
+                serialization_count: counter.serialization_count,
+                payload_clone_count: counter.payload_clone_count,
+                frame_reused: counter.frame_reused,
+                cadence_miss_count,
+                reconnect_churn_count: counter.reconnect_churn_count,
+            }
+        };
+        let current_cadence = projection.current.cadence_miss_count;
+        let network_cadence = projection.network.cadence_miss_count;
+        let terminal_cadence = projection.terminal.cadence_miss_count;
+        let working_conversations_cadence = self
+            .working_conversations_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let parallel_work_cadence = self
+            .parallel_work_cadence_miss_count
+            .load(Ordering::Relaxed);
+        let activity_cadence = current_cadence
+            .saturating_add(network_cadence)
+            .saturating_add(terminal_cadence);
+        let current_and_terminal_cadence = current_cadence.saturating_add(terminal_cadence);
+        let mut health = DashboardHotTopicsHealthSnapshot {
+            state: String::new(),
+            activity: topic(counters.activity, activity_cadence, recovery.activity),
+            summary: topic(
+                counters.summary,
+                current_and_terminal_cadence,
+                recovery.summary,
+            ),
+            network_timeseries: topic(
+                counters.network_timeseries,
+                network_cadence,
+                recovery.network_timeseries,
+            ),
+            network_recent: topic(
+                counters.network_recent,
+                network_cadence,
+                recovery.network_recent,
+            ),
+            working_conversations: topic(
+                counters.working_conversations,
+                working_conversations_cadence,
+                recovery.working_conversations,
+            ),
+            parallel_work: topic(
+                counters.parallel_work,
+                parallel_work_cadence,
+                recovery.parallel_work,
+            ),
+            timeseries: topic(
+                counters.timeseries,
+                current_and_terminal_cadence,
+                recovery.timeseries,
+            ),
+        };
+        let states = [
+            health.activity.state.as_str(),
+            health.summary.state.as_str(),
+            health.network_timeseries.state.as_str(),
+            health.network_recent.state.as_str(),
+            health.working_conversations.state.as_str(),
+            health.parallel_work.state.as_str(),
+            health.timeseries.state.as_str(),
+        ];
+        health.state = if states.contains(&"degraded") {
+            "degraded"
+        } else if states.contains(&"deferred") {
+            "deferred"
+        } else {
+            "healthy"
+        }
+        .to_string();
+        health
     }
 
     fn has_degraded_signal(&self) -> bool {
@@ -457,6 +668,10 @@ impl DashboardDeliveryTopologyCounters {
         self.working_conversations.reset();
         self.parallel_work.reset();
         self.timeseries.reset();
+        self.working_conversations_cadence_miss_count
+            .store(0, Ordering::Relaxed);
+        self.parallel_work_cadence_miss_count
+            .store(0, Ordering::Relaxed);
     }
 }
 
@@ -2800,6 +3015,46 @@ impl SubscriptionHub {
 
     pub(crate) fn dashboard_topology_counters(&self) -> DashboardDeliveryTopologyCounterSnapshot {
         self.dashboard_topology_counters.snapshot()
+    }
+
+    pub(crate) async fn dashboard_hot_topic_health(
+        &self,
+        projection: DashboardRuntimeTopologyCounterSnapshot,
+    ) -> DashboardHotTopicsHealthSnapshot {
+        let recovery = {
+            let guard = self.state.lock().await;
+            let mut recovery = DashboardHotTopicRecoveryHealth::default();
+            for (topic_key, cached) in &guard.topics {
+                if cached.topic.class() != SubscriptionTopicClass::HotProjection
+                    || guard
+                        .active_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                {
+                    continue;
+                }
+                let recovery_pending = guard.runtime_topic_recovery_queued.contains(topic_key)
+                    || cached.runtime_topic_recovery_retry_at.is_some();
+                let deferred = matches!(
+                    cached.topic,
+                    SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+                ) && (cached.prompt_cache_pressure_deferred
+                    || cached.prompt_cache_reconcile_required
+                    || !cached.prompt_cache_pending_key_hydrations.is_empty());
+                recovery.record(
+                    &cached.topic,
+                    DashboardHotTopicRecoveryState {
+                        degraded: cached.dirty || recovery_pending,
+                        deferred,
+                    },
+                );
+            }
+            recovery
+        };
+        self.dashboard_topology_counters
+            .hot_topic_health(projection, recovery)
     }
 
     pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
@@ -5403,7 +5658,7 @@ impl SubscriptionHub {
     ) -> Result<(), ApiError> {
         enum ParallelWorkSchedule {
             None,
-            Materialize,
+            Materialize(Instant),
             Reconcile,
         }
 
@@ -5504,7 +5759,7 @@ impl SubscriptionHub {
                     Some(ParallelWorkSchedule::None)
                 } else {
                     cached.parallel_work_refresh_scheduled = true;
-                    Some(ParallelWorkSchedule::Materialize)
+                    Some(ParallelWorkSchedule::Materialize(Instant::now()))
                 }
             };
             let Some(schedule) = schedule else {
@@ -5513,14 +5768,24 @@ impl SubscriptionHub {
             };
             match schedule {
                 ParallelWorkSchedule::None => {}
-                ParallelWorkSchedule::Materialize => {
+                ParallelWorkSchedule::Materialize(scheduled_at) => {
                     let hub = state.subscription_hub.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
+                        let deadline = scheduled_at + PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE;
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                        if Instant::now().saturating_duration_since(deadline)
+                            > PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE
+                        {
+                            hub.dashboard_topology_counters
+                                .record_cadence_miss("stats.parallel-work.current");
+                        }
                         hub.materialize_dashboard_parallel_work().await;
                     });
                 }
                 ParallelWorkSchedule::Reconcile => {
+                    // Account gaps are recovered from a dirty last-good frame, not by the
+                    // in-memory hot materializer. Recovery health reports that state directly;
+                    // this background rebaseline delay is therefore not a hot cadence miss.
                     let hub = state.subscription_hub.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
@@ -5776,8 +6041,15 @@ impl SubscriptionHub {
         for topic in scheduled {
             let hub = state.subscription_hub.clone();
             let state = state.clone();
+            let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
             tokio::spawn(async move {
-                tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                if Instant::now().saturating_duration_since(deadline)
+                    > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+                {
+                    hub.dashboard_topology_counters
+                        .record_cadence_miss(topic.name());
+                }
                 if let Err(err) = hub
                     .materialize_prompt_cache_topic(state.clone(), &topic)
                     .await
@@ -5897,8 +6169,15 @@ impl SubscriptionHub {
 
     fn spawn_prompt_cache_topic_materialization(state: Arc<AppState>, topic: SubscriptionTopic) {
         let hub = state.subscription_hub.clone();
+        let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
         tokio::spawn(async move {
-            tokio::time::sleep(PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE).await;
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            if Instant::now().saturating_duration_since(deadline)
+                > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
+            {
+                hub.dashboard_topology_counters
+                    .record_cadence_miss(topic.name());
+            }
             if let Err(err) = hub
                 .materialize_prompt_cache_topic(state.clone(), &topic)
                 .await
@@ -8788,6 +9067,48 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
+    fn class(&self) -> SubscriptionTopicClass {
+        match self {
+            Self::DashboardActivityCurrent { range, .. } => {
+                if range == "yesterday" {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::SummaryCurrent { window, .. } => {
+                if matches!(window.as_str(), "yesterday" | "previous7d") {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::ParallelWorkCurrent { range, .. } | Self::TimeseriesOpenWindow { range, .. } => {
+                if range == "yesterday" {
+                    SubscriptionTopicClass::ClosedSnapshot
+                } else {
+                    SubscriptionTopicClass::HotProjection
+                }
+            }
+            Self::DashboardNetworkTimeseriesWindow { .. }
+            | Self::DashboardNetworkRecentCurrent
+            | Self::DashboardWorkingConversationsCurrent { .. } => {
+                SubscriptionTopicClass::HotProjection
+            }
+            Self::AppVersion
+            | Self::QuotaCurrent
+            | Self::InvocationWindow { .. }
+            | Self::InvocationHistoryWindow { .. }
+            | Self::InvocationHistoryOverview { .. }
+            | Self::PromptCacheConversationBindingCurrent { .. }
+            | Self::PromptCacheConversationOperationsWindow { .. }
+            | Self::PromptCacheWindow { .. }
+            | Self::PromptCacheStickyWindow { .. }
+            | Self::ForwardProxyLive
+            | Self::InvocationPoolAttempts { .. } => SubscriptionTopicClass::BoundedColdHydrate,
+        }
+    }
+
     fn uses_server_push_cadence(&self, mode: RuntimeProjectionMode) -> bool {
         self.is_closed_summary_topic()
             || matches!(
@@ -13044,6 +13365,205 @@ mod tests {
         counters.record_reconnect_churn("dashboard.working-conversations.current");
 
         assert!(counters.has_degraded_signal());
+    }
+
+    #[test]
+    fn dashboard_topic_classification_is_exhaustive_for_live_closed_and_cold_topics() {
+        let hot = [
+            SubscriptionTopic::DashboardActivityCurrent {
+                range: "today".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                recent_limit: 16,
+                include_accounts: true,
+                include_recent: true,
+            },
+            SubscriptionTopic::DashboardWorkingConversationsCurrent {
+                page_size: 16,
+                recent_invocation_limit: 16,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::TimeseriesOpenWindow {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                settlement_hour: None,
+                upstream_account_id: None,
+            },
+        ];
+        for topic in hot {
+            assert_eq!(topic.class(), SubscriptionTopicClass::HotProjection);
+        }
+
+        for topic in [
+            SubscriptionTopic::DashboardActivityCurrent {
+                range: "yesterday".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                recent_limit: 16,
+                include_accounts: true,
+                include_recent: true,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "yesterday".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+        ] {
+            assert_eq!(topic.class(), SubscriptionTopicClass::ClosedSnapshot);
+        }
+
+        assert_eq!(
+            SubscriptionTopic::InvocationWindow {
+                limit: 50,
+                model: None,
+                status: None,
+            }
+            .class(),
+            SubscriptionTopicClass::BoundedColdHydrate,
+        );
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_reports_fallback_db_cadence_and_churn() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_materialization("stats.parallel-work.current", true);
+        counters.record_reconnect_churn("dashboard.working-conversations.current");
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            current: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.activity.cadence_miss_count, 2);
+        assert_eq!(health.parallel_work.generic_fallback_build_count, 1);
+        assert_eq!(health.parallel_work.live_path_db_read_count, 1);
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.working_conversations.reconnect_churn_count, 1);
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.timeseries.topic_class, "hot_projection");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_cadence_misses_to_each_materializer() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        counters.record_cadence_miss("dashboard.working-conversations.current");
+        counters.record_cadence_miss("stats.parallel-work.current");
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            current: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 2,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.working_conversations.cadence_miss_count, 1);
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.cadence_miss_count, 1);
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.cadence_miss_count, 5);
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+    }
+
+    #[test]
+    fn dashboard_hot_topic_health_attributes_activity_and_summary_slice_dependencies() {
+        let counters = DashboardDeliveryTopologyCounters::default();
+        let projection = DashboardRuntimeTopologyCounterSnapshot {
+            network: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 5,
+                ..Default::default()
+            },
+            terminal: DashboardProjectionSliceCounterSnapshot {
+                cadence_miss_count: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let health =
+            counters.hot_topic_health(projection, DashboardHotTopicRecoveryHealth::default());
+
+        assert_eq!(health.activity.cadence_miss_count, 12);
+        assert_eq!(health.activity.state, "degraded");
+        assert_eq!(health.summary.cadence_miss_count, 7);
+        assert_eq!(health.summary.state, "degraded");
+    }
+
+    #[tokio::test]
+    async fn dashboard_hot_topic_health_marks_cursor_gap_last_good_as_degraded() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topics = vec![
+            SubscriptionTopic::DashboardWorkingConversationsCurrent {
+                page_size: 20,
+                recent_invocation_limit: 16,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            },
+            SubscriptionTopic::ParallelWorkCurrent {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                upstream_account_id: None,
+            },
+            SubscriptionTopic::TimeseriesOpenWindow {
+                range: "1d".to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                bucket: Some("1m".to_string()),
+                settlement_hour: None,
+                upstream_account_id: None,
+            },
+        ];
+        {
+            let mut guard = hub.state.lock().await;
+            for topic in &topics {
+                guard.topics.insert(
+                    topic.cache_key().expect("hot topic key"),
+                    seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+                );
+            }
+            // Keep the recovery worker parked so the health snapshot observes dirty last-good.
+            guard.runtime_topic_recovery_running = true;
+        }
+        let lease = hub
+            .register_topic_subscribers(&topics)
+            .await
+            .expect("register hot topic owners");
+
+        hub.mark_runtime_mutation_gap_and_recover(state, 4, "cursor_gap")
+            .await;
+        let health = hub
+            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default())
+            .await;
+
+        assert_eq!(health.working_conversations.state, "degraded");
+        assert_eq!(health.parallel_work.state, "degraded");
+        assert_eq!(health.timeseries.state, "degraded");
+        assert_eq!(health.state, "degraded");
+        drop(lease);
     }
 
     #[test]

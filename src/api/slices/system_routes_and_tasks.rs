@@ -78,6 +78,7 @@ pub(crate) struct SystemRuntimePressureHealth {
         crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
     pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
     pub(crate) delivery: DashboardDeliveryTopologyCounterSnapshot,
+    pub(crate) dashboard_hot_topics: DashboardHotTopicsHealthSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
     pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
     pub(crate) event_bus: RuntimeMutationBusHealth,
@@ -161,6 +162,10 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let prompt_cache_bounded_cold_recovery =
         prompt_cache_projection.bounded_cold_recovery_topic_count > 0;
     let prompt_cache_pressure_deferred = prompt_cache_projection.pressure_deferred_topic_count > 0;
+    let dashboard_hot_topics = state
+        .subscription_hub
+        .dashboard_hot_topic_health(dashboard_projection.slice_counters)
+        .await;
     let projection_deferred = dashboard_projection.last_defer_reason.is_some()
         || terminal_projection.hard_limit_reason.is_some()
         || long_term_projection.last_defer_reason.is_some();
@@ -179,6 +184,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || dashboard_projection.state == "degraded"
             || projection_cadence_missed
             || delivery_degraded
+            || dashboard_hot_topics.state == "degraded"
             || prompt_cache_failed_or_stale
             || prompt_cache_live_path_db_read
             || event_bus.state == "degraded"
@@ -188,6 +194,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || writer_pressure_active
             || prompt_cache_pressure_deferred
             || prompt_cache_bounded_cold_recovery
+            || dashboard_hot_topics.state == "deferred"
             || backfill.state == "deferred",
     )
     .to_string();
@@ -210,6 +217,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         proxy_sqlite_write_coordinator,
         dashboard_projection,
         delivery,
+        dashboard_hot_topics,
         request_pipeline,
         prompt_cache_projection,
         event_bus,

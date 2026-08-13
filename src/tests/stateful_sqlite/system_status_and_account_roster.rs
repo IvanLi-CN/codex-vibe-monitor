@@ -403,6 +403,27 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(payload["delivery"]["summary"]["frameBytesCount"].is_u64());
     assert!(payload["delivery"]["summary"]["frameReused"].is_u64());
     assert!(payload["delivery"]["summary"]["cursorAdvanced"].is_u64());
+    assert_eq!(payload["dashboardHotTopics"]["state"], "healthy");
+    for topic in [
+        "activity",
+        "summary",
+        "networkTimeseries",
+        "networkRecent",
+        "workingConversations",
+        "parallelWork",
+        "timeseries",
+    ] {
+        assert_eq!(
+            payload["dashboardHotTopics"][topic]["topicClass"],
+            "hot_projection"
+        );
+        assert_eq!(payload["dashboardHotTopics"][topic]["state"], "healthy");
+        assert!(payload["dashboardHotTopics"][topic]["builderCount"].is_u64());
+        assert!(payload["dashboardHotTopics"][topic]["genericFallbackBuildCount"].is_u64());
+        assert!(payload["dashboardHotTopics"][topic]["livePathDbReadCount"].is_u64());
+        assert!(payload["dashboardHotTopics"][topic]["cadenceMissCount"].is_u64());
+        assert!(payload["dashboardHotTopics"][topic]["reconnectChurnCount"].is_u64());
+    }
     assert!(payload["promptCacheProjection"]["failedOrStaleTopicCount"].is_u64());
     assert_eq!(payload["requestPipeline"]["lastSnapshotKind"], "file");
     assert_eq!(payload["requestPipeline"]["semanticParseCount"], 1);
