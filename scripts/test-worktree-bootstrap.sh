@@ -148,13 +148,38 @@ if (cd "$missing_global_repo" && env PATH=/usr/bin:/bin "$bun_bin" run hooks:ins
 fi
 assert_file_contains "$missing_global_output" 'global lefthook is required'
 
+masquerade_repo="$tmp_dir/masquerade-global"
+masquerade_bin="$tmp_dir/masquerade-bin"
+mkdir -p "$masquerade_repo/scripts" "$masquerade_repo/node_modules/.bin" "$masquerade_bin"
+cp "$repo_root/package.json" "$masquerade_repo/package.json"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$masquerade_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$masquerade_repo/scripts/install-lefthook-hooks.sh"
+cat > "$masquerade_repo/node_modules/.bin/lefthook-local" <<EOF_LOCAL
+#!/usr/bin/env bash
+exec "$lefthook_bin" "\$@"
+EOF_LOCAL
+chmod +x "$masquerade_repo/node_modules/.bin/lefthook-local"
+ln -s "$masquerade_repo/node_modules/.bin/lefthook-local" "$masquerade_repo/node_modules/.bin/lefthook"
+ln -s "$masquerade_repo/node_modules/.bin/lefthook" "$masquerade_bin/lefthook"
+git -C "$masquerade_repo" init -q
+masquerade_output="$tmp_dir/masquerade-global-output.log"
+if (cd "$masquerade_repo" && env PATH="$masquerade_bin:/usr/bin:/bin" "$bun_bin" run hooks:install > "$masquerade_output" 2>&1); then
+  printf 'hooks:install must reject an external symlink to a repo-local Lefthook\n' >&2
+  exit 1
+fi
+assert_file_contains "$masquerade_output" 'global lefthook is required'
+
 fake_bin="$tmp_dir/fake-bin"
 global_bin="$tmp_dir/global-bin"
 bun_install_log="$tmp_dir/bun-install.log"
 cargo_fetch_log="$tmp_dir/cargo-fetch.log"
 bootstrap_order_log="$tmp_dir/bootstrap-order.log"
 mkdir -p "$global_bin"
-ln -s "$lefthook_bin" "$global_bin/lefthook"
+cat > "$global_bin/lefthook" <<EOF_GLOBAL
+#!/usr/bin/env bash
+exec "$lefthook_bin" "\$@"
+EOF_GLOBAL
+chmod +x "$global_bin/lefthook"
 write_fake_bun "$fake_bin"
 write_fake_cargo "$fake_bin"
 export PATH="$global_bin:$fake_bin:$PATH"

@@ -5,6 +5,25 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
 lefthook_path=''
+is_repo_local_path() {
+  resolved_path="$1"
+  case "$resolved_path" in
+    "$repo_root"/node_modules/*|"$repo_root"/*/node_modules/*)
+      return 0
+      ;;
+  esac
+
+  while IFS= read -r worktree_root; do
+    case "$resolved_path" in
+      "$worktree_root"/node_modules/*|"$worktree_root"/*/node_modules/*)
+        return 0
+        ;;
+    esac
+  done < <(git -C "$repo_root" worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}')
+
+  return 1
+}
+
 old_ifs="$IFS"
 IFS=:
 for path_entry in $PATH; do
@@ -18,6 +37,10 @@ for path_entry in $PATH; do
       ;;
   esac
   if [ -x "$candidate" ]; then
+    resolved_candidate="$(realpath "$candidate" 2>/dev/null || true)"
+    if is_repo_local_path "$resolved_candidate"; then
+        continue
+    fi
     lefthook_path="$candidate"
     break
   fi
