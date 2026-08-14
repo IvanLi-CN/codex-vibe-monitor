@@ -22,6 +22,7 @@
 - nextest archive 被限定为受控 CI 实验；只有两次相同 PR head 同时满足 Stateful `<= 390s` 和 backend runner 总秒数 `<= 1005s` 才允许改变 workflow，不能只因本地 archive runner 通过而保留。
 - archive 的两种 CI 拓扑都已按相同门槛拒绝：run `31811122919` 以独立 producer 分发 archive，Stateful critical path 为 `504s`；run `31813566813` 在 Stateful required job 中构建并分发 archive，critical path 为 `433s`。两次虽然 backend runner 总秒数分别为 `872s` 与 `750s`，仍因未达到 `390s` 关键路径预算而撤回 workflow 变更。
 - 在最终独立-job 候选中，进一步把只依赖 current schema 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试迁入 schema template pool；legacy migration、文件路径、gzip 与 write-lock 测试继续走真实 `ensure_schema` 和 file fixture。
+- 上游账户 Stateful tests 曾经通过共享 `test_pool()` 为每个 `AppState` 调用 `ensure_schema`，使远端执行被重复 DDL 主导。该 helper 现在只在 runner 已提供 template 时调用 current-schema template pool；无 template 的直跑和 Archive/File I/O profile 继续走原始 schema 初始化。该收口把本地完整 Stateful execution 降至 `42.507s`，并保留 `1213` 个用例。
 
 ## Key Reasons / Replacements
 

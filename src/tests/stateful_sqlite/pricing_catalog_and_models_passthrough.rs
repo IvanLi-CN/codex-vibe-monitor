@@ -338,10 +338,7 @@ async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_default_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -398,10 +395,7 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
 
 #[tokio::test]
 async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
     let catalog = load_pricing_catalog(&pool)
         .await
         .expect("load seeded default pricing catalog");
@@ -431,10 +425,7 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra_and_luna_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -503,10 +494,7 @@ async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -616,10 +604,7 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     save_pricing_catalog(&pool, &default_pricing_catalog())
         .await
@@ -661,10 +646,7 @@ async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom_catalog_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -712,10 +694,7 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new_models() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     // Simulate a repo-managed default catalog version so startup seeding will call
     // ensure_pricing_models_present, which must not overwrite existing rows.

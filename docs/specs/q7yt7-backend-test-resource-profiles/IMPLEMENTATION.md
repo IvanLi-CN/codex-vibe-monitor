@@ -42,6 +42,7 @@
   - `8` threads：`57.287s`、`67.727s`
   - `8` threads 平均最快，`6` threads 在最快档位 `10%` 内且线程更低，runner 固定为 `6`。
 - 当前 top offenders 主要是 SQLite write-lock/backfill、retention/archive 与系统 raw metrics 路径；它们保留真实锁、archive 与 retention 行为。普通 current-schema-only 测试已进一步迁到 template pool，包括服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 场景。
+- 上游账户 stateful suite 的共享 `test_pool()` 在 runner 提供 schema template 时同样复用唯一 shared-memory template pool，消除每个 `AppState` 的重复 `ensure_schema`；Stateful 内有 `82` 个调用点。它在未提供 template 的本地直跑及 Archive/File I/O profile 中严格保留原有 `ensure_schema` 路径。最新本地完整 Stateful receipt 为 `1213/1213`、nextest execution `42.507s`、runner `76s`。
 - runner 提供可选 `--archive-file`，本地 archive replay 的三个完整 profile 都能通过。CI archive 仍未进入最终 candidate：分离 producer 的 run `31811122919` 从 workflow start 到 Stateful completed 为 `504s`，虽然 backend runner 总计 `872s`；把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`，三个 backend runner 总计 `750s`。两次均未达到 `<= 390s` 的关键路径门槛，因此 workflow 与 quality-gates 维持三个独立 job；只有同一 PR head 的双重 CI 阈值和稳定 archive profile 证据都成立时，才允许重新提议 workflow 变更。
 - runner 在启动 Stateful profile 前由一次真实 `ensure_schema` 生成私有 file template；每个 nextest 子进程用 SQLite backup API 把它复制到唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见、逐条 SQL dump 因每个子进程重复构建而回退、直接文件副本因 SQLite snapshot lock 而被拒绝。
 
