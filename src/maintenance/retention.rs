@@ -1,5 +1,389 @@
 use super::*;
 
+const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
+const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
+const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
+const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
+const RETENTION_WRITE_MAX_ROWS: usize = 64;
+const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetentionWriteHealthSnapshot {
+    pub(crate) state: String,
+    pub(crate) operation: Option<String>,
+    pub(crate) admission_mode: Option<String>,
+    pub(crate) batch_rows: usize,
+    pub(crate) estimated_bytes: usize,
+    pub(crate) prepare_elapsed_ms: u64,
+    pub(crate) lock_wait_ms: u64,
+    pub(crate) execute_ms: u64,
+    pub(crate) commit_ms: u64,
+    pub(crate) budget_breach_count: u64,
+    pub(crate) defer_reason: Option<String>,
+    pub(crate) starvation_age_ms: Option<u64>,
+    pub(crate) p1_waiter_count: usize,
+    pub(crate) candidate_remaining_hint: usize,
+    pub(crate) last_error: Option<String>,
+}
+
+impl Default for RetentionWriteHealthSnapshot {
+    fn default() -> Self {
+        Self {
+            state: "healthy".to_string(),
+            operation: None,
+            admission_mode: None,
+            batch_rows: 0,
+            estimated_bytes: 0,
+            prepare_elapsed_ms: 0,
+            lock_wait_ms: 0,
+            execute_ms: 0,
+            commit_ms: 0,
+            budget_breach_count: 0,
+            defer_reason: None,
+            starvation_age_ms: None,
+            p1_waiter_count: 0,
+            candidate_remaining_hint: 0,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RetentionWriteBudget {
+    next_rows: usize,
+    estimated_bytes_per_row: usize,
+}
+
+impl Default for RetentionWriteBudget {
+    fn default() -> Self {
+        Self {
+            next_rows: RETENTION_WRITE_INITIAL_ROWS,
+            estimated_bytes_per_row: 256,
+        }
+    }
+}
+
+impl RetentionWriteBudget {
+    fn candidate_limit(&self, configured_limit: usize) -> usize {
+        let byte_limited_rows = RETENTION_WRITE_MAX_BYTES
+            .checked_div(self.estimated_bytes_per_row.max(1))
+            .unwrap_or(1)
+            .max(1);
+        self.next_rows
+            .min(byte_limited_rows)
+            .min(RETENTION_WRITE_MAX_ROWS)
+            .min(configured_limit.max(1))
+            .max(1)
+    }
+
+    fn observe_commit(&mut self, rows: usize, estimated_bytes: usize, elapsed: Duration) -> bool {
+        let observed_bytes_per_row = estimated_bytes.saturating_div(rows.max(1)).max(1);
+        self.estimated_bytes_per_row = self
+            .estimated_bytes_per_row
+            .saturating_mul(3)
+            .saturating_add(observed_bytes_per_row)
+            .saturating_div(4)
+            .max(1);
+        let breached =
+            elapsed > RETENTION_WRITE_WARNING || estimated_bytes > RETENTION_WRITE_MAX_BYTES;
+        if breached {
+            self.next_rows = self.next_rows.saturating_div(2).max(1);
+        } else if elapsed <= RETENTION_WRITE_TARGET && estimated_bytes < RETENTION_WRITE_MAX_BYTES {
+            self.next_rows = self
+                .next_rows
+                .saturating_add(1)
+                .min(RETENTION_WRITE_MAX_ROWS);
+        }
+        breached
+    }
+}
+
+#[derive(Debug, Default)]
+struct RetentionWriteHealthState {
+    snapshot: RetentionWriteHealthSnapshot,
+    budgets: HashMap<&'static str, RetentionWriteBudget>,
+}
+
+static RETENTION_WRITE_HEALTH: Lazy<std::sync::Mutex<RetentionWriteHealthState>> =
+    Lazy::new(|| std::sync::Mutex::new(RetentionWriteHealthState::default()));
+
+#[derive(Debug)]
+pub(super) struct RetentionWriteDeferred {
+    operation: &'static str,
+}
+
+impl std::fmt::Display for RetentionWriteDeferred {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "retention write deferred before {}",
+            self.operation
+        )
+    }
+}
+
+impl std::error::Error for RetentionWriteDeferred {}
+
+pub(super) fn retention_write_deferred(operation: &'static str) -> anyhow::Error {
+    anyhow::Error::new(RetentionWriteDeferred { operation })
+}
+
+pub(super) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
+    error.is::<RetentionWriteDeferred>()
+}
+
+pub(super) fn retention_prepared_batch_or_deferred<T>(result: Result<T>) -> Result<Option<T>> {
+    match result {
+        Err(error) if is_retention_write_deferred(&error) => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn retention_write_health_snapshot() -> RetentionWriteHealthSnapshot {
+    RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health")
+        .snapshot
+        .clone()
+}
+
+pub(super) fn retention_candidate_limit(config: &AppConfig, operation: &'static str) -> usize {
+    if cfg!(test) {
+        return config.retention_batch_rows;
+    }
+    RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health")
+        .budgets
+        .entry(operation)
+        .or_default()
+        .candidate_limit(config.retention_batch_rows)
+}
+
+fn retention_record_defer(operation: &'static str, reason: impl ToString) {
+    let reason = reason.to_string();
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    health.snapshot.state = "deferred".to_string();
+    health.snapshot.operation = Some(operation.to_string());
+    health.snapshot.defer_reason = Some(reason.clone());
+    health.snapshot.last_error = None;
+    debug!(
+        operation,
+        defer_reason = %reason,
+        "retention write deferred before SQLite admission"
+    );
+}
+
+pub(crate) struct RetentionWriteCommit {
+    pub(crate) operation: &'static str,
+    pub(crate) admission_mode: &'static str,
+    pub(crate) rows: usize,
+    pub(crate) estimated_bytes: usize,
+    pub(crate) prepare_elapsed: Duration,
+    pub(crate) lock_wait: Duration,
+    pub(crate) execute_elapsed: Duration,
+    pub(crate) commit_elapsed: Duration,
+    pub(crate) p1_waiter_count: usize,
+    pub(crate) candidate_remaining_hint: usize,
+}
+
+macro_rules! retention_record_commit {
+    (
+        $operation:expr,
+        $admission_mode:expr,
+        $rows:expr,
+        $estimated_bytes:expr,
+        $prepare_elapsed:expr,
+        $lock_wait:expr,
+        $execute_elapsed:expr,
+        $commit_elapsed:expr,
+        $p1_waiter_count:expr,
+        $candidate_remaining_hint:expr $(,)?
+    ) => {
+        $crate::maintenance::retention::record_retention_write_commit(
+            $crate::maintenance::retention::RetentionWriteCommit {
+                operation: $operation,
+                admission_mode: $admission_mode,
+                rows: $rows,
+                estimated_bytes: $estimated_bytes,
+                prepare_elapsed: $prepare_elapsed,
+                lock_wait: $lock_wait,
+                execute_elapsed: $execute_elapsed,
+                commit_elapsed: $commit_elapsed,
+                p1_waiter_count: $p1_waiter_count,
+                candidate_remaining_hint: $candidate_remaining_hint,
+            },
+        )
+    };
+}
+
+pub(crate) use retention_record_commit;
+
+pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
+    let RetentionWriteCommit {
+        operation,
+        admission_mode,
+        rows,
+        estimated_bytes,
+        prepare_elapsed,
+        lock_wait,
+        execute_elapsed,
+        commit_elapsed,
+        p1_waiter_count,
+        candidate_remaining_hint,
+    } = commit;
+    let elapsed = execute_elapsed.saturating_add(commit_elapsed);
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    let breached =
+        health
+            .budgets
+            .entry(operation)
+            .or_default()
+            .observe_commit(rows, estimated_bytes, elapsed);
+    if breached {
+        health.snapshot.budget_breach_count = health.snapshot.budget_breach_count.saturating_add(1);
+        health.snapshot.state = "degraded".to_string();
+    } else {
+        health.snapshot.state = "healthy".to_string();
+    }
+    health.snapshot.operation = Some(operation.to_string());
+    health.snapshot.admission_mode = Some(admission_mode.to_string());
+    health.snapshot.batch_rows = rows;
+    health.snapshot.estimated_bytes = estimated_bytes;
+    health.snapshot.prepare_elapsed_ms = prepare_elapsed.as_millis() as u64;
+    health.snapshot.lock_wait_ms = lock_wait.as_millis() as u64;
+    health.snapshot.execute_ms = execute_elapsed.as_millis() as u64;
+    health.snapshot.commit_ms = commit_elapsed.as_millis() as u64;
+    health.snapshot.defer_reason = None;
+    health.snapshot.starvation_age_ms = if admission_mode == "fairness" {
+        Some(lock_wait.as_millis() as u64)
+    } else {
+        None
+    };
+    health.snapshot.p1_waiter_count = p1_waiter_count;
+    health.snapshot.candidate_remaining_hint = candidate_remaining_hint;
+    health.snapshot.last_error = None;
+    if breached {
+        warn!(
+            operation,
+            admission_mode,
+            batch_rows = rows,
+            estimated_bytes,
+            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
+            lock_wait_ms = lock_wait.as_millis() as u64,
+            execute_ms = execute_elapsed.as_millis() as u64,
+            commit_ms = commit_elapsed.as_millis() as u64,
+            p1_waiter_count,
+            candidate_remaining_hint,
+            "retention write transaction exceeded its micro-batch budget"
+        );
+    } else {
+        debug!(
+            operation,
+            admission_mode,
+            batch_rows = rows,
+            estimated_bytes,
+            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
+            lock_wait_ms = lock_wait.as_millis() as u64,
+            execute_ms = execute_elapsed.as_millis() as u64,
+            p1_waiter_count,
+            candidate_remaining_hint,
+            "retention write micro-batch committed"
+        );
+    }
+}
+
+fn retention_record_error(operation: &'static str, error: &anyhow::Error) {
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    health.snapshot.state = "degraded".to_string();
+    health.snapshot.operation = Some(operation.to_string());
+    health.snapshot.last_error = Some(error.to_string());
+}
+
+pub(super) fn take_retention_micro_batch<T>(
+    candidates: Vec<T>,
+    estimated_bytes: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    let mut selected = Vec::new();
+    let mut total_bytes = 0usize;
+    for candidate in candidates {
+        let row_bytes = estimated_bytes(&candidate).max(1);
+        if !selected.is_empty()
+            && (selected.len() >= RETENTION_WRITE_MAX_ROWS
+                || total_bytes.saturating_add(row_bytes) > RETENTION_WRITE_MAX_BYTES)
+        {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(row_bytes);
+        selected.push(candidate);
+        if selected.len() >= RETENTION_WRITE_MAX_ROWS {
+            break;
+        }
+    }
+    selected
+}
+
+pub(super) struct RetentionWriteAdmission {
+    write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
+    _pressure_permit: crate::db_pressure::DbBackgroundPermit,
+    p1_waiter_count: usize,
+}
+
+impl RetentionWriteAdmission {
+    pub(super) fn admission_mode(&self) -> &'static str {
+        if self.write_permit.fairness_admission() {
+            "fairness"
+        } else {
+            "normal"
+        }
+    }
+
+    pub(super) fn lock_wait(&self) -> Duration {
+        self.write_permit.lock_wait()
+    }
+
+    pub(super) fn p1_waiter_count(&self) -> usize {
+        self.p1_waiter_count
+    }
+}
+
+pub(super) async fn acquire_retention_write_admission(
+    operation: &'static str,
+) -> Option<RetentionWriteAdmission> {
+    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+    if let Some(reason) = pressure_gate.background_deny_reason() {
+        retention_record_defer(operation, reason);
+        return None;
+    }
+    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
+        .await;
+    let coordinator_snapshot =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
+    match pressure_gate.try_begin_background(operation) {
+        Ok(pressure_permit) => Some(RetentionWriteAdmission {
+            write_permit,
+            _pressure_permit: pressure_permit,
+            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
+        }),
+        Err(reason) => {
+            retention_record_defer(operation, reason);
+            drop(write_permit);
+            None
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RetentionRunSummary {
     pub(crate) dry_run: bool,
@@ -78,6 +462,7 @@ pub(crate) struct InvocationDetailPruneCandidate {
     pub(crate) occurred_at: String,
     pub(crate) request_raw_path: Option<String>,
     pub(crate) response_raw_path: Option<String>,
+    pub(crate) estimated_write_bytes: i64,
 }
 
 #[derive(Debug, FromRow, Clone)]
@@ -738,14 +1123,7 @@ pub(crate) fn spawn_data_retention_maintenance(
             return;
         }
         loop {
-            if run_data_retention_maintenance_best_effort(
-                &state,
-                &cancel,
-                "retention-maintenance-startup-follow-up",
-                "startup",
-            )
-            .await
-            {
+            if run_data_retention_maintenance_best_effort(&state, &cancel, "startup").await {
                 break;
             }
             tokio::select! {
@@ -770,7 +1148,6 @@ pub(crate) fn spawn_data_retention_maintenance(
                     run_data_retention_maintenance_best_effort(
                         &state,
                         &cancel,
-                        "retention-maintenance-interval-follow-up",
                         "interval",
                     ).await;
                 }
@@ -782,43 +1159,20 @@ pub(crate) fn spawn_data_retention_maintenance(
 pub(crate) async fn run_data_retention_maintenance_best_effort(
     state: &Arc<AppState>,
     cancel: &CancellationToken,
-    rollup_refresh_reason: &'static str,
     trigger: &'static str,
 ) -> bool {
-    let task_run = begin_system_task_run(
-        &state.pool,
-        SystemTaskKind::RetentionArchive,
-        trigger,
-        Some("retention maintenance started".to_string()),
-    )
-    .await
-    .ok();
-    let gate = crate::db_pressure::global_db_pressure_gate();
-    let maintenance_succeeded = {
-        let _permit = match gate.try_begin_background("data_retention_maintenance") {
-            Ok(permit) => permit,
-            Err(reason) => {
-                if let Some(handle) = task_run.as_ref() {
-                    finish_system_task_run_batched(
-                        state.as_ref(),
-                        handle,
-                        SystemTaskStatus::Skipped,
-                        Some("retention skipped by db pressure gate".to_string()),
-                        Some(reason.to_string()),
-                    )
-                    .await;
-                }
-                warn!(
+    match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
+        Ok(summary) => {
+            let touched_anything = summary.touched_anything();
+            if touched_anything {
+                let task_run = begin_system_task_run(
+                    &state.pool,
+                    SystemTaskKind::RetentionArchive,
                     trigger,
-                    reason = %reason,
-                    "data retention maintenance skipped because database pressure gate is closed"
-                );
-                return false;
-            }
-        };
-
-        match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
-            Ok(summary) => {
+                    Some("retention maintenance completed a write pass".to_string()),
+                )
+                .await
+                .ok();
                 if let Some(handle) = task_run.as_ref() {
                     let (brief, detail) = summarize_retention_run_for_system_task(&summary);
                     finish_system_task_run_batched(
@@ -830,45 +1184,50 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     )
                     .await;
                 }
-                // A cold-compression rename changes the physical path as well. Reset the
-                // incremental inventory so it cannot count both the retired and new blob.
-                if (summary.raw_files_compressed > 0
-                    || summary.raw_files_removed > 0
-                    || summary.orphan_raw_files_removed > 0)
-                    && let Err(error) =
-                        reset_system_raw_payload_metrics_inventory(state.as_ref()).await
-                {
-                    warn!(error = %error, "failed to reset system raw metrics inventory after retention");
-                }
-                invalidate_system_status_cache(state.as_ref()).await;
-                true
             }
-            Err(err) => {
-                let pressure_error = gate.record_error("data_retention_maintenance", &err);
-                if let Some(handle) = task_run.as_ref() {
-                    finish_system_task_run_batched(
-                        state.as_ref(),
-                        handle,
-                        SystemTaskStatus::Failed,
-                        Some("retention maintenance failed".to_string()),
-                        Some(err.to_string()),
-                    )
-                    .await;
-                }
-                warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
-                return !pressure_error;
+            // A cold-compression rename changes the physical path as well. Reset the
+            // incremental inventory so it cannot count both the retired and new blob.
+            if (summary.raw_files_compressed > 0
+                || summary.raw_files_removed > 0
+                || summary.orphan_raw_files_removed > 0)
+                && let Err(error) = reset_system_raw_payload_metrics_inventory(state.as_ref()).await
+            {
+                warn!(error = %error, "failed to reset system raw metrics inventory after retention");
             }
+            invalidate_system_status_cache(state.as_ref()).await;
+            touched_anything
+        }
+        Err(err) => {
+            let pressure_error = crate::db_pressure::global_db_pressure_gate()
+                .record_error("data_retention_maintenance", &err);
+            retention_record_error("data_retention_maintenance", &err);
+            let task_run = begin_system_task_run(
+                &state.pool,
+                SystemTaskKind::RetentionArchive,
+                trigger,
+                Some("retention maintenance failed".to_string()),
+            )
+            .await
+            .ok();
+            if let Some(handle) = task_run.as_ref() {
+                finish_system_task_run_batched(
+                    state.as_ref(),
+                    handle,
+                    SystemTaskStatus::Failed,
+                    Some("retention maintenance failed".to_string()),
+                    Some(err.to_string()),
+                )
+                .await;
+            }
+            warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
+            return !pressure_error;
         }
     };
 
-    if maintenance_succeeded && !cancel.is_cancelled() {
-        refresh_hourly_rollups_for_read_surfaces_best_effort(
-            &state.pool,
-            &state.hourly_rollup_sync_lock,
-            rollup_refresh_reason,
-        )
-        .await;
-    }
+    // Hourly rollups run through their own P2 scheduler. Retention used to invoke a
+    // full refresh here after every committed batch, creating an uncoordinated long
+    // write immediately after the maintenance micro-transaction released its permit.
+    // Archive materialization already wakes the targeted repair path above.
     true
 }
 
@@ -896,12 +1255,9 @@ pub(crate) async fn run_data_retention_maintenance(
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
-        sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
-            pool,
-            Some(config.invocation_max_days),
-        )
-        .await
-        .context("failed to sync hourly rollups from live tables before retention")?;
+        // Hourly rollups are a separately scheduled P2 projection. Retention only checks its
+        // coverage gate below; rebuilding it here used to add an unbounded write phase before
+        // every archive pass.
         let janitor = cleanup_stale_archive_temp_files(config, false)?;
         if janitor.stale_temp_files_removed > 0 {
             info!(
@@ -919,8 +1275,27 @@ pub(crate) async fn run_data_retention_maintenance(
         summary.model_route_rows_pruned =
             crate::upstream_accounts::count_expired_model_routes(pool).await? as usize;
     } else {
+        let Some(admission) = acquire_retention_write_admission("model_route_purge").await else {
+            return Ok(summary);
+        };
+        let execute_started = Instant::now();
+        let candidate_limit = retention_candidate_limit(config, "model_route_purge");
         summary.model_route_rows_pruned =
-            crate::upstream_accounts::purge_model_routes(pool).await? as usize;
+            crate::upstream_accounts::purge_model_routes_bounded(pool, candidate_limit).await?
+                as usize;
+        retention_record_commit!(
+            "model_route_purge",
+            admission.admission_mode(),
+            summary.model_route_rows_pruned,
+            summary.model_route_rows_pruned.saturating_mul(128),
+            Duration::ZERO,
+            admission.lock_wait(),
+            execute_started.elapsed(),
+            Duration::ZERO,
+            admission.p1_waiter_count,
+            usize::from(summary.model_route_rows_pruned >= candidate_limit),
+        );
+        drop(admission);
     }
 
     let raw_compression =
@@ -1098,17 +1473,39 @@ pub(crate) async fn run_best_effort_retention_pragma(
     sql: &str,
     description: &'static str,
 ) -> Result<()> {
+    let Some(admission) = acquire_retention_write_admission("retention_pragma").await else {
+        return Ok(());
+    };
+    let execute_started = Instant::now();
     match sqlx::query(sql)
         .execute(pool)
         .await
         .with_context(|| format!("failed to run {description}"))
     {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            retention_record_commit!(
+                "retention_pragma",
+                admission.admission_mode(),
+                1,
+                0,
+                Duration::ZERO,
+                admission.lock_wait(),
+                execute_started.elapsed(),
+                Duration::ZERO,
+                admission.p1_waiter_count,
+                0,
+            );
+            Ok(())
+        }
         Err(err) if is_sqlite_lock_error(&err) => {
+            retention_record_error("retention_pragma", &err);
             warn!(error = %err, sql, "{description} skipped because the database is busy");
             Ok(())
         }
-        Err(err) => Err(err),
+        Err(err) => {
+            retention_record_error("retention_pragma", &err);
+            Err(err)
+        }
     }
 }
 
@@ -1144,7 +1541,7 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
     let batch_limit = if dry_run {
         i64::MAX as usize
     } else {
-        config.retention_batch_rows
+        retention_candidate_limit(config, "raw_compression")
     };
 
     loop {
@@ -1276,7 +1673,7 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             if !dry_run
                 && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
             {
-                replace_proxy_raw_path_references(
+                let references_updated = replace_proxy_raw_path_references(
                     pool,
                     &candidate.raw_path,
                     &next_path,
@@ -1284,6 +1681,7 @@ async fn compress_cold_pool_attempt_response_raw_lane(
                 )
                 .await?;
                 if let Some(path) = outcome.old_exact_path.as_deref()
+                    && references_updated
                     && next_path != candidate.raw_path
                 {
                     delete_exact_proxy_raw_path(Some(path), raw_path_fallback_root)?;
@@ -1419,7 +1817,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             if !dry_run
                 && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
             {
-                replace_proxy_raw_path_references(
+                let references_updated = replace_proxy_raw_path_references(
                     pool,
                     &candidate.raw_path,
                     &next_path,
@@ -1428,6 +1826,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
                 .await?;
 
                 if let Some(path) = outcome.old_exact_path.as_deref()
+                    && references_updated
                     && next_path != candidate.raw_path
                 {
                     delete_exact_proxy_raw_path(Some(path), raw_path_fallback_root)?;
@@ -1514,6 +1913,16 @@ pub(crate) async fn maybe_compress_proxy_raw_path(
     let target_db_path = raw_payload_compressed_db_path(raw_path);
     let target_path = raw_payload_compressed_file_path(&source_path);
     let bytes_before = source_meta.len();
+    if target_path.exists() {
+        return Ok(RawCompressionFileOutcome {
+            candidate_counted: true,
+            bytes_before,
+            new_db_path: Some(target_db_path),
+            new_codec: Some(RAW_CODEC_GZIP.to_string()),
+            old_exact_path: Some(source_path),
+            ..RawCompressionFileOutcome::default()
+        });
+    }
     if dry_run {
         let estimated_bytes_after = estimate_gzip_file_size(&source_path)?;
         return Ok(RawCompressionFileOutcome {
@@ -1649,7 +2058,12 @@ async fn replace_proxy_raw_path_references(
     old_path: &str,
     next_path: &str,
     next_codec: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let Some(admission) = acquire_retention_write_admission("raw_path_reference_update").await
+    else {
+        return Ok(false);
+    };
+    let execute_started = Instant::now();
     let mut tx = pool.begin().await?;
     for (path_column, codec_column) in [
         ("request_raw_path", "request_raw_codec"),
@@ -1673,12 +2087,25 @@ async fn replace_proxy_raw_path_references(
     .bind(old_path)
     .execute(tx.as_mut())
     .await?;
+    let commit_started = Instant::now();
     tx.commit().await?;
+    retention_record_commit!(
+        "raw_path_reference_update",
+        admission.admission_mode(),
+        1,
+        512,
+        Duration::ZERO,
+        admission.lock_wait(),
+        commit_started.duration_since(execute_started),
+        commit_started.elapsed(),
+        admission.p1_waiter_count,
+        0,
+    );
     debug!(
         old_path,
         next_path, next_codec, "propagated shared proxy raw path replacement"
     );
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn locate_existing_proxy_raw_path(
@@ -1772,7 +2199,9 @@ pub(crate) async fn prune_old_invocation_details(
     if dry_run {
         let sql = format!(
             r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path
+            SELECT id, occurred_at, request_raw_path, response_raw_path,
+                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
+                       AS estimated_write_bytes
             FROM codex_invocations
             WHERE {success_like_condition}
               AND detail_level = ?1
@@ -1825,7 +2254,9 @@ pub(crate) async fn prune_old_invocation_details(
     loop {
         let sql = format!(
             r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path
+            SELECT id, occurred_at, request_raw_path, response_raw_path,
+                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
+                       AS estimated_write_bytes
             FROM codex_invocations
             WHERE {success_like_condition}
               AND detail_level = ?1
@@ -1836,11 +2267,12 @@ pub(crate) async fn prune_old_invocation_details(
             "#,
             success_like_condition = success_like_condition,
         );
+        let candidate_limit = retention_candidate_limit(config, "invocation_detail_prune");
         let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
-            .bind(config.retention_batch_rows as i64)
+            .bind(candidate_limit as i64)
             .fetch_all(pool)
             .await?;
 
@@ -1848,6 +2280,7 @@ pub(crate) async fn prune_old_invocation_details(
             break;
         }
 
+        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -1855,8 +2288,10 @@ pub(crate) async fn prune_old_invocation_details(
         }
 
         for (group_key, group) in by_group {
-            rows_pruned += group.len();
-            archive_batches += 1;
+            let group = take_retention_micro_batch(group, |candidate| {
+                candidate.estimated_write_bytes.max(1) as usize
+            });
+            let prepare_started = Instant::now();
             let ids = group
                 .iter()
                 .map(|candidate| candidate.id)
@@ -1870,13 +2305,18 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
-            let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
-                ArchiveBatchLayout::LegacyMonth => {
-                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
-                }
-                ArchiveBatchLayout::SegmentV1 => {
-                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await?
-                }
+            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(
+                match archive_layout_for_dataset(config, spec.dataset) {
+                    ArchiveBatchLayout::LegacyMonth => {
+                        archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
+                    }
+                    ArchiveBatchLayout::SegmentV1 => {
+                        archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
+                    }
+                },
+            )?
+            else {
+                return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
@@ -1884,6 +2324,13 @@ pub(crate) async fn prune_old_invocation_details(
                 Some(config.invocation_archive_ttl_days),
             )?;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let prepare_elapsed = prepare_started.elapsed();
+            let Some(admission) =
+                acquire_retention_write_admission("invocation_detail_prune").await
+            else {
+                return Ok((rows_pruned, archive_batches, raw_files_removed));
+            };
+            let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             mark_archive_batch_historical_rollups_materialized_tx(
@@ -1917,7 +2364,26 @@ pub(crate) async fn prune_old_invocation_details(
             {
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
+            let commit_started = Instant::now();
             tx.commit().await?;
+            retention_record_commit!(
+                "invocation_detail_prune",
+                admission.admission_mode(),
+                group.len(),
+                group
+                    .iter()
+                    .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
+                    .sum(),
+                prepare_elapsed,
+                admission.lock_wait(),
+                commit_started.duration_since(execute_started),
+                commit_started.elapsed(),
+                admission.p1_waiter_count,
+                candidate_remaining_hint,
+            );
+            drop(admission);
+            rows_pruned += group.len();
+            archive_batches += 1;
 
             let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
@@ -1935,6 +2401,7 @@ pub(crate) async fn archive_old_invocations(
 ) -> Result<(usize, usize, usize)> {
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
+    let candidate_limit = retention_candidate_limit(config, "invocation_archive");
 
     if dry_run {
         let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
@@ -2020,7 +2487,7 @@ pub(crate) async fn archive_old_invocations(
             "#,
         )
         .bind(&cutoff)
-        .bind(config.retention_batch_rows as i64)
+        .bind(candidate_limit as i64)
         .fetch_all(pool)
         .await?;
 
@@ -2028,6 +2495,7 @@ pub(crate) async fn archive_old_invocations(
             break;
         }
 
+        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -2035,8 +2503,10 @@ pub(crate) async fn archive_old_invocations(
         }
 
         for (group_key, group) in by_group {
-            rows_archived += group.len();
-            archive_batches += 1;
+            let group = take_retention_micro_batch(group, |candidate| {
+                candidate.payload.as_deref().map_or(256, str::len).max(1)
+            });
+            let prepare_started = Instant::now();
             let raw_paths = group
                 .iter()
                 .flat_map(|candidate| {
@@ -2055,13 +2525,18 @@ pub(crate) async fn archive_old_invocations(
                 .iter()
                 .map(invocation_archive_candidate_to_hourly_source_record)
                 .collect::<Vec<_>>();
-            let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
-                ArchiveBatchLayout::LegacyMonth => {
-                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
-                }
-                ArchiveBatchLayout::SegmentV1 => {
-                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await?
-                }
+            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(
+                match archive_layout_for_dataset(config, spec.dataset) {
+                    ArchiveBatchLayout::LegacyMonth => {
+                        archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
+                    }
+                    ArchiveBatchLayout::SegmentV1 => {
+                        archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
+                    }
+                },
+            )?
+            else {
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
@@ -2073,7 +2548,56 @@ pub(crate) async fn archive_old_invocations(
                     &format_utc_iso(Utc::now()),
                     config.invocation_archive_ttl_days,
                 )?);
+            let prepare_elapsed = prepare_started.elapsed();
+            let Some(admission) = acquire_retention_write_admission("invocation_archive").await
+            else {
+                return Ok((rows_archived, archive_batches, raw_files_removed));
+            };
+            let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
+            // P2 normally advances this cursor before retention. Rows beyond it would be
+            // deleted before the regular replay can observe them, so materialize just those
+            // rows in this same archive transaction before claiming the archive is covered.
+            let live_rollup_cursor =
+                load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
+                    .await?;
+            let unprojected_rows = materialized_rows
+                .iter()
+                .filter(|row| row.id > live_rollup_cursor)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !unprojected_rows.is_empty() {
+                upsert_invocation_hourly_rollups_tx(
+                    tx.as_mut(),
+                    &unprojected_rows,
+                    &INVOCATION_HOURLY_ROLLUP_TARGETS,
+                )
+                .await?;
+
+                // The all-time reader can safely read a raw tail only after a
+                // contiguous live prefix. Do not leap over newer retained rows
+                // that happened to receive lower IDs than this archive batch.
+                let prefix_end = unprojected_rows
+                    .iter()
+                    .map(|row| row.id)
+                    .max()
+                    .expect("unprojected rows are non-empty");
+                let prefix_row_count = sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM codex_invocations WHERE id > ?1 AND id <= ?2",
+                )
+                .bind(live_rollup_cursor)
+                .bind(prefix_end)
+                .fetch_one(tx.as_mut())
+                .await?;
+                if prefix_row_count == unprojected_rows.len() as i64 {
+                    save_hourly_rollup_live_progress_tx(
+                        tx.as_mut(),
+                        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                        prefix_end,
+                    )
+                    .await?;
+                }
+            }
             upsert_invocation_rollups(tx.as_mut(), &group).await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             mark_archive_batch_historical_rollups_materialized_tx(
@@ -2090,7 +2614,31 @@ pub(crate) async fn archive_old_invocations(
                 &[],
             )
             .await?;
+            let commit_started = Instant::now();
             tx.commit().await?;
+            retention_record_commit!(
+                "invocation_archive",
+                admission.admission_mode(),
+                group.len(),
+                group
+                    .iter()
+                    .map(|candidate| {
+                        candidate
+                            .payload
+                            .as_deref()
+                            .map_or(256, |payload| payload.len())
+                    })
+                    .sum(),
+                prepare_elapsed,
+                admission.lock_wait(),
+                commit_started.duration_since(execute_started),
+                commit_started.elapsed(),
+                admission.p1_waiter_count,
+                candidate_remaining_hint,
+            );
+            drop(admission);
+            rows_archived += group.len();
+            archive_batches += 1;
             let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
@@ -2156,9 +2704,10 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut archive_batches = 0usize;
 
     loop {
+        let candidate_limit = retention_candidate_limit(config, "timestamped_archive");
         let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
-            .bind(config.retention_batch_rows as i64)
+            .bind(candidate_limit as i64)
             .fetch_all(pool)
             .await?;
 
@@ -2166,6 +2715,7 @@ pub(crate) async fn archive_timestamped_dataset(
             break;
         }
 
+        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let month_key =
@@ -2174,8 +2724,8 @@ pub(crate) async fn archive_timestamped_dataset(
         }
 
         for (month_key, group) in by_month {
-            rows_archived += group.len();
-            archive_batches += 1;
+            let group = take_retention_micro_batch(group, |_| 256);
+            let prepare_started = Instant::now();
             let ids = group
                 .iter()
                 .map(|candidate| candidate.id)
@@ -2224,8 +2774,12 @@ pub(crate) async fn archive_timestamped_dataset(
             } else {
                 Vec::new()
             };
-            let mut archive_outcome =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
+            )?
+            else {
+                return Ok((rows_archived, archive_batches));
+            };
             if spec.dataset == "pool_upstream_request_attempts" {
                 set_archive_batch_coverage_from_local_rows(
                     &mut archive_outcome,
@@ -2251,6 +2805,12 @@ pub(crate) async fn archive_timestamped_dataset(
                         .map(|candidate| candidate.timestamp_value.as_str()),
                 )?;
             }
+            let prepare_elapsed = prepare_started.elapsed();
+            let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
+            else {
+                return Ok((rows_archived, archive_batches));
+            };
+            let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
@@ -2372,7 +2932,23 @@ pub(crate) async fn archive_timestamped_dataset(
                 &materialized_forward_proxy_rows,
             )
             .await?;
+            let commit_started = Instant::now();
             tx.commit().await?;
+            retention_record_commit!(
+                "timestamped_archive",
+                admission.admission_mode(),
+                group.len(),
+                group.len().saturating_mul(256),
+                prepare_elapsed,
+                admission.lock_wait(),
+                commit_started.duration_since(execute_started),
+                commit_started.elapsed(),
+                admission.p1_waiter_count,
+                candidate_remaining_hint,
+            );
+            drop(admission);
+            rows_archived += group.len();
+            archive_batches += 1;
             if spec.dataset == "pool_upstream_request_attempts" {
                 let raw_paths =
                     filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
@@ -2491,6 +3067,35 @@ pub(crate) fn shanghai_archive_expiry_from_local_naive(
     let expiry = start_of_local_day(local_naive_to_utc(local, Shanghai), Shanghai)
         + ChronoDuration::days(archive_ttl_days as i64 + 1);
     Ok(format_naive(expiry.with_timezone(&Shanghai).naive_local()))
+}
+
+#[cfg(test)]
+mod retention_write_budget_tests {
+    use super::*;
+
+    #[test]
+    fn retention_write_budget_adapts_without_exceeding_hard_bounds() {
+        let mut budget = RetentionWriteBudget::default();
+        assert_eq!(budget.candidate_limit(1_000), RETENTION_WRITE_INITIAL_ROWS);
+
+        assert!(budget.observe_commit(4, 4 * 256, Duration::from_millis(251)));
+        assert_eq!(budget.candidate_limit(1_000), 2);
+
+        assert!(budget.observe_commit(1, RETENTION_WRITE_MAX_BYTES + 1, Duration::ZERO));
+        assert_eq!(budget.candidate_limit(1_000), 1);
+
+        for _ in 0..100 {
+            assert!(!budget.observe_commit(1, 256, Duration::from_millis(1)));
+        }
+        assert!(budget.candidate_limit(1_000) <= RETENTION_WRITE_MAX_ROWS);
+    }
+
+    #[test]
+    fn retention_micro_batch_keeps_a_single_oversized_row_losslessly() {
+        let selected =
+            take_retention_micro_batch(vec![2 * RETENTION_WRITE_MAX_BYTES, 128], |value| *value);
+        assert_eq!(selected, vec![2 * RETENTION_WRITE_MAX_BYTES]);
+    }
 }
 
 #[derive(Debug, FromRow)]

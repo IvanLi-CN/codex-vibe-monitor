@@ -141,6 +141,26 @@ pub(crate) async fn purge_model_routes(pool: &Pool<Sqlite>) -> Result<u64> {
     Ok(result.rows_affected())
 }
 
+pub(crate) async fn purge_model_routes_bounded(pool: &Pool<Sqlite>, limit: usize) -> Result<u64> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_model_routes
+        WHERE rowid IN (
+            SELECT rowid
+            FROM pool_upstream_account_model_routes
+            WHERE last_seen_at < ?1
+            ORDER BY last_seen_at ASC, rowid ASC
+            LIMIT ?2
+        )
+        "#,
+    )
+    .bind(cutoff_string())
+    .bind(limit.max(1) as i64)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub(crate) async fn count_expired_model_routes(pool: &Pool<Sqlite>) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "SELECT COUNT(*) FROM pool_upstream_account_model_routes WHERE last_seen_at < ?1",

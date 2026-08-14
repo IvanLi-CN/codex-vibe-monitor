@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/9aucy-db-retention-archive/SPEC.md`
-- Implementation summary: 已完成
+- Implementation summary: retention source mutations use coordinator-admitted, pressure-gated adaptive microtransactions.
 
 ## Migrated Implementation Notes
 
@@ -15,6 +15,9 @@
 - Note: parallel-work 采用独立的分钟 key 与永久小时标量层。分钟 key 固定保留 30 个完整上海自然日与当前自然日，过期时每小时原子 materialize 并删除 key；这条维护链不读取旧 archive，也不依赖原始明细 retention 开关。
 - Note: detail pruning records the latest unrecoverable-detail epoch in the same write transaction. Regular parallel-work maintenance reads that watermark; only an old database without the marker performs a one-time conservative seed scan.
 - Note: parallel-work coverage emits `watermark_source` and `scan_avoided`; normal maintenance must use the retention-side watermark and never revive the retained-table reverse scan.
+- Note: `RETENTION_BATCH_ROWS` is a candidate preparation limit, not a transaction-size contract. Retention DB mutations use coordinated, pressure-gated microbatches with a bounded fairness path so archival work cannot monopolize the SQLite writer.
+- Note: normal maintenance yields to P1 terminal, synchronous proxy and P2 derived work. After sustained starvation it may receive one fairness admission per 15-second interval, but never while the SQLite pressure cooldown is active.
+- Note: archive artifacts are prepared before admission. A short transaction atomically publishes its manifest and coverage state with the corresponding source mutation; raw owner links are released only after that commit.
 
 ## Verification
 

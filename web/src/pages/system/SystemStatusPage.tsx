@@ -360,6 +360,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const alertVariant = state === "healthy" ? "success" : state === "unknown" ? "info" : "warning";
   const eventBus = health?.eventBus;
   const backfill = health?.backfill;
+  const retention = health?.retentionWriteHealth;
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
   const slices = health?.dashboardProjection.sliceCounters;
@@ -576,10 +577,50 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                 label={t("system.status.runtimePressure.writerGate")}
                 value={
                   health.proxySqliteWriteCoordinator
-                    ? `${health.proxySqliteWriteCoordinator.p1WaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.interactiveWaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.p2WaiterCount.toLocaleString()}`
+                    ? `${health.proxySqliteWriteCoordinator.p1WaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.interactiveWaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.p2WaiterCount.toLocaleString()} / ${health.proxySqliteWriteCoordinator.maintenanceWaiterCount.toLocaleString()}`
                     : t("system.status.runtimePressure.states.unknown")
                 }
                 hint={health.writerAccounting.p2WakeReason}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.retentionWrite")}
+                value={t(`system.status.runtimePressure.states.${retention?.state ?? "unknown"}`)}
+                hint={retention?.deferReason ?? retention?.lastError ?? retention?.operation}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.retentionTransaction")}
+                value={
+                  retention
+                    ? `${retention.batchRows.toLocaleString()} / ${formatBytes(retention.estimatedBytes)}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  retention
+                    ? t("system.status.runtimePressure.retentionTransactionHint", {
+                        wait: retention.lockWaitMs.toLocaleString(),
+                        execute: retention.executeMs.toLocaleString(),
+                        commit: retention.commitMs.toLocaleString(),
+                        fairness: retention.admissionMode ?? "-",
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.retentionBudget")}
+                value={
+                  retention
+                    ? `${retention.budgetBreachCount.toLocaleString()} / ${retention.candidateRemainingHint.toLocaleString()}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  retention
+                    ? t("system.status.runtimePressure.retentionBudgetHint", {
+                        prepare: retention.prepareElapsedMs.toLocaleString(),
+                        starvation: retention.starvationAgeMs?.toLocaleString() ?? "-",
+                        p1: retention.p1WaiterCount.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
               />
               <BreakdownRow
                 label={t("system.status.runtimePressure.allocatorArenas")}

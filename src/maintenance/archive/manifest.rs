@@ -49,15 +49,39 @@ pub(crate) async fn refresh_archive_upstream_activity_manifest(
             }
         };
         let deduped_values = dedupe_archive_upstream_last_activity(values);
-        summary.refreshed_batches += 1;
-        summary.account_rows_written += deduped_values.len();
         if dry_run {
+            summary.refreshed_batches += 1;
+            summary.account_rows_written += deduped_values.len();
             continue;
         }
 
+        let Some(admission) =
+            super::super::retention::acquire_retention_write_admission("archive_manifest_refresh")
+                .await
+        else {
+            break;
+        };
+        let execute_started = Instant::now();
         let mut tx = pool.begin().await?;
         write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &deduped_values).await?;
+        let commit_started = Instant::now();
         tx.commit().await?;
+        summary.refreshed_batches += 1;
+        summary.account_rows_written += deduped_values.len();
+        super::super::retention::retention_record_commit!(
+            "archive_manifest_refresh",
+            admission.admission_mode(),
+            deduped_values.len(),
+            deduped_values.len().saturating_mul(96),
+            Duration::ZERO,
+            admission.lock_wait(),
+            commit_started.duration_since(execute_started),
+            commit_started.elapsed(),
+            admission.p1_waiter_count(),
+            summary
+                .pending_batches
+                .saturating_sub(summary.refreshed_batches),
+        );
     }
 
     Ok(summary)

@@ -92,6 +92,20 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       retryCount: 0,
       invariantViolationCount: 0,
     },
+    retentionWriteHealth: {
+      state: "healthy",
+      operation: "invocation_detail_prune",
+      admissionMode: "normal",
+      batchRows: 4,
+      estimatedBytes: 16_384,
+      prepareElapsedMs: 36,
+      lockWaitMs: 2,
+      executeMs: 47,
+      commitMs: 18,
+      budgetBreachCount: 0,
+      p1WaiterCount: 0,
+      candidateRemainingHint: 1,
+    },
     dashboardProjection: {
       mode: "auto",
       state: "healthy",
@@ -530,6 +544,18 @@ function runtimePressureStatus(
         invariantViolationCount: state === "accounting_error" ? 1 : 0,
         degradedReason: state === "accounting_error" ? "pending_bytes_underflow" : undefined,
       },
+      retentionWriteHealth: {
+        ...base.retentionWriteHealth!,
+        state: state === "deferred" ? "deferred" : state === "degraded" ? "degraded" : "healthy",
+        admissionMode:
+          state === "deferred" ? undefined : state === "degraded" ? "fairness" : "normal",
+        deferReason: state === "deferred" ? "pressure_cooldown:30000ms" : undefined,
+        budgetBreachCount: state === "degraded" ? 1 : 0,
+        lockWaitMs: state === "degraded" ? 15_004 : 2,
+        executeMs: state === "degraded" ? 251 : 47,
+        commitMs: state === "degraded" ? 36 : 18,
+        starvationAgeMs: state === "degraded" ? 15_004 : undefined,
+      },
       dashboardProjection: {
         ...base.dashboardProjection,
         state: state === "degraded" ? "degraded" : "healthy",
@@ -649,6 +675,7 @@ const runtimePressurePlay =
     await expect(await canvas.findByText(`运行压力：${label}`)).toBeVisible();
     await userEvent.click(await canvas.findByText("运行压力详情"));
     await expect(await canvas.findByText("实时路径数据库读取")).toBeVisible();
+    await expect(await canvas.findByText("保留写入健康状态")).toBeVisible();
   };
 
 export const StatusRuntimePressureHealthy: Story = {

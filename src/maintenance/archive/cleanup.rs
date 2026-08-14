@@ -27,11 +27,30 @@ pub(crate) async fn backfill_invocation_archive_expiries(
             &candidate.coverage_end_at,
             config.invocation_archive_ttl_days,
         )?;
+        let Some(admission) =
+            super::super::retention::acquire_retention_write_admission("archive_expiry_backfill")
+                .await
+        else {
+            break;
+        };
+        let execute_started = Instant::now();
         sqlx::query("UPDATE archive_batches SET archive_expires_at = ?1 WHERE id = ?2")
             .bind(archive_expires_at)
             .bind(candidate.id)
             .execute(pool)
             .await?;
+        super::super::retention::retention_record_commit!(
+            "archive_expiry_backfill",
+            admission.admission_mode(),
+            1,
+            128,
+            Duration::ZERO,
+            admission.lock_wait(),
+            execute_started.elapsed(),
+            Duration::ZERO,
+            admission.p1_waiter_count(),
+            0,
+        );
         updated += 1;
     }
     Ok(updated)
@@ -293,6 +312,12 @@ async fn stage_archive_batch_deletion(
     expected_sha256: &str,
     source_safe_start: Option<NaiveDate>,
 ) -> Result<bool> {
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("archive_cleanup_stage").await
+    else {
+        return Ok(false);
+    };
+    let execute_started = Instant::now();
     let mut tx = pool.begin().await?;
     let staged = sqlx::query(
         r#"
@@ -323,7 +348,20 @@ async fn stage_archive_batch_deletion(
         tx.rollback().await?;
         return Ok(false);
     }
+    let commit_started = Instant::now();
     tx.commit().await?;
+    super::super::retention::retention_record_commit!(
+        "archive_cleanup_stage",
+        admission.admission_mode(),
+        1,
+        512,
+        Duration::ZERO,
+        admission.lock_wait(),
+        commit_started.duration_since(execute_started),
+        commit_started.elapsed(),
+        admission.p1_waiter_count(),
+        0,
+    );
     Ok(true)
 }
 
@@ -431,6 +469,13 @@ where
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("archive_cleanup_finalize")
+            .await
+    else {
+        return Ok(false);
+    };
+    let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let staged_source_safe_start = sqlx::query_scalar::<_, Option<String>>(
         r#"
@@ -536,7 +581,20 @@ where
         tx.rollback().await?;
         return Ok(false);
     }
+    let commit_started = Instant::now();
     tx.commit().await?;
+    super::super::retention::retention_record_commit!(
+        "archive_cleanup_finalize",
+        admission.admission_mode(),
+        1,
+        1024,
+        Duration::ZERO,
+        admission.lock_wait(),
+        commit_started.duration_since(execute_started),
+        commit_started.elapsed(),
+        admission.p1_waiter_count(),
+        0,
+    );
     Ok(true)
 }
 
@@ -559,10 +617,15 @@ pub(crate) async fn cleanup_expired_archive_batches(
           AND archive_expires_at IS NOT NULL
           AND archive_expires_at < ?2
         ORDER BY archive_expires_at ASC, id ASC
+        LIMIT ?3
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(&cutoff)
+    .bind(super::super::retention::retention_candidate_limit(
+        config,
+        "archive_cleanup",
+    ) as i64)
     .fetch_all(pool)
     .await?;
     let materialized_pool_upstream_cache_files = sqlx::query_scalar::<_, String>(
@@ -1525,6 +1588,8 @@ pub(crate) async fn compact_old_quota_snapshots(
     let mut archive_batches = 0usize;
 
     loop {
+        let candidate_limit =
+            super::super::retention::retention_candidate_limit(config, "quota_compaction");
         let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(
             r#"
             WITH ranked AS (
@@ -1546,7 +1611,7 @@ pub(crate) async fn compact_old_quota_snapshots(
             "#,
         )
         .bind(&cutoff)
-        .bind(config.retention_batch_rows as i64)
+        .bind(candidate_limit as i64)
         .fetch_all(pool)
         .await?;
 
@@ -1554,6 +1619,7 @@ pub(crate) async fn compact_old_quota_snapshots(
             break;
         }
 
+        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
@@ -1561,24 +1627,53 @@ pub(crate) async fn compact_old_quota_snapshots(
         }
 
         for (month_key, group) in by_month {
-            rows_archived += group.len();
-            archive_batches += 1;
+            let group = super::super::retention::take_retention_micro_batch(group, |_| 256);
+            let prepare_started = Instant::now();
             let ids = group
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let mut archive_outcome =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let Some(mut archive_outcome) =
+                super::super::retention::retention_prepared_batch_or_deferred(
+                    archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
+                )?
+            else {
+                return Ok((rows_archived, archive_batches));
+            };
             set_archive_batch_coverage_from_utc_rows(
                 &mut archive_outcome,
                 group
                     .iter()
                     .map(|candidate| candidate.timestamp_value.as_str()),
             )?;
+            let prepare_elapsed = prepare_started.elapsed();
+            let Some(admission) =
+                super::super::retention::acquire_retention_write_admission("quota_compaction")
+                    .await
+            else {
+                return Ok((rows_archived, archive_batches));
+            };
+            let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+            let commit_started = Instant::now();
             tx.commit().await?;
+            super::super::retention::retention_record_commit!(
+                "quota_compaction",
+                admission.admission_mode(),
+                group.len(),
+                group.len().saturating_mul(256),
+                prepare_elapsed,
+                admission.lock_wait(),
+                commit_started.duration_since(execute_started),
+                commit_started.elapsed(),
+                admission.p1_waiter_count(),
+                candidate_remaining_hint,
+            );
+            drop(admission);
+            rows_archived += group.len();
+            archive_batches += 1;
         }
     }
 

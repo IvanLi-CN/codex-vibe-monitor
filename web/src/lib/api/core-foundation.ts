@@ -2225,7 +2225,27 @@ export interface RuntimePressureProxySqliteWriteCoordinatorHealth {
   p1WaiterCount: number;
   interactiveWaiterCount: number;
   p2WaiterCount: number;
+  maintenanceWaiterCount: number;
+  maintenanceFairnessAdmissionCount: number;
   directWriteBypassCount: number;
+}
+
+export interface RuntimePressureRetentionWriteHealth {
+  state: string;
+  operation?: string;
+  admissionMode?: string;
+  batchRows: number;
+  estimatedBytes: number;
+  prepareElapsedMs: number;
+  lockWaitMs: number;
+  executeMs: number;
+  commitMs: number;
+  budgetBreachCount: number;
+  deferReason?: string;
+  starvationAgeMs?: number;
+  p1WaiterCount: number;
+  candidateRemainingHint: number;
+  lastError?: string;
 }
 
 export interface RuntimePressureDashboardProjectionHealth {
@@ -2345,6 +2365,7 @@ export interface RuntimePressureHealth {
   writerAccounting: RuntimePressureWriterAccountingHealth;
   promptCacheProjection?: RuntimePressurePromptCacheProjectionHealth;
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
+  retentionWriteHealth?: RuntimePressureRetentionWriteHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
   dashboardHotTopics?: RuntimePressureDashboardHotTopicsHealth;
@@ -4320,6 +4341,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const eventBus = payload.eventBus as Record<string, unknown> | undefined;
   const backfill = payload.backfill as Record<string, unknown> | undefined;
   const dashboardHotTopics = payload.dashboardHotTopics as Record<string, unknown> | undefined;
+  const retentionWriteHealth = payload.retentionWriteHealth as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
@@ -4406,7 +4428,30 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           p1WaiterCount: number(writeCoordinator.p1WaiterCount),
           interactiveWaiterCount: number(writeCoordinator.interactiveWaiterCount),
           p2WaiterCount: number(writeCoordinator.p2WaiterCount),
+          maintenanceWaiterCount: number(writeCoordinator.maintenanceWaiterCount),
+          maintenanceFairnessAdmissionCount: number(
+            writeCoordinator.maintenanceFairnessAdmissionCount,
+          ),
           directWriteBypassCount: number(writeCoordinator.directWriteBypassCount),
+        }
+      : undefined,
+    retentionWriteHealth: retentionWriteHealth
+      ? {
+          state: optionalString(retentionWriteHealth.state) ?? "unknown",
+          operation: optionalString(retentionWriteHealth.operation),
+          admissionMode: optionalString(retentionWriteHealth.admissionMode),
+          batchRows: number(retentionWriteHealth.batchRows),
+          estimatedBytes: number(retentionWriteHealth.estimatedBytes),
+          prepareElapsedMs: number(retentionWriteHealth.prepareElapsedMs),
+          lockWaitMs: number(retentionWriteHealth.lockWaitMs),
+          executeMs: number(retentionWriteHealth.executeMs),
+          commitMs: number(retentionWriteHealth.commitMs),
+          budgetBreachCount: number(retentionWriteHealth.budgetBreachCount),
+          deferReason: optionalString(retentionWriteHealth.deferReason),
+          starvationAgeMs: normalizeFiniteNumber(retentionWriteHealth.starvationAgeMs) ?? undefined,
+          p1WaiterCount: number(retentionWriteHealth.p1WaiterCount),
+          candidateRemainingHint: number(retentionWriteHealth.candidateRemainingHint),
+          lastError: optionalString(retentionWriteHealth.lastError),
         }
       : undefined,
     dashboardProjection: {

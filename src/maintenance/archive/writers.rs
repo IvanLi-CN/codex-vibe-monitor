@@ -604,6 +604,19 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("legacy_archive_file_publish")
+            .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "legacy_archive_file_publish",
+        ));
+    };
+    let prepared_bytes = temporary_file_path
+        .metadata()
+        .map(|metadata| metadata.len() as usize)
+        .unwrap_or_default();
+    let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
@@ -633,7 +646,20 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         tx.rollback().await?;
         return Err(error);
     }
+    let commit_started = Instant::now();
     tx.commit().await?;
+    super::super::retention::retention_record_commit!(
+        "legacy_archive_file_publish",
+        admission.admission_mode(),
+        1,
+        prepared_bytes,
+        Duration::ZERO,
+        admission.lock_wait(),
+        commit_started.duration_since(execute_started),
+        commit_started.elapsed(),
+        admission.p1_waiter_count(),
+        0,
+    );
     Ok(())
 }
 

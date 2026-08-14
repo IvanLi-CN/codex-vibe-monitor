@@ -3335,13 +3335,15 @@ async fn retention_archives_duplicate_upstream_activity_across_chunks() {
 
     let manifest_rows = sqlx::query_as::<_, (i64, String)>(
         r#"
-        SELECT account_id, last_activity_at
+        SELECT account_id, MAX(last_activity_at) AS last_activity_at
         FROM archive_batch_upstream_activity
+        GROUP BY account_id
+        ORDER BY account_id ASC
         "#,
     )
     .fetch_all(&pool)
     .await
-    .expect("load deduped archive manifest rows");
+    .expect("load latest account activity across archive segments");
     assert_eq!(
         manifest_rows,
         vec![(account_id, newest_occurred_at.clone())]

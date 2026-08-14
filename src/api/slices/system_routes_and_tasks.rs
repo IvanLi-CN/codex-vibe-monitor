@@ -81,6 +81,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) dashboard_hot_topics: DashboardHotTopicsHealthSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
     pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
+    pub(crate) retention_write_health: RetentionWriteHealthSnapshot,
     pub(crate) event_bus: RuntimeMutationBusHealth,
     pub(crate) backfill: StartupBackfillHealthSnapshot,
 }
@@ -143,6 +144,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         .subscription_hub
         .prompt_cache_projection_health()
         .await;
+    let retention_write_health = retention_write_health_snapshot();
     let event_bus = state.subscription_hub.runtime_mutation_bus_health();
     let backfill = startup_backfill_health_snapshot();
     let terminal_projection = state.terminal_projection_hub.health();
@@ -187,6 +189,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || dashboard_hot_topics.state == "degraded"
             || prompt_cache_failed_or_stale
             || prompt_cache_live_path_db_read
+            || retention_write_health.state == "degraded"
             || event_bus.state == "degraded"
             || backfill.state == "degraded",
         projection_deferred
@@ -194,6 +197,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || writer_pressure_active
             || prompt_cache_pressure_deferred
             || prompt_cache_bounded_cold_recovery
+            || retention_write_health.state == "deferred"
             || dashboard_hot_topics.state == "deferred"
             || backfill.state == "deferred",
     )
@@ -220,6 +224,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         dashboard_hot_topics,
         request_pipeline,
         prompt_cache_projection,
+        retention_write_health,
         event_bus,
         backfill,
     }

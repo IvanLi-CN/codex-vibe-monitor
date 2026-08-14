@@ -273,6 +273,14 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     assert!(
         response_json["runtimePressureHealth"]["requestPipeline"]["semanticParseCount"].is_u64()
     );
+    assert_eq!(
+        response_json["runtimePressureHealth"]["retentionWriteHealth"]["state"],
+        "healthy"
+    );
+    assert!(
+        response_json["runtimePressureHealth"]["retentionWriteHealth"]["budgetBreachCount"]
+            .is_u64()
+    );
     assert!(
         response.database_bytes > 0,
         "database bytes should include sqlite files"

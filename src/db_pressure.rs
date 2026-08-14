@@ -120,6 +120,25 @@ impl DbPressureGate {
         }
     }
 
+    pub(crate) fn background_deny_reason(&self) -> Option<DbPressureDenyReason> {
+        #[cfg(test)]
+        if self.bypass_for_test_global {
+            return None;
+        }
+
+        let now_ms = current_epoch_ms();
+        let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        if pressure_until_ms > now_ms {
+            return Some(DbPressureDenyReason::PressureCooldown {
+                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
+            });
+        }
+        if self.background_slots.available_permits() == 0 {
+            return Some(DbPressureDenyReason::BackgroundBusy);
+        }
+        None
+    }
+
     pub(crate) fn try_begin_background(
         &self,
         _task: &'static str,

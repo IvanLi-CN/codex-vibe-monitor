@@ -1671,7 +1671,15 @@ const baseTranslations = {
     "system.status.runtimePressure.backfillSuppression": "Backfill no-op / pressure defer",
     "system.status.runtimePressure.backfillSuppressionHint":
       "Idle audit writes are suppressed; {{failed}} task(s) are currently failed.",
-    "system.status.runtimePressure.writerGate": "P1 / interactive / P2 writer waiters",
+    "system.status.runtimePressure.writerGate":
+      "P1 / interactive / P2 / maintenance writer waiters",
+    "system.status.runtimePressure.retentionWrite": "Retention write health",
+    "system.status.runtimePressure.retentionTransaction": "Retention transaction rows / estimate",
+    "system.status.runtimePressure.retentionTransactionHint":
+      "wait {{wait}}ms, execute {{execute}}ms, commit {{commit}}ms, admission {{fairness}}.",
+    "system.status.runtimePressure.retentionBudget": "Retention budget breaches / pending hint",
+    "system.status.runtimePressure.retentionBudgetHint":
+      "prepare {{prepare}}ms, starvation {{starvation}}ms, P1 waiters {{p1}}.",
     "system.status.runtimePressure.additiveUnknown":
       "The connected backend has not published this additive diagnostic.",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
@@ -4608,7 +4616,14 @@ const baseTranslations = {
     "system.status.runtimePressure.backfillSuppression": "回填空操作 / 压力延后",
     "system.status.runtimePressure.backfillSuppressionHint":
       "空闲审计写入已抑制；当前失败 {{failed}} 个任务。",
-    "system.status.runtimePressure.writerGate": "P1 / 交互 / P2 写入等待者",
+    "system.status.runtimePressure.writerGate": "P1 / 交互 / P2 / 维护写入等待者",
+    "system.status.runtimePressure.retentionWrite": "保留写入健康状态",
+    "system.status.runtimePressure.retentionTransaction": "保留事务行数 / 估算写入",
+    "system.status.runtimePressure.retentionTransactionHint":
+      "等待 {{wait}}ms，执行 {{execute}}ms，提交 {{commit}}ms，准入 {{fairness}}。",
+    "system.status.runtimePressure.retentionBudget": "保留预算越线 / 待处理提示",
+    "system.status.runtimePressure.retentionBudgetHint":
+      "准备 {{prepare}}ms，饥饿 {{starvation}}ms，P1 等待者 {{p1}}。",
     "system.status.runtimePressure.additiveUnknown": "当前后端尚未发布这一 additive 诊断字段。",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "后台任务",
