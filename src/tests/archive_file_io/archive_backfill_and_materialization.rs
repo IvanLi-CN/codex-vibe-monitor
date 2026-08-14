@@ -131,7 +131,7 @@ async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_fi
     .await
     .expect("insert manifest refresh batch");
 
-    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, &config, false)
         .await
         .expect("refresh manifest rows for duplicate accounts");
     assert_eq!(refresh.pending_batches, 1);
@@ -156,6 +156,115 @@ async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_fi
         ]
     );
 
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_refresh_respects_the_retention_candidate_budget() {
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-manifest-refresh-budget").await;
+    config.retention_batch_rows = 1;
+    let created_at = format_utc_iso(Utc::now());
+
+    for id in 1_i64..=3 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, 'missing', 1, ?3, ?4)
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("missing-manifest-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert missing manifest candidate");
+    }
+
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, &config, false)
+        .await
+        .expect("refresh bounded manifest candidates");
+    let pending_after_refresh: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE upstream_activity_manifest_refreshed_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count pending manifest candidates");
+    assert_eq!(refresh.pending_batches, 1);
+    assert_eq!(refresh.missing_files, 1);
+    assert_eq!(pending_after_refresh, 3);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_activity_replacement_clears_and_writes_in_micro_batches() {
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-manifest-activity-micro-batches").await;
+    config.retention_batch_rows = 2;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id, dataset, month_key, file_path, sha256, row_count, status, created_at
+        )
+        VALUES (99, 'codex_invocations', '2026-01', 'memory://manifest-activity', 'manifest', 5, ?1, ?2)
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert archive manifest batch");
+    for account_id in 10_i64..15 {
+        sqlx::query(
+            "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) VALUES (99, ?1, ?2)",
+        )
+        .bind(account_id)
+        .bind("2026-01-01 00:00:00")
+        .execute(&pool)
+        .await
+        .expect("seed stale manifest activity");
+    }
+
+    let next_values = (20_i64..25)
+        .map(|account_id| (account_id, format!("2026-01-01 00:00:{account_id:02}")))
+        .collect::<Vec<_>>();
+    let written = replace_archive_batch_upstream_activity_in_micro_batches(
+        &pool,
+        &config,
+        99,
+        &next_values,
+        0,
+    )
+    .await
+    .expect("replace manifest activity in micro batches");
+    let actual = sqlx::query_as::<_, (i64, String)>(
+        "SELECT account_id, last_activity_at FROM archive_batch_upstream_activity WHERE archive_batch_id = 99 ORDER BY account_id ASC",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load rebuilt manifest activity");
+    let marker: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_activity_manifest_refreshed_at FROM archive_batches WHERE id = 99",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load manifest refresh marker");
+    assert_eq!(written, Some(5));
+    assert_eq!(actual, next_values);
+    assert!(marker.is_some());
+
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 
@@ -1356,6 +1465,56 @@ async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
             .expect("load archive expiry");
     assert_eq!(actual.as_deref(), Some(expected.as_str()));
 
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_expiry_backfill_respects_the_retention_candidate_budget() {
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("archive-expiry-backfill-budget").await;
+    config.retention_batch_rows = 2;
+    let coverage_end_at = shanghai_local_days_ago(45, 18, 30, 0);
+    let created_at = format_utc_iso(Utc::now());
+
+    for id in 1_i64..=3 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                coverage_start_at, coverage_end_at, historical_rollups_materialized_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', ?2, ?3, 'expiry-budget', 1, ?4,
+                    ?5, ?5, datetime('now'), ?6)
+            "#,
+        )
+        .bind(id)
+        .bind(&coverage_end_at[..7])
+        .bind(
+            temp_dir
+                .join(format!("expiry-budget-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(&coverage_end_at)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert expiry backfill candidate");
+    }
+
+    let updated = backfill_invocation_archive_expiries(&pool, &config)
+        .await
+        .expect("backfill bounded archive expiries");
+    let pending: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE archive_expires_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining archive expiry candidates");
+    assert_eq!(updated, 2);
+    assert_eq!(pending, 1);
+
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 

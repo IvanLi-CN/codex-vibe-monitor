@@ -121,6 +121,8 @@
 - 每个微事务只提交一个已准备 batch 的 manifest、rollup/coverage marker 与对应源行裁剪/删除；失败、取消或重启时源行与 raw owner link 保持，未引用 archive artifact 必须可重试或清理。
 - segment batch 的身份由稳定的源行 ID 集合导出，不能在主库事务外依赖“下一个 part”计数。prepared artifact 必须在 source mutation 前完成 file 与父目录同步；已存在但 hash 不同的同一身份必须失败而非覆盖。
 - fairness 不得越过已排队的 P1 terminal；pressure 拒绝后必须归还尚未产生提交的 fairness token。维护准入等待必须响应 shutdown，取消时仅丢弃尚未开始的 microtransaction。
+- archive expiry backfill 与 upstream-activity manifest rebuild 也必须先取有界候选；manifest 的清理、写入和完成 marker 各自是 coordinator-admitted microtransaction，不能在一次 archive pass 内聚集全表行。
+- shared raw blob 的 owner-path replacement 必须按引用分组分批提交；startup backfill wake 和 raw metrics inventory reset 同样经 maintenance admission。多批 reset 期间 inventory 明确处于 preparing，而不是读取半旧基线。
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。

@@ -623,6 +623,14 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     )
     .fetch_one(&state.pool)
     .await?;
+    if snapshot.inventory_state == "resetting" {
+        set_system_raw_metrics_health_override(state, Some("preparing")).await;
+        debug!(
+            metrics_source = "inventory",
+            "system raw metrics inventory is waiting for retention reset batches"
+        );
+        return Ok(0);
+    }
     let rows = sqlx::query_as::<_, SystemRawPayloadInventoryRow>(
         r#"
         SELECT id, request_raw_path, response_raw_path
@@ -782,15 +790,21 @@ pub(crate) async fn set_system_raw_metrics_health_override(
     cache.latest = None;
 }
 
-pub(crate) async fn reset_system_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SystemRawPayloadInventoryResetOutcome {
+    pub(crate) removed_path_count: usize,
+    pub(crate) complete: bool,
+}
+
+pub(crate) async fn reset_system_raw_payload_metrics_inventory_batch(
+    state: &AppState,
+    max_paths: usize,
+) -> Result<SystemRawPayloadInventoryResetOutcome> {
     let mut tx = state.pool.begin().await?;
-    sqlx::query("DELETE FROM system_raw_payload_inventory_paths")
-        .execute(tx.as_mut())
-        .await?;
     sqlx::query(
         r#"
         UPDATE system_raw_payload_metrics
-        SET inventory_state = 'preparing',
+        SET inventory_state = 'resetting',
             inventory_cursor = 0,
             link_inventory_cursor = 0,
             raw_count = 0,
@@ -805,12 +819,45 @@ pub(crate) async fn reset_system_raw_payload_metrics_inventory(state: &AppState)
     )
     .execute(tx.as_mut())
     .await?;
+    let removed_path_count = sqlx::query(
+        r#"
+        DELETE FROM system_raw_payload_inventory_paths
+        WHERE raw_path IN (
+            SELECT raw_path
+            FROM system_raw_payload_inventory_paths
+            ORDER BY raw_path ASC
+            LIMIT ?1
+        )
+        "#,
+    )
+    .bind(max_paths.max(1) as i64)
+    .execute(tx.as_mut())
+    .await?
+    .rows_affected() as usize;
+    let complete =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM system_raw_payload_inventory_paths")
+            .fetch_one(tx.as_mut())
+            .await?
+            == 0;
+    if complete {
+        sqlx::query(
+            "UPDATE system_raw_payload_metrics SET inventory_state = 'preparing', updated_at = datetime('now') WHERE singleton = 1",
+        )
+        .execute(tx.as_mut())
+        .await?;
+    }
     tx.commit().await?;
+    set_system_raw_metrics_health_override(state, Some("preparing")).await;
     debug!(
         metrics_source = "inventory",
-        "system raw metrics inventory reset after retention"
+        removed_path_count,
+        complete,
+        "system raw metrics inventory reset batch completed after retention"
     );
-    Ok(())
+    Ok(SystemRawPayloadInventoryResetOutcome {
+        removed_path_count,
+        complete,
+    })
 }
 
 pub(crate) fn spawn_system_raw_payload_metrics_inventory(

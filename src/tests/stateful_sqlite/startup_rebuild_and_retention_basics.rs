@@ -2526,7 +2526,7 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
     .await
     .expect("insert archive batch manifest");
 
-    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, &config, false)
         .await
         .expect("rebuild archive upstream activity manifest");
     assert_eq!(refresh.refreshed_batches, 1);
@@ -3132,14 +3132,14 @@ async fn archive_backfill_waits_for_manifest_until_rebuilt() {
     assert!(waiting.waiting_for_manifest_backfill);
     assert_eq!(waiting.updated_accounts, 0);
 
-    let dry_run = refresh_archive_upstream_activity_manifest(&pool, true)
+    let dry_run = refresh_archive_upstream_activity_manifest(&pool, &config, true)
         .await
         .expect("dry-run manifest rebuild");
     assert_eq!(dry_run.pending_batches, 1);
     assert_eq!(dry_run.refreshed_batches, 1);
     assert_eq!(dry_run.account_rows_written, 1);
 
-    let rebuild = refresh_archive_upstream_activity_manifest(&pool, false)
+    let rebuild = refresh_archive_upstream_activity_manifest(&pool, &config, false)
         .await
         .expect("live manifest rebuild");
     assert_eq!(rebuild.pending_batches, 1);
@@ -3228,7 +3228,7 @@ async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
     .await
     .expect("insert missing manifest batch");
 
-    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, &config, false)
         .await
         .expect("refresh manifest with missing archive file");
     assert_eq!(refresh.pending_batches, 1);

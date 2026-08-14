@@ -4,7 +4,7 @@ const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
-const RETENTION_WRITE_MAX_ROWS: usize = 64;
+pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
 
 tokio::task_local! {
@@ -164,6 +164,10 @@ pub(super) fn retention_candidate_limit(config: &AppConfig, operation: &'static 
         .entry(operation)
         .or_default()
         .candidate_limit(config.retention_batch_rows)
+}
+
+pub(super) fn retention_micro_batch_limit(config: &AppConfig, operation: &'static str) -> usize {
+    retention_candidate_limit(config, operation).min(RETENTION_WRITE_MAX_ROWS)
 }
 
 fn retention_record_defer(operation: &'static str, reason: impl ToString) {
@@ -572,6 +576,12 @@ pub(crate) struct InvocationRawCompressionFieldCandidate {
     pub(crate) id: i64,
     pub(crate) occurred_at: String,
     pub(crate) raw_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct RawPathReferenceCandidate {
+    reference_kind: String,
+    id: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1209,7 +1219,8 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             if (summary.raw_files_compressed > 0
                 || summary.raw_files_removed > 0
                 || summary.orphan_raw_files_removed > 0)
-                && let Err(error) = reset_system_raw_payload_metrics_inventory(state.as_ref()).await
+                && let Err(error) =
+                    reset_retention_raw_payload_metrics_inventory(state.as_ref()).await
             {
                 warn!(error = %error, "failed to reset system raw metrics inventory after retention");
             }
@@ -1400,7 +1411,7 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
     if !dry_run && (pruned.1 > 0 || invocation_archive.1 > 0) {
-        let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false)
+        let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, config, false)
             .await
             .context("failed to refresh upstream activity manifest after invocation archive materialization")?;
         debug!(
@@ -1409,7 +1420,7 @@ async fn run_data_retention_maintenance_inner(
             account_rows_written = manifest_refresh.account_rows_written,
             "refreshed upstream activity manifest before waking archive backfill"
         );
-        wake_startup_backfill_tasks(
+        wake_retention_startup_backfill_tasks(
             pool,
             &[
                 StartupBackfillTask::UpstreamActivityArchives,
@@ -1716,6 +1727,7 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             {
                 let references_updated = replace_proxy_raw_path_references(
                     pool,
+                    config,
                     &candidate.raw_path,
                     &next_path,
                     &next_codec,
@@ -1860,6 +1872,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             {
                 let references_updated = replace_proxy_raw_path_references(
                     pool,
+                    config,
                     &candidate.raw_path,
                     &next_path,
                     &next_codec,
@@ -2094,59 +2107,174 @@ pub(crate) fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gz", path.display()))
 }
 
-async fn replace_proxy_raw_path_references(
+pub(crate) async fn replace_proxy_raw_path_references(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     old_path: &str,
     next_path: &str,
     next_codec: &str,
 ) -> Result<bool> {
-    let Some(admission) = acquire_retention_write_admission("raw_path_reference_update").await
-    else {
-        return Ok(false);
-    };
-    let execute_started = Instant::now();
-    let mut tx = pool.begin().await?;
-    for (path_column, codec_column) in [
-        ("request_raw_path", "request_raw_codec"),
-        ("response_raw_path", "response_raw_codec"),
-    ] {
-        let query = format!(
-            "UPDATE codex_invocations SET {path_column} = ?1, {codec_column} = ?2 WHERE {path_column} = ?3"
+    loop {
+        let candidate_limit = retention_candidate_limit(config, "raw_path_reference_update")
+            .min(RETENTION_WRITE_MAX_ROWS);
+        let mut candidates = sqlx::query_as::<_, RawPathReferenceCandidate>(
+            r#"
+            SELECT reference_kind, id
+            FROM (
+                SELECT 'invocation_request' AS reference_kind, id
+                FROM codex_invocations
+                WHERE request_raw_path = ?1
+                UNION ALL
+                SELECT 'invocation_response' AS reference_kind, id
+                FROM codex_invocations
+                WHERE response_raw_path = ?1
+                UNION ALL
+                SELECT 'attempt_response' AS reference_kind, id
+                FROM pool_upstream_request_attempts
+                WHERE response_raw_path = ?1
+            )
+            ORDER BY reference_kind ASC, id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(old_path)
+        .bind(candidate_limit.saturating_add(1) as i64)
+        .fetch_all(pool)
+        .await?;
+        if candidates.is_empty() {
+            break;
+        }
+
+        let candidate_remaining_hint = usize::from(candidates.len() > candidate_limit);
+        candidates.truncate(candidate_limit);
+        let mut by_kind = BTreeMap::<String, Vec<i64>>::new();
+        for candidate in &candidates {
+            by_kind
+                .entry(candidate.reference_kind.clone())
+                .or_default()
+                .push(candidate.id);
+        }
+        let Some(admission) = acquire_retention_write_admission("raw_path_reference_update").await
+        else {
+            return Ok(false);
+        };
+        let execute_started = Instant::now();
+        let mut tx = pool.begin().await?;
+        let mut updated = 0usize;
+        for (reference_kind, ids) in by_kind {
+            let (table, path_column, codec_column) = match reference_kind.as_str() {
+                "invocation_request" => {
+                    ("codex_invocations", "request_raw_path", "request_raw_codec")
+                }
+                "invocation_response" => (
+                    "codex_invocations",
+                    "response_raw_path",
+                    "response_raw_codec",
+                ),
+                "attempt_response" => (
+                    "pool_upstream_request_attempts",
+                    "response_raw_path",
+                    "response_raw_codec",
+                ),
+                _ => continue,
+            };
+            let mut update =
+                QueryBuilder::<Sqlite>::new(format!("UPDATE {table} SET {path_column} = "));
+            update
+                .push_bind(next_path)
+                .push(format!(", {codec_column} = "))
+                .push_bind(next_codec)
+                .push(format!(" WHERE {path_column} = "))
+                .push_bind(old_path)
+                .push(" AND id IN (");
+            {
+                let mut separated = update.separated(", ");
+                for id in &ids {
+                    separated.push_bind(id);
+                }
+            }
+            update.push(")");
+            updated += update.build().execute(tx.as_mut()).await?.rows_affected() as usize;
+        }
+        let commit_started = Instant::now();
+        tx.commit().await?;
+        retention_record_commit!(
+            "raw_path_reference_update",
+            admission.admission_mode(),
+            updated,
+            updated.saturating_mul(192),
+            Duration::ZERO,
+            admission.lock_wait(),
+            commit_started.duration_since(execute_started),
+            commit_started.elapsed(),
+            admission.p1_waiter_count,
+            candidate_remaining_hint,
         );
-        sqlx::query(&query)
-            .bind(next_path)
-            .bind(next_codec)
-            .bind(old_path)
-            .execute(tx.as_mut())
-            .await?;
+        drop(admission);
     }
-    sqlx::query(
-        "UPDATE pool_upstream_request_attempts SET response_raw_path = ?1, response_raw_codec = ?2 WHERE response_raw_path = ?3",
-    )
-    .bind(next_path)
-    .bind(next_codec)
-    .bind(old_path)
-    .execute(tx.as_mut())
-    .await?;
-    let commit_started = Instant::now();
-    tx.commit().await?;
-    retention_record_commit!(
-        "raw_path_reference_update",
-        admission.admission_mode(),
-        1,
-        512,
-        Duration::ZERO,
-        admission.lock_wait(),
-        commit_started.duration_since(execute_started),
-        commit_started.elapsed(),
-        admission.p1_waiter_count,
-        0,
-    );
     debug!(
         old_path,
         next_path, next_codec, "propagated shared proxy raw path replacement"
     );
     Ok(true)
+}
+
+async fn wake_retention_startup_backfill_tasks(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let Some(admission) = acquire_retention_write_admission("archive_backfill_wake").await else {
+        return Ok(0);
+    };
+    let execute_started = Instant::now();
+    let woken = wake_startup_backfill_tasks(pool, tasks, wake_reason).await?;
+    retention_record_commit!(
+        "archive_backfill_wake",
+        admission.admission_mode(),
+        woken as usize,
+        tasks.len().saturating_mul(256),
+        Duration::ZERO,
+        admission.lock_wait(),
+        execute_started.elapsed(),
+        Duration::ZERO,
+        admission.p1_waiter_count,
+        0,
+    );
+    Ok(woken)
+}
+
+async fn reset_retention_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+    loop {
+        let Some(admission) =
+            acquire_retention_write_admission("raw_metrics_inventory_reset").await
+        else {
+            return Ok(());
+        };
+        let candidate_limit =
+            retention_candidate_limit(&state.config, "raw_metrics_inventory_reset");
+        let execute_started = Instant::now();
+        let outcome =
+            reset_system_raw_payload_metrics_inventory_batch(state, candidate_limit).await?;
+        retention_record_commit!(
+            "raw_metrics_inventory_reset",
+            admission.admission_mode(),
+            outcome.removed_path_count.saturating_add(1),
+            outcome
+                .removed_path_count
+                .saturating_mul(128)
+                .saturating_add(256),
+            Duration::ZERO,
+            admission.lock_wait(),
+            execute_started.elapsed(),
+            Duration::ZERO,
+            admission.p1_waiter_count,
+            usize::from(!outcome.complete),
+        );
+        if outcome.complete {
+            return Ok(());
+        }
+    }
 }
 
 pub(crate) fn locate_existing_proxy_raw_path(

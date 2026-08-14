@@ -46,7 +46,7 @@ flowchart LR
 - `TerminalProjectionHub` 保存 terminal admission/P1 ACK 与消费者 cursor，供 Dashboard totals、长期统计和 timeseries 增量物化。
 - P1 只保障 raw terminal 与 journal ACK；派生 rollup 和 repair 通过 P2 并受 SQLite pressure gate 控制。
 - writer queue 的 depth/bytes 由单一 accounting owner 管理。P1 生成 P2 工作时必须转移 ownership，不得跨阶段裸减计数。
-- 代理热写由 `ProxySqliteWriteCoordinator` 单点仲裁，优先级为 P1 terminal、同步 attempt/route、P2 derived、retention maintenance。同步写仍等待并返回原结果，但不得绕过协调器直接竞争 SQLite writer；retention 只在高优先级空闲时正常提交，持续饥饿时也只能按受限 fairness token 提交一个短事务。
+- 代理热写由 `ProxySqliteWriteCoordinator` 单点仲裁，优先级为 P1 terminal、同步 attempt/route、P2 derived、retention maintenance。同步写仍等待并返回原结果，但不得绕过协调器直接竞争 SQLite writer；retention 只在高优先级空闲时正常提交，持续饥饿时也只能按受限 fairness token 提交一个短事务。expiry/manifest、raw owner reference、backfill wake 与 raw inventory reset 都属于同一 maintenance 域，并按各自预算切片。
 - P1 使用 20ms admission、最多 32 条或 4 MiB 的短批次；busy/locked 批次完整保留并按 250ms、500ms、1s、2s、5s 退避。只有事务提交后才能推进 journal 与 projection ACK。
 - P2 仅在 P1 与同步等待者为空时运行；首个派生事件建立固定 250ms 合并 deadline，后续事件不延长。pressure cooldown 按 gate 剩余时间休眠，background eligibility 变化或实际 SQLite 失败退避才再次唤醒，禁止复用 P1 的 20ms ticker 轮询。rollup cursor 每次只推进一个有界 chunk，剩余工作重新排队。
 - `prompt-cache.window` 与 `prompt-cache.sticky.window` 在 owner 订阅期间维护 topic-scoped 内存投影。通用 Records 只追加去重 delta，500ms 固定 deadline 从 last-good baseline 更新 lifetime、账号、recent 和 24h points；初始订阅、60 秒 pressure-gated reconcile 与 dirty 恢复才允许完整 hydrate。

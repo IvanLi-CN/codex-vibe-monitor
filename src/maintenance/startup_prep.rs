@@ -61,7 +61,7 @@ pub(crate) async fn run_startup_persistent_prep_inner(
     }
 
     let janitor_summary = cleanup_stale_archive_temp_files(config, false)?;
-    let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false).await?;
+    let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, config, false).await?;
     let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups_with_parallel_work_coverage(

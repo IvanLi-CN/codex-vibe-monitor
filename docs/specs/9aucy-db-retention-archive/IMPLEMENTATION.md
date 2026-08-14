@@ -20,6 +20,8 @@
 - Note: archive artifacts are prepared before admission. A short transaction atomically publishes its manifest and coverage state with the corresponding source mutation; raw owner links are released only after that commit.
 - Note: segment identities are derived from their source row IDs, and publication verifies and syncs the artifact before source mutation. A conflicting existing identity is retained as evidence and aborts the batch instead of replacing archive bytes.
 - Note: fairness preserves queued P1 priority, and a pressure-deferred admission returns its unused token. Shutdown cancels only a queued admission; an already-admitted microtransaction still completes or rolls back at its database boundary.
+- Note: archive expiry and upstream-activity manifest passes use candidate-plus-one probes. Existing manifest rows are cleared, replacement rows are written, and the completion marker is committed through separately budgeted maintenance microtransactions.
+- Note: raw blob path replacement batches owner references before releasing the old file. Archive-driven startup wakeups and raw-metrics inventory reset use the same maintenance admission; the inventory remains `preparing` until its bounded reset completes.
 
 ## Verification
 

@@ -6,7 +6,9 @@ pub(crate) async fn backfill_invocation_archive_expiries(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<usize> {
-    let candidates = sqlx::query_as::<_, ArchiveExpiryBackfillCandidate>(
+    let candidate_limit =
+        super::super::retention::retention_candidate_limit(config, "archive_expiry_backfill");
+    let mut candidates = sqlx::query_as::<_, ArchiveExpiryBackfillCandidate>(
         r#"
         SELECT id, coverage_end_at
         FROM archive_batches
@@ -15,12 +17,18 @@ pub(crate) async fn backfill_invocation_archive_expiries(
           AND coverage_end_at IS NOT NULL
           AND archive_expires_at IS NULL
           AND historical_rollups_materialized_at IS NOT NULL
+        ORDER BY id ASC
+        LIMIT ?2
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(candidate_limit.saturating_add(1) as i64)
     .fetch_all(pool)
     .await?;
 
+    let candidate_remaining_hint = usize::from(candidates.len() > candidate_limit);
+    candidates.truncate(candidate_limit);
+    let candidate_count = candidates.len();
     let mut updated = 0usize;
     for candidate in candidates {
         let archive_expires_at = shanghai_archive_expiry_from_reference_timestamp(
@@ -49,7 +57,7 @@ pub(crate) async fn backfill_invocation_archive_expiries(
             execute_started.elapsed(),
             Duration::ZERO,
             admission.p1_waiter_count(),
-            0,
+            candidate_remaining_hint.max(usize::from(updated.saturating_add(1) < candidate_count)),
         );
         updated += 1;
     }
