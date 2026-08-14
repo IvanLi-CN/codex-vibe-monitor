@@ -128,6 +128,11 @@ lefthook_bin="$(resolve_lefthook)" || {
   printf 'worktree bootstrap smoke requires lefthook on PATH or repo-local dependencies\n' >&2
   exit 1
 }
+bun_bin="$(command -v bun 2>/dev/null || true)"
+if [ -z "$bun_bin" ]; then
+  printf 'worktree bootstrap smoke requires bun on PATH\n' >&2
+  exit 1
+fi
 
 missing_global_repo="$tmp_dir/missing-global"
 mkdir -p "$missing_global_repo/scripts" "$missing_global_repo/node_modules/.bin"
@@ -137,7 +142,7 @@ chmod +x "$missing_global_repo/scripts/install-lefthook-hooks.sh"
 ln -s "$lefthook_bin" "$missing_global_repo/node_modules/.bin/lefthook"
 git -C "$missing_global_repo" init -q
 missing_global_output="$tmp_dir/missing-global-output.log"
-if (cd "$missing_global_repo" && env PATH=/usr/bin:/bin /opt/homebrew/bin/bun run hooks:install > "$missing_global_output" 2>&1); then
+if (cd "$missing_global_repo" && env PATH=/usr/bin:/bin "$bun_bin" run hooks:install > "$missing_global_output" 2>&1); then
   printf 'hooks:install must reject a repo-local Lefthook without a global binary\n' >&2
   exit 1
 fi
