@@ -42,9 +42,23 @@ case "$hooks_dir" in
 esac
 
 install_hooks=()
+is_managed_hook() {
+  hook_path="$1"
+  if [ ! -e "$hook_path" ] && [ ! -L "$hook_path" ]; then
+    return 0
+  fi
+
+  if grep -Fq '# managed by codex-vibe-monitor hooks:install' "$hook_path" 2>/dev/null; then
+    return 0
+  fi
+
+  grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
+    && grep -Eq '^[[:space:]]*call_lefthook run ' "$hook_path" 2>/dev/null
+}
+
 for hook_name in pre-commit commit-msg post-checkout; do
   hook_path="$hooks_dir/$hook_name"
-  if { [ -e "$hook_path" ] || [ -L "$hook_path" ]; } && ! grep -Fq 'lefthook' "$hook_path" 2>/dev/null; then
+  if ! is_managed_hook "$hook_path"; then
     printf '[worktree-bootstrap] %s already exists and is unmanaged; leaving it untouched\n' "$hook_name" >&2
     continue
   fi

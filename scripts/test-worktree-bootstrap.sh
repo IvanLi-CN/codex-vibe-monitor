@@ -149,12 +149,15 @@ fi
 assert_file_contains "$missing_global_output" 'global lefthook is required'
 
 fake_bin="$tmp_dir/fake-bin"
+global_bin="$tmp_dir/global-bin"
 bun_install_log="$tmp_dir/bun-install.log"
 cargo_fetch_log="$tmp_dir/cargo-fetch.log"
 bootstrap_order_log="$tmp_dir/bootstrap-order.log"
+mkdir -p "$global_bin"
+ln -s "$lefthook_bin" "$global_bin/lefthook"
 write_fake_bun "$fake_bin"
 write_fake_cargo "$fake_bin"
-export PATH="$fake_bin:$PATH"
+export PATH="$global_bin:$fake_bin:$PATH"
 export BUN_INSTALL_LOG="$bun_install_log"
 export CARGO_FETCH_LOG="$cargo_fetch_log"
 export BOOTSTRAP_ORDER_LOG="$bootstrap_order_log"
@@ -213,7 +216,7 @@ assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
 preserve_repo="$tmp_dir/preserve-existing-hook"
 copy_repo "$repo_root" "$preserve_repo"
 init_repo "$preserve_repo"
-printf '#!/bin/sh\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
+printf '#!/bin/sh\n# lefthook is intentionally disabled for this local hook\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
 chmod +x "$preserve_repo/.git/hooks/pre-commit"
 (cd "$preserve_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
 assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
