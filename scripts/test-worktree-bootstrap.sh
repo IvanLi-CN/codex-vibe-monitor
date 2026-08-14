@@ -418,6 +418,7 @@ esac
 sync_lock_dir="$sync_common_dir/worktree-bootstrap-sync.lock"
 mkdir -p "$sync_lock_dir"
 printf '999999999\n' > "$sync_lock_dir/pid"
+rm -f "$worktree_dir/.env.local"
 lock_recovery_output="$tmp_dir/lock-recovery-output.log"
 (
   cd "$worktree_dir"
@@ -427,6 +428,9 @@ if [ -e "$sync_lock_dir" ]; then
   printf 'sync must clean up recovered lock directories\n' >&2
   exit 1
 fi
+assert_file_contains "$lock_recovery_output" 'copied .env.local'
+assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
+printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \

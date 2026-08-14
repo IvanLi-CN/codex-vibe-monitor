@@ -50,6 +50,10 @@ while [ "$lock_attempt" -lt 200 ]; do
     rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
     continue
   fi
+  if [ -z "$lock_owner" ] && [ "$lock_attempt" -ge 20 ]; then
+    rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
+    [ -e "$sync_lock_dir" ] || continue
+  fi
   lock_attempt=$((lock_attempt + 1))
   sleep 0.05
 done
