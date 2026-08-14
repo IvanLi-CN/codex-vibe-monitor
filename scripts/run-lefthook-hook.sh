@@ -30,6 +30,11 @@ is_linked_worktree() {
 }
 
 if [ "$hook_name" = "post-checkout" ]; then
+  if ! command -v lefthook >/dev/null 2>&1; then
+    printf '[worktree-bootstrap] global lefthook is unavailable; checkout continues. Run `bun run hooks:install` to install hooks.\n' >&2
+    exit 0
+  fi
+
   if [ -x "$sync_script" ]; then
     if ! "$sync_script" "$@"; then
       printf '[worktree-bootstrap] resource sync failed; checkout continues. Run `bun run worktree:bootstrap` to retry.\n' >&2

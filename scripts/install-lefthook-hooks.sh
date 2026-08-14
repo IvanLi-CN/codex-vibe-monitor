@@ -69,6 +69,10 @@ case "$hooks_dir" in
   /*) ;;
   *) hooks_dir="$repo_root/$hooks_dir" ;;
 esac
+if [ -L "$hooks_dir" ]; then
+  printf '[worktree-bootstrap] hooks directory is a symlink; leaving hooks untouched: %s\n' "$hooks_dir" >&2
+  exit 0
+fi
 
 install_hooks=()
 is_managed_hook() {
@@ -81,8 +85,7 @@ is_managed_hook() {
     return 0
   fi
 
-  grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
-    && grep -Eq '^[[:space:]]*call_lefthook run ' "$hook_path" 2>/dev/null
+  return 1
 }
 
 for hook_name in pre-commit commit-msg post-checkout; do
@@ -98,5 +101,8 @@ if [ "${#install_hooks[@]}" -gt 0 ]; then
   (
     cd "$repo_root"
     "$lefthook_path" install "${install_hooks[@]}"
+    for hook_name in "${install_hooks[@]}"; do
+      printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$hooks_dir/$hook_name"
+    done
   )
 fi
