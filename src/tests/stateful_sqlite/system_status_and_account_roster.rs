@@ -1039,6 +1039,23 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     .await
 }
 
+pub(crate) async fn test_current_schema_pool() -> SqlitePool {
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let db_url =
+        format!("sqlite:file:codex-vibe-monitor-test-pool-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePoolOptions::new()
+        // Keep the shared in-memory schema available while a test acquires connections.
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&db_url)
+        .await
+        .expect("connect in-memory sqlite");
+    restore_stateful_schema_template(&pool)
+        .await
+        .expect("initialize current-schema test pool");
+    pool
+}
+
 async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
     config: AppConfig,
     startup_ready: bool,

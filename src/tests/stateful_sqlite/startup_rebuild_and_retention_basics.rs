@@ -1286,10 +1286,7 @@ async fn live_activity_v2_coverage_progress_wakes_historical_rollups() {
 
 #[tokio::test]
 async fn failure_classification_backfill_skips_success_rows_with_complete_defaults() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -1337,10 +1334,7 @@ async fn failure_classification_backfill_recovers_response_failed_records() {
         payload: Option<String>,
     }
 
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     let raw_response = [
         "event: response.created",
@@ -1539,10 +1533,7 @@ data: {{"type":"response.failed","response":{{"id":"resp_test","model":"gpt-5.4"
 
 #[tokio::test]
 async fn failure_classification_backfill_from_cursor_respects_scan_limit() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     for idx in 0..205 {
         sqlx::query(

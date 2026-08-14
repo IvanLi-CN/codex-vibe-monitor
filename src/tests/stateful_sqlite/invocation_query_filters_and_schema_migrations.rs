@@ -456,12 +456,7 @@ async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation()
 
 #[tokio::test]
 async fn resolve_default_source_scope_always_all() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let scope_before = resolve_default_source_scope(&pool)
         .await

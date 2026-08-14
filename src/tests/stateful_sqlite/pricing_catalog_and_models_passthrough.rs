@@ -122,10 +122,7 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
 
 #[tokio::test]
 async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -1261,12 +1258,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
 #[tokio::test]
 async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
