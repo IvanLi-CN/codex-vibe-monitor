@@ -33,12 +33,7 @@ async fn ensure_schema_adds_upstream_account_pressure_hot_path_indexes() {
 
 #[tokio::test]
 async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_without_raw_files() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -88,12 +83,7 @@ async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_with
 
 #[tokio::test]
 async fn backfill_invocation_service_tiers_revisits_inline_proxy_non_auto_stream_tiers() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -154,12 +144,7 @@ async fn backfill_invocation_service_tiers_revisits_inline_proxy_non_auto_stream
 
 #[tokio::test]
 async fn backfill_invocation_service_tiers_tracks_skip_counters() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -436,12 +421,7 @@ async fn backfill_proxy_usage_tokens_respects_snapshot_upper_bound() {
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempotent() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     insert_proxy_cost_backfill_row(
         &pool,
@@ -512,12 +492,7 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billing_service_tier() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -621,12 +596,7 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_tier() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -709,12 +679,7 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_reprices_api_keys_requested_tier_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let created_at = "2026-01-01T00:00:00Z".to_string();
     sqlx::query(
@@ -839,12 +804,7 @@ async fn backfill_proxy_missing_costs_reprices_api_keys_requested_tier_rows() {
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_reprices_failed_api_keys_requested_tier_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let created_at = "2026-01-01T00:00:00Z".to_string();
     sqlx::query(
@@ -978,12 +938,7 @@ async fn backfill_proxy_missing_costs_reprices_failed_api_keys_requested_tier_ro
 #[tokio::test]
 async fn backfill_proxy_missing_costs_prefers_payload_account_kind_snapshots_over_live_account_rows()
  {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let created_at = format_utc_iso(Utc::now());
     sqlx::query(
@@ -1150,12 +1105,7 @@ async fn backfill_proxy_missing_costs_prefers_payload_account_kind_snapshots_ove
 #[tokio::test]
 async fn backfill_proxy_missing_costs_falls_back_to_safe_live_api_key_account_kind_when_snapshot_missing()
  {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let created_at = "2026-01-01T00:00:00Z".to_string();
     sqlx::query(
@@ -1273,12 +1223,7 @@ async fn backfill_proxy_missing_costs_falls_back_to_safe_live_api_key_account_ki
 #[tokio::test]
 async fn backfill_proxy_missing_costs_keeps_response_tier_when_live_account_created_after_invocation()
  {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -1394,12 +1339,7 @@ async fn backfill_proxy_missing_costs_keeps_response_tier_when_live_account_crea
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_keeps_non_api_keys_rows_on_response_tier_strategy() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -1490,12 +1430,7 @@ async fn backfill_proxy_missing_costs_keeps_non_api_keys_rows_on_response_tier_s
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_skips_rows_already_settled_with_requested_tier_strategy() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -1559,12 +1494,7 @@ async fn backfill_proxy_missing_costs_skips_rows_already_settled_with_requested_
 
 #[tokio::test]
 async fn backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_unpriced_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     insert_proxy_cost_backfill_row(
         &pool,
@@ -1876,6 +1806,7 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -2547,6 +2478,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),

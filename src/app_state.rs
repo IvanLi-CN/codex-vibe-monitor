@@ -2112,6 +2112,8 @@ pub(crate) struct AppState {
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,
+    #[cfg(test)]
+    pub(crate) fallback_proxy_429_retry_delay_override: Option<Duration>,
     pub(crate) pool_no_available_wait: PoolNoAvailableWaitSettings,
     pub(crate) upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }

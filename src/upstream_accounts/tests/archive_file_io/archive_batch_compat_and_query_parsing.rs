@@ -4026,6 +4026,10 @@ fn is_reauth_error_requires_explicit_invalidated_signal() {
 }
 
 pub(crate) async fn test_pool() -> SqlitePool {
+    if std::env::var_os(crate::tests::STATEFUL_SCHEMA_TEMPLATE_PATH_ENV).is_some() {
+        return crate::tests::test_current_schema_pool().await;
+    }
+
     let pool = SqlitePool::connect("sqlite::memory:")
         .await
         .expect("connect sqlite");
@@ -4226,6 +4230,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(

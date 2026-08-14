@@ -15,6 +15,14 @@
 - 2026-07-09：修复后的本地热缓存测量显示三个 profile wall time 分别约为 `3.83s`、`66.97s`、`29.14s`，拆分后 critical path 远低于 `6m30s` 预算。
 - 2026-07-10：PR #576 合并后的 CI Main 实测 Stateful SQLite job 为 `6m45s`，比预算高 `15s`；完整 1048 个 stateful 用例在本地 4、6、8 threads 下均通过，采用保守的 6-thread runner 上限收敛预算。
 - 2026-07-10：PR #579 的 CI Main run `29074132864` 实测三路 backend job 为 `3m10s`、`6m00s`、`4m50s`；Stateful SQLite 最慢 job 比 `6m30s` 预算低 `30s`，runtime budget 完成收口。
+- 后续 CI Main run `31706131099` 显示 Stateful SQLite 回归到 `617s`（compile `143s`、test execution `404s`），因此预算口径改为 PR workflow start 至 Stateful job completed `<= 390s`，并要求同一 head 连续两次验证。
+- 测试时间成本收敛采用 private/`cfg(test)` 注入：生产 retry/backoff 和 replay threshold wrapper 不变，测试 harness 才能使用零等待或较小 replay threshold；验证正式时间行为的测试必须显式恢复正式 delay。
+- Stateful 并发选择不再凭单次最快结果决定；完整 profile 的 4/6/8 threads 各运行两次，选择最快档位 10% 内的最低档位。当前 `1213` 用例矩阵为 4 threads `134.108s` / `83.952s`、6 threads `63.593s` / `62.874s`、8 threads `57.287s` / `67.727s`；8 平均最快但 6 在线 10% 内，因此选择 6 threads。
+- current-schema fixture 先拒绝了 shared in-memory serialize/deserialize 原型（第二 pooled connection 不可见）、直接文件副本（SQLite snapshot lock）和逐条 SQL dump（每个 nextest 子进程重复构建，CI 执行回退）。最终由 runner 从一次真实 `ensure_schema` 生成私有 file template，并由每个子进程通过 SQLite backup API 复制到唯一 shared-memory SQLite；schema/default-data parity、pooled 双向写入可见性和跨数据库隔离均有回归覆盖。
+- nextest archive 被限定为受控 CI 实验；只有两次相同 PR head 同时满足 Stateful `<= 390s` 和 backend runner 总秒数 `<= 1005s` 才允许改变 workflow，不能只因本地 archive runner 通过而保留。
+- archive 的两种 CI 拓扑都已按相同门槛拒绝：run `31811122919` 以独立 producer 分发 archive，Stateful critical path 为 `504s`；run `31813566813` 在 Stateful required job 中构建并分发 archive，critical path 为 `433s`。两次虽然 backend runner 总秒数分别为 `872s` 与 `750s`，仍因未达到 `390s` 关键路径预算而撤回 workflow 变更。
+- 在最终独立-job 候选中，进一步把只依赖 current schema 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试迁入 schema template pool；legacy migration、文件路径、gzip 与 write-lock 测试继续走真实 `ensure_schema` 和 file fixture。
+- 上游账户 Stateful tests 曾经通过共享 `test_pool()` 为每个 `AppState` 调用 `ensure_schema`，使远端执行被重复 DDL 主导。该 helper 现在只在 runner 已提供 template 时调用 current-schema template pool；无 template 的直跑和 Archive/File I/O profile 继续走原始 schema 初始化。该收口把本地完整 Stateful execution 降至 `42.507s`，并保留 `1213` 个用例。
 
 ## Key Reasons / Replacements
 

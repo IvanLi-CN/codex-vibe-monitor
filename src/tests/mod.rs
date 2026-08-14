@@ -11,6 +11,17 @@ pub(crate) use lightweight::*;
 pub(crate) use stateful_sqlite::*;
 pub(crate) use support::*;
 
+#[tokio::test]
+async fn prepare_current_schema_template_for_stateful_profile() {
+    let Some(path) = std::env::var_os(stateful_sqlite::STATEFUL_SCHEMA_TEMPLATE_PATH_ENV) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    stateful_sqlite::write_stateful_schema_template(&path)
+        .await
+        .expect("prepare stateful profile schema template");
+}
+
 #[cfg(test)]
 async fn resolve_pool_account_for_request(
     state: &crate::AppState,

@@ -141,7 +141,7 @@ mod stats;
 mod terminal_journal;
 mod terminal_projection;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod upstream_accounts;
 
 use api::*;

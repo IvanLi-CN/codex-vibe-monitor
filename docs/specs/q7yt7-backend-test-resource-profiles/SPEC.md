@@ -4,8 +4,8 @@
 
 ## 背景 / 问题陈述
 
-- 后端测试入口虽然已经摆脱 `include!()`，但 `src/tests/slices` 与 `src/upstream_accounts/tests_part_*` 仍然由超大文件、编号切片、`#[path]` 聚合和大范围 `pub(crate) use` 组成。
-- 当前 `Backend Tests` 仍以单个 required check 暴露给 owner；一旦运行时回归，只能看到总耗时变慢，缺乏稳定的资源/成本分层诊断。
+- 前序工作已将后端测试入口从 `include!()`、编号切片和 `#[path]` 聚合迁入 resource-profile 模块树；后续性能收敛必须以这一稳定分组为真相源。
+- 三个 backend required checks 已按资源类型拆分，但 `CI Main` run `31706131099` 的 Stateful SQLite 路径仍耗时 `617s`（编译 `143s`、测试执行 `404s`），无法满足 PR 的快速反馈需要。
 - 如果不冻结新的测试组织与 CI 合同，后续对 nextest 分组、fixture 压缩或 top offenders 收口都会继续建立在脆弱的旧切片命名上。
 
 ## 目标 / 非目标
@@ -15,13 +15,15 @@
 - 为后端测试建立稳定的 resource-profile 顶层组织：`lightweight`、`stateful_sqlite`、`archive_file_io`。
 - 将 `src/tests/slices` 与 `src/upstream_accounts/tests` 都收口到真实模块树，移除 `pool_failover_window_*`、`tests_part_*` 和 `#[path = "../..."]` 聚合。
 - 把 owner-facing backend required checks 从单个 `Backend Tests` 改成三个稳定 job，并让质量门禁与发布链路以这三个名称为真相源。
-- 将运行时优化目标固定为 `CI Main` 中最慢 backend required job 的 wall time `<= 6m30s`。
+- 将 Stateful SQLite PR 关键路径恢复到从 workflow 启动至该 required job 完成 `<= 390s`，并以同一 PR head 的连续两次 CI 运行验证。
 
 ### Non-goals
 
 - 不改变任何生产 HTTP/SSE/API/schema/env/CLI/runtime 语义。
 - 不把 backend tests 继续拆成四个以上 required jobs。
 - 不在本主题内引入独立 benchmark 服务、长期基准数据库或新的发布流程。
+- 不按改动路径跳过 required tests，不将全量测试迁移到 main 或定时任务。
+- 不优化前端 Vitest、Storybook 或 E2E；它们只保留现有基线记录。
 
 ## 范围（Scope）
 
@@ -29,7 +31,8 @@
 
 - `src/tests/**` 与 `src/upstream_accounts/tests**` 的测试模块树重组。
 - `.github/scripts/run-backend-tests.sh` 的 profile-aware runner 合同。
-- `CI PR` / `CI Main` / `quality-gates` / `release snapshot` / `release gate` 中 backend test required-check 名称与期望 job 集。
+- Stateful retry/backoff、no-available-account wait 和大请求 replay fixture 的 test-only 时间/阈值注入点。
+- `CI PR` / `CI Main` / `quality-gates` / `release snapshot` / `release gate` 中 backend test required-check 名称与期望 job 集；archive 仅可作为受控实验，不能新增 required check。
 - 与本主题直接相关的性能经验文档更新。
 
 ### Out of scope
@@ -49,12 +52,17 @@
   - `Backend Tests (Stateful SQLite)`
   - `Backend Tests (Archive / File I/O)`
 - `run-backend-tests.sh` 必须提供稳定 `--profile` 入口，供本地与 CI 复用同一分组真相。
-- 运行时优化必须以 `CI Main` 中最慢 backend required job 的 wall time 为主指标，目标为 `<= 6m30s`。
+- `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
+- Stateful 运行时优化必须以从 workflow 启动到 `Backend Tests (Stateful SQLite)` 完成的 wall time 为主指标；同一 PR head 连续两次均须 `<= 390s`。
+- retry/backoff、no-available-account wait 和 replay memory threshold 的测试加速只能经私有或 `cfg(test)` seam 注入；生产默认值、尝试次数/顺序、错误分类和运行时配置面不得变化。
+- Stateful 的候选线程数必须在完整 profile 的 `4`、`6`、`8` threads 各至少两次热运行中比较；选择最快档位 `10%` 以内的最低线程数。
+- 若 archive workflow 被提议保留，必须在同一 PR head 连续两次满足 Stateful `<= 390s`，且 backend-related jobs 的总 runner 秒数相对 `1257s` 基线下降至少 `20%`（即 `<= 1005s`）；否则不得进入最终 candidate。
 
 ### SHOULD
 
 - bucket 内文件与目录命名应按 failover、routing、archive、stats、maintenance、usage 等语义场景组织，而不是按提交历史或行数残留命名。
 - DB-only 测试应优先改为唯一命名的 in-memory SQLite；需要真实 archive/file-path/gzip/write-lock 语义的测试应固定留在 `archive_file_io` bucket。
+- 非 migration 的 in-memory schema fixture 可由 runner 从一次真实 `ensure_schema` 生成私有 file template，并通过 SQLite backup API 复制到每个唯一 shared-memory SQLite；采用前必须证明 schema/default-data parity、独立连接可见性、并发写安全和跨测试隔离。legacy migration、文件路径、gzip 和 write-lock 测试始终使用真实 `ensure_schema` 和 file fixture。
 - 共享 harness、seed、archive helper、SQLite helper 应下沉到稳定测试支撑模块，避免跨大文件复制粘贴。
 
 ### COULD
@@ -65,9 +73,11 @@
 
 ### Core flows
 
-- PR1：先完成测试树模块化。实现后，新的模块路径与语义命名成为后续 nextest/profile 过滤的唯一真相源。
-- PR2：在 PR1 的模块路径稳定后，引入 profile-aware runner，并把 CI/quality-gates/release 相关契约切到三个 backend required jobs。
-- 运行时优化仅能通过测试组织、fixture、SQLite 连接池、archive seed 范围、nextest 分组和 CI job 拆分达成；不得通过放宽生产语义验证来“做快”。
+- profile runner 始终以同一 resource-profile 过滤集合运行；性能优化不得删除用例或改变三个 required check 名称。
+- 生产 wrapper 继续使用正式 retry/backoff 与 replay threshold；测试 harness 可为零等待 retry、零等待 no-available-account 和较小的私有 replay threshold 注入值，以验证同一分支而不承担真实时间。
+- 需要验证正式时间预算的用例显式清除 retry override；需要验证真实文件语义的用例继续走默认 threshold 与真实文件 fixture。
+- 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize、逐条 SQL dump 或直接文件副本原型作为最终测试路径。
+- archive build/distribution 是可逆实验。仅在同一 PR head 的连续两次 CI 同时满足关键路径与总 runner 成本门槛时，才同步 workflow 与 quality-gates 合同；否则 runner 的可选 archive 入口不改变 required CI 拓扑。
 
 ### Edge cases / errors
 
@@ -99,14 +109,23 @@
 
 - Given `CI PR` 与 `CI Main` 已更新，When GitHub 评估 required checks，Then backend required checks 只包含三个新 job 名称，不再引用旧 `Backend Tests`。
 
-- Given 运行时优化收口完成，When 查看 `CI Main` 中三个 backend required jobs，Then 最慢 job 的 wall time `<= 6m30s`。
+- Given 同一 PR head 的两次完整 CI，When 分别计算 workflow start 至 Stateful SQLite job completed 的时长，Then 两次都 `<= 390s`，且三个 backend profiles 的用例集合不变。
+
+- Given 测试 harness 注入零等待或较小 threshold，When 运行 targeted regression tests，Then 生产默认 delay/threshold、retry attempt/order 和错误分类保持不变，且不存在运行时测试开关。
+
+- Given 运行完整 Stateful profile，When 每个 `4`、`6`、`8` threads 档位运行两次，Then 全部通过，runner 使用最快档位 `10%` 以内的最低线程数。
+
+- Given archive workflow 实验，When 它未同时降低 Stateful 关键路径和 backend runner 总秒数，Then archive workflow 变更不得保留。
 
 ## 验收清单（Acceptance checklist）
 
-- [ ] 两条测试树都已迁入新的 resource-profile 模块树。
-- [ ] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
-- [ ] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
-- [ ] 运行时预算口径与通过阈值已明确。
+- [x] 两条测试树都已迁入新的 resource-profile 模块树。
+- [x] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
+- [x] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
+- [ ] Stateful PR 关键路径连续两次 `<= 390s`。
+- [x] 4/6/8 完整热运行矩阵已记录，且 runner 线程选择符合最低档位规则。
+- [x] 测试专用 timing/threshold seam 已验证不改变生产默认行为。
+- [x] archive 仅在双重量化门槛通过时进入 CI candidate；当前 candidate 不包含 archive workflow。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -123,9 +142,9 @@
 ### Quality checks
 
 - `cargo fmt --all -- --check`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cargo check --locked --all-targets --all-features`
 - `bash .github/scripts/test-quality-gates-contract.sh`
-- `bash .github/scripts/test-release-snapshot.sh`
 - `bash .github/scripts/test-live-quality-gates.sh`
 
 ## Visual Evidence
@@ -137,8 +156,9 @@
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：按 resource-profile 拆 required jobs 会同步改动 quality-gates 与 release 合同，若 job 名称漂移会直接阻断 PR merge 与 release。
-- 风险：部分 stateful/archive 测试可能共享隐式 helper 或 fixture 全局状态，模块化后会暴露出此前被大文件顺序掩盖的耦合。
-- 假设（已确定）：第二个 PR 可以建立在第一个 PR 的新模块路径真相源之上，不再额外保留旧切片兼容层。
+- 风险：schema 模板在 shared in-memory 连接池和文件副本下可能引入连接可见性或 SQLite snapshot lock 回归；没有完整等价性证据时必须回退到真实 `ensure_schema`。
+- 风险：archive 可能减少重复编译却增加 Stateful job 的 dependency critical path；必须以 workflow-start wall time 而非单个 runner 命令判断。
+- 假设（已确定）：每个 PR 保持全部 required tests，性能优化只改变测试内部成本与受控 runner 复用。
 
 ## 参考（References）
 

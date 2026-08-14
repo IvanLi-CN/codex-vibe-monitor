@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io]
+Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH]
 
 Profiles:
   lightweight
@@ -11,10 +11,14 @@ Profiles:
   archive-file-io
 
 If --profile is omitted, all three profiles run sequentially.
+
+When --archive-file is set, run profiles from an existing cargo-nextest archive
+instead of building test binaries in this invocation.
 EOF
 }
 
 profile="all"
+archive_file=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -24,6 +28,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       profile="$2"
+      shift 2
+      ;;
+    --archive-file)
+      if [[ $# -lt 2 ]]; then
+        echo "::error::--archive-file requires a path." >&2
+        usage >&2
+        exit 1
+      fi
+      archive_file="$2"
       shift 2
       ;;
     -h|--help)
@@ -39,6 +52,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 start_epoch="$(date +%s)"
+stateful_schema_template_dir=""
+
+cleanup_stateful_schema_template() {
+  if [[ -n "$stateful_schema_template_dir" && -d "$stateful_schema_template_dir" ]]; then
+    rm -rf "$stateful_schema_template_dir"
+  fi
+}
+trap cleanup_stateful_schema_template EXIT
 
 # The pool routing/live-first test profiles now exercise async paths that exceed the
 # default Rust thread stack on CI workers. Raise the per-thread minimum for the
@@ -53,6 +74,20 @@ if ! command -v cargo-nextest >/dev/null 2>&1; then
   exit 1
 fi
 
+prepare_stateful_schema_template() {
+  stateful_schema_template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-stateful-schema.XXXXXX")"
+  local template_path="$stateful_schema_template_dir/current-schema.db"
+  export CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH="$template_path"
+  echo "backend_test_stateful_schema_template=$template_path"
+
+  local template_filter='test(=tests::prepare_current_schema_template_for_stateful_profile)'
+  if [[ -n "$archive_file" ]]; then
+    cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$template_filter"
+  else
+    cargo nextest run --locked --all-features --no-fail-fast -E "$template_filter"
+  fi
+}
+
 run_profile() {
   local selected_profile="$1"
   local filter_expr=""
@@ -64,7 +99,7 @@ run_profile() {
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
-      # Stateful tests use isolated in-memory SQLite pools and benefit from bounded I/O concurrency.
+      # The 4/6/8 hot-run matrix selected the lowest tier within 10% of the fastest mean.
       test_threads="6"
       ;;
     archive-file-io)
@@ -77,14 +112,34 @@ run_profile() {
       ;;
   esac
 
+  # The current-schema template is a Stateful-only acceleration. Ensure a
+  # caller-provided value cannot change the Archive/File I/O fixture contract.
+  if [[ "$selected_profile" != "stateful-sqlite" ]]; then
+    unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
+  fi
+
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
+  if [[ "$selected_profile" == "stateful-sqlite" ]]; then
+    prepare_stateful_schema_template
+  fi
   if [[ -n "$test_threads" ]]; then
     echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
-    cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    if [[ -n "$archive_file" ]]; then
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    else
+      cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    fi
   else
-    cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+    if [[ -n "$archive_file" ]]; then
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$filter_expr"
+    else
+      cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+    fi
+  fi
+  if [[ "$selected_profile" == "stateful-sqlite" ]]; then
+    unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
   fi
   local profile_end_epoch
   profile_end_epoch="$(date +%s)"

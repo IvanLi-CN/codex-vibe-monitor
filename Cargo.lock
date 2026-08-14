@@ -462,6 +462,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "libsqlite3-sys",
  "nanoid",
  "once_cell",
  "rand 0.8.5",

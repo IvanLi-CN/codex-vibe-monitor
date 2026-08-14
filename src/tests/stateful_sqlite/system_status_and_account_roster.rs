@@ -1,5 +1,12 @@
 use super::*;
+use libsqlite3_sys::{
+    SQLITE_DONE, SQLITE_OK, sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step,
+};
 use serde_json::json;
+use std::str::FromStr;
+
+pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
+    "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
 
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,
@@ -908,7 +915,7 @@ pub(crate) async fn test_state_with_openai_base_and_runtime_projection_mode(
     test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
         config,
         true,
-        PoolNoAvailableWaitSettings::default(),
+        immediate_test_pool_no_available_wait_settings(),
         runtime_projection_mode,
     )
     .await
@@ -983,9 +990,17 @@ pub(crate) async fn test_state_from_config(
     test_state_from_config_with_pool_no_available_wait(
         config,
         startup_ready,
-        PoolNoAvailableWaitSettings::default(),
+        immediate_test_pool_no_available_wait_settings(),
     )
     .await
+}
+
+fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettings {
+    PoolNoAvailableWaitSettings {
+        timeout: Duration::ZERO,
+        poll_interval: Duration::ZERO,
+        retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+    }
 }
 
 fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64) -> PathBuf {
@@ -1024,6 +1039,23 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
     .await
 }
 
+pub(crate) async fn test_current_schema_pool() -> SqlitePool {
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let db_url =
+        format!("sqlite:file:codex-vibe-monitor-test-pool-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePoolOptions::new()
+        // Keep the shared in-memory schema available while a test acquires connections.
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&db_url)
+        .await
+        .expect("connect in-memory sqlite");
+    restore_stateful_schema_template(&pool)
+        .await
+        .expect("initialize current-schema test pool");
+    pool
+}
+
 async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
     config: AppConfig,
     startup_ready: bool,
@@ -1041,9 +1073,9 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
+    restore_stateful_schema_template(&pool)
         .await
-        .expect("schema should initialize");
+        .expect("schema should initialize from the stateful template");
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
@@ -1115,9 +1147,279 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: Some(Duration::ZERO),
         pool_no_available_wait,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
+}
+
+pub(crate) async fn write_stateful_schema_template(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create stateful schema template directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("remove stale stateful schema template {}", path.display()))?;
+    }
+
+    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(path))
+        .context("build stateful schema template sqlite options")?
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .with_context(|| format!("open stateful schema template {}", path.display()))?;
+    ensure_schema(&pool)
+        .await
+        .context("initialize stateful schema template")?;
+    pool.close().await;
+    Ok(())
+}
+
+async fn restore_stateful_schema_template(pool: &SqlitePool) -> anyhow::Result<()> {
+    let Some(template_path) = std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV) else {
+        return ensure_schema(pool).await;
+    };
+    let template_path = PathBuf::from(template_path);
+    if !template_path.is_file() {
+        anyhow::bail!(
+            "stateful schema template does not exist: {}",
+            template_path.display()
+        );
+    }
+    restore_stateful_schema_template_from_path(pool, &template_path).await
+}
+
+async fn restore_stateful_schema_template_from_path(
+    pool: &SqlitePool,
+    template_path: &Path,
+) -> anyhow::Result<()> {
+    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(template_path))
+        .context("build stateful schema template reader options")?
+        .read_only(true)
+        .create_if_missing(false);
+    let mut source = SqliteConnection::connect_with(&options)
+        .await
+        .with_context(|| format!("open stateful schema template {}", template_path.display()))?;
+    let mut destination = pool
+        .acquire()
+        .await
+        .context("acquire stateful test sqlite")?;
+    let mut destination_handle = destination
+        .lock_handle()
+        .await
+        .context("lock stateful test sqlite handle")?;
+    let mut source_handle = source
+        .lock_handle()
+        .await
+        .context("lock stateful schema template handle")?;
+
+    // The SQLite backup API copies the already-built template without replaying DDL per test.
+    let backup = unsafe {
+        sqlite3_backup_init(
+            destination_handle.as_raw_handle().as_ptr(),
+            c"main".as_ptr(),
+            source_handle.as_raw_handle().as_ptr(),
+            c"main".as_ptr(),
+        )
+    };
+    if backup.is_null() {
+        anyhow::bail!("start stateful schema SQLite backup");
+    }
+    let step_code = unsafe { sqlite3_backup_step(backup, -1) };
+    let finish_code = unsafe { sqlite3_backup_finish(backup) };
+    if step_code != SQLITE_DONE || finish_code != SQLITE_OK {
+        anyhow::bail!(
+            "copy stateful schema SQLite backup failed: step={step_code}, finish={finish_code}"
+        );
+    }
+
+    drop(source_handle);
+    drop(destination_handle);
+    drop(destination);
+    source
+        .close()
+        .await
+        .context("close stateful schema template")?;
+    Ok(())
+}
+
+fn quote_sqlite_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_sqlite_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+async fn schema_object_signature(
+    pool: &SqlitePool,
+) -> Vec<(String, String, String, Option<String>)> {
+    sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load schema signature")
+}
+
+async fn schema_default_data_signature(pool: &SqlitePool) -> Vec<(String, Vec<String>)> {
+    let table_names = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load schema table names");
+    let mut table_rows = Vec::with_capacity(table_names.len());
+    for table_name in table_names {
+        let columns = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT name FROM pragma_table_info({}) ORDER BY cid",
+            quote_sqlite_string(&table_name)
+        ))
+        .fetch_all(pool)
+        .await
+        .expect("load schema signature columns");
+        let values = columns
+            .iter()
+            .map(|column| {
+                let identifier = quote_sqlite_identifier(column);
+                if column.ends_with("_at") {
+                    format!(
+                        "CASE WHEN {identifier} IS NULL THEN 'NULL' ELSE '<initialization-timestamp>' END"
+                    )
+                } else {
+                    format!("quote({identifier})")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" || char(31) || ");
+        let rows = if values.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, String>(&format!(
+                "SELECT {values} FROM {} ORDER BY 1",
+                quote_sqlite_identifier(&table_name)
+            ))
+            .fetch_all(pool)
+            .await
+            .expect("load schema default data signature")
+        };
+        table_rows.push((table_name, rows));
+    }
+    table_rows
+}
+
+#[tokio::test]
+async fn stateful_schema_template_matches_fresh_schema_and_keeps_pooled_databases_isolated() {
+    let temp_dir = make_temp_test_dir("stateful-schema-template-parity");
+    let template_path = temp_dir.join("current-schema.db");
+    write_stateful_schema_template(&template_path)
+        .await
+        .expect("write stateful schema template");
+
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let template_url =
+        format!("sqlite:file:codex-vibe-monitor-template-parity-{db_id}?mode=memory&cache=shared");
+    let fresh_url =
+        format!("sqlite:file:codex-vibe-monitor-fresh-parity-{db_id}?mode=memory&cache=shared");
+    let isolated_url = format!(
+        "sqlite:file:codex-vibe-monitor-template-isolated-{db_id}?mode=memory&cache=shared"
+    );
+    let template_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&template_url)
+        .await
+        .expect("connect template schema parity sqlite");
+    restore_stateful_schema_template_from_path(&template_pool, &template_path)
+        .await
+        .expect("restore template schema parity sqlite");
+    let fresh_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&fresh_url)
+        .await
+        .expect("connect fresh schema parity sqlite");
+    ensure_schema(&fresh_pool)
+        .await
+        .expect("initialize fresh schema parity sqlite");
+
+    assert_eq!(
+        schema_object_signature(&template_pool).await,
+        schema_object_signature(&fresh_pool).await,
+        "template schema must match fresh ensure_schema output"
+    );
+    assert_eq!(
+        schema_default_data_signature(&template_pool).await,
+        schema_default_data_signature(&fresh_pool).await,
+        "template default data must match fresh ensure_schema output"
+    );
+
+    let mut first_connection = template_pool
+        .acquire()
+        .await
+        .expect("acquire first template connection");
+    sqlx::query("CREATE TABLE template_pool_visibility (value INTEGER NOT NULL)")
+        .execute(&mut *first_connection)
+        .await
+        .expect("create pooled visibility table");
+    sqlx::query("INSERT INTO template_pool_visibility (value) VALUES (7)")
+        .execute(&mut *first_connection)
+        .await
+        .expect("write through first template connection");
+
+    let mut second_connection = template_pool
+        .acquire()
+        .await
+        .expect("acquire second template connection");
+    let visible_value: i64 = sqlx::query_scalar("SELECT value FROM template_pool_visibility")
+        .fetch_one(&mut *second_connection)
+        .await
+        .expect("template write must be visible to a second pooled connection");
+    assert_eq!(visible_value, 7);
+    sqlx::query("INSERT INTO template_pool_visibility (value) VALUES (11)")
+        .execute(&mut *second_connection)
+        .await
+        .expect("write through second template connection");
+    let visible_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM template_pool_visibility")
+        .fetch_one(&mut *first_connection)
+        .await
+        .expect("second pooled connection write must be visible to the first connection");
+    assert_eq!(visible_count, 2);
+
+    let isolated_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&isolated_url)
+        .await
+        .expect("connect isolated template sqlite");
+    restore_stateful_schema_template_from_path(&isolated_pool, &template_path)
+        .await
+        .expect("restore isolated template sqlite");
+    let isolated_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'template_pool_visibility'",
+    )
+    .fetch_one(&isolated_pool)
+    .await
+    .expect("query isolated template schema");
+    assert_eq!(
+        isolated_count, 0,
+        "template pools must not share test writes"
+    );
+
+    drop(second_connection);
+    drop(first_connection);
+    template_pool.close().await;
+    fresh_pool.close().await;
+    isolated_pool.close().await;
+    fs::remove_dir_all(temp_dir).expect("remove stateful schema template parity directory");
 }
 
 pub(crate) async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {
@@ -1176,14 +1478,16 @@ pub(crate) fn clone_state_with_upstream_accounts(
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
+        fallback_proxy_429_retry_delay_override: state.fallback_proxy_429_retry_delay_override,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts,
     })
 }
 
-pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
+fn clone_state_with_retry_delay_overrides(
     state: &Arc<AppState>,
-    delay: Option<Duration>,
+    pool_group_delay: Option<Duration>,
+    fallback_delay: Option<Duration>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
         config: state.config.clone(),
@@ -1231,10 +1535,29 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
-        pool_group_429_retry_delay_override: delay,
+        pool_group_429_retry_delay_override: pool_group_delay,
+        fallback_proxy_429_retry_delay_override: fallback_delay,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts: state.upstream_accounts.clone(),
     })
+}
+
+pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
+    state: &Arc<AppState>,
+    delay: Option<Duration>,
+) -> Arc<AppState> {
+    clone_state_with_retry_delay_overrides(
+        state,
+        delay,
+        state.fallback_proxy_429_retry_delay_override,
+    )
+}
+
+pub(crate) fn clone_state_with_fallback_proxy_429_retry_delay_override(
+    state: &Arc<AppState>,
+    delay: Option<Duration>,
+) -> Arc<AppState> {
+    clone_state_with_retry_delay_overrides(state, state.pool_group_429_retry_delay_override, delay)
 }
 
 pub(crate) async fn test_state_from_existing_pool(
@@ -1310,7 +1633,8 @@ pub(crate) async fn test_state_from_existing_pool(
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
-        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
+        fallback_proxy_429_retry_delay_override: Some(Duration::ZERO),
+        pool_no_available_wait: immediate_test_pool_no_available_wait_settings(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }

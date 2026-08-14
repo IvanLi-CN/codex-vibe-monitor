@@ -5891,7 +5891,9 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 .headers()
                 .get(header::RETRY_AFTER)
                 .and_then(parse_retry_after_delay)
-                .unwrap_or_else(|| fallback_proxy_429_retry_delay(u32::from(attempt) + 1));
+                .unwrap_or_else(|| {
+                    fallback_proxy_429_retry_delay_for_state(state.as_ref(), u32::from(attempt) + 1)
+                });
             info!(
                 proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
                 proxy_source = selected_proxy.source,

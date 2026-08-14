@@ -122,10 +122,7 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
 
 #[tokio::test]
 async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -341,10 +338,7 @@ async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_default_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -401,10 +395,7 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
 
 #[tokio::test]
 async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
     let catalog = load_pricing_catalog(&pool)
         .await
         .expect("load seeded default pricing catalog");
@@ -434,10 +425,7 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra_and_luna_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -506,10 +494,7 @@ async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -619,10 +604,7 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     save_pricing_catalog(&pool, &default_pricing_catalog())
         .await
@@ -664,10 +646,7 @@ async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom_catalog_version() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     sqlx::query(
         r#"
@@ -715,10 +694,7 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
 
 #[tokio::test]
 async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new_models() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let pool = test_current_schema_pool().await;
 
     // Simulate a repo-managed default catalog version so startup seeding will call
     // ensure_pricing_models_present, which must not overwrite existing rows.
@@ -1109,8 +1085,7 @@ fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 
 #[tokio::test]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_retrying_models_upstream(1, Some("0")).await;
+    let (upstream_base, attempts, upstream_handle) = spawn_retrying_models_upstream(1, None).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -1126,6 +1101,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         };
     }
 
+    let started = Instant::now();
     let response = proxy_openai_v1(
         State(state.clone()),
         OriginalUri("/v1/models".parse().expect("valid uri")),
@@ -1134,6 +1110,11 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         Body::empty(),
     )
     .await;
+
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "test-only 429 retry delay override should apply when upstream omits Retry-After"
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1261,12 +1242,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
 #[tokio::test]
 async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    let pool = test_current_schema_pool().await;
 
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
@@ -1337,6 +1313,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
