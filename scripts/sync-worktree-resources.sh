@@ -41,13 +41,22 @@ lock_owner_token="$$|$lock_owner_start"
 lock_acquired=0
 lock_attempt=0
 while [ "$lock_attempt" -lt 200 ]; do
-  if ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
+  if [ ! -e "$sync_lock_path" ] && [ ! -L "$sync_lock_path" ] \
+    && ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
     lock_acquired=1
     break
   fi
-  lock_token="$(readlink "$sync_lock_path" 2>/dev/null || true)"
-  lock_owner="${lock_token%%|*}"
-  lock_owner_start="${lock_token#*|}"
+  legacy_lock_dir=0
+  if [ -d "$sync_lock_path" ]; then
+    legacy_lock_dir=1
+    lock_token=''
+    lock_owner="$(sed -n '1p' "$sync_lock_path/owner" 2>/dev/null || true)"
+    lock_owner_start="$(sed -n '2p' "$sync_lock_path/owner" 2>/dev/null || true)"
+  else
+    lock_token="$(readlink "$sync_lock_path" 2>/dev/null || true)"
+    lock_owner="${lock_token%%|*}"
+    lock_owner_start="${lock_token#*|}"
+  fi
   lock_stale=0
   if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
     lock_stale=1
@@ -56,10 +65,17 @@ while [ "$lock_attempt" -lt 200 ]; do
     [ -n "$current_owner_start" ] && [ "$current_owner_start" != "$lock_owner_start" ] && lock_stale=1
   fi
   if [ "$lock_stale" -eq 1 ]; then
-    if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_token" ]; then
+    if [ "$legacy_lock_dir" -eq 1 ]; then
+      rm -f "$sync_lock_path/owner"
+      rmdir "$sync_lock_path" >/dev/null 2>&1 || true
+    elif [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_token" ]; then
       rm -f "$sync_lock_path"
     fi
     continue
+  fi
+  if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ] && [ "$lock_attempt" -ge 20 ]; then
+    rmdir "$sync_lock_path" >/dev/null 2>&1 || true
+    [ -e "$sync_lock_path" ] || continue
   fi
   lock_attempt=$((lock_attempt + 1))
   sleep 0.05
