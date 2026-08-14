@@ -1,5 +1,8 @@
 use super::*;
 use serde_json::json;
+use tokio::sync::OnceCell;
+
+static CURRENT_SCHEMA_TEMPLATE_SQL: OnceCell<String> = OnceCell::const_new();
 
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,
@@ -1049,9 +1052,10 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
-    ensure_schema(&pool)
+    sqlx::raw_sql(current_schema_template_sql().await)
+        .execute(&pool)
         .await
-        .expect("schema should initialize");
+        .expect("initialize schema from current template");
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
@@ -1127,6 +1131,261 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_no_available_wait,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
+}
+
+async fn current_schema_template_sql() -> &'static String {
+    CURRENT_SCHEMA_TEMPLATE_SQL
+        .get_or_init(|| async {
+            let template_pool = SqlitePoolOptions::new()
+                .min_connections(1)
+                .max_connections(1)
+                .connect(
+                    "sqlite:file:codex-vibe-monitor-current-schema-template?mode=memory&cache=shared",
+                )
+                .await
+                .expect("connect current schema template sqlite");
+            ensure_schema(&template_pool)
+                .await
+                .expect("initialize current schema template");
+            let sql = current_schema_template_sql_from_pool(&template_pool).await;
+            template_pool.close().await;
+            sql
+        })
+        .await
+}
+
+async fn current_schema_template_sql_from_pool(pool: &SqlitePool) -> String {
+    let tables = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load current schema tables");
+    let secondary_objects = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger', 'view') AND sql IS NOT NULL ORDER BY CASE type WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load current schema secondary objects");
+
+    let mut script = String::from("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;\n");
+    for (_, create_sql) in &tables {
+        append_sql_statement(&mut script, create_sql);
+    }
+    for (table_name, _) in &tables {
+        let columns = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT name FROM pragma_table_info({}) ORDER BY cid",
+            quote_sqlite_string(table_name)
+        ))
+        .fetch_all(pool)
+        .await
+        .expect("load current schema table columns");
+        if columns.is_empty() {
+            continue;
+        }
+        let identifiers = columns
+            .iter()
+            .map(|column| quote_sqlite_identifier(column))
+            .collect::<Vec<_>>();
+        let values = identifiers
+            .iter()
+            .map(|column| format!("quote({column})"))
+            .collect::<Vec<_>>()
+            .join(" || ',' || ");
+        let rows = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT 'INSERT INTO {} ({}) VALUES (' || {} || ');' FROM {}",
+            quote_sqlite_identifier(table_name),
+            identifiers.join(", "),
+            values,
+            quote_sqlite_identifier(table_name),
+        ))
+        .fetch_all(pool)
+        .await
+        .expect("dump current schema table rows");
+        for row in rows {
+            script.push_str(&row);
+            script.push('\n');
+        }
+    }
+    for create_sql in secondary_objects {
+        append_sql_statement(&mut script, &create_sql);
+    }
+    script.push_str("COMMIT; PRAGMA foreign_keys = ON;");
+    script
+}
+
+fn quote_sqlite_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_sqlite_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn append_sql_statement(script: &mut String, statement: &str) {
+    script.push_str(statement);
+    if !statement.trim_end().ends_with(';') {
+        script.push(';');
+    }
+    script.push('\n');
+}
+
+async fn schema_object_signature(
+    pool: &SqlitePool,
+) -> Vec<(String, String, String, Option<String>)> {
+    sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load schema signature")
+}
+
+async fn schema_table_row_signatures(pool: &SqlitePool) -> Vec<(String, Vec<String>)> {
+    let table_names = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load schema table names");
+    let mut table_rows = Vec::with_capacity(table_names.len());
+    for table_name in table_names {
+        let columns = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT name FROM pragma_table_info({}) ORDER BY cid",
+            quote_sqlite_string(&table_name)
+        ))
+        .fetch_all(pool)
+        .await
+        .expect("load schema table signature columns");
+        let values = columns
+            .iter()
+            .map(|column| {
+                let identifier = quote_sqlite_identifier(column);
+                if column.ends_with("_at") {
+                    format!(
+                        "CASE WHEN {identifier} IS NULL THEN 'NULL' ELSE '<initialization-timestamp>' END"
+                    )
+                } else {
+                    format!("quote({identifier})")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" || char(31) || ");
+        let rows = if values.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, String>(&format!(
+                "SELECT {values} FROM {} ORDER BY 1",
+                quote_sqlite_identifier(&table_name)
+            ))
+            .fetch_all(pool)
+            .await
+            .expect("load schema table row signatures")
+        };
+        table_rows.push((table_name, rows));
+    }
+    table_rows
+}
+
+#[tokio::test]
+async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases_isolated() {
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let template_url =
+        format!("sqlite:file:codex-vibe-monitor-template-parity-{db_id}?mode=memory&cache=shared");
+    let fresh_url =
+        format!("sqlite:file:codex-vibe-monitor-fresh-parity-{db_id}?mode=memory&cache=shared");
+    let isolated_url = format!(
+        "sqlite:file:codex-vibe-monitor-template-isolated-{db_id}?mode=memory&cache=shared"
+    );
+    let template_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&template_url)
+        .await
+        .expect("connect template schema parity sqlite");
+    sqlx::raw_sql(current_schema_template_sql().await)
+        .execute(&template_pool)
+        .await
+        .expect("initialize template schema parity sqlite");
+    let fresh_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&fresh_url)
+        .await
+        .expect("connect fresh schema parity sqlite");
+    ensure_schema(&fresh_pool)
+        .await
+        .expect("initialize fresh schema parity sqlite");
+
+    assert_eq!(
+        schema_object_signature(&template_pool).await,
+        schema_object_signature(&fresh_pool).await,
+        "template schema must match fresh ensure_schema output"
+    );
+    assert_eq!(
+        schema_table_row_signatures(&template_pool).await,
+        schema_table_row_signatures(&fresh_pool).await,
+        "template default data must match fresh ensure_schema output"
+    );
+
+    let mut first_connection = template_pool
+        .acquire()
+        .await
+        .expect("acquire first template connection");
+    sqlx::query("CREATE TABLE template_pool_visibility (value INTEGER NOT NULL)")
+        .execute(&mut *first_connection)
+        .await
+        .expect("create pooled visibility table");
+    sqlx::query("INSERT INTO template_pool_visibility (value) VALUES (7)")
+        .execute(&mut *first_connection)
+        .await
+        .expect("write through first template connection");
+
+    let mut second_connection = template_pool
+        .acquire()
+        .await
+        .expect("acquire second template connection");
+    let visible_value: i64 = sqlx::query_scalar("SELECT value FROM template_pool_visibility")
+        .fetch_one(&mut *second_connection)
+        .await
+        .expect("template write must be visible to a second pooled connection");
+    assert_eq!(visible_value, 7);
+    sqlx::query("INSERT INTO template_pool_visibility (value) VALUES (11)")
+        .execute(&mut *second_connection)
+        .await
+        .expect("write through second template connection");
+    let visible_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM template_pool_visibility")
+        .fetch_one(&mut *first_connection)
+        .await
+        .expect("second pooled connection write must be visible to the first connection");
+    assert_eq!(visible_count, 2);
+
+    let isolated_pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(4)
+        .connect(&isolated_url)
+        .await
+        .expect("connect isolated template sqlite");
+    sqlx::raw_sql(current_schema_template_sql().await)
+        .execute(&isolated_pool)
+        .await
+        .expect("initialize isolated template sqlite");
+    let isolated_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'template_pool_visibility'",
+    )
+    .fetch_one(&isolated_pool)
+    .await
+    .expect("query isolated template schema");
+    assert_eq!(
+        isolated_count, 0,
+        "template pools must not share test writes"
+    );
+
+    drop(second_connection);
+    drop(first_connection);
+    template_pool.close().await;
+    fresh_pool.close().await;
+    isolated_pool.close().await;
 }
 
 pub(crate) async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {

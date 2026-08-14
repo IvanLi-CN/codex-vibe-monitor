@@ -26,7 +26,7 @@ related_specs:
 
 - Stateful 端到端测试会继承生产保护性的 retry/backoff 与 no-available-account 等待；若 harness 没有显式区分行为验证和真实时间验证，睡眠会累计为 CI 关键路径。
 - 大请求 file-backed 语义测试若用远高于分支阈值的 payload，会把内存分配、序列化与文件 I/O 成本误当成覆盖价值。
-- schema 模板只有在 pooled connection 可见性、并发写和跨测试隔离都成立时才会快；否则竞争和 SQLite snapshot lock 会比每个测试运行真实 schema 更慢。
+- schema 模板只有在 schema/default-data parity、pooled connection 可见性、并发写和跨测试隔离都成立时才会快；serialize/deserialize 与文件副本若暴露连接竞争或 SQLite snapshot lock，不能进入最终路径。
 
 ## 核心结论
 
@@ -34,10 +34,10 @@ related_specs:
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
 - CI 主指标是从 PR workflow start 到 `Backend Tests (Stateful SQLite)` completed。当前预算 `<= 390s`，且同一 PR head 必须连续两次通过。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
-- 当前 1212 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `253.040s` / `176.027s`，6 threads 为 `170.506s` / `149.079s`，8 threads 为 `232.304s` / `304.421s`；6 是最快平均档位，也满足“最快档位 10% 内的最低线程数”规则。
+- 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `206.846s` / `225.494s`，6 threads 为 `180.681s` / `154.336s`，8 threads 为 `119.289s` / `117.784s`；8 是最快平均档位，也满足“最快档位 10% 内的最低线程数”规则。
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
 - 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；legacy migration、文件路径、gzip 和 write-lock 保留真实 schema/file fixture。
-- current-schema 模板不能只因单 fixture 变快就采用。先验证 schema parity、pooled connection visibility、并发写安全和跨测试隔离；shared template contention 或 file-copy snapshot lock 任一存在时，回退到真实 `ensure_schema`。
+- current-schema fixture 由一次真实 `ensure_schema` 生成私有 SQL dump，再重放到每个唯一 shared-memory SQLite。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize 连接不可见和 file-copy snapshot lock 都是应拒绝的原型。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。
 - 对确实验证 archive 文件内容或文件主库行为的测试，保留文件 SQLite，并把它们作为剩余 top offenders 明确列出。
 

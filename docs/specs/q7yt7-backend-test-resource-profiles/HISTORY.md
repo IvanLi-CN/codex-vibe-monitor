@@ -17,8 +17,8 @@
 - 2026-07-10：PR #579 的 CI Main run `29074132864` 实测三路 backend job 为 `3m10s`、`6m00s`、`4m50s`；Stateful SQLite 最慢 job 比 `6m30s` 预算低 `30s`，runtime budget 完成收口。
 - 后续 CI Main run `31706131099` 显示 Stateful SQLite 回归到 `617s`（compile `143s`、test execution `404s`），因此预算口径改为 PR workflow start 至 Stateful job completed `<= 390s`，并要求同一 head 连续两次验证。
 - 测试时间成本收敛采用 private/`cfg(test)` 注入：生产 retry/backoff 和 replay threshold wrapper 不变，测试 harness 才能使用零等待或较小 replay threshold；验证正式时间行为的测试必须显式恢复正式 delay。
-- Stateful 并发选择不再凭单次最快结果决定；完整 profile 的 4/6/8 threads 各运行两次，选择最快档位 10% 内的最低档位。当前矩阵选择 6 threads。
-- current-schema 模板 fixture 被作为可逆实验拒绝：shared in-memory 模板在全套并发下竞争，文件副本出现 SQLite snapshot lock；不能证明 pooled visibility、并发写安全和隔离时，继续使用真实 `ensure_schema`。
+- Stateful 并发选择不再凭单次最快结果决定；完整 profile 的 4/6/8 threads 各运行两次，选择最快档位 10% 内的最低档位。当前 `1213` 用例矩阵为 4 threads `206.846s` / `225.494s`、6 threads `180.681s` / `154.336s`、8 threads `119.289s` / `117.784s`，因此选择 8 threads。
+- current-schema fixture 先拒绝了 shared in-memory serialize/deserialize 原型（第二 pooled connection 不可见）和唯一文件副本（SQLite snapshot lock）。最终采用由一次真实 `ensure_schema` 生成的私有 SQL dump，在每个唯一 shared-memory SQLite 重放；schema/default-data parity、pooled 双向写入可见性和跨数据库隔离均有回归覆盖。
 - nextest archive 被限定为受控 CI 实验；只有两次相同 PR head 同时满足 Stateful `<= 390s` 和 backend runner 总秒数 `<= 1005s` 才允许改变 workflow，不能只因本地 archive runner 通过而保留。
 
 ## Key Reasons / Replacements

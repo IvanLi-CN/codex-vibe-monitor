@@ -36,14 +36,14 @@
   - fallback 429 retry delay 只在 `cfg(test)` AppState override 存在时注入；生产构造不含该字段，继续使用原有退避公式。
   - 普通 test state 的 no-available-account wait 为零；验证真实时间预算的测试显式清除 fallback override 或提供自己的非零 wait。
   - replay snapshot 保留正式 `1 MiB` wrapper，并用私有 threshold 参数让大请求语义测试以较小输入覆盖 file-backed 分支；正式阈值边界另有回归测试。
-- 当前 Stateful profile 共 `1212` 个用例。完整热运行矩阵每档两次均通过：
-  - `4` threads：`253.040s`、`176.027s`
-  - `6` threads：`170.506s`、`149.079s`
-  - `8` threads：`232.304s`、`304.421s`
-  - `6` threads 是最快平均档位，因此也是最快档位 `10%` 内的最低线程数，runner 固定为 `6`。
+- 当前 Stateful profile 共 `1213` 个用例。完整热运行矩阵每档两次均通过：
+  - `4` threads：`206.846s`、`225.494s`
+  - `6` threads：`180.681s`、`154.336s`
+  - `8` threads：`119.289s`、`117.784s`
+  - `8` threads 是最快平均档位，因此也是最快档位 `10%` 内的最低线程数，runner 固定为 `8`。
 - 当前 top offenders 主要是 SQLite write-lock/backfill、retention/archive 与系统 raw metrics 路径，最长单项约 `9.286s`；它们保留真实锁、archive 与 retention 行为。
-- runner 提供可选 `--archive-file`。本地 archive 验证的三个 profile 均通过（lightweight `23s`、Stateful SQLite `169s`、archive/file I/O `89s`，合计 `281s`）。它尚未改变 CI workflow：冷编译 archive 的 dependency 会延长 Stateful critical path，只有 PR CI 的双重阈值证据才允许保留 workflow 变更。
-- 曾验证 current-schema 模板 fixture：共享 in-memory 模板在全套并发中发生连接竞争，文件模板副本出现 SQLite snapshot lock。两种方案都未同时满足 pooled visibility、并发写安全和完整 profile 运行时要求，已回退到每个 State fixture 的真实 `ensure_schema`。
+- runner 提供可选 `--archive-file`，但 archive-file I/O 在两次 archive replay 中分别出现 legacy schema trigger already exists 失败，不能作为可靠 CI 分发方案。它没有改变 CI workflow 或 quality-gates；只有同一 PR head 的双重 CI 阈值和稳定 archive profile 证据都成立时，才允许重新提议 workflow 变更。
+- current-schema fixture 由一次真实 `ensure_schema` 生成私有 SQL dump，并重放到每个唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见而被拒绝，文件模板副本因 SQLite snapshot lock 而被拒绝。
 
 ## Remaining Gaps
 

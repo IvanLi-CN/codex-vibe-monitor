@@ -77,8 +77,8 @@ run_profile() {
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
-      # The 4/6/8 hot-run matrix selected 6 as the fastest stable low-concurrency tier.
-      test_threads="6"
+      # The 4/6/8 hot-run matrix selected 8 as the fastest stable tier.
+      test_threads="8"
       ;;
     archive-file-io)
       filter_expr='test(/^(tests|upstream_accounts::tests)::archive_file_io::/)'
