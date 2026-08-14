@@ -59,6 +59,7 @@ while [ "$lock_attempt" -lt 200 ]; do
     lock_owner_start="${lock_token#*|}"
   fi
   legacy_empty_lock_old=0
+  legacy_empty_lock_active=0
   if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ]; then
     lock_mtime="$(stat -f %m "$sync_lock_path" 2>/dev/null || true)"
     case "$lock_mtime" in
@@ -67,6 +68,10 @@ while [ "$lock_attempt" -lt 200 ]; do
     current_time="$(date +%s)"
     if [ -n "$lock_mtime" ] && [ "$lock_mtime" -le $((current_time - legacy_empty_lock_grace_seconds)) ]; then
       legacy_empty_lock_old=1
+    fi
+    if ps -axo pid=,command= 2>/dev/null \
+      | awk -v self_pid="$$" '$1 != self_pid && $0 ~ /sync-worktree-resources\.sh/ { found = 1 } END { exit(found ? 0 : 1) }'; then
+      legacy_empty_lock_active=1
     fi
   fi
   lock_stale=0
@@ -85,7 +90,8 @@ while [ "$lock_attempt" -lt 200 ]; do
     fi
     continue
   fi
-  if [ "$legacy_lock_dir" -eq 1 ] && [ "$legacy_empty_lock_old" -eq 1 ] && [ "$lock_attempt" -ge 20 ]; then
+  if [ "$legacy_lock_dir" -eq 1 ] && [ "$legacy_empty_lock_old" -eq 1 ] \
+    && [ "$legacy_empty_lock_active" -eq 0 ] && [ "$lock_attempt" -ge 20 ]; then
     rmdir "$sync_lock_path" >/dev/null 2>&1 || true
     [ -e "$sync_lock_path" ] || continue
   fi
