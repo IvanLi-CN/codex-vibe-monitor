@@ -244,6 +244,27 @@ if [ -s "$bun_install_log" ] || [ -s "$cargo_fetch_log" ]; then
   exit 1
 fi
 
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+local_runtime_output="$tmp_dir/local-runtime-output.log"
+mkdir -p "$worktree_dir/node_modules/.bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree_dir/node_modules/.bin/lefthook"
+chmod +x "$worktree_dir/node_modules/.bin/lefthook"
+if (
+  cd "$worktree_dir"
+  PATH="$worktree_dir/node_modules/.bin:/usr/bin:/bin" \
+    bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 > "$local_runtime_output" 2>&1
+); then
+  assert_file_contains "$local_runtime_output" 'global lefthook is unavailable'
+else
+  printf 'repo-local Lefthook must not fail the automatic hook\n' >&2
+  exit 1
+fi
+if [ -s "$bun_install_log" ] || [ -s "$cargo_fetch_log" ]; then
+  printf 'repo-local Lefthook must not trigger dependency recovery\n' >&2
+  exit 1
+fi
+
 (
   cd "$worktree_dir"
   bash scripts/worktree-bootstrap.sh >/dev/null

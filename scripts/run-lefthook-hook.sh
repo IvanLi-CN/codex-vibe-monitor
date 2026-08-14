@@ -29,8 +29,48 @@ is_linked_worktree() {
   [ -n "$source_root" ] && [ "$repo_root" != "$source_root" ]
 }
 
+is_repo_local_path() {
+  resolved_path="$1"
+  case "$resolved_path" in
+    "$repo_root"|"$repo_root"/*)
+      return 0
+      ;;
+  esac
+
+  while IFS= read -r worktree_root; do
+    case "$resolved_path" in
+      "$worktree_root"|"$worktree_root"/*)
+        return 0
+        ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}')
+
+  return 1
+}
+
+resolve_global_lefthook() {
+  old_ifs="$IFS"
+  IFS=:
+  for path_entry in $PATH; do
+    [ -n "$path_entry" ] || path_entry='.'
+    path_entry="$(cd "$path_entry" 2>/dev/null && pwd -P || true)"
+    [ -n "$path_entry" ] || continue
+    candidate="$path_entry/lefthook"
+    if [ -x "$candidate" ]; then
+      resolved_candidate="$(realpath "$candidate" 2>/dev/null || true)"
+      if [ -n "$resolved_candidate" ] && ! is_repo_local_path "$resolved_candidate"; then
+        printf '%s\n' "$candidate"
+        IFS="$old_ifs"
+        return 0
+      fi
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
 if [ "$hook_name" = "post-checkout" ]; then
-  if ! command -v lefthook >/dev/null 2>&1; then
+  if ! command -v realpath >/dev/null 2>&1 || ! lefthook_bin="$(resolve_global_lefthook)"; then
     printf '[worktree-bootstrap] global lefthook is unavailable; checkout continues. Run `bun run hooks:install` to install hooks.\n' >&2
     exit 0
   fi
@@ -79,28 +119,8 @@ if [ "$hook_name" = "prepare-commit-msg" ] || [ "$hook_name" = "commit-msg" ]; t
   fi
 fi
 
-is_repo_local_path() {
-  resolved_path="$1"
-  case "$resolved_path" in
-    "$repo_root"|"$repo_root"/*)
-      return 0
-      ;;
-  esac
-
-  while IFS= read -r worktree_root; do
-    case "$resolved_path" in
-      "$worktree_root"|"$worktree_root"/*)
-        return 0
-        ;;
-    esac
-  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}')
-
-  return 1
-}
-
-if command -v realpath >/dev/null 2>&1 && lefthook_bin="$(command -v lefthook 2>/dev/null)"; then
-  resolved_lefthook="$(realpath "$lefthook_bin" 2>/dev/null || true)"
-  if [ -n "$resolved_lefthook" ] && ! is_repo_local_path "$resolved_lefthook"; then
+if command -v realpath >/dev/null 2>&1 && lefthook_bin="$(resolve_global_lefthook)"; then
+  if [ -n "$lefthook_bin" ]; then
     exec "$lefthook_bin" run "$hook_name" --no-auto-install "$@"
   fi
 fi
