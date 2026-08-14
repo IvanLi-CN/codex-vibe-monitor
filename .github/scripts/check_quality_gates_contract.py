@@ -341,10 +341,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     required_checks = require_string_set(payload.get("required_checks"), "quality-gates.json.required_checks")
     informational_checks = require_string_set(payload.get("informational_checks"), "quality-gates.json.informational_checks")
     require(required_checks.isdisjoint(informational_checks), "quality-gates.json: required_checks and informational_checks must be disjoint")
-    require(
-        informational_checks <= {"Backend Test Archive"},
-        "quality-gates.json: only the backend archive producer may be informational",
-    )
+    require(not informational_checks, "quality-gates.json: informational_checks must stay empty")
     require(set(integrations) == required_checks, f"quality-gates.json: required_status_checks.integrations drifted: {sorted(integrations)}")
     normalized_integrations: dict[str, int] = {}
     for context, integration_id in integrations.items():
@@ -377,8 +374,8 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
 
     declared_pr_jobs = {job for jobs in expected_pr_workflows.values() for job in jobs}
     require(
-        declared_pr_jobs == required_checks | informational_checks,
-        "quality-gates.json: expected_pr_workflows jobs must exactly cover required and informational checks",
+        declared_pr_jobs == required_checks,
+        "quality-gates.json: expected_pr_workflows jobs must exactly cover required_checks",
     )
 
     label_jobs = set(expected_pr_workflows.get("Label Gate", ()))
@@ -422,66 +419,6 @@ def validate_metadata_policy(module: Any, contract: ContractModel) -> None:
         == contract.review_allowed_permissions,
         "metadata_gate.REVIEW_ALLOWED_PERMISSIONS drifted from quality-gates.json",
     )
-
-
-def validate_backend_archive_topology(workflow: dict[str, Any], expected_jobs: set[str], where: str) -> None:
-    archive_job = named_job_config(workflow, "backend-test-archive", expected_jobs, where)
-    require(archive_job.get("name") == "Backend Test Archive", f"{where}.jobs.backend-test-archive.name drifted")
-    require(archive_job.get("runs-on") == RUNNER_X64, f"{where}.jobs.backend-test-archive.runs-on drifted")
-
-    create_step = step_config(archive_job, "Create backend test archive", f"{where}.jobs.backend-test-archive")
-    create_run = step_run(create_step, f"{where}.jobs.backend-test-archive.steps['Create backend test archive']")
-    require(
-        'cargo nextest archive --locked --all-features' in create_run
-        and '"$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"' in create_run,
-        f"{where}.jobs.backend-test-archive: archive creation command drifted",
-    )
-
-    upload_step = uses_step_config(
-        archive_job,
-        "Upload backend test archive",
-        "actions/upload-artifact@v7",
-        f"{where}.jobs.backend-test-archive",
-    )
-    upload_with = require_mapping(
-        upload_step.get("with"), f"{where}.jobs.backend-test-archive.steps['Upload backend test archive'].with"
-    )
-    require(
-        upload_with.get("name") == "backend-test-archive"
-        and upload_with.get("path") == "${{ runner.temp }}/backend-test-archive/backend-test-archive.tar.zst"
-        and upload_with.get("compression-level") == 0
-        and upload_with.get("retention-days") == 1,
-        f"{where}.jobs.backend-test-archive: upload artifact contract drifted",
-    )
-
-    for job_id, profile, step_name in [
-        ("backend-tests-lightweight", "lightweight", "Run lightweight backend profile"),
-        ("backend-tests-stateful-sqlite", "stateful-sqlite", "Run stateful SQLite backend profile"),
-        ("backend-tests-archive-file-io", "archive-file-io", "Run archive / file I/O backend profile"),
-    ]:
-        job = named_job_config(workflow, job_id, expected_jobs, where)
-        require(job.get("needs") == "backend-test-archive", f"{where}.jobs.{job_id}.needs drifted")
-        download_step = uses_step_config(
-            job,
-            "Download backend test archive",
-            "actions/download-artifact@v8",
-            f"{where}.jobs.{job_id}",
-        )
-        download_with = require_mapping(
-            download_step.get("with"), f"{where}.jobs.{job_id}.steps['Download backend test archive'].with"
-        )
-        require(
-            download_with.get("name") == "backend-test-archive"
-            and download_with.get("path") == "${{ runner.temp }}/backend-test-archive",
-            f"{where}.jobs.{job_id}: archive download contract drifted",
-        )
-        run_step = step_config(job, step_name, f"{where}.jobs.{job_id}")
-        run_command = step_run(run_step, f"{where}.jobs.{job_id}.steps[{step_name!r}]")
-        require(
-            f"--profile {profile}" in run_command
-            and '--archive-file "$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"' in run_command,
-            f"{where}.jobs.{job_id}: archive runner command drifted",
-        )
 
 
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
@@ -571,8 +508,6 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "ci-pr.yml.jobs.lint: build smoke retry helper syntax check drifted",
     )
 
-    validate_backend_archive_topology(workflow, expected_jobs, "ci-pr.yml")
-
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     require_exact_if(build_job, "github.event_name == 'pull_request'", "ci-pr.yml.jobs.build")
 
@@ -622,8 +557,6 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         and "test-live-quality-gates.sh" in self_tests_run,
         "ci-main.yml.jobs.lint: self-tests step drifted",
     )
-
-    validate_backend_archive_topology(workflow, expected_jobs, "ci-main.yml")
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
     require(
