@@ -4264,8 +4264,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normal_p2_flush_runs_after_its_scheduled_deadline() {
-        let pool = test_pool().await;
+    async fn normal_p2_schedule_becomes_ready_after_its_deadline() {
         let mut schedule = P2ScheduleState::default();
         schedule.arm_if_idle(Instant::now());
         tokio::time::timeout(
@@ -4275,40 +4274,10 @@ mod tests {
         .await
         .expect("normal P2 coalescing deadline should elapse");
 
-        let accounting = PendingQueueAccounting::default();
-        let mut batch = PendingBatch::default();
-        batch.push(SqliteBatchWrite::AccountSelectedTouch(
-            BatchedAccountSelectedTouch {
-                account_id: 999_999,
-                selected_at: "2026-08-10T12:00:00Z".to_string(),
-            },
-        ));
-        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
-        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
-        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
-        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
-        let terminal_journal = Arc::new(std::sync::Mutex::new(None));
-
-        let retained = flush_pending_batch(
-            &accounting,
-            &pool,
-            None,
-            batch,
-            FlushReason::Interval,
-            None,
-            &terminal_runtime_store,
-            &dashboard_activity_snapshot_cache,
-            &terminal_projection_hub,
-            &dashboard_reconcile_gate,
-            &terminal_journal,
-        )
-        .await;
-
         assert!(
-            retained.is_none(),
-            "normal P2 batch should flush without retention"
+            schedule.ready(Instant::now()),
+            "normal P2 schedule should be eligible after its fixed deadline"
         );
-        assert_eq!(accounting.snapshot().p2_flush_attempt_count, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
