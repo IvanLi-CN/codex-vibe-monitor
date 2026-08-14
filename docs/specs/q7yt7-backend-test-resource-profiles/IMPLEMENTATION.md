@@ -46,9 +46,9 @@
 - runner 提供可选 `--archive-file`，本地 archive replay 的三个完整 profile 都能通过。CI archive 仍未进入最终 candidate：分离 producer 的 run `31811122919` 从 workflow start 到 Stateful completed 为 `504s`，虽然 backend runner 总计 `872s`；把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`，三个 backend runner 总计 `750s`。两次均未达到 `<= 390s` 的关键路径门槛，因此 workflow 与 quality-gates 维持三个独立 job；只有同一 PR head 的双重 CI 阈值和稳定 archive profile 证据都成立时，才允许重新提议 workflow 变更。
 - runner 在启动 Stateful profile 前由一次真实 `ensure_schema` 生成私有 file template；每个 nextest 子进程用 SQLite backup API 把它复制到唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见、逐条 SQL dump 因每个子进程重复构建而回退、直接文件副本因 SQLite snapshot lock 而被拒绝。
 
-## Remaining Gaps
+## Convergence Contract
 
-- 当前候选尚缺同一 PR head 的连续两次 CI 性能证据。两次从 workflow start 到 Stateful SQLite completed 均须 `<= 390s`。
+- 每个候选 head 都必须重新绑定同一 PR head 的连续两次 CI 性能证据；两次从 workflow start 到 Stateful SQLite completed 均须 `<= 390s`。祖先 head 的 receipt 只能作为诊断基线，不能作为合并凭证。
 - archive CI 仍是未保留的实验：若它不能同时使 workflow-start-to-Stateful `<= 390s` 两次、backend-related runner seconds `<= 1005s`，不得同步进 workflow/quality-gates 契约。
 
 ## Related Changes

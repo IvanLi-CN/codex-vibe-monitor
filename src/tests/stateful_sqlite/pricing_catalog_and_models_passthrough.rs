@@ -1085,8 +1085,7 @@ fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 
 #[tokio::test]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_retrying_models_upstream(1, Some("0")).await;
+    let (upstream_base, attempts, upstream_handle) = spawn_retrying_models_upstream(1, None).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -1102,6 +1101,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         };
     }
 
+    let started = Instant::now();
     let response = proxy_openai_v1(
         State(state.clone()),
         OriginalUri("/v1/models".parse().expect("valid uri")),
@@ -1110,6 +1110,11 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         Body::empty(),
     )
     .await;
+
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "test-only 429 retry delay override should apply when upstream omits Retry-After"
+    );
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(

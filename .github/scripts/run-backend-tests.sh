@@ -112,6 +112,12 @@ run_profile() {
       ;;
   esac
 
+  # The current-schema template is a Stateful-only acceleration. Ensure a
+  # caller-provided value cannot change the Archive/File I/O fixture contract.
+  if [[ "$selected_profile" != "stateful-sqlite" ]]; then
+    unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
+  fi
+
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
@@ -131,6 +137,9 @@ run_profile() {
     else
       cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
     fi
+  fi
+  if [[ "$selected_profile" == "stateful-sqlite" ]]; then
+    unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
   fi
   local profile_end_epoch
   profile_end_epoch="$(date +%s)"
