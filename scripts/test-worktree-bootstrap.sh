@@ -483,7 +483,6 @@ foreign_sync_pid=''
 git -C "$foreign_fixture_repo" worktree remove --force "$foreign_worktree" >/dev/null 2>&1 || true
 
 mkdir -p "$sync_lock_path"
-touch -t 200001010000 "$sync_lock_path"
 rm -f "$worktree_dir/.env.local"
 fresh_lock_output="$tmp_dir/fresh-lock-output.log"
 (
