@@ -44,7 +44,7 @@
 - `worktree:bootstrap` 必须继续遵守 copy-missing-only；目标文件已存在时不得覆盖。
 - `worktree:setup` 必须按四项依赖任务执行，使用 locked 参数；单项失败后必须继续其余任务并汇总失败。
 - 自动 hook 必须返回成功并告警；手动 `worktree:bootstrap` 在存在失败时必须返回非零。
-- `lefthook` 必须在 `PATH` 中可执行；`bun run hooks:install` 缺少该命令时必须明确返回非零。
+- 未配置 `core.hooksPath` 时，`lefthook` 必须在 `PATH` 中可执行；`bun run hooks:install` 缺少该命令时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
 - `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；这些 hook 必须保持原状并给出提示。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。
 
