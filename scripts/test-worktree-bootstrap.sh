@@ -448,6 +448,7 @@ assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 
 mkdir -p "$sync_lock_path"
+touch -t 200001010000 "$sync_lock_path"
 rm -f "$worktree_dir/.env.local"
 fresh_lock_output="$tmp_dir/fresh-lock-output.log"
 (

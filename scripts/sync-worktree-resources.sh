@@ -21,6 +21,7 @@ case "$common_dir" in
   /*) ;;
   *) common_dir="$repo_root/$common_dir" ;;
 esac
+common_dir="$(cd "$common_dir" && pwd)"
 
 source_root="${WORKTREE_BOOTSTRAP_SOURCE_ROOT:-$(cd "$(dirname "$common_dir")" && pwd)}"
 manifest_path="${WORKTREE_BOOTSTRAP_MANIFEST:-$repo_root/scripts/worktree-sync.paths}"
@@ -69,10 +70,24 @@ while [ "$lock_attempt" -lt 200 ]; do
     if [ -n "$lock_mtime" ] && [ "$lock_mtime" -le $((current_time - legacy_empty_lock_grace_seconds)) ]; then
       legacy_empty_lock_old=1
     fi
-    if ps -axo pid=,command= 2>/dev/null \
-      | awk -v self_pid="$$" '$1 != self_pid && $0 ~ /sync-worktree-resources\.sh/ { found = 1 } END { exit(found ? 0 : 1) }'; then
-      legacy_empty_lock_active=1
-    fi
+    process_pids="$(ps -axo pid=,command= 2>/dev/null | awk '$0 ~ /sync-worktree-resources\.sh/ { print $1 }' || true)"
+    for process_pid in $process_pids; do
+      [ -n "$process_pid" ] && [ "$process_pid" != "$$" ] || continue
+      process_cwd="$(lsof -a -p "$process_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)"
+      if [ -z "$process_cwd" ] && [ -L "/proc/$process_pid/cwd" ]; then
+        process_cwd="$(readlink "/proc/$process_pid/cwd" 2>/dev/null || true)"
+      fi
+      [ -n "$process_cwd" ] || continue
+      process_common_dir="$(git -C "$process_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
+      case "$process_common_dir" in
+        /*) process_common_dir="$(cd "$process_common_dir" 2>/dev/null && pwd || true)" ;;
+        *) process_common_dir="$(cd "$process_cwd/$process_common_dir" 2>/dev/null && pwd || true)" ;;
+      esac
+      if [ "$process_common_dir" = "$common_dir" ]; then
+        legacy_empty_lock_active=1
+        break
+      fi
+    done
   fi
   lock_stale=0
   if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
