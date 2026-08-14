@@ -40,13 +40,22 @@ lock_acquired=0
 lock_attempt=0
 while [ "$lock_attempt" -lt 200 ]; do
   if mkdir "$sync_lock_dir" 2>/dev/null; then
-    printf '%s\n' "$$" > "$sync_lock_dir/pid"
+    lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
+    printf '%s\n%s\n' "$$" "$lock_owner_start" > "$sync_lock_dir/owner"
     lock_acquired=1
     break
   fi
-  lock_owner="$(cat "$sync_lock_dir/pid" 2>/dev/null || true)"
+  lock_owner="$(sed -n '1p' "$sync_lock_dir/owner" 2>/dev/null || true)"
+  lock_owner_start="$(sed -n '2p' "$sync_lock_dir/owner" 2>/dev/null || true)"
+  lock_stale=0
   if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
-    rm -f "$sync_lock_dir/pid"
+    lock_stale=1
+  elif [ -n "$lock_owner" ] && [ -n "$lock_owner_start" ]; then
+    current_owner_start="$(ps -p "$lock_owner" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
+    [ -n "$current_owner_start" ] && [ "$current_owner_start" != "$lock_owner_start" ] && lock_stale=1
+  fi
+  if [ "$lock_stale" -eq 1 ]; then
+    rm -f "$sync_lock_dir/owner"
     rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
     continue
   fi
@@ -62,7 +71,7 @@ if [ "$lock_acquired" -ne 1 ]; then
   exit 1
 fi
 release_sync_lock() {
-  rm -f "$sync_lock_dir/pid"
+  rm -f "$sync_lock_dir/owner"
   rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
 }
 trap release_sync_lock EXIT

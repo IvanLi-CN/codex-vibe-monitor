@@ -417,7 +417,7 @@ case "$sync_common_dir" in
 esac
 sync_lock_dir="$sync_common_dir/worktree-bootstrap-sync.lock"
 mkdir -p "$sync_lock_dir"
-printf '999999999\n' > "$sync_lock_dir/pid"
+printf '999999999\nstale-process-start\n' > "$sync_lock_dir/owner"
 rm -f "$worktree_dir/.env.local"
 lock_recovery_output="$tmp_dir/lock-recovery-output.log"
 (
