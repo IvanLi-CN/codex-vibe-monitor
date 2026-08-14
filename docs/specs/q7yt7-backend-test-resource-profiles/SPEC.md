@@ -77,7 +77,7 @@
 - 生产 wrapper 继续使用正式 retry/backoff 与 replay threshold；测试 harness 可为零等待 retry、零等待 no-available-account 和较小的私有 replay threshold 注入值，以验证同一分支而不承担真实时间。
 - 需要验证正式时间预算的用例显式清除 retry override；需要验证真实文件语义的用例继续走默认 threshold 与真实文件 fixture。
 - 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize、逐条 SQL dump 或直接文件副本原型作为最终测试路径。
-- archive build/distribution 是可逆实验。仅在 CI 关键路径和总 runner 成本同时达标时，才同步 workflow 与 quality-gates 合同；否则 runner 的可选本地 archive 入口不改变 required CI 拓扑。
+- archive build/distribution 是可逆实验。仅在同一 PR head 的连续两次 CI 同时满足关键路径与总 runner 成本门槛时，才同步 workflow 与 quality-gates 合同；否则 runner 的可选 archive 入口不改变 required CI 拓扑。
 
 ### Edge cases / errors
 
@@ -119,13 +119,13 @@
 
 ## 验收清单（Acceptance checklist）
 
-- [ ] 两条测试树都已迁入新的 resource-profile 模块树。
-- [ ] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
-- [ ] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
+- [x] 两条测试树都已迁入新的 resource-profile 模块树。
+- [x] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
+- [x] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
 - [ ] Stateful PR 关键路径连续两次 `<= 390s`。
-- [ ] 4/6/8 完整热运行矩阵已记录，且 runner 线程选择符合最低档位规则。
-- [ ] 测试专用 timing/threshold seam 已验证不改变生产默认行为。
-- [ ] archive 仅在双重量化门槛通过时进入 CI candidate。
+- [x] 4/6/8 完整热运行矩阵已记录，且 runner 线程选择符合最低档位规则。
+- [x] 测试专用 timing/threshold seam 已验证不改变生产默认行为。
+- [x] archive 仅在双重量化门槛通过时进入 CI candidate；当前 candidate 不包含 archive workflow。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

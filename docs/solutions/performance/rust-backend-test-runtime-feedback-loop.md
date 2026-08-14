@@ -36,8 +36,10 @@ related_specs:
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
 - 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `134.108s` / `83.952s`，6 threads 为 `63.593s` / `62.874s`，8 threads 为 `57.287s` / `67.727s`；8 的平均值最快，但 6 在线 10% 内，因此 runner 选择 6。
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
+- 两个 CI archive 原型都说明“编译复用”不等于关键路径改善：独立 producer 的 run `31811122919` Stateful critical path 为 `504s`、backend runner 为 `872s`；Stateful job 内构建并分发的 run `31813566813` 为 `433s`、`750s`。两者都应从最终 workflow 移除，并仅保留 runner 的可选 archive 参数供后续受控实验。
 - 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；legacy migration、文件路径、gzip 和 write-lock 保留真实 schema/file fixture。
 - runner 先由一次真实 `ensure_schema` 生成私有 file template；每个唯一 shared-memory SQLite 再通过 SQLite backup API 获得副本。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize、逐条 SQL dump 和直接文件副本都不是最终路径。
+- current-schema-only 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试应优先复用 template pool；不得把 legacy migration、文件路径、gzip 或 write-lock 测试迁入该路径。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。
 - 对确实验证 archive 文件内容或文件主库行为的测试，保留文件 SQLite，并把它们作为剩余 top offenders 明确列出。
 

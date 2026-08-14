@@ -20,6 +20,8 @@
 - Stateful 并发选择不再凭单次最快结果决定；完整 profile 的 4/6/8 threads 各运行两次，选择最快档位 10% 内的最低档位。当前 `1213` 用例矩阵为 4 threads `134.108s` / `83.952s`、6 threads `63.593s` / `62.874s`、8 threads `57.287s` / `67.727s`；8 平均最快但 6 在线 10% 内，因此选择 6 threads。
 - current-schema fixture 先拒绝了 shared in-memory serialize/deserialize 原型（第二 pooled connection 不可见）、直接文件副本（SQLite snapshot lock）和逐条 SQL dump（每个 nextest 子进程重复构建，CI 执行回退）。最终由 runner 从一次真实 `ensure_schema` 生成私有 file template，并由每个子进程通过 SQLite backup API 复制到唯一 shared-memory SQLite；schema/default-data parity、pooled 双向写入可见性和跨数据库隔离均有回归覆盖。
 - nextest archive 被限定为受控 CI 实验；只有两次相同 PR head 同时满足 Stateful `<= 390s` 和 backend runner 总秒数 `<= 1005s` 才允许改变 workflow，不能只因本地 archive runner 通过而保留。
+- archive 的两种 CI 拓扑都已按相同门槛拒绝：run `31811122919` 以独立 producer 分发 archive，Stateful critical path 为 `504s`；run `31813566813` 在 Stateful required job 中构建并分发 archive，critical path 为 `433s`。两次虽然 backend runner 总秒数分别为 `872s` 与 `750s`，仍因未达到 `390s` 关键路径预算而撤回 workflow 变更。
+- 在最终独立-job 候选中，进一步把只依赖 current schema 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试迁入 schema template pool；legacy migration、文件路径、gzip 与 write-lock 测试继续走真实 `ensure_schema` 和 file fixture。
 
 ## Key Reasons / Replacements
 
