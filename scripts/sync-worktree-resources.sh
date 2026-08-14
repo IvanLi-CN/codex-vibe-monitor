@@ -60,7 +60,10 @@ while [ "$lock_attempt" -lt 200 ]; do
   fi
   legacy_empty_lock_old=0
   if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ]; then
-    lock_mtime="$(stat -f %m "$sync_lock_path" 2>/dev/null || stat -c %Y "$sync_lock_path" 2>/dev/null || true)"
+    lock_mtime="$(stat -f %m "$sync_lock_path" 2>/dev/null || true)"
+    case "$lock_mtime" in
+      ''|*[!0-9]*) lock_mtime="$(stat -c %Y "$sync_lock_path" 2>/dev/null || true)" ;;
+    esac
     current_time="$(date +%s)"
     if [ -n "$lock_mtime" ] && [ "$lock_mtime" -le $((current_time - legacy_empty_lock_grace_seconds)) ]; then
       legacy_empty_lock_old=1
