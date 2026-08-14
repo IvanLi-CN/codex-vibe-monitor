@@ -38,6 +38,7 @@ fi
 sync_lock_path="$common_dir/worktree-bootstrap-sync.lock"
 lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
 lock_owner_token="$$|$lock_owner_start"
+legacy_empty_lock_grace_seconds=10
 lock_acquired=0
 lock_attempt=0
 while [ "$lock_attempt" -lt 200 ]; do
@@ -57,6 +58,14 @@ while [ "$lock_attempt" -lt 200 ]; do
     lock_owner="${lock_token%%|*}"
     lock_owner_start="${lock_token#*|}"
   fi
+  legacy_empty_lock_old=0
+  if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ]; then
+    lock_mtime="$(stat -f %m "$sync_lock_path" 2>/dev/null || stat -c %Y "$sync_lock_path" 2>/dev/null || true)"
+    current_time="$(date +%s)"
+    if [ -n "$lock_mtime" ] && [ "$lock_mtime" -le $((current_time - legacy_empty_lock_grace_seconds)) ]; then
+      legacy_empty_lock_old=1
+    fi
+  fi
   lock_stale=0
   if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
     lock_stale=1
@@ -73,7 +82,7 @@ while [ "$lock_attempt" -lt 200 ]; do
     fi
     continue
   fi
-  if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ] && [ "$lock_attempt" -ge 20 ]; then
+  if [ "$legacy_lock_dir" -eq 1 ] && [ "$legacy_empty_lock_old" -eq 1 ] && [ "$lock_attempt" -ge 20 ]; then
     rmdir "$sync_lock_path" >/dev/null 2>&1 || true
     [ -e "$sync_lock_path" ] || continue
   fi
