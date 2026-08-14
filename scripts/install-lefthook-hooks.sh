@@ -80,9 +80,20 @@ is_managed_hook() {
   if [ ! -e "$hook_path" ] && [ ! -L "$hook_path" ]; then
     return 0
   fi
+  if [ -L "$hook_path" ]; then
+    return 1
+  fi
 
   if grep -Fq '# managed by codex-vibe-monitor hooks:install' "$hook_path" 2>/dev/null; then
     return 0
+  fi
+
+  if grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
+    && grep -Eq '^[[:space:]]*call_lefthook run ' "$hook_path" 2>/dev/null; then
+    last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' "$hook_path")"
+    case "$last_nonempty_line" in
+      call_lefthook\ run\ *) return 0 ;;
+    esac
   fi
 
   return 1

@@ -202,6 +202,13 @@ hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
 for hook_name in pre-commit commit-msg post-checkout; do
   assert_file_contains "$hooks_dir/$hook_name" 'lefthook'
 done
+awk '!/managed by codex-vibe-monitor hooks:install/' "$hooks_dir/post-checkout" > "$hooks_dir/post-checkout.legacy"
+mv "$hooks_dir/post-checkout.legacy" "$hooks_dir/post-checkout"
+(
+  cd "$fixture_repo"
+  "$bun_bin" run hooks:install >/dev/null
+)
+assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor hooks:install'
 
 worktree_dir="$tmp_dir/linked"
 git -C "$fixture_repo" worktree add --detach "$worktree_dir" HEAD >/dev/null
