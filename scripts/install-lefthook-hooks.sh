@@ -4,7 +4,18 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 
+custom_hooks_path="$(git -C "$repo_root" config --get core.hooksPath || true)"
+if [ -n "$custom_hooks_path" ]; then
+  printf '[worktree-bootstrap] core.hooksPath is set to %s; leaving hooks untouched\n' "$custom_hooks_path" >&2
+  exit 0
+fi
+
 lefthook_path=''
+if ! command -v realpath >/dev/null 2>&1; then
+  printf '[worktree-bootstrap] global lefthook is required; realpath is unavailable\n' >&2
+  exit 1
+fi
+
 is_repo_local_path() {
   resolved_path="$1"
   case "$resolved_path" in
@@ -38,8 +49,9 @@ for path_entry in $PATH; do
   esac
   if [ -x "$candidate" ]; then
     resolved_candidate="$(realpath "$candidate" 2>/dev/null || true)"
+    [ -n "$resolved_candidate" ] || continue
     if is_repo_local_path "$resolved_candidate"; then
-        continue
+      continue
     fi
     lefthook_path="$candidate"
     break
@@ -50,12 +62,6 @@ IFS="$old_ifs"
 if [ -z "$lefthook_path" ]; then
   printf '[worktree-bootstrap] global lefthook is required; repo-local binary is not sufficient\n' >&2
   exit 1
-fi
-
-custom_hooks_path="$(git -C "$repo_root" config --get core.hooksPath || true)"
-if [ -n "$custom_hooks_path" ]; then
-  printf '[worktree-bootstrap] core.hooksPath is set to %s; leaving hooks untouched\n' "$custom_hooks_path" >&2
-  exit 0
 fi
 
 hooks_dir="$(git -C "$repo_root" rev-parse --git-path hooks)"

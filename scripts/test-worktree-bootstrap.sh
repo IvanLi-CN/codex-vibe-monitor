@@ -186,14 +186,14 @@ export PATH="$global_bin:$fake_bin:$PATH"
 export BUN_INSTALL_LOG="$bun_install_log"
 export CARGO_FETCH_LOG="$cargo_fetch_log"
 export BOOTSTRAP_ORDER_LOG="$bootstrap_order_log"
-export LEFTHOOK_BIN="$lefthook_bin"
+export LEFTHOOK_BIN="$global_bin/lefthook"
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
 : > "$bootstrap_order_log"
 
 (
   cd "$fixture_repo"
-  "$lefthook_bin" install >/dev/null
+  "$bun_bin" run hooks:install >/dev/null
 )
 
 hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
@@ -246,6 +246,16 @@ chmod +x "$preserve_repo/.git/hooks/pre-commit"
 (cd "$preserve_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
 assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
 assert_file_contains "$preserve_repo/.git/hooks/post-checkout" 'lefthook'
+
+custom_hooks_repo="$tmp_dir/custom-hooks-path"
+copy_repo "$repo_root" "$custom_hooks_repo"
+init_repo "$custom_hooks_repo"
+mkdir -p "$custom_hooks_repo/custom-hooks"
+printf '#!/bin/sh\necho custom-hooks-path\n' > "$custom_hooks_repo/custom-hooks/pre-commit"
+chmod +x "$custom_hooks_repo/custom-hooks/pre-commit"
+git -C "$custom_hooks_repo" config core.hooksPath custom-hooks
+(cd "$custom_hooks_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
+assert_file_contains "$custom_hooks_repo/custom-hooks/pre-commit" 'custom-hooks-path'
 
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
