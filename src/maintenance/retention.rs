@@ -7,6 +7,10 @@ const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
 
+tokio::task_local! {
+    static RETENTION_SHUTDOWN: CancellationToken;
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetentionWriteHealthSnapshot {
@@ -363,9 +367,23 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, reason);
         return None;
     }
-    let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-        .await;
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
+        Ok(shutdown) => {
+            coordinator
+                .acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown)
+                .await
+        }
+        Err(_) => Some(
+            coordinator
+                .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
+                .await,
+        ),
+    };
+    let Some(mut write_permit) = write_permit else {
+        retention_record_defer(operation, "shutdown");
+        return None;
+    };
     let coordinator_snapshot =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
@@ -378,6 +396,7 @@ pub(super) async fn acquire_retention_write_admission(
         }),
         Err(reason) => {
             retention_record_defer(operation, reason);
+            write_permit.revoke_fairness_admission();
             drop(write_permit);
             None
         }
@@ -1242,6 +1261,28 @@ pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&Cancellat
 }
 
 pub(crate) async fn run_data_retention_maintenance(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+) -> Result<RetentionRunSummary> {
+    if let Some(shutdown) = shutdown {
+        return RETENTION_SHUTDOWN
+            .scope(
+                shutdown.clone(),
+                run_data_retention_maintenance_inner(
+                    pool,
+                    config,
+                    dry_run_override,
+                    Some(shutdown),
+                ),
+            )
+            .await;
+    }
+    run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
+}
+
+async fn run_data_retention_maintenance_inner(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     dry_run_override: Option<bool>,

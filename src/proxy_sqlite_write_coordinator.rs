@@ -5,6 +5,7 @@ use std::{
 
 use serde::Serialize;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) const PROXY_SQLITE_WRITE_COORDINATOR_MODE_ENV: &str =
     "PROXY_SQLITE_WRITE_COORDINATOR_MODE";
@@ -99,7 +100,9 @@ impl CoordinatorState {
     }
 
     fn can_admit_maintenance_fairness(&self, deadline: Instant, now: Instant) -> bool {
-        self.active.is_none() && now >= deadline
+        // Fairness prevents perpetual maintenance starvation, but it never lets an
+        // already queued P1 terminal write lose to work that has not started yet.
+        self.active.is_none() && self.p1_waiters == 0 && now >= deadline
     }
 }
 
@@ -278,6 +281,17 @@ impl ProxySqliteWriteCoordinator {
         }
     }
 
+    pub(crate) async fn acquire_maintenance_cancellable(
+        self: &Arc<Self>,
+        fairness_interval: Duration,
+        cancel: &CancellationToken,
+    ) -> Option<ProxySqliteWritePermit> {
+        tokio::select! {
+            _ = cancel.cancelled() => None,
+            permit = self.acquire_maintenance(fairness_interval) => Some(permit),
+        }
+    }
+
     pub(crate) async fn snapshot(&self) -> ProxySqliteWriteCoordinatorSnapshot {
         let state = self.state.lock().expect("proxy sqlite coordinator state");
         ProxySqliteWriteCoordinatorSnapshot {
@@ -318,6 +332,23 @@ impl ProxySqliteWritePermit {
 
     pub(crate) fn fairness_admission(&self) -> bool {
         self.fairness_admission
+    }
+
+    pub(crate) fn revoke_fairness_admission(&mut self) {
+        if !self.coordinated || !self.fairness_admission {
+            return;
+        }
+        let mut state = self
+            .coordinator
+            .state
+            .lock()
+            .expect("proxy sqlite coordinator state");
+        if state.active == Some(self.class) {
+            state.maintenance_fairness_admissions =
+                state.maintenance_fairness_admissions.saturating_sub(1);
+            state.last_maintenance_fairness_admission = None;
+        }
+        self.fairness_admission = false;
     }
 
     pub(crate) fn suppress_background_eligibility_wakeup(&mut self) {
@@ -506,6 +537,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maintenance_fairness_never_overtakes_a_queued_p1() {
+        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        });
+        let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
+        let maintenance = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire_maintenance(Duration::from_millis(20))
+                    .await
+            }
+        });
+        let p1 = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(active);
+        let p1_permit = tokio::time::timeout(Duration::from_secs(1), p1)
+            .await
+            .expect("queued P1 admitted before fairness maintenance")
+            .expect("P1 task");
+        assert!(!maintenance.is_finished());
+        drop(p1_permit);
+        let maintenance_permit = tokio::time::timeout(Duration::from_secs(1), maintenance)
+            .await
+            .expect("maintenance admitted after queued P1")
+            .expect("maintenance task");
+        assert!(maintenance_permit.fairness_admission());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_fairness_admission_does_not_spend_the_token() {
+        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        });
+        let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
+        let maintenance = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire_maintenance(Duration::from_millis(20))
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(active);
+        let mut permit = tokio::time::timeout(Duration::from_secs(1), maintenance)
+            .await
+            .expect("fairness maintenance admitted")
+            .expect("maintenance task");
+        assert!(permit.fairness_admission());
+        permit.revoke_fairness_admission();
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .await
+                .maintenance_fairness_admission_count,
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn retention_write_scheduler_lock_and_cancel_releases_maintenance_waiter() {
         let coordinator = Arc::new(ProxySqliteWriteCoordinator {
             coordinated: true,
@@ -525,6 +625,38 @@ mod tests {
         assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
         maintenance.abort();
         let _ = maintenance.await;
+        assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 0);
+        drop(active);
+    }
+
+    #[tokio::test]
+    async fn cancellable_maintenance_admission_releases_waiter_immediately() {
+        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        });
+        let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+        let cancel = CancellationToken::new();
+        let waiter = tokio::spawn({
+            let coordinator = coordinator.clone();
+            let cancel = cancel.clone();
+            async move {
+                coordinator
+                    .acquire_maintenance_cancellable(Duration::from_secs(60), &cancel)
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
+        cancel.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("cancelled maintenance waiter completes")
+                .expect("maintenance task")
+                .is_none()
+        );
         assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 0);
         drop(active);
     }

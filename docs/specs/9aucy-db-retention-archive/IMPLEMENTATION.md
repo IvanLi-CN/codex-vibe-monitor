@@ -18,6 +18,8 @@
 - Note: `RETENTION_BATCH_ROWS` is a candidate preparation limit, not a transaction-size contract. Retention DB mutations use coordinated, pressure-gated microbatches with a bounded fairness path so archival work cannot monopolize the SQLite writer.
 - Note: normal maintenance yields to P1 terminal, synchronous proxy and P2 derived work. After sustained starvation it may receive one fairness admission per 15-second interval, but never while the SQLite pressure cooldown is active.
 - Note: archive artifacts are prepared before admission. A short transaction atomically publishes its manifest and coverage state with the corresponding source mutation; raw owner links are released only after that commit.
+- Note: segment identities are derived from their source row IDs, and publication verifies and syncs the artifact before source mutation. A conflicting existing identity is retained as evidence and aborts the batch instead of replacing archive bytes.
+- Note: fairness preserves queued P1 priority, and a pressure-deferred admission returns its unused token. Shutdown cancels only a queued admission; an already-admitted microtransaction still completes or rolls back at its database boundary.
 
 ## Verification
 

@@ -132,15 +132,6 @@ async fn load_account_kind(pool: &Pool<Sqlite>, account_id: i64) -> Result<Optio
     )
 }
 
-pub(crate) async fn purge_model_routes(pool: &Pool<Sqlite>) -> Result<u64> {
-    let result =
-        sqlx::query("DELETE FROM pool_upstream_account_model_routes WHERE last_seen_at < ?1")
-            .bind(cutoff_string())
-            .execute(pool)
-            .await?;
-    Ok(result.rows_affected())
-}
-
 pub(crate) async fn purge_model_routes_bounded(pool: &Pool<Sqlite>, limit: usize) -> Result<u64> {
     let result = sqlx::query(
         r#"
@@ -174,7 +165,8 @@ pub(crate) async fn load_model_routing_states(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Vec<ModelRoutingState>> {
-    purge_model_routes(pool).await?;
+    // Expired rows are filtered by the query below. Physical cleanup belongs to
+    // retention, where it is bounded and admitted through the maintenance writer.
     let rows = sqlx::query_as::<_, ModelRouteRow>(
         r#"
         SELECT account_id, model, state, priority, consecutive_failures,

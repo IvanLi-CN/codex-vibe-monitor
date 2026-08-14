@@ -119,6 +119,8 @@
 - 所有 retention 主库写入必须通过统一写协调器，优先级低于 P1 terminal、同步代理写和 P2 derived。文件压缩、hash 与 archive 准备在主库写 permit 外执行。
 - 正常 maintenance 只有在更高优先级无等待且 pressure gate 开放时才可提交；连续饥饿时每 15 秒最多公平提交一个微事务。fairness 不得绕过 pressure cooldown。
 - 每个微事务只提交一个已准备 batch 的 manifest、rollup/coverage marker 与对应源行裁剪/删除；失败、取消或重启时源行与 raw owner link 保持，未引用 archive artifact 必须可重试或清理。
+- segment batch 的身份由稳定的源行 ID 集合导出，不能在主库事务外依赖“下一个 part”计数。prepared artifact 必须在 source mutation 前完成 file 与父目录同步；已存在但 hash 不同的同一身份必须失败而非覆盖。
+- fairness 不得越过已排队的 P1 terminal；pressure 拒绝后必须归还尚未产生提交的 fairness token。维护准入等待必须响应 shutdown，取消时仅丢弃尚未开始的 microtransaction。
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。
