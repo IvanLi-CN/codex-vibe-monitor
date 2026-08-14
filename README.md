@@ -231,14 +231,15 @@ bun run test:e2e:pwa
 
 ## Worktree bootstrap
 
-首次拉到包含该功能的版本后，在任一 worktree 执行一次，安装 shared Git hooks：
+首次拉到包含该功能的版本后，先确认全局 `lefthook` 已在 `PATH` 中，再在任一 worktree 执行一次，安装 shared Git hooks：
 
 ```bash
+command -v lefthook
 bun install
 bun run hooks:install
 ```
 
-之后新建或切换 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`，并尝试恢复当前 checkout 所需的依赖。主 worktree 的普通 checkout 不会触发依赖安装。如果需要手动重跑完整 bootstrap，可执行：
+`hooks:install` 会让 Lefthook 生成标准 shared Git hooks；之后新建或切换 linked worktree 时，`post-checkout` hook 会调用当前 checkout 的 bootstrap runner，自动补齐缺失的 `.env.local`，并尝试恢复当前 checkout 所需的依赖。主 worktree 的普通 checkout 不会触发依赖安装。如果需要手动重跑完整 bootstrap，可执行：
 
 ```bash
 bun run worktree:bootstrap

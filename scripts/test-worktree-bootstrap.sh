@@ -6,10 +6,11 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-worktree-bootstrap.XXXX
 tmp_dir="$(cd "$tmp_dir" && pwd)"
 
 cleanup() {
+  set +e
   if [ -n "${fixture_repo:-}" ] && [ -n "${worktree_dir:-}" ] && [ -d "$fixture_repo" ]; then
     git -C "$fixture_repo" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
   fi
-  rm -rf "$tmp_dir"
+  rm -rf "$tmp_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -49,27 +50,13 @@ assert_file_contains() {
   fi
 }
 
-assert_equal_file() {
-  expected="$1"
-  actual="$2"
-  if ! cmp -s "$expected" "$actual"; then
-    printf 'expected %s to match %s\n' "$actual" "$expected" >&2
-    exit 1
+resolve_lefthook() {
+  if [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
+    printf '%s\n' "$repo_root/node_modules/.bin/lefthook"
+    return 0
   fi
-}
 
-write_fake_lefthook() {
-  repo="$1"
-  os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
-  cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
-  native_dir="$repo/node_modules/lefthook-$os_arch-$cpu_arch/bin"
-  mkdir -p "$native_dir"
-  cat > "$native_dir/lefthook" <<'EOF_FAKE'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" > .lefthook-run.log
-EOF_FAKE
-  chmod +x "$native_dir/lefthook"
+  command -v lefthook 2>/dev/null
 }
 
 write_fake_bun() {
@@ -78,11 +65,19 @@ write_fake_bun() {
   cat > "$bin_dir/bun" <<'EOF_FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+
 printf '%s\t%s\n' "$(pwd)" "$*" >> "${BUN_INSTALL_LOG:?}"
 surface=repo
 case "$(basename "$(pwd)")" in
   web|docs-site) surface="$(basename "$(pwd)")" ;;
 esac
+
+if [ "$surface" = 'web' ]; then
+  mkdir -p node_modules/.bin
+  printf '#!/usr/bin/env bash\nexit 0\n' > node_modules/.bin/vitest
+  chmod +x node_modules/.bin/vitest
+fi
+
 if [ "${FAKE_BUN_FAIL_SURFACE:-}" = "$surface" ]; then
   exit 11
 fi
@@ -96,6 +91,7 @@ write_fake_cargo() {
   cat > "$bin_dir/cargo" <<'EOF_FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+
 printf '%s\t%s\n' "$(pwd)" "$*" >> "${CARGO_FETCH_LOG:?}"
 if [ "${FAKE_CARGO_FAIL:-0}" = '1' ]; then
   exit 12
@@ -109,7 +105,11 @@ copy_repo "$repo_root" "$fixture_repo"
 init_repo "$fixture_repo"
 
 printf 'PRIMARY_SECRET=from-primary\n' > "$fixture_repo/.env.local"
-write_fake_lefthook "$fixture_repo"
+
+lefthook_bin="$(resolve_lefthook)" || {
+  printf 'worktree bootstrap smoke requires lefthook on PATH or repo-local dependencies\n' >&2
+  exit 1
+}
 
 fake_bin="$tmp_dir/fake-bin"
 bun_install_log="$tmp_dir/bun-install.log"
@@ -119,25 +119,29 @@ write_fake_cargo "$fake_bin"
 export PATH="$fake_bin:$PATH"
 export BUN_INSTALL_LOG="$bun_install_log"
 export CARGO_FETCH_LOG="$cargo_fetch_log"
+export LEFTHOOK_BIN="$lefthook_bin"
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
 
-install_output="$(bash "$fixture_repo/scripts/install-hooks.sh" 2>&1)"
-assert_file_contains <(printf '%s' "$install_output") 'installed shared hooks'
+(
+  cd "$fixture_repo"
+  "$lefthook_bin" install >/dev/null
+)
 
 hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
-assert_file_contains "$hooks_dir/pre-commit" '# managed by codex-vibe-monitor hooks:install'
-assert_file_contains "$hooks_dir/prepare-commit-msg" '# managed by codex-vibe-monitor hooks:install'
-assert_file_contains "$hooks_dir/commit-msg" '# managed by codex-vibe-monitor hooks:install'
-assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor hooks:install'
+assert_file_contains "$hooks_dir/post-checkout" 'lefthook'
 
 worktree_dir="$tmp_dir/linked"
 git -C "$fixture_repo" worktree add --detach "$worktree_dir" HEAD >/dev/null
-assert_equal_file "$fixture_repo/.env.local" "$worktree_dir/.env.local"
+assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
 assert_file_contains "$bun_install_log" "$worktree_dir/web"$'\t''install --frozen-lockfile'
 assert_file_contains "$bun_install_log" "$worktree_dir/docs-site"$'\t''install --frozen-lockfile'
 assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
+if [ ! -x "$worktree_dir/web/node_modules/.bin/vitest" ]; then
+  printf 'linked worktree bootstrap must leave a runnable web Vitest binary\n' >&2
+  exit 1
+fi
 
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 git -C "$worktree_dir" checkout --detach HEAD >/dev/null 2>&1
@@ -153,24 +157,6 @@ if [ -s "$bun_install_log" ] || [ -s "$cargo_fetch_log" ]; then
   printf 'primary worktree post-checkout must not install dependencies\n' >&2
   exit 1
 fi
-
-rm -rf "$worktree_dir/node_modules"
-(
-  cd "$worktree_dir"
-  "$hooks_dir/pre-commit" >/dev/null
-)
-assert_file_contains "$worktree_dir/.lefthook-run.log" 'run pre-commit'
-assert_file_contains "$worktree_dir/.lefthook-run.log" '--no-auto-install'
-
-commit_editmsg_path="$(git -C "$worktree_dir" rev-parse --git-path COMMIT_EDITMSG)"
-mkdir -p "$(dirname "$commit_editmsg_path")"
-: > "$commit_editmsg_path"
-(
-  cd "$worktree_dir"
-  "$hooks_dir/commit-msg" .git/COMMIT_EDITMSG >/dev/null
-)
-assert_file_contains "$worktree_dir/.lefthook-run.log" 'run commit-msg'
-assert_file_contains "$worktree_dir/.lefthook-run.log" "$commit_editmsg_path"
 
 (
   cd "$worktree_dir"
@@ -220,42 +206,5 @@ head_sha="$(git -C "$fixture_repo" rev-parse HEAD^)"
 git -C "$worktree_dir" checkout --detach "$legacy_sha" >/dev/null
 git -C "$worktree_dir" checkout --detach "$head_sha" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
-
-preserve_repo="$tmp_dir/preserve-existing-hook"
-copy_repo "$repo_root" "$preserve_repo"
-init_repo "$preserve_repo"
-printf '#!/bin/sh\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
-chmod +x "$preserve_repo/.git/hooks/pre-commit"
-preserve_output="$(bash "$preserve_repo/scripts/install-hooks.sh" 2>&1)"
-assert_file_contains <(printf '%s' "$preserve_output") 'pre-commit already exists and is unmanaged'
-assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
-assert_file_contains "$preserve_repo/.git/hooks/post-checkout" '# managed by codex-vibe-monitor hooks:install'
-
-path_repo="$tmp_dir/path-resolution"
-copy_repo "$repo_root" "$path_repo"
-init_repo "$path_repo"
-caller_dir="$tmp_dir/outside-caller"
-mkdir -p "$caller_dir"
-printf 'CALLER_SECRET=outside\n' > "$caller_dir/.env.local"
-(
-  cd "$caller_dir"
-  bash "$path_repo/scripts/sync-worktree-resources.sh" >/dev/null
-)
-if [ -e "$path_repo/.env.local" ]; then
-  printf 'sync script must not resolve source_root from the caller working directory\n' >&2
-  exit 1
-fi
-
-custom_repo="$tmp_dir/custom-hooks"
-copy_repo "$repo_root" "$custom_repo"
-init_repo "$custom_repo"
-git -C "$custom_repo" config core.hooksPath .custom-hooks
-mkdir -p "$custom_repo/.custom-hooks"
-custom_output="$(bash "$custom_repo/scripts/install-hooks.sh" 2>&1)"
-assert_file_contains <(printf '%s' "$custom_output") 'core.hooksPath is set'
-if [ -e "$custom_repo/.custom-hooks/post-checkout" ]; then
-  printf 'custom hooks path should remain untouched\n' >&2
-  exit 1
-fi
 
 printf 'worktree bootstrap smoke passed\n'

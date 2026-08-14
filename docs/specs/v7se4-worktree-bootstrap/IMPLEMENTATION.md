@@ -10,15 +10,15 @@
 
 ## Coverage / rollout summary
 
-- `scripts/worktree-bootstrap.sh` 安装 shared hooks、同步缺失本地资源并调用依赖 setup。
+- `bun run hooks:install` 通过 Lefthook 安装标准 shared hooks；`scripts/worktree-bootstrap.sh` 复用该入口、同步缺失本地资源并调用依赖 setup。
 - `scripts/worktree-setup.sh` 逐项执行三项 `bun install --frozen-lockfile` 与 `cargo fetch --locked`，汇总失败。
-- `scripts/run-lefthook-hook.sh` 仅在 linked worktree 的 `post-checkout` 调用依赖 setup，并吞掉失败码。
-- `scripts/test-worktree-bootstrap.sh` 使用真实 linked worktree smoke 和 fake `bun`/`cargo` 验证自动/手动入口、主 worktree 跳过与失败隔离。
+- `lefthook.yml` 的 `post-checkout` command 调用 `scripts/run-lefthook-hook.sh`；runner 仅在 linked worktree 调用依赖 setup，并吞掉自动路径失败码。
+- `scripts/test-worktree-bootstrap.sh` 使用真实 Lefthook、真实 linked worktree smoke、fake `bun`/`cargo` 与 Vitest sentinel 验证自动/手动入口、主 worktree 跳过、历史 revision no-op 与失败隔离。
 - README 与 AGENTS 已说明自动恢复、手动失败码和 locked 参数。
 
 ## Remaining Gaps
 
-- None
+- 无已知实现缺口；Lefthook PATH 前置条件已写入维护文档和 smoke preflight。
 
 ## Related Changes
 
