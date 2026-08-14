@@ -15,7 +15,7 @@
 - 保持 `post-checkout` bootstrap 安全、可重复执行，并只在 linked worktree 中恢复依赖。
 - 提供统一的依赖恢复实现，覆盖 repo root、`web`、`docs-site` 的 Bun 依赖和 Rust crate 缓存。
 - 用 smoke test 锁住自动/手动入口、主/linked worktree 区分、锁定参数与失败隔离行为。
-- 将全局 `lefthook` 可执行性作为 shared `post-checkout` hook 的启动前置条件，并在安装入口中显式失败。
+- 将 repo 外全局 `lefthook` 可执行性作为 shared `post-checkout` hook 的启动前置条件，并在安装入口中显式失败；repo-local `node_modules/.bin/lefthook` 不得伪装该前置条件。
 
 ### Non-goals
 
@@ -45,6 +45,7 @@
 - `worktree:setup` 必须按四项依赖任务执行，使用 locked 参数；单项失败后必须继续其余任务并汇总失败。
 - 自动 hook 必须返回成功并告警；手动 `worktree:bootstrap` 在存在失败时必须返回非零。
 - `lefthook` 必须在 `PATH` 中可执行；`bun run hooks:install` 缺少该命令时必须明确返回非零。
+- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；这些 hook 必须保持原状并给出提示。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。
 
 ### SHOULD
@@ -101,7 +102,7 @@
 
 - Given CI 运行 `scripts/test-worktree-bootstrap.sh`
   When 真实 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
-  Then 测试不联网且能证明命令参数、执行顺序、Vitest 可执行 sentinel 和失败隔离。
+  Then 测试不联网且能证明命令参数、Bun 在 Cargo 之前执行、Vitest 可执行 sentinel 和失败隔离。
 
 ## 验收清单（Acceptance checklist）
 
@@ -139,6 +140,7 @@ None
 
 - 风险：把依赖安装放进 linked checkout hook 会增加网络和耗时；本规范固定为逐项 best-effort，失败不阻断 checkout。
 - 风险：新 linked worktree 在 hook 启动前没有本地 `node_modules`，因此依赖全局 `lefthook`；缺少该命令时安装入口必须尽早失败并给出补救提示。
+- 风险：贡献者可能已有自定义 Git hook；安装入口必须跳过 unmanaged hook，避免 Lefthook 将其移动为 `.old` 后停止执行。
 - 假设：Bun 是仓库唯一 JS package manager，且 root、`web/`、`docs-site/` 都由 Bun 管理。
 
 ## 参考（References）
