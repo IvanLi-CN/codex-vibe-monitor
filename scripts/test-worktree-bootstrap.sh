@@ -447,6 +447,26 @@ assert_file_contains "$legacy_lock_recovery_output" 'copied .env.local'
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 
+mkdir -p "$sync_lock_path"
+rm -f "$worktree_dir/.env.local"
+fresh_lock_output="$tmp_dir/fresh-lock-output.log"
+(
+  cd "$worktree_dir"
+  bash scripts/sync-worktree-resources.sh > "$fresh_lock_output" 2>&1
+) &
+fresh_lock_pid=$!
+sleep 2
+if ! kill -0 "$fresh_lock_pid" 2>/dev/null || [ ! -d "$sync_lock_path" ]; then
+  printf 'sync must retain a fresh legacy lock while its owner initializes\n' >&2
+  kill "$fresh_lock_pid" 2>/dev/null || true
+  wait "$fresh_lock_pid" 2>/dev/null || true
+  exit 1
+fi
+kill "$fresh_lock_pid" 2>/dev/null || true
+wait "$fresh_lock_pid" 2>/dev/null || true
+rmdir "$sync_lock_path"
+printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
+
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \
   "$fixture_repo/scripts/worktree-bootstrap.sh" \
