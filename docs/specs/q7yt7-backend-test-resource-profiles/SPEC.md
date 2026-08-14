@@ -62,7 +62,7 @@
 
 - bucket 内文件与目录命名应按 failover、routing、archive、stats、maintenance、usage 等语义场景组织，而不是按提交历史或行数残留命名。
 - DB-only 测试应优先改为唯一命名的 in-memory SQLite；需要真实 archive/file-path/gzip/write-lock 语义的测试应固定留在 `archive_file_io` bucket。
-- 非 migration 的 in-memory schema fixture 可从一次真实 `ensure_schema` 生成私有 SQL dump，并在每个唯一 shared-memory SQLite 重放；采用前必须证明 schema/default-data parity、独立连接可见性、并发写安全和跨测试隔离。legacy migration、文件路径、gzip 和 write-lock 测试始终使用真实 `ensure_schema` 和 file fixture。
+- 非 migration 的 in-memory schema fixture 可由 runner 从一次真实 `ensure_schema` 生成私有 file template，并通过 SQLite backup API 复制到每个唯一 shared-memory SQLite；采用前必须证明 schema/default-data parity、独立连接可见性、并发写安全和跨测试隔离。legacy migration、文件路径、gzip 和 write-lock 测试始终使用真实 `ensure_schema` 和 file fixture。
 - 共享 harness、seed、archive helper、SQLite helper 应下沉到稳定测试支撑模块，避免跨大文件复制粘贴。
 
 ### COULD
@@ -76,7 +76,7 @@
 - profile runner 始终以同一 resource-profile 过滤集合运行；性能优化不得删除用例或改变三个 required check 名称。
 - 生产 wrapper 继续使用正式 retry/backoff 与 replay threshold；测试 harness 可为零等待 retry、零等待 no-available-account 和较小的私有 replay threshold 注入值，以验证同一分支而不承担真实时间。
 - 需要验证正式时间预算的用例显式清除 retry override；需要验证真实文件语义的用例继续走默认 threshold 与真实文件 fixture。
-- 普通 Stateful test state 的 current-schema SQL dump 只能由真实 fresh schema 生成，重放后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 serialize/deserialize 或文件副本原型作为生产测试路径。
+- 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize、逐条 SQL dump 或直接文件副本原型作为最终测试路径。
 - archive build/distribution 是可逆实验。仅在 CI 关键路径和总 runner 成本同时达标时，才同步 workflow 与 quality-gates 合同；否则 runner 的可选本地 archive 入口不改变 required CI 拓扑。
 
 ### Edge cases / errors

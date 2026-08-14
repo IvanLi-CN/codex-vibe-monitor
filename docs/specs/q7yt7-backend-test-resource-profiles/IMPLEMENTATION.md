@@ -37,13 +37,13 @@
   - 普通 test state 的 no-available-account wait 为零；验证真实时间预算的测试显式清除 fallback override 或提供自己的非零 wait。
   - replay snapshot 保留正式 `1 MiB` wrapper，并用私有 threshold 参数让大请求语义测试以较小输入覆盖 file-backed 分支；正式阈值边界另有回归测试。
 - 当前 Stateful profile 共 `1213` 个用例。完整热运行矩阵每档两次均通过：
-  - `4` threads：`206.846s`、`225.494s`
-  - `6` threads：`180.681s`、`154.336s`
-  - `8` threads：`119.289s`、`117.784s`
-  - `8` threads 是最快平均档位，因此也是最快档位 `10%` 内的最低线程数，runner 固定为 `8`。
+  - `4` threads：`134.108s`、`83.952s`
+  - `6` threads：`63.593s`、`62.874s`
+  - `8` threads：`57.287s`、`67.727s`
+  - `8` threads 平均最快，`6` threads 在最快档位 `10%` 内且线程更低，runner 固定为 `6`。
 - 当前 top offenders 主要是 SQLite write-lock/backfill、retention/archive 与系统 raw metrics 路径，最长单项约 `9.286s`；它们保留真实锁、archive 与 retention 行为。
 - runner 提供可选 `--archive-file`，但 archive-file I/O 在两次 archive replay 中分别出现 legacy schema trigger already exists 失败，不能作为可靠 CI 分发方案。它没有改变 CI workflow 或 quality-gates；只有同一 PR head 的双重 CI 阈值和稳定 archive profile 证据都成立时，才允许重新提议 workflow 变更。
-- current-schema fixture 由一次真实 `ensure_schema` 生成私有 SQL dump，并重放到每个唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见而被拒绝，文件模板副本因 SQLite snapshot lock 而被拒绝。
+- runner 在启动 Stateful profile 前由一次真实 `ensure_schema` 生成私有 file template；每个 nextest 子进程用 SQLite backup API 把它复制到唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见、逐条 SQL dump 因每个子进程重复构建而回退、直接文件副本因 SQLite snapshot lock 而被拒绝。
 
 ## Remaining Gaps
 

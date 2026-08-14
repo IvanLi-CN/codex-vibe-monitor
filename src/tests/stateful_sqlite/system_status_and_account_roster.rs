@@ -1,8 +1,12 @@
 use super::*;
+use libsqlite3_sys::{
+    SQLITE_DONE, SQLITE_OK, sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step,
+};
 use serde_json::json;
-use tokio::sync::OnceCell;
+use std::str::FromStr;
 
-static CURRENT_SCHEMA_TEMPLATE_SQL: OnceCell<String> = OnceCell::const_new();
+pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
+    "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
 
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,
@@ -1052,10 +1056,9 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
-    sqlx::raw_sql(current_schema_template_sql().await)
-        .execute(&pool)
+    restore_stateful_schema_template(&pool)
         .await
-        .expect("initialize schema from current template");
+        .expect("schema should initialize from the stateful template");
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
@@ -1133,85 +1136,102 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     })
 }
 
-async fn current_schema_template_sql() -> &'static String {
-    CURRENT_SCHEMA_TEMPLATE_SQL
-        .get_or_init(|| async {
-            let template_pool = SqlitePoolOptions::new()
-                .min_connections(1)
-                .max_connections(1)
-                .connect(
-                    "sqlite:file:codex-vibe-monitor-current-schema-template?mode=memory&cache=shared",
-                )
-                .await
-                .expect("connect current schema template sqlite");
-            ensure_schema(&template_pool)
-                .await
-                .expect("initialize current schema template");
-            let sql = current_schema_template_sql_from_pool(&template_pool).await;
-            template_pool.close().await;
-            sql
-        })
+pub(crate) async fn write_stateful_schema_template(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create stateful schema template directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("remove stale stateful schema template {}", path.display()))?;
+    }
+
+    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(path))
+        .context("build stateful schema template sqlite options")?
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
         .await
+        .with_context(|| format!("open stateful schema template {}", path.display()))?;
+    ensure_schema(&pool)
+        .await
+        .context("initialize stateful schema template")?;
+    pool.close().await;
+    Ok(())
 }
 
-async fn current_schema_template_sql_from_pool(pool: &SqlitePool) -> String {
-    let tables = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("load current schema tables");
-    let secondary_objects = sqlx::query_scalar::<_, String>(
-        "SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger', 'view') AND sql IS NOT NULL ORDER BY CASE type WHEN 'index' THEN 1 WHEN 'view' THEN 2 ELSE 3 END, name",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("load current schema secondary objects");
+async fn restore_stateful_schema_template(pool: &SqlitePool) -> anyhow::Result<()> {
+    let Some(template_path) = std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV) else {
+        return ensure_schema(pool).await;
+    };
+    let template_path = PathBuf::from(template_path);
+    if !template_path.is_file() {
+        anyhow::bail!(
+            "stateful schema template does not exist: {}",
+            template_path.display()
+        );
+    }
+    restore_stateful_schema_template_from_path(pool, &template_path).await
+}
 
-    let mut script = String::from("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;\n");
-    for (_, create_sql) in &tables {
-        append_sql_statement(&mut script, create_sql);
-    }
-    for (table_name, _) in &tables {
-        let columns = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT name FROM pragma_table_info({}) ORDER BY cid",
-            quote_sqlite_string(table_name)
-        ))
-        .fetch_all(pool)
+async fn restore_stateful_schema_template_from_path(
+    pool: &SqlitePool,
+    template_path: &Path,
+) -> anyhow::Result<()> {
+    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(template_path))
+        .context("build stateful schema template reader options")?
+        .read_only(true)
+        .create_if_missing(false);
+    let mut source = SqliteConnection::connect_with(&options)
         .await
-        .expect("load current schema table columns");
-        if columns.is_empty() {
-            continue;
-        }
-        let identifiers = columns
-            .iter()
-            .map(|column| quote_sqlite_identifier(column))
-            .collect::<Vec<_>>();
-        let values = identifiers
-            .iter()
-            .map(|column| format!("quote({column})"))
-            .collect::<Vec<_>>()
-            .join(" || ',' || ");
-        let rows = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT 'INSERT INTO {} ({}) VALUES (' || {} || ');' FROM {}",
-            quote_sqlite_identifier(table_name),
-            identifiers.join(", "),
-            values,
-            quote_sqlite_identifier(table_name),
-        ))
-        .fetch_all(pool)
+        .with_context(|| format!("open stateful schema template {}", template_path.display()))?;
+    let mut destination = pool
+        .acquire()
         .await
-        .expect("dump current schema table rows");
-        for row in rows {
-            script.push_str(&row);
-            script.push('\n');
-        }
+        .context("acquire stateful test sqlite")?;
+    let mut destination_handle = destination
+        .lock_handle()
+        .await
+        .context("lock stateful test sqlite handle")?;
+    let mut source_handle = source
+        .lock_handle()
+        .await
+        .context("lock stateful schema template handle")?;
+
+    // The SQLite backup API copies the already-built template without replaying DDL per test.
+    let backup = unsafe {
+        sqlite3_backup_init(
+            destination_handle.as_raw_handle().as_ptr(),
+            c"main".as_ptr(),
+            source_handle.as_raw_handle().as_ptr(),
+            c"main".as_ptr(),
+        )
+    };
+    if backup.is_null() {
+        anyhow::bail!("start stateful schema SQLite backup");
     }
-    for create_sql in secondary_objects {
-        append_sql_statement(&mut script, &create_sql);
+    let step_code = unsafe { sqlite3_backup_step(backup, -1) };
+    let finish_code = unsafe { sqlite3_backup_finish(backup) };
+    if step_code != SQLITE_DONE || finish_code != SQLITE_OK {
+        anyhow::bail!(
+            "copy stateful schema SQLite backup failed: step={step_code}, finish={finish_code}"
+        );
     }
-    script.push_str("COMMIT; PRAGMA foreign_keys = ON;");
-    script
+
+    drop(source_handle);
+    drop(destination_handle);
+    drop(destination);
+    source
+        .close()
+        .await
+        .context("close stateful schema template")?;
+    Ok(())
 }
 
 fn quote_sqlite_identifier(identifier: &str) -> String {
@@ -1220,14 +1240,6 @@ fn quote_sqlite_identifier(identifier: &str) -> String {
 
 fn quote_sqlite_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-fn append_sql_statement(script: &mut String, statement: &str) {
-    script.push_str(statement);
-    if !statement.trim_end().ends_with(';') {
-        script.push(';');
-    }
-    script.push('\n');
 }
 
 async fn schema_object_signature(
@@ -1241,7 +1253,7 @@ async fn schema_object_signature(
     .expect("load schema signature")
 }
 
-async fn schema_table_row_signatures(pool: &SqlitePool) -> Vec<(String, Vec<String>)> {
+async fn schema_default_data_signature(pool: &SqlitePool) -> Vec<(String, Vec<String>)> {
     let table_names = sqlx::query_scalar::<_, String>(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )
@@ -1256,7 +1268,7 @@ async fn schema_table_row_signatures(pool: &SqlitePool) -> Vec<(String, Vec<Stri
         ))
         .fetch_all(pool)
         .await
-        .expect("load schema table signature columns");
+        .expect("load schema signature columns");
         let values = columns
             .iter()
             .map(|column| {
@@ -1280,7 +1292,7 @@ async fn schema_table_row_signatures(pool: &SqlitePool) -> Vec<(String, Vec<Stri
             ))
             .fetch_all(pool)
             .await
-            .expect("load schema table row signatures")
+            .expect("load schema default data signature")
         };
         table_rows.push((table_name, rows));
     }
@@ -1288,7 +1300,13 @@ async fn schema_table_row_signatures(pool: &SqlitePool) -> Vec<(String, Vec<Stri
 }
 
 #[tokio::test]
-async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases_isolated() {
+async fn stateful_schema_template_matches_fresh_schema_and_keeps_pooled_databases_isolated() {
+    let temp_dir = make_temp_test_dir("stateful-schema-template-parity");
+    let template_path = temp_dir.join("current-schema.db");
+    write_stateful_schema_template(&template_path)
+        .await
+        .expect("write stateful schema template");
+
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let template_url =
         format!("sqlite:file:codex-vibe-monitor-template-parity-{db_id}?mode=memory&cache=shared");
@@ -1303,10 +1321,9 @@ async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases
         .connect(&template_url)
         .await
         .expect("connect template schema parity sqlite");
-    sqlx::raw_sql(current_schema_template_sql().await)
-        .execute(&template_pool)
+    restore_stateful_schema_template_from_path(&template_pool, &template_path)
         .await
-        .expect("initialize template schema parity sqlite");
+        .expect("restore template schema parity sqlite");
     let fresh_pool = SqlitePoolOptions::new()
         .min_connections(1)
         .max_connections(4)
@@ -1323,8 +1340,8 @@ async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases
         "template schema must match fresh ensure_schema output"
     );
     assert_eq!(
-        schema_table_row_signatures(&template_pool).await,
-        schema_table_row_signatures(&fresh_pool).await,
+        schema_default_data_signature(&template_pool).await,
+        schema_default_data_signature(&fresh_pool).await,
         "template default data must match fresh ensure_schema output"
     );
 
@@ -1366,10 +1383,9 @@ async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases
         .connect(&isolated_url)
         .await
         .expect("connect isolated template sqlite");
-    sqlx::raw_sql(current_schema_template_sql().await)
-        .execute(&isolated_pool)
+    restore_stateful_schema_template_from_path(&isolated_pool, &template_path)
         .await
-        .expect("initialize isolated template sqlite");
+        .expect("restore isolated template sqlite");
     let isolated_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'template_pool_visibility'",
     )
@@ -1386,6 +1402,7 @@ async fn current_schema_template_matches_fresh_schema_and_keeps_pooled_databases
     template_pool.close().await;
     fresh_pool.close().await;
     isolated_pool.close().await;
+    fs::remove_dir_all(temp_dir).expect("remove stateful schema template parity directory");
 }
 
 pub(crate) async fn enable_encrypted_session_owner_routing_for_test(state: &Arc<AppState>) {
