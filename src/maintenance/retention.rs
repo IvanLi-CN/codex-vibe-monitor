@@ -967,6 +967,7 @@ pub(crate) enum RawCompressionAlertLevel {
 #[derive(Debug, Default)]
 pub(crate) struct ArchiveManifestRefreshSummary {
     pub(crate) pending_batches: usize,
+    pub(crate) candidate_remaining_hint: usize,
     pub(crate) refreshed_batches: usize,
     pub(crate) account_rows_written: usize,
     pub(crate) missing_files: usize,
@@ -1277,10 +1278,22 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             // A cold-compression rename changes the physical path as well. Reset the
             // incremental inventory so it cannot count both the retired and new blob.
-            let reset_pending =
-                crate::system_raw_payload_metrics_inventory_reset_pending(&state.pool)
-                    .await
-                    .unwrap_or(false);
+            let reset_pending = match crate::system_raw_payload_metrics_inventory_reset_pending(
+                &state.pool,
+            )
+            .await
+            {
+                Ok(pending) => pending,
+                Err(error) => {
+                    warn!(
+                        trigger,
+                        error = %error,
+                        "failed to inspect system raw metrics inventory reset state"
+                    );
+                    invalidate_system_status_cache(state.as_ref()).await;
+                    return false;
+                }
+            };
             if summary.raw_files_compressed > 0
                 || summary.raw_files_removed > 0
                 || summary.orphan_raw_files_removed > 0

@@ -28,6 +28,7 @@ pub(crate) async fn refresh_archive_upstream_activity_manifest(
     batches.truncate(candidate_limit);
     let mut summary = ArchiveManifestRefreshSummary {
         pending_batches: batches.len(),
+        candidate_remaining_hint,
         ..ArchiveManifestRefreshSummary::default()
     };
 

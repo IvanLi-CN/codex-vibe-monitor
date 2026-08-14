@@ -1789,10 +1789,11 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
                 missing_manifest_files = summary.missing_manifest_files,
                 backfilled_archive_expiries = summary.backfilled_archive_expiries,
                 bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
+                pending_manifest_batches = summary.pending_manifest_batches,
                 deferred,
                 "startup background prep finished"
             );
-            !deferred
+            !deferred && summary.pending_manifest_batches == 0
         }
         Err(err) => {
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
