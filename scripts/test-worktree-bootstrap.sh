@@ -432,6 +432,21 @@ assert_file_contains "$lock_recovery_output" 'copied .env.local'
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 
+mkdir -p "$sync_lock_dir"
+rm -f "$worktree_dir/.env.local"
+empty_lock_recovery_output="$tmp_dir/empty-lock-recovery-output.log"
+(
+  cd "$worktree_dir"
+  bash scripts/sync-worktree-resources.sh > "$empty_lock_recovery_output" 2>&1
+)
+if [ -e "$sync_lock_dir" ]; then
+  printf 'sync must recover empty lock directories\n' >&2
+  exit 1
+fi
+assert_file_contains "$empty_lock_recovery_output" 'copied .env.local'
+assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
+printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
+
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \
   "$fixture_repo/scripts/worktree-bootstrap.sh" \
