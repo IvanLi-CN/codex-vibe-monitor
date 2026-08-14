@@ -376,7 +376,6 @@ jobs:
 
   backend-tests-lightweight:
     name: Backend Tests (Lightweight)
-    needs: backend-tests-stateful-sqlite
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -391,17 +390,22 @@ jobs:
         with:
           toolchain: 1.96.0
 
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Download backend test archive
-        uses: actions/download-artifact@v8
-        with:
-          name: backend-test-archive
-          path: ${{ runner.temp }}/backend-test-archive
-
       - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
 
   backend-tests-stateful-sqlite:
     name: Backend Tests (Stateful SQLite)
@@ -433,29 +437,11 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Create backend test archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/backend-test-archive"
-          cargo nextest archive --locked --all-features \
-            --archive-file "$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"
-
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"
-
-      - name: Upload backend test archive
-        uses: actions/upload-artifact@v7
-        with:
-          name: backend-test-archive
-          path: ${{ runner.temp }}/backend-test-archive/backend-test-archive.tar.zst
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 
   backend-tests-archive-file-io:
     name: Backend Tests (Archive / File I/O)
-    needs: backend-tests-stateful-sqlite
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -470,17 +456,22 @@ jobs:
         with:
           toolchain: 1.96.0
 
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Download backend test archive
-        uses: actions/download-artifact@v8
-        with:
-          name: backend-test-archive
-          path: ${{ runner.temp }}/backend-test-archive
-
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-test-archive/backend-test-archive.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 
   build:
     name: Build Artifacts
