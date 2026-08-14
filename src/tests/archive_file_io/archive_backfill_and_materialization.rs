@@ -340,6 +340,58 @@ async fn startup_persistent_prep_skips_mutations_for_dry_run_commands() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn startup_persistent_prep_keeps_manifest_backlog_pending_after_a_bounded_pass() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("startup-prep-bounded-manifest-backlog").await;
+    config.retention_batch_rows = 1;
+    let occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
+
+    for (index, month_key) in ["2025-01", "2025-02"].into_iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+            "#,
+        )
+        .bind("codex_invocations")
+        .bind(month_key)
+        .bind(
+            temp_dir
+                .join(format!("pending-manifest-{index}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("deadbeef-{index}"))
+        .bind(1_i64)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(&occurred_at)
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert pending manifest batch");
+    }
+
+    let summary = run_startup_persistent_prep_inner(&pool, &config, &CliArgs::default(), false)
+        .await
+        .expect("run bounded startup prep");
+
+    assert_eq!(summary.refreshed_manifest_batches, 0);
+    assert_eq!(summary.pending_manifest_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[test]
 fn startup_rollup_bootstrap_stays_blocking_for_normal_server_start() {
     let default_cli = CliArgs::default();
