@@ -175,10 +175,12 @@ bun_install_log="$tmp_dir/bun-install.log"
 cargo_fetch_log="$tmp_dir/cargo-fetch.log"
 bootstrap_order_log="$tmp_dir/bootstrap-order.log"
 mkdir -p "$global_bin"
-cat > "$global_bin/lefthook" <<EOF_GLOBAL
-#!/usr/bin/env bash
-exec "$lefthook_bin" "\$@"
-EOF_GLOBAL
+global_runtime="$global_bin/runtime"
+mkdir -p "$global_runtime/node_modules"
+cp -R "$repo_root/node_modules/lefthook" "$global_runtime/node_modules/lefthook"
+lefthook_platform_package="$(node -p 'require.resolve(`lefthook-${process.platform}-${process.arch}/package.json`)' 2>/dev/null)"
+cp -R "$(dirname "$lefthook_platform_package")" "$global_runtime/node_modules/"
+ln -s "$global_runtime/node_modules/lefthook/bin/index.js" "$global_bin/lefthook"
 chmod +x "$global_bin/lefthook"
 write_fake_bun "$fake_bin"
 write_fake_cargo "$fake_bin"
@@ -197,7 +199,9 @@ export LEFTHOOK_BIN="$global_bin/lefthook"
 )
 
 hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
-assert_file_contains "$hooks_dir/post-checkout" 'lefthook'
+for hook_name in pre-commit commit-msg post-checkout; do
+  assert_file_contains "$hooks_dir/$hook_name" 'lefthook'
+done
 
 worktree_dir="$tmp_dir/linked"
 git -C "$fixture_repo" worktree add --detach "$worktree_dir" HEAD >/dev/null
@@ -215,6 +219,7 @@ if [ ! -x "$worktree_dir/web/node_modules/.bin/vitest" ]; then
   printf 'linked worktree bootstrap must leave a runnable web Vitest binary\n' >&2
   exit 1
 fi
+"$worktree_dir/web/node_modules/.bin/vitest"
 
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 git -C "$worktree_dir" checkout --detach HEAD >/dev/null 2>&1
@@ -254,8 +259,22 @@ mkdir -p "$custom_hooks_repo/custom-hooks"
 printf '#!/bin/sh\necho custom-hooks-path\n' > "$custom_hooks_repo/custom-hooks/pre-commit"
 chmod +x "$custom_hooks_repo/custom-hooks/pre-commit"
 git -C "$custom_hooks_repo" config core.hooksPath custom-hooks
-(cd "$custom_hooks_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
+custom_hooks_output="$tmp_dir/custom-hooks-output.log"
+(cd "$custom_hooks_repo" && env PATH=/usr/bin:/bin bash scripts/install-lefthook-hooks.sh > "$custom_hooks_output" 2>&1)
 assert_file_contains "$custom_hooks_repo/custom-hooks/pre-commit" 'custom-hooks-path'
+assert_file_contains "$custom_hooks_output" 'core.hooksPath is set to custom-hooks'
+for hook_name in pre-commit commit-msg post-checkout; do
+  if [ -e "$custom_hooks_repo/.git/hooks/$hook_name" ] || [ -L "$custom_hooks_repo/.git/hooks/$hook_name" ]; then
+    printf 'core.hooksPath must prevent installation into default .git/hooks (%s)\n' "$hook_name" >&2
+    exit 1
+  fi
+done
+for hook_name in commit-msg post-checkout; do
+  if [ -e "$custom_hooks_repo/custom-hooks/$hook_name" ] || [ -L "$custom_hooks_repo/custom-hooks/$hook_name" ]; then
+    printf 'core.hooksPath must leave configured hooks untouched (%s)\n' "$hook_name" >&2
+    exit 1
+  fi
+done
 
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
@@ -286,6 +305,29 @@ if (
   exit 1
 fi
 assert_file_contains "$failure_output" 'dependency setup failed'
+
+sync_script_backup="$tmp_dir/sync-worktree-resources.sh"
+cp "$worktree_dir/scripts/sync-worktree-resources.sh" "$sync_script_backup"
+cat > "$worktree_dir/scripts/sync-worktree-resources.sh" <<'EOF_SYNC_FAILURE'
+#!/usr/bin/env bash
+printf 'sync failure sentinel\n' >&2
+exit 13
+EOF_SYNC_FAILURE
+chmod +x "$worktree_dir/scripts/sync-worktree-resources.sh"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+sync_failure_output="$tmp_dir/sync-failure-output.log"
+if ! (
+  cd "$worktree_dir"
+  "$hooks_dir/post-checkout" HEAD HEAD 1 > "$sync_failure_output" 2>&1
+); then
+  printf 'post-checkout sync failures must not fail the hook\n' >&2
+  exit 1
+fi
+assert_file_contains "$sync_failure_output" 'resource sync failed'
+assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
+assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
+cp "$sync_script_backup" "$worktree_dir/scripts/sync-worktree-resources.sh"
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \

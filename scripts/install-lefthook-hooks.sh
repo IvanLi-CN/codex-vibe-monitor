@@ -19,14 +19,14 @@ fi
 is_repo_local_path() {
   resolved_path="$1"
   case "$resolved_path" in
-    "$repo_root"/node_modules/*|"$repo_root"/*/node_modules/*)
+    "$repo_root"|"$repo_root"/*)
       return 0
       ;;
   esac
 
   while IFS= read -r worktree_root; do
     case "$resolved_path" in
-      "$worktree_root"/node_modules/*|"$worktree_root"/*/node_modules/*)
+      "$worktree_root"|"$worktree_root"/*)
         return 0
         ;;
     esac

@@ -31,7 +31,9 @@ is_linked_worktree() {
 
 if [ "$hook_name" = "post-checkout" ]; then
   if [ -x "$sync_script" ]; then
-    "$sync_script" "$@"
+    if ! "$sync_script" "$@"; then
+      printf '[worktree-bootstrap] resource sync failed; checkout continues. Run `bun run worktree:bootstrap` to retry.\n' >&2
+    fi
   fi
 
   if is_linked_worktree && [ -x "$setup_script" ]; then
