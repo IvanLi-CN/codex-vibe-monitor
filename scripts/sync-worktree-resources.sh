@@ -40,8 +40,15 @@ lock_acquired=0
 lock_attempt=0
 while [ "$lock_attempt" -lt 200 ]; do
   if mkdir "$sync_lock_dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$sync_lock_dir/pid"
     lock_acquired=1
     break
+  fi
+  lock_owner="$(cat "$sync_lock_dir/pid" 2>/dev/null || true)"
+  if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
+    rm -f "$sync_lock_dir/pid"
+    rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
+    continue
   fi
   lock_attempt=$((lock_attempt + 1))
   sleep 0.05
@@ -50,7 +57,11 @@ if [ "$lock_acquired" -ne 1 ]; then
   log "sync lock is busy; skipping resource sync"
   exit 1
 fi
-trap 'rmdir "$sync_lock_dir" >/dev/null 2>&1 || true' EXIT
+release_sync_lock() {
+  rm -f "$sync_lock_dir/pid"
+  rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
+}
+trap release_sync_lock EXIT
 
 copied_count=0
 missing_count=0

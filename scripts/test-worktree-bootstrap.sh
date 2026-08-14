@@ -296,7 +296,7 @@ assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
 preserve_repo="$tmp_dir/preserve-existing-hook"
 copy_repo "$repo_root" "$preserve_repo"
 init_repo "$preserve_repo"
-printf '#!/bin/sh\n# lefthook is intentionally disabled for this local hook\n# managed by codex-vibe-monitor hooks:install\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
+printf '#!/bin/sh\n# lefthook is intentionally disabled for this local hook\necho custom-pre-commit\n# managed by codex-vibe-monitor hooks:install\n' > "$preserve_repo/.git/hooks/pre-commit"
 chmod +x "$preserve_repo/.git/hooks/pre-commit"
 (cd "$preserve_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
 assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
@@ -409,6 +409,24 @@ assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lo
 assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
 cp "$install_script_backup" "$worktree_dir/scripts/install-lefthook-hooks.sh"
 cp "$sync_script_backup" "$worktree_dir/scripts/sync-worktree-resources.sh"
+
+sync_common_dir="$(git -C "$worktree_dir" rev-parse --git-common-dir)"
+case "$sync_common_dir" in
+  /*) ;;
+  *) sync_common_dir="$worktree_dir/$sync_common_dir" ;;
+esac
+sync_lock_dir="$sync_common_dir/worktree-bootstrap-sync.lock"
+mkdir -p "$sync_lock_dir"
+printf '999999999\n' > "$sync_lock_dir/pid"
+lock_recovery_output="$tmp_dir/lock-recovery-output.log"
+(
+  cd "$worktree_dir"
+  bash scripts/sync-worktree-resources.sh > "$lock_recovery_output" 2>&1
+)
+if [ -e "$sync_lock_dir" ]; then
+  printf 'sync must clean up recovered lock directories\n' >&2
+  exit 1
+fi
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \
