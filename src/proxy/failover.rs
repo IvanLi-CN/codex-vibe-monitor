@@ -2236,7 +2236,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 && !direct_image_handshake_timeout
                                 && !codex_imagegen_retest_claimed;
                             if has_retry_budget && !should_timeout_route_failover {
-                                let retry_delay = fallback_proxy_429_retry_delay(
+                                let retry_delay = fallback_proxy_429_retry_delay_for_state(
+                                    state.as_ref(),
                                     u32::from(same_account_attempt) + 1,
                                 );
                                 info!(
@@ -2484,7 +2485,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 && !direct_image_request
                                 && !codex_imagegen_retest_claimed;
                             if has_retry_budget && !should_timeout_route_failover {
-                                let retry_delay = fallback_proxy_429_retry_delay(
+                                let retry_delay = fallback_proxy_429_retry_delay_for_state(
+                                    state.as_ref(),
                                     u32::from(same_account_attempt) + 1,
                                 );
                                 info!(
@@ -3315,7 +3317,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         .as_ref()
                         .and_then(parse_retry_after_delay)
                         .unwrap_or_else(|| {
-                            fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
+                            fallback_proxy_429_retry_delay_for_state(
+                                state.as_ref(),
+                                u32::from(same_account_attempt) + 1,
+                            )
                         })
                 });
                 let finished_at = shanghai_now_string();
@@ -3416,8 +3421,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     continue;
                 }
                 if has_upstream_413_retry_budget && !codex_imagegen_retest_claimed {
-                    let retry_delay =
-                        fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                    let retry_delay = fallback_proxy_429_retry_delay_for_state(
+                        state.as_ref(),
+                        u32::from(same_account_attempt) + 1,
+                    );
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
@@ -3722,8 +3729,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         let has_retry_budget =
                             same_account_attempt + 1 < same_account_attempt_budget;
                         if has_retry_budget && !should_timeout_route_failover {
-                            let retry_delay =
-                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                            let retry_delay = fallback_proxy_429_retry_delay_for_state(
+                                state.as_ref(),
+                                u32::from(same_account_attempt) + 1,
+                            );
                             info!(
                                 account_id = account.account_id,
                                 retry_index = same_account_attempt + 1,
@@ -3921,8 +3930,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         let has_retry_budget =
                             same_account_attempt + 1 < overload_same_account_attempt_budget;
                         if has_retry_budget {
-                            let retry_delay =
-                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                            let retry_delay = fallback_proxy_429_retry_delay_for_state(
+                                state.as_ref(),
+                                u32::from(same_account_attempt) + 1,
+                            );
                             info!(
                                 account_id = account.account_id,
                                 retry_index = same_account_attempt + 1,

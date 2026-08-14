@@ -2259,6 +2259,21 @@ pub(crate) fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     Duration::from_millis(500_u64.saturating_mul(multiplier)).min(Duration::from_secs(5))
 }
 
+pub(crate) fn fallback_proxy_429_retry_delay_for_state(
+    state: &AppState,
+    retry_index: u32,
+) -> Duration {
+    #[cfg(not(test))]
+    let _ = state;
+
+    #[cfg(test)]
+    if let Some(delay) = state.fallback_proxy_429_retry_delay_override {
+        return delay;
+    }
+
+    fallback_proxy_429_retry_delay(retry_index)
+}
+
 pub(crate) fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
     if let Some(delay) = state.pool_group_429_retry_delay_override {
         return delay;
@@ -2377,10 +2392,23 @@ pub(crate) async fn pool_replay_snapshot_from_bytes(
     proxy_request_id: u64,
     bytes: Bytes,
 ) -> io::Result<PoolReplayBodySnapshot> {
+    pool_replay_snapshot_from_bytes_with_memory_threshold(
+        proxy_request_id,
+        bytes,
+        POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES,
+    )
+    .await
+}
+
+async fn pool_replay_snapshot_from_bytes_with_memory_threshold(
+    proxy_request_id: u64,
+    bytes: Bytes,
+    memory_threshold_bytes: usize,
+) -> io::Result<PoolReplayBodySnapshot> {
     if bytes.is_empty() {
         return Ok(PoolReplayBodySnapshot::Empty);
     }
-    if bytes.len() <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+    if bytes.len() <= memory_threshold_bytes {
         return Ok(PoolReplayBodySnapshot::Memory(bytes));
     }
 
@@ -6377,14 +6405,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_semantic_projection_keeps_large_bodies_file_backed() {
-        for (request_id, size, target) in [
+    async fn request_semantic_projection_keeps_file_backed_bodies_file_backed() {
+        for (request_id, size, target, case_suffix) in [
             (
                 90_016,
-                16 * 1024 * 1024,
+                256 * 1024,
                 ProxyCaptureTarget::ChatCompletions,
+                "16",
             ),
-            (90_064, 64 * 1024 * 1024, ProxyCaptureTarget::Responses),
+            (90_064, 512 * 1024, ProxyCaptureTarget::Responses, "64"),
         ] {
             let prefix = match target {
                 ProxyCaptureTarget::ChatCompletions => br#"{"model":"gpt-5","stream":true,"stream_options":{"include_usage":false,"other_option":"preserved"},"metadata":{"sticky_key":"sticky-16","prompt_cache_key":"cache-16"},"service_tier":"priority","reasoning_effort":"high","input":[{"encrypted_content":"cipher"}],"padding":""#.as_slice(),
@@ -6397,9 +6426,13 @@ mod tests {
             body.resize(size - suffix.len(), b'x');
             body.extend_from_slice(suffix);
             let original_digest = Sha256::digest(&body);
-            let snapshot = pool_replay_snapshot_from_bytes(request_id, Bytes::from(body))
-                .await
-                .expect("build replay snapshot");
+            let snapshot = pool_replay_snapshot_from_bytes_with_memory_threshold(
+                request_id,
+                Bytes::from(body),
+                64 * 1024,
+            )
+            .await
+            .expect("build replay snapshot");
             assert!(matches!(&snapshot, PoolReplayBodySnapshot::File { .. }));
 
             let projection = project_request_semantics(request_id, snapshot, target, true).await;
@@ -6419,14 +6452,13 @@ mod tests {
                 projection.request_info.requested_service_tier.as_deref(),
                 Some("priority")
             );
-            let suffix = if size == 16 * 1024 * 1024 { "16" } else { "64" };
             assert_eq!(
                 projection.request_info.sticky_key.as_deref(),
-                Some(format!("sticky-{suffix}").as_str())
+                Some(format!("sticky-{case_suffix}").as_str())
             );
             assert_eq!(
                 projection.request_info.prompt_cache_key.as_deref(),
-                Some(format!("cache-{suffix}").as_str())
+                Some(format!("cache-{case_suffix}").as_str())
             );
             assert_eq!(projection.request_body_for_capture, None);
             assert_eq!(
@@ -6465,7 +6497,7 @@ mod tests {
                 let PoolReplayBodySnapshot::File { temp_file, size } =
                     &projection.upstream_snapshot
                 else {
-                    panic!("rewritten 16 MiB body must remain file-backed");
+                    panic!("rewritten body must remain file-backed");
                 };
                 let mut config = crate::tests::test_config();
                 config.proxy_raw_dir = std::env::temp_dir().join(format!(
@@ -6476,7 +6508,7 @@ mod tests {
                 config.proxy_raw_max_bytes = None;
                 let raw = store_raw_payload_snapshot_file(
                     &config,
-                    "request-semantic-16m",
+                    "request-semantic-file-backed",
                     "request",
                     temp_file.path.clone(),
                     *size,

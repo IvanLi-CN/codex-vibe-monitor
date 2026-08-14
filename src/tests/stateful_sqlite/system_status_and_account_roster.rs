@@ -908,7 +908,7 @@ pub(crate) async fn test_state_with_openai_base_and_runtime_projection_mode(
     test_state_from_config_with_pool_no_available_wait_and_runtime_projection_mode(
         config,
         true,
-        PoolNoAvailableWaitSettings::default(),
+        immediate_test_pool_no_available_wait_settings(),
         runtime_projection_mode,
     )
     .await
@@ -983,9 +983,17 @@ pub(crate) async fn test_state_from_config(
     test_state_from_config_with_pool_no_available_wait(
         config,
         startup_ready,
-        PoolNoAvailableWaitSettings::default(),
+        immediate_test_pool_no_available_wait_settings(),
     )
     .await
+}
+
+fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettings {
+    PoolNoAvailableWaitSettings {
+        timeout: Duration::ZERO,
+        poll_interval: Duration::ZERO,
+        retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+    }
 }
 
 fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64) -> PathBuf {
@@ -1115,6 +1123,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
+        fallback_proxy_429_retry_delay_override: Some(Duration::ZERO),
         pool_no_available_wait,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
@@ -1176,14 +1185,16 @@ pub(crate) fn clone_state_with_upstream_accounts(
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
+        fallback_proxy_429_retry_delay_override: state.fallback_proxy_429_retry_delay_override,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts,
     })
 }
 
-pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
+fn clone_state_with_retry_delay_overrides(
     state: &Arc<AppState>,
-    delay: Option<Duration>,
+    pool_group_delay: Option<Duration>,
+    fallback_delay: Option<Duration>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
         config: state.config.clone(),
@@ -1231,10 +1242,29 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
-        pool_group_429_retry_delay_override: delay,
+        pool_group_429_retry_delay_override: pool_group_delay,
+        fallback_proxy_429_retry_delay_override: fallback_delay,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts: state.upstream_accounts.clone(),
     })
+}
+
+pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
+    state: &Arc<AppState>,
+    delay: Option<Duration>,
+) -> Arc<AppState> {
+    clone_state_with_retry_delay_overrides(
+        state,
+        delay,
+        state.fallback_proxy_429_retry_delay_override,
+    )
+}
+
+pub(crate) fn clone_state_with_fallback_proxy_429_retry_delay_override(
+    state: &Arc<AppState>,
+    delay: Option<Duration>,
+) -> Arc<AppState> {
+    clone_state_with_retry_delay_overrides(state, state.pool_group_429_retry_delay_override, delay)
 }
 
 pub(crate) async fn test_state_from_existing_pool(
@@ -1310,7 +1340,8 @@ pub(crate) async fn test_state_from_existing_pool(
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
-        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
+        fallback_proxy_429_retry_delay_override: Some(Duration::ZERO),
+        pool_no_available_wait: immediate_test_pool_no_available_wait_settings(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }

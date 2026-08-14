@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io]
+Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH]
 
 Profiles:
   lightweight
@@ -11,10 +11,14 @@ Profiles:
   archive-file-io
 
 If --profile is omitted, all three profiles run sequentially.
+
+When --archive-file is set, run profiles from an existing cargo-nextest archive
+instead of building test binaries in this invocation.
 EOF
 }
 
 profile="all"
+archive_file=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -24,6 +28,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       profile="$2"
+      shift 2
+      ;;
+    --archive-file)
+      if [[ $# -lt 2 ]]; then
+        echo "::error::--archive-file requires a path." >&2
+        usage >&2
+        exit 1
+      fi
+      archive_file="$2"
       shift 2
       ;;
     -h|--help)
@@ -64,7 +77,7 @@ run_profile() {
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
-      # Stateful tests use isolated in-memory SQLite pools and benefit from bounded I/O concurrency.
+      # The 4/6/8 hot-run matrix selected 6 as the fastest stable low-concurrency tier.
       test_threads="6"
       ;;
     archive-file-io)
@@ -82,9 +95,17 @@ run_profile() {
   echo "backend_test_profile=$selected_profile"
   if [[ -n "$test_threads" ]]; then
     echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
-    cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    if [[ -n "$archive_file" ]]; then
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    else
+      cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+    fi
   else
-    cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+    if [[ -n "$archive_file" ]]; then
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$filter_expr"
+    else
+      cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+    fi
   fi
   local profile_end_epoch
   profile_end_epoch="$(date +%s)"

@@ -1141,7 +1141,10 @@ async fn pool_openai_v1_responses_total_timeout_caps_same_account_retry_before_f
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
     config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
     config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
-    let state = test_state_from_config(config, true).await;
+    let state = clone_state_with_fallback_proxy_429_retry_delay_override(
+        &test_state_from_config(config, true).await,
+        None,
+    );
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account_with_options(
         &state,
@@ -1263,7 +1266,10 @@ async fn pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
     config.openai_proxy_compact_handshake_timeout = Duration::from_millis(180);
     config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
-    let state = test_state_from_config(config, true).await;
+    let state = clone_state_with_fallback_proxy_429_retry_delay_override(
+        &test_state_from_config(config, true).await,
+        None,
+    );
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account_with_options(
         &state,
