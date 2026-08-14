@@ -7,6 +7,13 @@ tmp_dir="$(cd "$tmp_dir" && pwd)"
 
 cleanup() {
   set +e
+  if [ -n "${foreign_sync_pid:-}" ]; then
+    kill "$foreign_sync_pid" >/dev/null 2>&1 || true
+    wait "$foreign_sync_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${foreign_fixture_repo:-}" ] && [ -n "${foreign_worktree:-}" ] && [ -d "$foreign_fixture_repo" ]; then
+    git -C "$foreign_fixture_repo" worktree remove --force "$foreign_worktree" >/dev/null 2>&1 || true
+  fi
   if [ -n "${fixture_repo:-}" ] && [ -n "${worktree_dir:-}" ] && [ -d "$fixture_repo" ]; then
     git -C "$fixture_repo" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
   fi
@@ -431,6 +438,30 @@ assert_file_contains "$lock_recovery_output" 'copied .env.local'
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 
+foreign_fixture_repo="$tmp_dir/foreign-fixture"
+foreign_worktree="$tmp_dir/foreign-linked"
+mkdir -p "$foreign_fixture_repo/scripts"
+cp "$sync_script_backup" "$foreign_fixture_repo/scripts/sync-worktree-resources.sh"
+cp "$worktree_dir/scripts/worktree-sync.paths" "$foreign_fixture_repo/scripts/worktree-sync.paths"
+printf 'PRIMARY_SECRET=foreign\n' > "$foreign_fixture_repo/.env.local"
+init_repo "$foreign_fixture_repo"
+git -C "$foreign_fixture_repo" worktree add -q "$foreign_worktree"
+foreign_common_dir="$(git -C "$foreign_worktree" rev-parse --git-common-dir)"
+foreign_lock_path="$foreign_common_dir/worktree-bootstrap-sync.lock"
+mkdir -p "$foreign_lock_path"
+touch -t 200001010000 "$foreign_lock_path"
+foreign_lock_output="$tmp_dir/foreign-lock-output.log"
+(
+  cd "$foreign_worktree"
+  bash scripts/sync-worktree-resources.sh > "$foreign_lock_output" 2>&1
+) &
+foreign_sync_pid=$!
+sleep 2
+if ! kill -0 "$foreign_sync_pid" 2>/dev/null; then
+  printf 'foreign sync owner must remain active during stale-lock recovery\n' >&2
+  exit 1
+fi
+
 mkdir -p "$sync_lock_path"
 touch -t 200001010000 "$sync_lock_path"
 rm -f "$worktree_dir/.env.local"
@@ -446,6 +477,10 @@ fi
 assert_file_contains "$legacy_lock_recovery_output" 'copied .env.local'
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
+kill "$foreign_sync_pid" 2>/dev/null || true
+wait "$foreign_sync_pid" 2>/dev/null || true
+foreign_sync_pid=''
+git -C "$foreign_fixture_repo" worktree remove --force "$foreign_worktree" >/dev/null 2>&1 || true
 
 mkdir -p "$sync_lock_path"
 touch -t 200001010000 "$sync_lock_path"
