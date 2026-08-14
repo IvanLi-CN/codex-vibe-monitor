@@ -29,9 +29,56 @@ is_linked_worktree() {
   [ -n "$source_root" ] && [ "$repo_root" != "$source_root" ]
 }
 
+is_repo_local_path() {
+  resolved_path="$1"
+  case "$resolved_path" in
+    "$repo_root"|"$repo_root"/*)
+      return 0
+      ;;
+  esac
+
+  while IFS= read -r worktree_root; do
+    case "$resolved_path" in
+      "$worktree_root"|"$worktree_root"/*)
+        return 0
+        ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}')
+
+  return 1
+}
+
+resolve_global_lefthook() {
+  old_ifs="$IFS"
+  IFS=:
+  for path_entry in $PATH; do
+    [ -n "$path_entry" ] || path_entry='.'
+    path_entry="$(cd "$path_entry" 2>/dev/null && pwd -P || true)"
+    [ -n "$path_entry" ] || continue
+    candidate="$path_entry/lefthook"
+    if [ -x "$candidate" ]; then
+      resolved_candidate="$(realpath "$candidate" 2>/dev/null || true)"
+      if [ -n "$resolved_candidate" ] && ! is_repo_local_path "$resolved_candidate"; then
+        printf '%s\n' "$candidate"
+        IFS="$old_ifs"
+        return 0
+      fi
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
 if [ "$hook_name" = "post-checkout" ]; then
+  if ! command -v realpath >/dev/null 2>&1 || ! lefthook_bin="$(resolve_global_lefthook)"; then
+    printf '[worktree-bootstrap] global lefthook is unavailable; checkout continues. Run `bun run hooks:install` to install hooks.\n' >&2
+    exit 0
+  fi
+
   if [ -x "$sync_script" ]; then
-    "$sync_script" "$@"
+    if ! "$sync_script" "$@"; then
+      printf '[worktree-bootstrap] resource sync failed; checkout continues. Run `bun run worktree:bootstrap` to retry.\n' >&2
+    fi
   fi
 
   if is_linked_worktree && [ -x "$setup_script" ]; then
@@ -72,48 +119,10 @@ if [ "$hook_name" = "prepare-commit-msg" ] || [ "$hook_name" = "commit-msg" ]; t
   fi
 fi
 
-os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
-cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
-
-candidate_roots() {
-  printf '%s\n' "$repo_root"
-  git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}'
-}
-
-resolve_lefthook_binary() {
-  seen=''
-  while IFS= read -r candidate_root; do
-    if [ -z "$candidate_root" ] || [ ! -d "$candidate_root" ]; then
-      continue
-    fi
-
-    case ":$seen:" in
-      *":$candidate_root:"*) continue ;;
-      *) seen="$seen:$candidate_root" ;;
-    esac
-
-    native_bin="$candidate_root/node_modules/lefthook-$os_arch-$cpu_arch/bin/lefthook"
-    if [ -x "$native_bin" ]; then
-      printf '%s\n' "$native_bin"
-      return 0
-    fi
-
-    legacy_bin="$candidate_root/node_modules/@evilmartians/lefthook/bin/lefthook-$os_arch-$cpu_arch/lefthook"
-    if [ -x "$legacy_bin" ]; then
-      printf '%s\n' "$legacy_bin"
-      return 0
-    fi
-  done < <(candidate_roots)
-
-  return 1
-}
-
-if lefthook_bin="$(resolve_lefthook_binary)"; then
-  exec "$lefthook_bin" run "$hook_name" --no-auto-install "$@"
-fi
-
-if command -v lefthook >/dev/null 2>&1; then
-  exec lefthook run "$hook_name" --no-auto-install "$@"
+if command -v realpath >/dev/null 2>&1 && lefthook_bin="$(resolve_global_lefthook)"; then
+  if [ -n "$lefthook_bin" ]; then
+    exec "$lefthook_bin" run "$hook_name" --no-auto-install "$@"
+  fi
 fi
 
 printf '[worktree-bootstrap] lefthook unavailable for %s; skipping.\n' "$hook_name" >&2
