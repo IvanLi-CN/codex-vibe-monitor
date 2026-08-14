@@ -1776,36 +1776,29 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
         return true;
     }
 
-    let gate = crate::db_pressure::global_db_pressure_gate();
-    match gate.try_begin_background("startup_persistent_prep") {
-        Ok(_permit) => {
-            match run_startup_persistent_prep_inner(&state.pool, &state.config, prep_cli, false)
-                .await
-            {
-                Ok(summary) => {
-                    info!(
-                        refreshed_manifest_batches = summary.refreshed_manifest_batches,
-                        refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
-                        missing_manifest_files = summary.missing_manifest_files,
-                        backfilled_archive_expiries = summary.backfilled_archive_expiries,
-                        bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
-                        "startup background prep finished"
-                    );
-                    true
-                }
-                Err(err) => {
-                    let pressure_error = gate.record_error("startup_persistent_prep", &err);
-                    warn!(error = %err, retry_soon = pressure_error, "startup background prep failed");
-                    !pressure_error
-                }
-            }
-        }
-        Err(reason) => {
-            warn!(
-                reason = %reason,
-                "startup background prep deferred because database pressure gate is closed"
+    // The individual manifest and expiry writers acquire the maintenance permit themselves.
+    // Holding the global background slot here would make those nested admissions reject every
+    // startup pass before they can do any work.
+    let defer_generation = super::retention::retention_defer_generation();
+    match run_startup_persistent_prep_inner(&state.pool, &state.config, prep_cli, false).await {
+        Ok(summary) => {
+            let deferred = super::retention::retention_defer_generation() != defer_generation;
+            info!(
+                refreshed_manifest_batches = summary.refreshed_manifest_batches,
+                refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
+                missing_manifest_files = summary.missing_manifest_files,
+                backfilled_archive_expiries = summary.backfilled_archive_expiries,
+                bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
+                deferred,
+                "startup background prep finished"
             );
-            false
+            !deferred
+        }
+        Err(err) => {
+            let pressure_error = crate::db_pressure::global_db_pressure_gate()
+                .record_error("startup_persistent_prep", &err);
+            warn!(error = %err, retry_soon = pressure_error, "startup background prep failed");
+            !pressure_error
         }
     }
 }

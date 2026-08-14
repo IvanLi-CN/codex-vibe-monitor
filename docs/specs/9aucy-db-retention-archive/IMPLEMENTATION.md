@@ -22,12 +22,20 @@
 - Note: fairness preserves queued P1 priority, and a pressure-deferred admission returns its unused token. Shutdown cancels only a queued admission; an already-admitted microtransaction still completes or rolls back at its database boundary.
 - Note: archive expiry and upstream-activity manifest passes use candidate-plus-one probes. Existing manifest rows are cleared, replacement rows are written, and the completion marker is committed through separately budgeted maintenance microtransactions.
 - Note: raw blob path replacement batches owner references before releasing the old file. Archive-driven startup wakeups and raw-metrics inventory reset use the same maintenance admission; the inventory remains `preparing` until its bounded reset completes.
+- Note: startup persistent preparation does not hold a global background permit around nested retention writers. Each writer acquires its own maintenance admission, and a deferred pass remains eligible for the prompt retry schedule instead of being recorded as complete.
+- Note: raw-metrics inventory reset is resumable. The inventory worker checks for an interrupted `resetting` state and advances one pressure-gated reset batch before resuming normal inventory, so a restart or defer cannot strand the snapshot indefinitely.
+- Note: archive publication paths include a process-local monotonic suffix in addition to PID and timestamp, preventing parallel test or worker collisions when timestamp resolution is coarse.
 
 ## Verification
 
 - `cargo test previous7d_summary_matches_daily_timeseries_when_window_spans_archived_and_live_days -- --nocapture`
 - `cargo test archived_range_reads_skip_archive_fallback_rows_already_counted_in_live_tail -- --nocapture`
-- `cargo fmt`
+- `cargo test retention_write_scheduler_fairness -- --nocapture`
+- `cargo test retention_write_scheduler_lock_and_cancel -- --nocapture`
+- `cargo test prepared_archive_publish_reuses_a_matching_identity -- --nocapture`
+- `cargo fmt --check`
+- `cargo check`
+- Shared testbox source build: `cargo test -q` with the repository testbox runner; preserve the run log and exit code for the release gate.
 
 ## Migrated Task-Ticket Sections
 

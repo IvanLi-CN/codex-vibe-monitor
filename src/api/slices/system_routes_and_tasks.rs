@@ -860,12 +860,29 @@ pub(crate) async fn reset_system_raw_payload_metrics_inventory_batch(
     })
 }
 
+pub(crate) async fn system_raw_payload_metrics_inventory_reset_pending(
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT inventory_state FROM system_raw_payload_metrics WHERE singleton = 1",
+    )
+    .fetch_one(pool)
+    .await?
+        == "resetting")
+}
+
 pub(crate) fn spawn_system_raw_payload_metrics_inventory(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            if let Err(error) =
+                crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
+            {
+                set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
+                warn!(error = %error, "system raw metrics inventory reset resume failed");
+            }
             if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory batch failed");

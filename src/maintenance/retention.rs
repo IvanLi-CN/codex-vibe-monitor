@@ -11,6 +11,9 @@ tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
 }
 
+static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetentionWriteHealthSnapshot {
@@ -157,13 +160,26 @@ pub(super) fn retention_candidate_limit(config: &AppConfig, operation: &'static 
     if cfg!(test) {
         return config.retention_batch_rows;
     }
-    RETENTION_WRITE_HEALTH
+    retention_adaptive_candidate_limit(config.retention_batch_rows, operation)
+}
+
+fn retention_adaptive_candidate_limit(configured_limit: usize, operation: &'static str) -> usize {
+    let mut health = RETENTION_WRITE_HEALTH
         .lock()
-        .expect("retention write health")
+        .expect("retention write health");
+    retention_adaptive_candidate_limit_from_state(&mut health, configured_limit, operation)
+}
+
+fn retention_adaptive_candidate_limit_from_state(
+    health: &mut RetentionWriteHealthState,
+    configured_limit: usize,
+    operation: &'static str,
+) -> usize {
+    health
         .budgets
         .entry(operation)
         .or_default()
-        .candidate_limit(config.retention_batch_rows)
+        .candidate_limit(configured_limit)
 }
 
 pub(super) fn retention_micro_batch_limit(config: &AppConfig, operation: &'static str) -> usize {
@@ -171,6 +187,7 @@ pub(super) fn retention_micro_batch_limit(config: &AppConfig, operation: &'stati
 }
 
 fn retention_record_defer(operation: &'static str, reason: impl ToString) {
+    RETENTION_DEFER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reason = reason.to_string();
     let mut health = RETENTION_WRITE_HEALTH
         .lock()
@@ -184,6 +201,10 @@ fn retention_record_defer(operation: &'static str, reason: impl ToString) {
         defer_reason = %reason,
         "retention write deferred before SQLite admission"
     );
+}
+
+pub(crate) fn retention_defer_generation() -> u64 {
+    RETENTION_DEFER_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) struct RetentionWriteCommit {
@@ -244,10 +265,68 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
-    let elapsed = execute_elapsed.saturating_add(commit_elapsed);
     let mut health = RETENTION_WRITE_HEALTH
         .lock()
         .expect("retention write health");
+    let breached = observe_retention_write_commit(
+        &mut health,
+        operation,
+        admission_mode,
+        rows,
+        estimated_bytes,
+        prepare_elapsed,
+        lock_wait,
+        execute_elapsed,
+        commit_elapsed,
+        p1_waiter_count,
+        candidate_remaining_hint,
+    );
+    drop(health);
+    if breached {
+        warn!(
+            operation,
+            admission_mode,
+            batch_rows = rows,
+            estimated_bytes,
+            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
+            lock_wait_ms = lock_wait.as_millis() as u64,
+            execute_ms = execute_elapsed.as_millis() as u64,
+            commit_ms = commit_elapsed.as_millis() as u64,
+            p1_waiter_count,
+            candidate_remaining_hint,
+            "retention write transaction exceeded its micro-batch budget"
+        );
+    } else {
+        debug!(
+            operation,
+            admission_mode,
+            batch_rows = rows,
+            estimated_bytes,
+            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
+            lock_wait_ms = lock_wait.as_millis() as u64,
+            execute_ms = execute_elapsed.as_millis() as u64,
+            p1_waiter_count,
+            candidate_remaining_hint,
+            "retention write micro-batch committed"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_retention_write_commit(
+    health: &mut RetentionWriteHealthState,
+    operation: &'static str,
+    admission_mode: &'static str,
+    rows: usize,
+    estimated_bytes: usize,
+    prepare_elapsed: Duration,
+    lock_wait: Duration,
+    execute_elapsed: Duration,
+    commit_elapsed: Duration,
+    p1_waiter_count: usize,
+    candidate_remaining_hint: usize,
+) -> bool {
+    let elapsed = execute_elapsed.saturating_add(commit_elapsed);
     let breached =
         health
             .budgets
@@ -277,34 +356,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
     health.snapshot.p1_waiter_count = p1_waiter_count;
     health.snapshot.candidate_remaining_hint = candidate_remaining_hint;
     health.snapshot.last_error = None;
-    if breached {
-        warn!(
-            operation,
-            admission_mode,
-            batch_rows = rows,
-            estimated_bytes,
-            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
-            lock_wait_ms = lock_wait.as_millis() as u64,
-            execute_ms = execute_elapsed.as_millis() as u64,
-            commit_ms = commit_elapsed.as_millis() as u64,
-            p1_waiter_count,
-            candidate_remaining_hint,
-            "retention write transaction exceeded its micro-batch budget"
-        );
-    } else {
-        debug!(
-            operation,
-            admission_mode,
-            batch_rows = rows,
-            estimated_bytes,
-            prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
-            lock_wait_ms = lock_wait.as_millis() as u64,
-            execute_ms = execute_elapsed.as_millis() as u64,
-            p1_waiter_count,
-            candidate_remaining_hint,
-            "retention write micro-batch committed"
-        );
-    }
+    breached
 }
 
 fn retention_record_error(operation: &'static str, error: &anyhow::Error) {
@@ -410,6 +462,7 @@ pub(super) async fn acquire_retention_write_admission(
 #[derive(Debug, Default)]
 pub(crate) struct RetentionRunSummary {
     pub(crate) dry_run: bool,
+    pub(crate) deferred: bool,
     pub(crate) raw_files_compression_candidates: usize,
     pub(crate) raw_files_compressed: usize,
     pub(crate) raw_bytes_before: u64,
@@ -1192,6 +1245,14 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
 ) -> bool {
     match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
         Ok(summary) => {
+            if summary.deferred {
+                debug!(
+                    trigger,
+                    "retention maintenance deferred; preserving the prompt retry schedule"
+                );
+                invalidate_system_status_cache(state.as_ref()).await;
+                return false;
+            }
             let touched_anything = summary.touched_anything();
             if touched_anything {
                 let task_run = begin_system_task_run(
@@ -1216,13 +1277,29 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             // A cold-compression rename changes the physical path as well. Reset the
             // incremental inventory so it cannot count both the retired and new blob.
-            if (summary.raw_files_compressed > 0
+            let reset_pending =
+                crate::system_raw_payload_metrics_inventory_reset_pending(&state.pool)
+                    .await
+                    .unwrap_or(false);
+            if summary.raw_files_compressed > 0
                 || summary.raw_files_removed > 0
-                || summary.orphan_raw_files_removed > 0)
-                && let Err(error) =
-                    reset_retention_raw_payload_metrics_inventory(state.as_ref()).await
+                || summary.orphan_raw_files_removed > 0
+                || reset_pending
             {
-                warn!(error = %error, "failed to reset system raw metrics inventory after retention");
+                match reset_retention_raw_payload_metrics_inventory(state.as_ref()).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        debug!(
+                            trigger,
+                            "system raw metrics inventory reset deferred; preserving retry schedule"
+                        );
+                        invalidate_system_status_cache(state.as_ref()).await;
+                        return false;
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "failed to reset system raw metrics inventory after retention");
+                    }
+                }
             }
             invalidate_system_status_cache(state.as_ref()).await;
             touched_anything
@@ -1277,8 +1354,9 @@ pub(crate) async fn run_data_retention_maintenance(
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
-    if let Some(shutdown) = shutdown {
-        return RETENTION_SHUTDOWN
+    let defer_generation = retention_defer_generation();
+    let result = if let Some(shutdown) = shutdown {
+        RETENTION_SHUTDOWN
             .scope(
                 shutdown.clone(),
                 run_data_retention_maintenance_inner(
@@ -1288,9 +1366,14 @@ pub(crate) async fn run_data_retention_maintenance(
                     Some(shutdown),
                 ),
             )
-            .await;
-    }
-    run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
+            .await
+    } else {
+        run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
+    };
+    result.map(|mut summary| {
+        summary.deferred = retention_defer_generation() != defer_generation;
+        summary
+    })
 }
 
 async fn run_data_retention_maintenance_inner(
@@ -2244,37 +2327,55 @@ async fn wake_retention_startup_backfill_tasks(
     Ok(woken)
 }
 
-async fn reset_retention_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+async fn reset_retention_raw_payload_metrics_inventory(state: &AppState) -> Result<bool> {
     loop {
-        let Some(admission) =
-            acquire_retention_write_admission("raw_metrics_inventory_reset").await
+        let Some(complete) = reset_retention_raw_payload_metrics_inventory_batch(state).await?
         else {
-            return Ok(());
+            return Ok(false);
         };
-        let candidate_limit =
-            retention_candidate_limit(&state.config, "raw_metrics_inventory_reset");
-        let execute_started = Instant::now();
-        let outcome =
-            reset_system_raw_payload_metrics_inventory_batch(state, candidate_limit).await?;
-        retention_record_commit!(
-            "raw_metrics_inventory_reset",
-            admission.admission_mode(),
-            outcome.removed_path_count.saturating_add(1),
-            outcome
-                .removed_path_count
-                .saturating_mul(128)
-                .saturating_add(256),
-            Duration::ZERO,
-            admission.lock_wait(),
-            execute_started.elapsed(),
-            Duration::ZERO,
-            admission.p1_waiter_count,
-            usize::from(!outcome.complete),
-        );
-        if outcome.complete {
-            return Ok(());
+        if complete {
+            return Ok(true);
         }
     }
+}
+
+async fn reset_retention_raw_payload_metrics_inventory_batch(
+    state: &AppState,
+) -> Result<Option<bool>> {
+    let Some(admission) = acquire_retention_write_admission("raw_metrics_inventory_reset").await
+    else {
+        return Ok(None);
+    };
+    let candidate_limit = retention_candidate_limit(&state.config, "raw_metrics_inventory_reset");
+    let execute_started = Instant::now();
+    let outcome = reset_system_raw_payload_metrics_inventory_batch(state, candidate_limit).await?;
+    retention_record_commit!(
+        "raw_metrics_inventory_reset",
+        admission.admission_mode(),
+        outcome.removed_path_count.saturating_add(1),
+        outcome
+            .removed_path_count
+            .saturating_mul(128)
+            .saturating_add(256),
+        Duration::ZERO,
+        admission.lock_wait(),
+        execute_started.elapsed(),
+        Duration::ZERO,
+        admission.p1_waiter_count,
+        usize::from(!outcome.complete),
+    );
+    Ok(Some(outcome.complete))
+}
+
+pub(crate) async fn resume_retention_raw_payload_metrics_inventory_reset(
+    state: &AppState,
+) -> Result<bool> {
+    if !crate::system_raw_payload_metrics_inventory_reset_pending(&state.pool).await? {
+        return Ok(true);
+    }
+    reset_retention_raw_payload_metrics_inventory_batch(state)
+        .await
+        .map(|outcome| outcome.unwrap_or(false))
 }
 
 pub(crate) fn locate_existing_proxy_raw_path(
@@ -3257,6 +3358,34 @@ mod retention_write_budget_tests {
             assert!(!budget.observe_commit(1, 256, Duration::from_millis(1)));
         }
         assert!(budget.candidate_limit(1_000) <= RETENTION_WRITE_MAX_ROWS);
+    }
+
+    #[test]
+    fn retention_health_records_a_budget_breach_for_the_next_production_candidate() {
+        const OPERATION: &str = "retention_test_adaptive_budget";
+        let mut health = RetentionWriteHealthState::default();
+        assert_eq!(
+            retention_adaptive_candidate_limit_from_state(&mut health, 64, OPERATION),
+            4
+        );
+        assert!(observe_retention_write_commit(
+            &mut health,
+            OPERATION,
+            "normal",
+            4,
+            4 * 256,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_millis(251),
+            Duration::ZERO,
+            0,
+            0,
+        ));
+        assert_eq!(
+            retention_adaptive_candidate_limit_from_state(&mut health, 64, OPERATION),
+            2
+        );
+        assert_eq!(health.snapshot.state, "degraded");
     }
 
     #[test]

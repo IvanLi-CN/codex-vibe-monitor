@@ -410,6 +410,23 @@ pub(crate) fn proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoordinato
 mod tests {
     use super::*;
 
+    async fn wait_for_waiters(
+        coordinator: &ProxySqliteWriteCoordinator,
+        predicate: impl Fn(&ProxySqliteWriteCoordinatorSnapshot) -> bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = coordinator.snapshot().await;
+                if predicate(&snapshot) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("coordinator waiters must register before the test proceeds");
+    }
+
     #[tokio::test]
     async fn p1_is_admitted_before_waiting_interactive_and_p2_work() {
         let coordinator = Arc::new(ProxySqliteWriteCoordinator {
@@ -518,6 +535,10 @@ mod tests {
             }
         });
 
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(!maintenance.is_finished());
         drop(active);
@@ -557,6 +578,10 @@ mod tests {
             async move { coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await }
         });
 
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1 && snapshot.p1_waiter_count == 1
+        })
+        .await;
         tokio::time::sleep(Duration::from_millis(30)).await;
         drop(active);
         let p1_permit = tokio::time::timeout(Duration::from_secs(1), p1)
@@ -588,6 +613,10 @@ mod tests {
                     .await
             }
         });
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
         tokio::time::sleep(Duration::from_millis(30)).await;
         drop(active);
         let mut permit = tokio::time::timeout(Duration::from_secs(1), maintenance)
@@ -621,7 +650,10 @@ mod tests {
                     .await
             }
         });
-        tokio::task::yield_now().await;
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
         assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
         maintenance.abort();
         let _ = maintenance.await;
@@ -647,7 +679,10 @@ mod tests {
                     .await
             }
         });
-        tokio::task::yield_now().await;
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
         assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
         cancel.cancel();
         assert!(

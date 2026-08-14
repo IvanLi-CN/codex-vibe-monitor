@@ -16,6 +16,8 @@ use crate::{
     INVOCATION_STATUS_WARNING_SUCCESS, format_naive, start_of_local_day,
 };
 
+static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) fn resolved_raw_path_candidates(
     path: &str,
     fallback_root: Option<&Path>,
@@ -254,9 +256,10 @@ pub(crate) fn archive_month_key_from_day_key(day_key: &str) -> Result<String> {
 
 pub(crate) fn retention_temp_suffix() -> String {
     format!(
-        "{}-{}",
+        "{}-{}-{}",
         std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        RETENTION_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
 
