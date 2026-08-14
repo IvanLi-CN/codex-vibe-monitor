@@ -35,6 +35,23 @@ if [ "$repo_root" = "$source_root" ]; then
   exit 0
 fi
 
+sync_lock_dir="$common_dir/worktree-bootstrap-sync.lock"
+lock_acquired=0
+lock_attempt=0
+while [ "$lock_attempt" -lt 200 ]; do
+  if mkdir "$sync_lock_dir" 2>/dev/null; then
+    lock_acquired=1
+    break
+  fi
+  lock_attempt=$((lock_attempt + 1))
+  sleep 0.05
+done
+if [ "$lock_acquired" -ne 1 ]; then
+  log "sync lock is busy; skipping resource sync"
+  exit 1
+fi
+trap 'rmdir "$sync_lock_dir" >/dev/null 2>&1 || true' EXIT
+
 copied_count=0
 missing_count=0
 

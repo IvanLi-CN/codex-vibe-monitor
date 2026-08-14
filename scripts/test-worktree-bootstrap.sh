@@ -211,9 +211,16 @@ mv "$hooks_dir/post-checkout.legacy" "$hooks_dir/post-checkout"
 assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor hooks:install'
 
 {
-  sed -n '1p' "$hooks_dir/post-checkout"
-  printf '%s\n' '# managed by codex-vibe-monitor hooks:install' '# legacy-wrapper-sentinel'
-  sed -n '2,$p' "$hooks_dir/post-checkout" | grep -v 'managed by codex-vibe-monitor hooks:install'
+  cat <<'EOF_LEGACY_TOP'
+#!/bin/sh
+# managed by codex-vibe-monitor hooks:install
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '')"
+[ -n "$repo_root" ] || exit 0
+runner="$repo_root/scripts/run-lefthook-hook.sh"
+[ -x "$runner" ] || exit 0
+exec "$runner" post-checkout "$@"
+# legacy-wrapper-sentinel
+EOF_LEGACY_TOP
 } > "$hooks_dir/post-checkout.legacy-top"
 mv "$hooks_dir/post-checkout.legacy-top" "$hooks_dir/post-checkout"
 (
@@ -289,7 +296,7 @@ assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
 preserve_repo="$tmp_dir/preserve-existing-hook"
 copy_repo "$repo_root" "$preserve_repo"
 init_repo "$preserve_repo"
-printf '#!/bin/sh\n# lefthook is intentionally disabled for this local hook\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
+printf '#!/bin/sh\n# lefthook is intentionally disabled for this local hook\n# managed by codex-vibe-monitor hooks:install\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
 chmod +x "$preserve_repo/.git/hooks/pre-commit"
 (cd "$preserve_repo" && bash scripts/install-lefthook-hooks.sh >/dev/null)
 assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
@@ -370,6 +377,37 @@ fi
 assert_file_contains "$sync_failure_output" 'resource sync failed'
 assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
 assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
+cp "$sync_script_backup" "$worktree_dir/scripts/sync-worktree-resources.sh"
+
+install_script_backup="$tmp_dir/install-lefthook-hooks.sh"
+cp "$worktree_dir/scripts/install-lefthook-hooks.sh" "$install_script_backup"
+cat > "$worktree_dir/scripts/install-lefthook-hooks.sh" <<'EOF_INSTALL_FAILURE'
+#!/usr/bin/env bash
+printf 'install failure sentinel\n' >&2
+exit 14
+EOF_INSTALL_FAILURE
+chmod +x "$worktree_dir/scripts/install-lefthook-hooks.sh"
+cat > "$worktree_dir/scripts/sync-worktree-resources.sh" <<'EOF_SYNC_MANUAL_FAILURE'
+#!/usr/bin/env bash
+printf 'sync failure sentinel\n' >&2
+exit 13
+EOF_SYNC_MANUAL_FAILURE
+chmod +x "$worktree_dir/scripts/sync-worktree-resources.sh"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+manual_early_failure_output="$tmp_dir/manual-early-failure-output.log"
+if (
+  cd "$worktree_dir"
+  bash scripts/worktree-bootstrap.sh > "$manual_early_failure_output" 2>&1
+); then
+  printf 'manual bootstrap must report installer and sync failures\n' >&2
+  exit 1
+fi
+assert_file_contains "$manual_early_failure_output" 'install failure sentinel'
+assert_file_contains "$manual_early_failure_output" 'sync failure sentinel'
+assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
+assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
+cp "$install_script_backup" "$worktree_dir/scripts/install-lefthook-hooks.sh"
 cp "$sync_script_backup" "$worktree_dir/scripts/sync-worktree-resources.sh"
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \

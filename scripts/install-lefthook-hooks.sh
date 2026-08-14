@@ -69,6 +69,12 @@ case "$hooks_dir" in
   /*) ;;
   *) hooks_dir="$repo_root/$hooks_dir" ;;
 esac
+hooks_parent="$(dirname "$hooks_dir")"
+resolved_hooks_parent="$(realpath "$hooks_parent" 2>/dev/null || true)"
+if [ -z "$resolved_hooks_parent" ] || [ "$resolved_hooks_parent" != "$hooks_parent" ]; then
+  printf '[worktree-bootstrap] hooks directory has a symlinked parent; leaving hooks untouched: %s\n' "$hooks_dir" >&2
+  exit 0
+fi
 if [ -L "$hooks_dir" ]; then
   printf '[worktree-bootstrap] hooks directory is a symlink; leaving hooks untouched: %s\n' "$hooks_dir" >&2
   exit 0
@@ -85,7 +91,14 @@ is_managed_hook() {
   fi
 
   if grep -Fq '# managed by codex-vibe-monitor hooks:install' "$hook_path" 2>/dev/null; then
-    return 0
+    last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' "$hook_path")"
+    if [ "$last_nonempty_line" = '# managed by codex-vibe-monitor hooks:install' ]; then
+      return 0
+    fi
+    if grep -Fq 'runner="$repo_root/scripts/run-lefthook-hook.sh"' "$hook_path" 2>/dev/null \
+      && grep -Fq 'exec "$runner"' "$hook_path" 2>/dev/null; then
+      return 0
+    fi
   fi
 
   if grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
