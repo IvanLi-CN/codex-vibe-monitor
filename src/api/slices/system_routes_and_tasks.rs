@@ -179,7 +179,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let writer_pressure_active = writer_accounting.p2_deferred_age_ms > 0
         || proxy_sqlite_write_coordinator.p1_waiter_count > 0
         || proxy_sqlite_write_coordinator.interactive_waiter_count > 0
-        || proxy_sqlite_write_coordinator.p2_waiter_count > 0;
+        || proxy_sqlite_write_coordinator.p2_waiter_count > 0
+        || proxy_sqlite_write_coordinator.maintenance_waiter_count > 0;
     let state = runtime_pressure_state(
         writer_accounting.state == "degraded",
         memory.pressure_level != "normal"
