@@ -85,8 +85,7 @@ is_managed_hook() {
   fi
 
   if grep -Fq '# managed by codex-vibe-monitor hooks:install' "$hook_path" 2>/dev/null; then
-    last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' "$hook_path")"
-    [ "$last_nonempty_line" = '# managed by codex-vibe-monitor hooks:install' ] && return 0
+    return 0
   fi
 
   if grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \

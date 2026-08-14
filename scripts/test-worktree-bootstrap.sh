@@ -210,6 +210,21 @@ mv "$hooks_dir/post-checkout.legacy" "$hooks_dir/post-checkout"
 )
 assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor hooks:install'
 
+{
+  sed -n '1p' "$hooks_dir/post-checkout"
+  printf '%s\n' '# managed by codex-vibe-monitor hooks:install' '# legacy-wrapper-sentinel'
+  sed -n '2,$p' "$hooks_dir/post-checkout" | grep -v 'managed by codex-vibe-monitor hooks:install'
+} > "$hooks_dir/post-checkout.legacy-top"
+mv "$hooks_dir/post-checkout.legacy-top" "$hooks_dir/post-checkout"
+(
+  cd "$fixture_repo"
+  "$bun_bin" run hooks:install >/dev/null
+)
+if grep -Fq '# legacy-wrapper-sentinel' "$hooks_dir/post-checkout"; then
+  printf 'hooks:install must replace legacy top-marker wrappers\n' >&2
+  exit 1
+fi
+
 worktree_dir="$tmp_dir/linked"
 git -C "$fixture_repo" worktree add --detach "$worktree_dir" HEAD >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
