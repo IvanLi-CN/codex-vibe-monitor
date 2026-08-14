@@ -60,7 +60,9 @@
     "Build Artifacts",
     "Review Policy Gate"
   ],
-  "informational_checks": [],
+  "informational_checks": [
+    "Backend Test Archive"
+  ],
   "waivers": [],
   "expected_pr_workflows": [
     {
@@ -75,6 +77,7 @@
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
+        "Backend Test Archive",
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
@@ -95,6 +98,7 @@
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
+        "Backend Test Archive",
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
