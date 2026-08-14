@@ -415,35 +415,19 @@ case "$sync_common_dir" in
   /*) ;;
   *) sync_common_dir="$worktree_dir/$sync_common_dir" ;;
 esac
-sync_lock_dir="$sync_common_dir/worktree-bootstrap-sync.lock"
-mkdir -p "$sync_lock_dir"
-printf '999999999\nstale-process-start\n' > "$sync_lock_dir/owner"
+sync_lock_path="$sync_common_dir/worktree-bootstrap-sync.lock"
+ln -s '999999999|stale-process-start' "$sync_lock_path"
 rm -f "$worktree_dir/.env.local"
 lock_recovery_output="$tmp_dir/lock-recovery-output.log"
 (
   cd "$worktree_dir"
   bash scripts/sync-worktree-resources.sh > "$lock_recovery_output" 2>&1
 )
-if [ -e "$sync_lock_dir" ]; then
+if [ -e "$sync_lock_path" ] || [ -L "$sync_lock_path" ]; then
   printf 'sync must clean up recovered lock directories\n' >&2
   exit 1
 fi
 assert_file_contains "$lock_recovery_output" 'copied .env.local'
-assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
-printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
-
-mkdir -p "$sync_lock_dir"
-rm -f "$worktree_dir/.env.local"
-empty_lock_recovery_output="$tmp_dir/empty-lock-recovery-output.log"
-(
-  cd "$worktree_dir"
-  bash scripts/sync-worktree-resources.sh > "$empty_lock_recovery_output" 2>&1
-)
-if [ -e "$sync_lock_dir" ]; then
-  printf 'sync must recover empty lock directories\n' >&2
-  exit 1
-fi
-assert_file_contains "$empty_lock_recovery_output" 'copied .env.local'
 assert_file_contains "$worktree_dir/.env.local" 'PRIMARY_SECRET=from-primary'
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 

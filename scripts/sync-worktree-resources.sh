@@ -35,18 +35,19 @@ if [ "$repo_root" = "$source_root" ]; then
   exit 0
 fi
 
-sync_lock_dir="$common_dir/worktree-bootstrap-sync.lock"
+sync_lock_path="$common_dir/worktree-bootstrap-sync.lock"
+lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
+lock_owner_token="$$|$lock_owner_start"
 lock_acquired=0
 lock_attempt=0
 while [ "$lock_attempt" -lt 200 ]; do
-  if mkdir "$sync_lock_dir" 2>/dev/null; then
-    lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-    printf '%s\n%s\n' "$$" "$lock_owner_start" > "$sync_lock_dir/owner"
+  if ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
     lock_acquired=1
     break
   fi
-  lock_owner="$(sed -n '1p' "$sync_lock_dir/owner" 2>/dev/null || true)"
-  lock_owner_start="$(sed -n '2p' "$sync_lock_dir/owner" 2>/dev/null || true)"
+  lock_token="$(readlink "$sync_lock_path" 2>/dev/null || true)"
+  lock_owner="${lock_token%%|*}"
+  lock_owner_start="${lock_token#*|}"
   lock_stale=0
   if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
     lock_stale=1
@@ -55,13 +56,10 @@ while [ "$lock_attempt" -lt 200 ]; do
     [ -n "$current_owner_start" ] && [ "$current_owner_start" != "$lock_owner_start" ] && lock_stale=1
   fi
   if [ "$lock_stale" -eq 1 ]; then
-    rm -f "$sync_lock_dir/owner"
-    rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
+    if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_token" ]; then
+      rm -f "$sync_lock_path"
+    fi
     continue
-  fi
-  if [ -z "$lock_owner" ] && [ "$lock_attempt" -ge 20 ]; then
-    rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
-    [ -e "$sync_lock_dir" ] || continue
   fi
   lock_attempt=$((lock_attempt + 1))
   sleep 0.05
@@ -71,8 +69,9 @@ if [ "$lock_acquired" -ne 1 ]; then
   exit 1
 fi
 release_sync_lock() {
-  rm -f "$sync_lock_dir/owner"
-  rmdir "$sync_lock_dir" >/dev/null 2>&1 || true
+  if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_owner_token" ]; then
+    rm -f "$sync_lock_path"
+  fi
 }
 trap release_sync_lock EXIT
 
