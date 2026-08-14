@@ -1311,6 +1311,8 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     }
                     Err(error) => {
                         warn!(error = %error, "failed to reset system raw metrics inventory after retention");
+                        invalidate_system_status_cache(state.as_ref()).await;
+                        return false;
                     }
                 }
             }
