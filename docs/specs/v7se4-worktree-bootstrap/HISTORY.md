@@ -7,6 +7,7 @@
 - 2026-03-14: archived spec 固定 shared hooks、`post-checkout`、`.env.local` copy-missing-only 与真实 linked worktree smoke。
 - 2026-05-15: 重新建立 canonical `docs/specs/` 主题 spec，并将依赖安装明确拆到显式 `worktree:setup`，避免 checkout hook 变成联网/重型动作。
 - 2026-07-24: 将依赖恢复扩展到 linked `post-checkout`；三项 Bun 安装和 `cargo fetch --locked` 逐项执行，自动路径告警后继续 checkout，手动 bootstrap 返回聚合失败码。
+- 2026-08-14: 将 hook 入口收敛为 Lefthook-only；标准 `post-checkout` hook 调用 runner，smoke 改为真实 Lefthook 触发并验证 Vitest sentinel、历史 revision no-op 与全局 Lefthook 前置条件。
 
 ## Key Reasons / Replacements
 

@@ -26,4 +26,4 @@ commit-msg:
 post-checkout:
   commands:
     worktree-bootstrap:
-      run: ./scripts/sync-worktree-resources.sh
+      run: '[ -x ./scripts/run-lefthook-hook.sh ] && ./scripts/run-lefthook-hook.sh post-checkout || true'
