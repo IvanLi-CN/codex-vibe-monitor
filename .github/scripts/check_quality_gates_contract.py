@@ -575,6 +575,26 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_no_if(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
         require_fail_closed(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
+        e2e_run_step = step_config(
+            e2e_producer_job,
+            "Run records overlay and Web Demo Playwright regression",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer",
+        )
+        e2e_run = str(e2e_run_step.get("run", ""))
+        require(
+            "records-filter-overlay.spec.ts" in e2e_run
+            and "demo-runtime.spec.ts" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run both Playwright regression specs",
+        )
+        require(
+            "--output=test-results/records-overlay" in e2e_run
+            and "--output=test-results/demo-runtime" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate both Playwright result directories",
+        )
+        require(
+            "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run Web Demo against its mock-only server",
+        )
         smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
         require(
             smoke_artifact_job.get("name") == "PR Smoke Artifact Producer"

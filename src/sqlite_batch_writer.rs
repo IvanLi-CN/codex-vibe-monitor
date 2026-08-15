@@ -5116,7 +5116,8 @@ mod tests {
         writer.shutdown_and_drain().await;
     }
 
-    #[tokio::test]
+    // The producer intentionally saturates the queue while the writer waits for its deadline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_p2_work_does_not_starve_its_scheduled_flush() {
         let pool = test_pool().await;
         let writer = SqliteBatchWriter::spawn(

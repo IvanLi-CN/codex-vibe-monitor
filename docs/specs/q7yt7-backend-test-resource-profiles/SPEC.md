@@ -57,7 +57,7 @@
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。
 - PR Docker smoke 必须只使用 CI 生成的当前 binary 与 web bundle 构建私有 runtime target，并继续运行真实容器 smoke；耗时的 binary、web bundle 与 Xray staging 可以由显式 auxiliary producer 生成，`Build Artifacts` 必须在 producer 失败时实际运行并失败，不得被标记为 skipped。该私有 target 的运行库必须兼容 host-built binary。生产 release workflow、默认 Docker target 和 release profile 不得改变。
 - test-only Cargo profile 可关闭 debug info；任何编译参数实验必须保留 source-key target cache 的依赖复用，并且不得进入 production release profile 或运行时配置面。
-- `Lint & Format Check`、`Repository Tooling Checks`、`Front-end Tests`、`Storybook Accessibility Tests`、`Docs & Web Demo Build`、`Records Overlay E2E` 和三个 backend profiles 均为 required checks；拆分只能改变资源边界，不得删除测试或断言。若完整 E2E 的稳定运行时间超过 required job 预算，可由显式 auxiliary producer 运行，required gate 必须以 `always()` 运行并在 producer 失败时显式失败；测试仍须在每个 PR 和 merge-group 执行。
+- `Lint & Format Check`、`Repository Tooling Checks`、`Front-end Tests`、`Storybook Accessibility Tests`、`Docs & Web Demo Build`、`Records Overlay E2E` 和三个 backend profiles 均为 required checks；拆分只能改变资源边界，不得删除测试或断言。若完整 E2E 的稳定运行时间超过 required job 预算，可由显式 auxiliary producer 运行，required gate 必须以 `always()` 运行并在 producer 失败时显式失败；producer 必须实际运行 Records Overlay 与 Web Demo 两套 spec，分别写入隔离结果目录，测试仍须在每个 PR 和 merge-group 执行。
 - retry/backoff、no-available-account wait 和 replay memory threshold 的测试加速只能经私有或 `cfg(test)` seam 注入；生产默认值、尝试次数/顺序、错误分类和运行时配置面不得变化。
 - Stateful 的候选线程数必须在完整 profile 的 `4`、`6`、`8` threads 各至少两次热运行中比较；选择最快档位 `10%` 以内的最低线程数。
 - 若 archive workflow 被提议保留，它必须作为不进入 branch protection 的显式 auxiliary producer；三个原有 backend required checks 必须完整回放同一 PR head 的 archive。只有同一 PR head 连续两次满足 Stateful `<= 390s`、所有 required job `<= 180s`，且 backend-related jobs 的总 runner 秒数相对 `1257s` 基线下降至少 `20%`（即 `<= 1005s`）时才可保留。
@@ -66,7 +66,7 @@
 
 - bucket 内文件与目录命名应按 failover、routing、archive、stats、maintenance、usage 等语义场景组织，而不是按提交历史或行数残留命名。
 - DB-only 测试应优先改为唯一命名的 in-memory SQLite；需要真实 archive/file-path/gzip/write-lock 语义的测试应固定留在 `archive_file_io` bucket。
-- Stateful 的非 migration in-memory schema fixture 可由 runner 从一次真实 `ensure_schema` 生成私有 file template，并通过 SQLite backup API 复制到每个唯一 shared-memory SQLite。Archive/File I/O 的普通 current-schema tests 可从同一类私有 template 创建唯一文件副本；采用前必须证明 schema/default-data parity、独立连接可见性、并发写安全和跨测试隔离。legacy migration、文件路径、gzip、文件损坏和 write-lock 测试始终使用真实 `ensure_schema` 和 file fixture。
+- Stateful 的非 migration in-memory schema fixture 可由 runner 从一次真实 `ensure_schema` 生成私有 file template，并通过 SQLite backup API 复制到每个唯一 shared-memory SQLite。Archive/File I/O 的普通 current-schema tests 可从同一类私有 template 创建唯一文件副本；采用前必须证明 schema/default-data parity、独立连接可见性、并发写安全和跨测试隔离。legacy migration、文件路径、gzip、文件损坏和 write-lock 测试始终使用真实 `ensure_schema` 和 file fixture；重复 schema DDL 的 fresh fixture 必须避免跨 pooled connection 执行。
 - 共享 harness、seed、archive helper、SQLite helper 应下沉到稳定测试支撑模块，避免跨大文件复制粘贴。
 
 ### COULD

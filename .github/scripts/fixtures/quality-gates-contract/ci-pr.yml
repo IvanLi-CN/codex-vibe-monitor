@@ -382,9 +382,40 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Run records overlay Playwright regression
+      - name: Start mock-only Web Demo server
         working-directory: web
-        run: bun run test:e2e -- records-filter-overlay.spec.ts
+        run: |
+          bun run demo:dev -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-demo.pid
+
+      - name: Wait for Web Demo readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60083/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Web Demo server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-demo.log || true
+          exit 1
+
+      - name: Run records overlay and Web Demo Playwright regression
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          records_status=0
+          demo_status=0
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
+            bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
+          records_pid=$!
+          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
+          demo_pid=$!
+          wait "$records_pid" || records_status=$?
+          wait "$demo_pid" || demo_status=$?
+          exit $(( records_status || demo_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -392,7 +423,8 @@ jobs:
         with:
           name: records-overlay-playwright-report
           path: |
-            web/playwright-report
+            web/playwright-report-records
+            web/playwright-report-demo
             web/test-results
           if-no-files-found: ignore
 
@@ -401,6 +433,9 @@ jobs:
         run: |
           if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
+          fi
+          if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
           fi
 
   records-overlay-e2e:

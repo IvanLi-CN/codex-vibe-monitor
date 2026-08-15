@@ -241,6 +241,28 @@ fi
 
 grep -q "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer" "$tmp_dir/e2e-producer.log"
 
+e2e_spec_repo="$tmp_dir/e2e-spec-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_spec_repo"
+python3 - <<'PY' "$e2e_spec_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "demo-runtime.spec.ts"
+if needle not in text:
+    raise SystemExit("failed to locate Web Demo Playwright spec")
+path.write_text(text.replace(needle, "demo-runtime-removed.spec.ts", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_spec_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-spec.log"; then
+  echo "expected missing Web Demo Playwright spec fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must run both Playwright regression specs" "$tmp_dir/e2e-spec.log"
+
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
 python3 - <<'PY' "$informational_repo"

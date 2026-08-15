@@ -2881,12 +2881,20 @@ pub(crate) async fn retention_test_pool_and_config(
 pub(crate) async fn retention_fresh_schema_test_pool_and_config(
     prefix: &str,
 ) -> (SqlitePool, AppConfig, PathBuf) {
-    retention_test_pool_and_config_from_template(prefix, None).await
+    retention_test_pool_and_config_with_connections(prefix, None, 1).await
 }
 
 async fn retention_test_pool_and_config_from_template(
     prefix: &str,
     schema_template: Option<&Path>,
+) -> (SqlitePool, AppConfig, PathBuf) {
+    retention_test_pool_and_config_with_connections(prefix, schema_template, 2).await
+}
+
+async fn retention_test_pool_and_config_with_connections(
+    prefix: &str,
+    schema_template: Option<&Path>,
+    max_connections: u32,
 ) -> (SqlitePool, AppConfig, PathBuf) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("codex-vibe-monitor.db");
@@ -2903,7 +2911,7 @@ async fn retention_test_pool_and_config_from_template(
     }
     let db_url = test_sqlite_url_for_path(&db_path);
     let pool = SqlitePoolOptions::new()
-        .max_connections(2)
+        .max_connections(max_connections)
         .connect(&db_url)
         .await
         .expect("connect retention sqlite");
@@ -2958,6 +2966,19 @@ async fn retention_file_fixture_copies_current_schema_template_without_leaking_m
     cleanup_temp_test_dir(&first_dir);
     cleanup_temp_test_dir(&second_dir);
     cleanup_temp_test_dir(&template_dir);
+}
+
+#[tokio::test]
+async fn retention_fresh_schema_fixture_reapplies_schema_without_pooled_ddl_races() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-fresh-schema-reapply").await;
+
+    ensure_schema(&pool)
+        .await
+        .expect("reapply fresh retention schema");
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 pub(crate) async fn retention_memory_test_pool_and_config(
