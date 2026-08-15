@@ -178,7 +178,7 @@
 
 ## Visual Evidence
 
-- SHA `dc5a59fe`
+- SHA `b37da68e`
   source_type: `storybook_canvas`
   target_program: `mock-only`
   capture_scope: `element`
@@ -193,7 +193,7 @@
   evidence_note: `验证四层累计面积、右侧 0–100% 轴、10 分钟平滑命中率折线与 1 小时平滑参考线，以及 tooltip/图例按缓存输入、缓存写入、输出、思考、总计、10 分钟缓存命中率、1 小时缓存命中率固定排序。`
   PR: include
   ![Tokens breakdown desktop 1440 dark](./assets/tokens-breakdown-desktop1440-dark.png)
-- SHA `dc5a59fe`
+- SHA `b37da68e`
   source_type: `storybook_canvas`
   target_program: `mock-only`
   capture_scope: `element`
