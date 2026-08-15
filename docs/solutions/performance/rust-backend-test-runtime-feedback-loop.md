@@ -34,8 +34,8 @@ related_specs:
 - 先分离冷编译、热 profile、单 fixture 初始化、真实等待和线程并发成本。热数据只能帮助定位测试执行，不能替代 CI critical path 验收。
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
 - PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。最终 PR 指标是每个 required job 的 job wall time 在同一 head 的冷/热两轮都 `<= 180s`，并使 required runner 总秒数至少下降 `20%`。
-- 分离 Cargo registry/git cache 与 target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，clippy 与 nextest 使用独立 target namespace，并保留 lockfile-only restore prefix。首次迁移 namespace 时可以将旧 lockfile-only cache 作为只读 ancestor seed，随后只写入新的 source-key。
-- `profile.test` 可关闭 debug information；PR smoke image 使用专用低优化 `ci-smoke` profile，生产 release profile 不得借此改变。
+- 分离 Cargo registry/git cache 与 target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，clippy 与 nextest 使用独立 target namespace，并保留 lockfile-only restore prefix。首次迁移 namespace 时，ancestor cache 的恢复路径必须与旧缓存完全一致，否则 Actions cache 的版本校验会拒绝解包；随后只写入新的 source-key。
+- PR smoke image 可以把当前 debug binary 与 web bundle 在 host 侧并行构建，再封装到私有 runtime target；生产 release profile 和默认 Docker target 不得借此改变。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
 - 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `134.108s` / `83.952s`，6 threads 为 `63.593s` / `62.874s`，8 threads 为 `57.287s` / `67.727s`；8 的平均值最快，但 6 在线 10% 内，因此 runner 选择 6。
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。

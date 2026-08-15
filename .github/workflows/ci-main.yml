@@ -38,8 +38,18 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -48,20 +58,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo clippy artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Cargo clippy artifacts
+        if: ${{ always() && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -330,10 +356,10 @@ jobs:
         run: |
           set -euo pipefail
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
-            bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts &
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --output=test-results/demo-runtime demo-runtime.spec.ts &
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts &
           demo_pid=$!
           records_status=0
           demo_status=0
@@ -380,8 +406,18 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -390,20 +426,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Cargo test artifacts
+        if: ${{ always() && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   backend-tests-stateful-sqlite:
     name: Backend Tests (Stateful SQLite)
@@ -421,8 +473,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -431,14 +492,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -462,8 +522,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -472,14 +541,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest

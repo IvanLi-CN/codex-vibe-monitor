@@ -46,8 +46,18 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -56,20 +66,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo clippy artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Cargo clippy artifacts
+        if: ${{ always() && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -412,10 +438,10 @@ jobs:
         run: |
           set -euo pipefail
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
-            bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts &
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --output=test-results/demo-runtime demo-runtime.spec.ts &
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts &
           demo_pid=$!
           records_status=0
           demo_status=0
@@ -462,8 +488,18 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -472,20 +508,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Cargo test artifacts
+        if: ${{ always() && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   backend-tests-stateful-sqlite:
     name: Backend Tests (Stateful SQLite)
@@ -503,8 +555,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -513,14 +574,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -544,8 +604,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -554,14 +623,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cache Cargo test artifacts
-        uses: actions/cache@v5
+      - name: Restore Cargo test artifacts
+        uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -578,6 +646,59 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Restore legacy Cargo workspace cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build PR smoke artifacts
+        shell: bash
+        env:
+          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          rm -rf .ci-smoke
+          mkdir -p .ci-smoke
+          cargo build --locked > /tmp/codex-vibe-monitor-smoke-rust.log 2>&1 &
+          rust_pid=$!
+          (
+            cd web
+            VITE_APP_VERSION="$APP_EFFECTIVE_VERSION" bun run build
+          ) > /tmp/codex-vibe-monitor-smoke-web.log 2>&1 &
+          web_pid=$!
+          rust_status=0
+          web_status=0
+          wait "$rust_pid" || rust_status=$?
+          wait "$web_pid" || web_status=$?
+          if [[ "$rust_status" -ne 0 || "$web_status" -ne 0 ]]; then
+            cat /tmp/codex-vibe-monitor-smoke-rust.log || true
+            cat /tmp/codex-vibe-monitor-smoke-web.log || true
+            exit 1
+          fi
+          install -m 0755 target/debug/codex-vibe-monitor .ci-smoke/codex-vibe-monitor
+          cp -R web/dist .ci-smoke/web
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -586,14 +707,14 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: ci-smoke-runtime
           load: true
           platforms: ${{ env.PLATFORM_AMD64 }}
           tags: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             APP_EFFECTIVE_VERSION=pr-${{ github.run_id }}-${{ github.run_attempt }}
-            CARGO_BUILD_PROFILE=ci-smoke
           cache-from: type=gha,scope=pr-smoke-amd64
-          cache-to: type=gha,mode=max,scope=pr-smoke-amd64
+          cache-to: type=gha,mode=min,scope=pr-smoke-runtime-amd64
 
       - name: Smoke test image (linux/amd64)
         shell: bash

@@ -54,8 +54,8 @@
 - `run-backend-tests.sh` 必须提供稳定 `--profile` 入口，供本地与 CI 复用同一分组真相。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
 - PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 与第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
-- Cargo registry/git 与 `target` cache 必须分离；target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移到新的 target namespace 时可只读恢复既有 lockfile-only cache 作为 ancestor seed，但后续写入必须回到分离的 source-key，避免 clippy 和 nextest 复用不可变陈旧 target。
-- `profile.test` 可以关闭 debug information；PR Docker smoke 只能使用私有 `ci-smoke` Cargo profile 的快速编译参数。生产 release workflow 和 release profile 不得改变。
+- Cargo registry/git 与 `target` cache 必须分离；target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移到新的 target namespace 时可通过原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed，后续写入必须回到分离的 source-key，避免 clippy 和 nextest 复用不可变陈旧 target。
+- PR Docker smoke 必须只使用 CI 生成的当前 binary 与 web bundle 构建私有 runtime target，并继续运行真实容器 smoke；生产 release workflow、默认 Docker target 和 release profile 不得改变。
 - `Lint & Format Check`、`Repository Tooling Checks`、`Front-end Tests`、`Storybook Accessibility Tests`、`Docs & Web Demo Build`、`Records Overlay E2E` 和三个 backend profiles 均为 required checks；拆分只能改变资源边界，不得删除测试或断言。
 - retry/backoff、no-available-account wait 和 replay memory threshold 的测试加速只能经私有或 `cfg(test)` seam 注入；生产默认值、尝试次数/顺序、错误分类和运行时配置面不得变化。
 - Stateful 的候选线程数必须在完整 profile 的 `4`、`6`、`8` threads 各至少两次热运行中比较；选择最快档位 `10%` 以内的最低线程数。
