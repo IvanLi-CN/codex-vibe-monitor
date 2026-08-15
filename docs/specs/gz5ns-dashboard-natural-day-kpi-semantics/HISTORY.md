@@ -7,6 +7,8 @@
 
 ## Decision Trace
 
+- 2026-08-15：Tokens 图从单层累计总量升级为四个互斥累计分量；`outputTokens` 中的 reasoning 必须扣除后再作为可见输出，避免双计。今日同时展示最近 10 分钟命中率与 1 小时参考线，均按 `ΣcacheInputTokens / ΣtotalTokens` Token 加权；无流量窗口断线，旧快照缺少分量时整图回退单层总量。
+
 - `进行中对话 -> 日均` 的分母固定为有至少一个去重 `prompt_cache_key` 的完整活动分钟，不能使用完整分钟数或任何展示 bucket 数。这样切换分钟、小时、日展示粒度不会改变同一底层时间范围的均值。
 - `activeMinuteCount` 独立暴露为 API 的 nullable 分母；历史覆盖无法验证时，均值和分母同时不可用，避免以 key 的首末时间推测活动分布。
 - 2026-07-27：确认 Dashboard 自然日 KPI 的升级后漏算不是定价、cost 或原始 invocation 被改写，而是账号活动 v2 的 false coverage marker 跳过 exact fallback。实现改为 repair generation + per-bucket completion marker，并保留通用 summary/rollup 作为对账基准。
