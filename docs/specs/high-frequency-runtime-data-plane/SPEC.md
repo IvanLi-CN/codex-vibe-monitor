@@ -34,6 +34,15 @@
 - terminal durable 事实继续由 `TerminalProjectionHub` 与 P1 journal 管理；两个 Hub 共享 ingress 事件标识，不共享可变 ownership 或回收 cursor。
 - startup warm restore、`60s` reconcile 与 cold fallback 可访问 persistence；已有 last-good 时，订阅请求链不得同步回源数据库。
 
+### Account Window Storage Boundary
+
+`/api/pool/upstream-accounts/window-usage` is a high-frequency read path and uses the account-window StoragePlane rather than calling the pool directly from the handler. The StoragePlane owns selection coalescing, bounded LRU lifecycle, rollup coverage, exact boundary/live tails, and the last-good/preparing state machine.
+
+- New terminal writes populate nullable `codex_invocations.upstream_account_id`; legacy rows are filled by a pressure-gated, cursor-ordered backfill.
+- Complete minute/hour rollups are read first. Only partial boundaries, uncovered live buckets, and a cursor-bounded live tail may use exact invocation rows. A missing archive coverage bucket returns `202` preparing instead of opening a full archive/raw scan.
+- A cold selection without a complete baseline returns `{items: [], readiness: "preparing", retryAfterMs}` with `Retry-After: 1`; a last-good response is usable for at most 60 seconds.
+- The account-window selection has a bounded 128-entry LRU and a 10-minute idle eviction. This bounds coordination state without imposing a data TTL on a ready response.
+
 ### Delivery
 
 - `TopicMaterializer` 只接受 typed base 与其依赖切片的 revision tuple，并生成一个 `Arc<SerializedTopicFrame>`。frame 包含 envelope bytes、cursor、schema epoch、fingerprint 与 topic metadata。
@@ -62,6 +71,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
+- `runtimePressureHealth.storagePlane` is additive and reports account-window selection/build/coverage health without adding a status-page SQL query.
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health

@@ -66,6 +66,7 @@ import {
 const LOAD_LIST_FAILED = Symbol("load-list-failed");
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {};
 export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
+const WINDOW_USAGE_RETRY_MAX_MS = 5_000;
 
 export type UpstreamAccountsListFreshness = "fresh" | "stale" | "missing" | "deferred";
 export type UpstreamAccountsListLoadingState =
@@ -206,6 +207,9 @@ export function useUpstreamAccounts(
   const [windowUsageByAccount, setWindowUsageByAccount] = useState<
     Record<number, HydratedWindowUsage>
   >({});
+  const windowUsageRetryTimerRef = useRef<number | null>(null);
+  const windowUsageRetryDelayRef = useRef(1_000);
+  const windowUsageSelectionKeyRef = useRef(currentListQueryKey);
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
   const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(
     null,
@@ -641,6 +645,19 @@ export function useUpstreamAccounts(
       if (!response || !Array.isArray(response.items)) {
         return;
       }
+      if (response.readiness === "preparing") {
+        const delay = Math.max(1_000, response.retryAfterMs ?? windowUsageRetryDelayRef.current);
+        windowUsageRetryDelayRef.current = Math.min(delay * 2, WINDOW_USAGE_RETRY_MAX_MS);
+        if (windowUsageRetryTimerRef.current != null) {
+          window.clearTimeout(windowUsageRetryTimerRef.current);
+        }
+        windowUsageRetryTimerRef.current = window.setTimeout(() => {
+          windowUsageRetryTimerRef.current = null;
+          void hydrateWindowUsage(normalizedAccountIds);
+        }, delay);
+        return;
+      }
+      windowUsageRetryDelayRef.current = 1_000;
 
       const usageEntries = Object.fromEntries(
         response.items.map((item) => [
@@ -688,6 +705,28 @@ export function useUpstreamAccounts(
       }
     }
   }, []);
+
+  useEffect(
+    () => () => {
+      if (windowUsageRetryTimerRef.current != null) {
+        window.clearTimeout(windowUsageRetryTimerRef.current);
+        windowUsageRetryTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (windowUsageSelectionKeyRef.current === currentListQueryKey) {
+      return;
+    }
+    windowUsageSelectionKeyRef.current = currentListQueryKey;
+    if (windowUsageRetryTimerRef.current != null) {
+      window.clearTimeout(windowUsageRetryTimerRef.current);
+      windowUsageRetryTimerRef.current = null;
+    }
+    windowUsageRetryDelayRef.current = 1_000;
+  }, [currentListQueryKey]);
 
   useEffect(() => {
     if (query == null || listDataQueryKey !== currentListQueryKey) {

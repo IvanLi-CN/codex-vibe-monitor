@@ -13,6 +13,7 @@ mod maintenance_dispatch;
 )]
 mod oauth_sessions_callbacks;
 mod routing;
+mod storage_plane;
 mod sync;
 #[cfg(test)]
 mod tests;
@@ -24,4 +25,5 @@ pub(crate) use imports_jobs_sse::*;
 pub(crate) use maintenance_dispatch::*;
 pub(crate) use oauth_sessions_callbacks::*;
 pub(crate) use routing::*;
+pub(crate) use storage_plane::*;
 pub(crate) use sync::*;

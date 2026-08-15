@@ -11,6 +11,8 @@
 
 - P2 派生写从 P1 的 20ms ticker 中分离，使用 250ms 固定合并、pressure deadline 与分类 lock retry；Prompt Cache window topic 同步改为 500ms active projection，通用 Records 不再触发整窗 SQLite hydrate。
 
+- Account window usage now has a bounded StoragePlane: terminal rows carry a nullable structured account id, rollup and exact boundary reads are coalesced per selection, and uncovered archive buckets report preparation instead of triggering a full-range fallback.
+
 - 统一代理 terminal、attempt、route 与派生写的 SQLite admission，删除 P1 retained batch 固定 250ms 重试语义，并限制 P2 rollup 单事务工作量。
 
 - 高频路径的边界由类型依赖和计数测试约束，不再仅依赖“memory-first”命名或日志字段。

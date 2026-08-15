@@ -27,6 +27,7 @@
 2. 若 deploy / upgrade 后某些 `(account_id, bucket_start_epoch)` 还没被 hourly 覆盖，只回补这些未覆盖 bucket。
 3. retention 边界 partial bucket 再回读 raw rows。
 4. raw fallback 必须按 `(account_id, bucket_epoch)` 去重，保证已有 hourly bucket 不会被重复累计。
+5. minute rollup 只能覆盖它实际存在的 `(account_id, minute)`；不能因为一个分钟行存在就把整小时标为 covered。小时 rollup、分钟行与 exact fallback 必须以每分钟覆盖集合排除重复。
 
 ### 3. 为什么不要在列表接口里算 usage
 
@@ -48,6 +49,7 @@
 - stale hydrate 请求如果在 `finally` 里直接清空 pending ids，会把更新一轮的真实请求误判成“已完成”。
 - SQLite 会按结果值保留整数类型；映射到 Rust `f64` 的 `SUM` / `COALESCE` 输出应显式 `CAST(... AS REAL)`，否则整型测试数据会在 SQLx 解码阶段失败。
 - 列表 query key 变化时如果不清空 hydrate generation，旧 usage 响应会覆盖新筛选结果。
+- archive coverage 不可用时，返回明确 `202 preparing` 并由客户端重试。把该状态回退为全窗 archive 打开会把恢复缺口变成持续的交互读放大。
 
 ## 何时不适用
 

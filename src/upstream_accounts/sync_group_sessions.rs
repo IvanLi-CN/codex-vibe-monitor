@@ -84,19 +84,12 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         return Ok(Vec::new());
     }
 
-    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             id,
             occurred_at,
-        "#,
-    );
-    query
-        .push(upstream_account_id_sql)
-        .push(
-            r#"
-            AS upstream_account_id,
+            upstream_account_id,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -105,13 +98,12 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         FROM codex_invocations
         WHERE occurred_at >=
         "#,
-        )
+    );
+    query
         .push_bind(start_at)
-        .push(" AND occurred_at <= ")
+        .push(" AND occurred_at < ")
         .push_bind(end_at)
-        .push(" AND ")
-        .push(upstream_account_id_sql)
-        .push(" IS NOT NULL");
+        .push(" AND upstream_account_id IS NOT NULL");
 
     if let Some(end_before) = end_before {
         query.push(" AND occurred_at < ").push_bind(end_before);
@@ -123,10 +115,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         query.push(" AND id <= ").push_bind(max_id_inclusive.max(0));
     }
 
-    query
-        .push(" AND ")
-        .push(upstream_account_id_sql)
-        .push(" IN (");
+    query.push(" AND upstream_account_id IN (");
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
@@ -156,17 +145,12 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
 
     let mut sorted_bucket_epochs = bucket_epochs.iter().copied().collect::<Vec<_>>();
     sorted_bucket_epochs.sort_unstable();
-    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             id,
             occurred_at,
-        "#,
-    );
-    query.push(upstream_account_id_sql).push(
-        r#"
-            AS upstream_account_id,
+            upstream_account_id,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -214,12 +198,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
             ))
             .push(")");
     }
-    query
-        .push(") AND ")
-        .push(upstream_account_id_sql)
-        .push(" IS NOT NULL AND ")
-        .push(upstream_account_id_sql)
-        .push(" IN (");
+    query.push(") AND upstream_account_id IS NOT NULL AND upstream_account_id IN (");
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
@@ -556,13 +535,13 @@ pub(crate) fn fold_account_window_usage_rows(
         let entry = usage.entry(row.upstream_account_id).or_default();
         if plan.primary.as_ref().is_some_and(|range| {
             row.occurred_at.as_str() >= range.start_at.as_str()
-                && row.occurred_at.as_str() <= range.end_at.as_str()
+                && row.occurred_at.as_str() < range.end_at.as_str()
         }) {
             entry.primary.add_row(&row);
         }
         if plan.secondary.as_ref().is_some_and(|range| {
             row.occurred_at.as_str() >= range.start_at.as_str()
-                && row.occurred_at.as_str() <= range.end_at.as_str()
+                && row.occurred_at.as_str() < range.end_at.as_str()
         }) {
             entry.secondary.add_row(&row);
         }
@@ -647,9 +626,11 @@ pub(crate) fn collect_account_window_hourly_coverage_keys(
 pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     rows: Vec<AccountWindowUsageRow>,
     partial_minute_bucket_epochs: &HashSet<i64>,
+    include_partial_minute_rows: bool,
     partial_bucket_epochs: &HashSet<i64>,
     missing_full_hour_bucket_epochs: &HashSet<i64>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
+    covered_minute_keys: &HashSet<(i64, i64)>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -658,6 +639,14 @@ pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     let mut filtered_rows = Vec::with_capacity(rows.len());
     for row in rows {
         let minute_bucket_epoch = invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)?;
+        if covered_minute_keys.contains(&(row.upstream_account_id, minute_bucket_epoch)) {
+            continue;
+        }
+        if partial_minute_bucket_epochs.contains(&minute_bucket_epoch)
+            && !include_partial_minute_rows
+        {
+            continue;
+        }
         let bucket_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
         let include = if partial_minute_bucket_epochs.contains(&minute_bucket_epoch) {
             true

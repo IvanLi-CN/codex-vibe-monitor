@@ -1,6 +1,24 @@
 use super::*;
 use serde_json::json;
 
+async fn load_window_usage_response(
+    state: Arc<AppState>,
+    account_ids: Vec<i64>,
+) -> (StatusCode, serde_json::Value) {
+    let response = get_upstream_account_window_usage(
+        State(state),
+        Json(UpstreamAccountWindowUsageRequest { account_ids }),
+    )
+    .await
+    .expect("load batch actual usage");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read batch usage response");
+    let payload = serde_json::from_slice(&body).expect("decode batch usage response");
+    (status, payload)
+}
+
 #[tokio::test]
 async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -3689,8 +3707,7 @@ async fn enrich_window_actual_usage_for_summaries_uses_matching_stale_reset_wind
 }
 
 #[tokio::test]
-async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usage_past_retention_cutoff()
- {
+async fn enrich_window_actual_usage_for_summaries_returns_preparing_for_archive_boundary_hole() {
     let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     config.invocation_max_days = 1;
     config.archive_dir = PathBuf::from(format!(
@@ -3770,21 +3787,19 @@ async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usa
     .expect("insert materialized archived usage hourly row");
 
     let mut items = vec![summary];
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
         .await
-        .expect("enrich actual usage with materialized archive usage");
+        .expect("build archive boundary usage");
 
-    let usage = items[0]
-        .primary_window
-        .as_ref()
-        .and_then(|window| window.actual_usage)
-        .expect("primary actual usage");
-    assert_eq!(usage.request_count, 2);
-    assert_eq!(usage.total_tokens, 5000);
-    assert_eq!(usage.input_tokens, 3000);
-    assert_eq!(usage.output_tokens, 1500);
-    assert_eq!(usage.cache_input_tokens, 500);
-    assert_cost_close(usage.total_cost, 0.05);
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Preparing);
+    assert!(telemetry.coverage_hole_bucket_count > 0);
+    assert!(
+        items[0]
+            .primary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -3955,15 +3970,8 @@ async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
     )
     .await;
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
         .as_array()
         .and_then(|items| items.first())
@@ -4004,15 +4012,8 @@ async fn get_upstream_account_window_usage_does_not_double_count_partial_live_ro
     )
     .await;
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage without cursor");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
         .as_array()
         .and_then(|items| items.first())
@@ -4073,15 +4074,8 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
     .await
     .expect("mark live rollup cursor without backfill");
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch usage with missing hourly buckets");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
         .as_array()
         .and_then(|items| items.first())
@@ -4145,15 +4139,8 @@ async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_m
     )
     .await;
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage without live cursor");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
         .as_array()
         .and_then(|items| items.first())
@@ -4282,15 +4269,8 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
     .await
     .expect("mark live rollup cursor");
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage with partial minute boundary");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
         .as_array()
         .and_then(|items| items.first())
@@ -4376,28 +4356,31 @@ async fn get_upstream_account_window_usage_includes_archived_partial_bucket_befo
     )
     .await;
 
-    let Json(response) = get_upstream_account_window_usage(
+    let response = get_upstream_account_window_usage(
         State(state),
         Json(UpstreamAccountWindowUsageRequest {
             account_ids: vec![account_id],
         }),
     )
     .await
-    .expect("load batch actual usage across retention cutoff");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
-
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 3);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 7900);
-    assert_eq!(item["secondaryActualUsage"]["inputTokens"], 4900);
-    assert_eq!(item["secondaryActualUsage"]["outputTokens"], 2300);
-    assert_eq!(item["secondaryActualUsage"]["cacheInputTokens"], 700);
+    .expect("load archive-boundary usage response");
+    let status = response.status();
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read archive-boundary usage response");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).expect("decode archive-boundary usage response");
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
+    assert_eq!(payload["retryAfterMs"], 1000);
+    assert!(payload["items"].as_array().is_some_and(Vec::is_empty));
 }
 
 #[tokio::test]
@@ -4544,7 +4527,7 @@ fn round_millis(value_ms: f64) -> f64 {
 
 #[tokio::test]
 #[ignore = "manual benchmark: seeds a prod-sized fixture and prints latency samples"]
-async fn benchmark_upstream_account_roster_prod_sized() {
+async fn benchmark_upstream_account_window_usage_42_accounts() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
 
@@ -4557,8 +4540,8 @@ async fn benchmark_upstream_account_roster_prod_sized() {
 
     let captured_at = format_utc_iso(Utc::now());
     let now = Utc::now();
-    let mut account_ids = Vec::with_capacity(159);
-    for index in 0..159_usize {
+    let mut account_ids = Vec::with_capacity(42);
+    for index in 0..42_usize {
         let display_name = format!("Benchmark Account {index:03}");
         let account_id = insert_api_key_account(&state.pool, &display_name).await;
         if index % 11 != 0 {
@@ -4624,17 +4607,9 @@ async fn benchmark_upstream_account_roster_prod_sized() {
         ..Default::default()
     };
 
-    let Json(flat_response) = list_upstream_accounts_from_params(state.clone(), flat_query())
-        .await
-        .expect("load flat roster for benchmark batch ids");
-    let batch_account_ids = flat_response
-        .items
-        .iter()
-        .map(|item| item.id)
-        .take(20)
-        .collect::<Vec<_>>();
-    assert_eq!(account_ids.len(), 159);
-    assert_eq!(batch_account_ids.len(), 20);
+    let batch_account_ids = account_ids.clone();
+    assert_eq!(account_ids.len(), 42);
+    assert_eq!(batch_account_ids.len(), 42);
 
     for _ in 0..5 {
         let _ = list_upstream_accounts_from_params(state.clone(), flat_query())

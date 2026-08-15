@@ -33,6 +33,8 @@ related_specs:
 - 为账号详情统计建立 minute/hourly 两层 read-model，并通过 invocation 写入、archive replay 与 startup bootstrap 统一维护。
 - summary / timeseries 只读账号 read-model；raw invocations 只用于 boundary 精确补齐和 cursor 之后的有界 live tail。
 - `window-usage` 优先读 minute read-model，再合并缺失 hourly rows 与 live tail，不再按账号窗口常态化在线重算。
+- window usage handler 通过 bounded StoragePlane 协调同参读取；selection 以 LRU 管理，不把缓存 TTL 当成统计正确性。冷 baseline 或 archive coverage hole 显式返回 `202 preparing`，已有 last-good 最多服务 60 秒。
+- `codex_invocations.upstream_account_id` 是新 terminal 的结构化账号维度，并由 partial index 支持 bounded exact tail；旧 payload 归属只允许 pressure-gated 小批回填，不能继续作为健康查询过滤条件。
 - 前端只为当前选中账号 hydrate `window-usage`，避免 roster / SSE / 列表刷新批量打后端。
 - invocation `records` SSE 不得直接驱动账号池 roster 或 `window-usage` refresh；这些刷新会把“记录实时性”误升级成重型统计重算。
 - 详情抽屉只在真正需要时才启用重统计上下文：`routing` 才加载 sticky conversation 统计，`edit` / `routing` 才补拉 roster 上下文，避免 `overview` / `records` 首开把无关重查询叠上去。
@@ -57,6 +59,7 @@ related_specs:
 - 账号作用域的近期尝试列表可以按 `(upstream_account_id, occurred_at)` 索引读取并只在 `SELECT` 中从 invocation JSON payload 投影展示字段；对旧 SQLite 数据库，不能把尚未存在的可选列放进查询，即使该列只用于显示模型名称。
 - 若某条 SSE 只携带 invocation records，它最多只能更新 records/live 表层；不能反向触发 roster、summary、timeseries 或 `window-usage` 这类重型面。
 - 若 roster 仍需展示最新 usage/plan 快照，优先复用主表或按账号索引直取最新样本；不要再回到 `pool_upstream_account_limit_samples` 的窗口函数全表排名路径。
+- minute/hourly rollup 的覆盖粒度必须与回退粒度一致。单个 minute row 只排除同一分钟的 exact row；只有 60 个完整 minute buckets 才能替代一个 hourly bucket。
 
 ## References
 

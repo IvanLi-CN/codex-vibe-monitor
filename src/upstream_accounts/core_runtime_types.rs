@@ -201,6 +201,7 @@ pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
     pub(crate) bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
     pub(crate) bulk_sync_creation: Arc<Mutex<()>>,
+    pub(crate) window_usage_storage: Arc<AccountWindowStoragePlane>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,6 +353,7 @@ impl UpstreamAccountsRuntime {
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_creation: Arc::new(Mutex::new(())),
+            window_usage_storage: Arc::new(AccountWindowStoragePlane::default()),
         })
     }
 
@@ -388,6 +390,7 @@ impl UpstreamAccountsRuntime {
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_creation: Arc::new(Mutex::new(())),
+            window_usage_storage: Arc::new(AccountWindowStoragePlane::default()),
         }
     }
 
@@ -995,6 +998,14 @@ pub(crate) struct UpstreamAccountWindowUsageItem {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountWindowUsageResponse {
     pub(crate) items: Vec<UpstreamAccountWindowUsageItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountWindowUsagePreparingResponse {
+    pub(crate) items: Vec<UpstreamAccountWindowUsageItem>,
+    pub(crate) readiness: &'static str,
+    pub(crate) retry_after_ms: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -68,6 +68,7 @@ flowchart LR
 - SQLite rollup 保存长期统计、账号活动、usage breakdown、timeseries 与 parallel-work 的可恢复聚合；archive 承担超出 live retention 的历史详情。
 - 历史 HTTP API 从 rollup、archive 与 exact boundary 查询构建；不得把历史重建工作放回 Dashboard 当前态热路径。
 - 价格、归属、archive rewrite/restore 等修正通过目标桶 repair 收敛，而不是周期性重扫宽时间窗。
+- 账号窗口 hydrate 使用私有 StoragePlane。新 terminal 将账号归属持久化到 `codex_invocations.upstream_account_id`；读侧先合并 minute/hourly rollup，再读取范围边界、明确 coverage hole 或 cursor 后 tail。无准确 baseline 时显式返回 `202 preparing`，不能以全窗 raw/archive 读取换取表面的成功响应。
 
 ## 6. 健康与回退
 
@@ -75,6 +76,7 @@ flowchart LR
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
 - `PROXY_SQLITE_WRITE_COORDINATOR_MODE=coordinated|legacy` 控制代理热写协调器；默认 `coordinated`，legacy 只保留一个发布周期用于显式回滚。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。
+- `runtimePressureHealth.storagePlane` 仅从内存 counters 显示账号窗口的 selection、singleflight、coverage、backfill 与 last-good 健康；状态页不得因该诊断新增 SQL。
 - accounting violation、live-path DB read、whole-body materialization、cadence miss、subscription lag/skipped 或重复 serialization 必须改变健康状态并可被结构化 telemetry 判责。
 - 运行镜像默认 `MALLOC_ARENA_MAX=8`，部署可显式覆盖；该设置只限制 glibc arena 保留，不改变业务并发。
 

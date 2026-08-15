@@ -739,7 +739,7 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
 pub(crate) async fn get_upstream_account_window_usage(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UpstreamAccountWindowUsageRequest>,
-) -> Result<Json<UpstreamAccountWindowUsageResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let started_at = Instant::now();
     let mut account_ids = payload
         .account_ids
@@ -750,45 +750,44 @@ pub(crate) async fn get_upstream_account_window_usage(
     account_ids.dedup();
 
     if account_ids.is_empty() {
-        return Ok(Json(UpstreamAccountWindowUsageResponse {
-            items: Vec::new(),
-        }));
+        return Ok(Json(UpstreamAccountWindowUsageResponse { items: Vec::new() }).into_response());
     }
 
-    let load_summaries_started_at = Instant::now();
-    let mut summaries =
-        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &account_ids)
-            .await
-            .map_err(internal_error_tuple)?;
-    let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
-    let usage_batch_started_at = Instant::now();
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)
+    let response = state
+        .upstream_accounts
+        .window_usage_storage
+        .load(state.as_ref(), &account_ids)
         .await
         .map_err(internal_error_tuple)?;
-    let usage_batch_ms = usage_batch_started_at.elapsed().as_millis() as u64;
     let total_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(
         account_count = account_ids.len(),
-        load_summaries_ms,
-        usage_batch_ms,
         total_ms,
-        "upstream account window usage batch completed"
+        response_source = match &response {
+            AccountWindowStorageResponse::Ready(_) => "storage_plane",
+            AccountWindowStorageResponse::Preparing { .. } => "preparing",
+        },
+        "upstream account window usage request completed"
     );
-
-    Ok(Json(UpstreamAccountWindowUsageResponse {
-        items: summaries
-            .into_iter()
-            .map(|summary| UpstreamAccountWindowUsageItem {
-                account_id: summary.id,
-                primary_actual_usage: summary
-                    .primary_window
-                    .and_then(|window| window.actual_usage),
-                secondary_actual_usage: summary
-                    .secondary_window
-                    .and_then(|window| window.actual_usage),
-            })
-            .collect(),
-    }))
+    match response {
+        AccountWindowStorageResponse::Ready(payload) => Ok(Json(payload).into_response()),
+        AccountWindowStorageResponse::Preparing { retry_after_ms } => {
+            let mut response = (
+                StatusCode::ACCEPTED,
+                Json(UpstreamAccountWindowUsagePreparingResponse {
+                    items: Vec::new(),
+                    readiness: "preparing",
+                    retry_after_ms,
+                }),
+            )
+                .into_response();
+            response.headers_mut().insert(
+                HeaderName::from_static("retry-after"),
+                HeaderValue::from_static("1"),
+            );
+            Ok(response)
+        }
+    }
 }
 
 pub(crate) async fn list_forward_proxy_binding_nodes(

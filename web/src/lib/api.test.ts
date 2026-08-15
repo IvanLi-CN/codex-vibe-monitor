@@ -2330,6 +2330,29 @@ describe("account pool frontend API helpers", () => {
     ]);
   });
 
+  it("preserves the preparing contract for a cold window-usage baseline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [],
+              readiness: "preparing",
+              retryAfterMs: 1000,
+            }),
+            { status: 202, headers: { "Content-Type": "application/json" } },
+          ),
+      ) as typeof fetch,
+    );
+
+    await expect(fetchUpstreamAccountWindowUsage([3])).resolves.toEqual({
+      items: [],
+      readiness: "preparing",
+      retryAfterMs: 1000,
+    });
+  });
+
   it("normalizes window actual usage from upstream account detail payloads", async () => {
     vi.stubGlobal(
       "fetch",

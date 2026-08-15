@@ -1211,6 +1211,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     for (column, ty) in [
         ("source", "TEXT NOT NULL DEFAULT 'xy'"),
+        ("upstream_account_id", "INTEGER"),
         ("model", "TEXT"),
         ("input_tokens", "INTEGER"),
         ("output_tokens", "INTEGER"),
@@ -1437,6 +1438,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_upstream_account_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_structured_upstream_account_occurred_at
+        ON codex_invocations (upstream_account_id, occurred_at, id)
+        WHERE upstream_account_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure structured upstream-account invocation index")?;
 
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.

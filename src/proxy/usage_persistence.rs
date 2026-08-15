@@ -2959,7 +2959,8 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             first_token_ms = ?39,
             t_upstream_stream_ms = ?40,
             t_resp_parse_ms = ?41,
-            t_persist_ms = ?42
+            t_persist_ms = ?42,
+            upstream_account_id = ?43
         WHERE id = ?1
           AND (
                 LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
@@ -3012,6 +3013,9 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(t_upstream_stream_ms)
     .bind(t_resp_parse_ms)
     .bind(t_persist_ms)
+    .bind(crate::proxy::upstream_account_id_from_payload(
+        record.payload.as_deref(),
+    ))
     .execute(&mut *tx)
     .await?;
 
@@ -3787,6 +3791,8 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
     record: ProxyCaptureRecord,
     write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
+    let upstream_account_id =
+        crate::proxy::upstream_account_id_from_payload(record.payload.as_deref());
     let raw_response = if record.response_body_preview_enabled {
         record.raw_response.clone()
     } else {
@@ -3906,12 +3912,13 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms,
-                created_at
+                created_at,
+                upstream_account_id
             )
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
             )
             "#,
         )
@@ -3959,6 +3966,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
         .bind(None::<f64>)
         .bind(None::<f64>)
         .bind(created_at)
+        .bind(upstream_account_id)
         .execute(&mut *tx)
         .await?;
         if insert_result.rows_affected() == 0 {

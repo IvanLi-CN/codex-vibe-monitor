@@ -494,6 +494,38 @@ describe("useUpstreamAccounts", () => {
     expect(text("first-item-secondary-requests")).toBe("30");
   });
 
+  it("retries a preparing window-usage response with bounded backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+        createListResponse({ items: [createWindowedSummary(1, "Alpha")] }),
+      );
+      apiMocks.fetchUpstreamAccountWindowUsage
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 1_000,
+        })
+        .mockResolvedValueOnce(createWindowUsageResponse([1]));
+
+      render(<Probe query={{ page: 1, pageSize: 20 }} />);
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(1);
+      expect(text("first-item-primary-requests")).toBe("");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(2);
+      expect(text("first-item-primary-requests")).toBe("10");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hydrates only the selected account for includeAll roster queries", async () => {
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({

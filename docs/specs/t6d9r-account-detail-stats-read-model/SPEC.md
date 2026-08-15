@@ -87,6 +87,9 @@
 - `/api/pool/upstream-accounts/window-usage` 优先读取 minute read-model，再合并缺失 hourly usage rows 与 cursor 之后的 live raw tail。
 - partial bucket 不得丢失，也不得因为 archive/live overlap 被双计数。
 - 不允许按账号窗口构造大型 live SQL + 内存重算作为常规路径。
+- handler 只能委托 account-window StoragePlane。该边界负责同参 singleflight、128 项 / 10 分钟空闲 LRU、coverage/last-good 状态与结构化 telemetry；不能把 pool 访问重新放回 HTTP handler。
+- 新 terminal 记录必须写结构化 nullable `codex_invocations.upstream_account_id`。旧行仅由 pressure-gated、按 cursor 的小批回填修复；健康读路径不得再从 JSON 表达式过滤账号。
+- 无准确 baseline 或 archive coverage hole 时返回 `202 { items: [], readiness: "preparing", retryAfterMs }` 与 `Retry-After: 1`，不得以全窗 archive/raw fallback 伪造成功响应。已有 last-good 最多服务 60 秒。
 
 ## 前端编排契约
 
@@ -95,6 +98,7 @@
 - invocation `records` SSE 只用于 records/live surfaces 的实时补丁；不得再作为账号池 roster、详情或 `window-usage` 的通用刷新触发器。
 - 同账号重复请求必须去重。
 - 切换账号、关闭抽屉或 query key 失效时，旧请求必须被取消或结果丢弃。
+- `window-usage` 收到 `preparing` 后按 1s、2s、5s 有界退避；卸载或 query key 切换必须取消未到期 retry。
 - SSE 与列表刷新最多触发一次受控详情刷新，不能叠加出重复重型请求。
 - 请求 ID 历史定位必须由后端返回目标所在固定页窗口；前端以该页为锚点向新、旧两个方向按需加载，不得逐页扫描目标或预取无关页。
 - 锚点窗口必须冻结到定位响应的 `snapshotId + anchorId` 并暂停 records SSE；`anchorId` 负责让双向分页复现定位时的 runtime overlay，用户返回最新请求后才恢复第一页与实时订阅。
