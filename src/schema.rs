@@ -1016,6 +1016,12 @@ pub(crate) async fn backfill_upstream_account_usage_hourly_status_counts(
                 WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
                   AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
             ),
+            reasoning_tokens = (
+                SELECT COALESCE(SUM(reasoning_tokens), 0)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+            ),
             failure_count = (
                 SELECT COUNT(*)
                 FROM codex_invocations
@@ -1994,7 +2000,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             terminal_cost REAL NOT NULL DEFAULT 0,
             terminal_proof_complete INTEGER NOT NULL DEFAULT 0,
             total_tokens INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2034,6 +2043,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("terminal_cost", "REAL NOT NULL DEFAULT 0"),
         ("terminal_proof_complete", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
@@ -2458,6 +2470,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
             cache_input_tokens INTEGER NOT NULL,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2476,6 +2489,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("success_count", "INTEGER NOT NULL DEFAULT 0"),
         ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
     ] {
         if !upstream_account_usage_hourly_columns.contains(column) {
@@ -2585,6 +2599,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2640,6 +2655,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut added_upstream_account_stats_columns = false;
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -2768,6 +2784,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2796,6 +2813,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         load_sqlite_table_columns(pool, "upstream_account_stats_minute").await?;
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),

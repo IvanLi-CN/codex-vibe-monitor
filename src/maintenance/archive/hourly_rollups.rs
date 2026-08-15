@@ -762,9 +762,25 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     };
     let status = select("status");
     let model = select("model");
-    let input_tokens = select("input_tokens");
-    let output_tokens = select("output_tokens");
+    let has_complete_token_components = ["input_tokens", "output_tokens", "reasoning_tokens"]
+        .iter()
+        .all(|column| archive_columns.contains(*column));
+    let input_tokens = if has_complete_token_components {
+        select("input_tokens")
+    } else {
+        "NULL AS input_tokens".to_string()
+    };
+    let output_tokens = if has_complete_token_components {
+        select("output_tokens")
+    } else {
+        "NULL AS output_tokens".to_string()
+    };
     let cache_input_tokens = select("cache_input_tokens");
+    let reasoning_tokens = if has_complete_token_components {
+        select("reasoning_tokens")
+    } else {
+        "NULL AS reasoning_tokens".to_string()
+    };
     let total_tokens = select("total_tokens");
     let cost = select("cost");
     let upstream_account_id = select("upstream_account_id");
@@ -799,6 +815,7 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
+            {reasoning_tokens},
             {total_tokens},
             {cost},
             {upstream_account_id},
@@ -1437,6 +1454,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             entry.input_tokens += row.input_tokens.unwrap_or_default();
             entry.output_tokens += row.output_tokens.unwrap_or_default();
             entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+            entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
         }
 
         if upsert_upstream_account_usage_breakdown {
@@ -1623,9 +1641,12 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_sum_ms,
                     first_token_max_ms,
                     first_token_histogram,
+                    input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
@@ -1636,6 +1657,9 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     terminal_proof_complete = 0,
                     total_tokens = invocation_rollup_hourly.total_tokens + excluded.total_tokens,
                     cache_input_tokens = invocation_rollup_hourly.cache_input_tokens + excluded.cache_input_tokens,
+                    input_tokens = invocation_rollup_hourly.input_tokens + excluded.input_tokens,
+                    output_tokens = invocation_rollup_hourly.output_tokens + excluded.output_tokens,
+                    reasoning_tokens = invocation_rollup_hourly.reasoning_tokens + excluded.reasoning_tokens,
                     total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
                     non_success_cost = invocation_rollup_hourly.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = invocation_rollup_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -1683,6 +1707,9 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_token_sum_ms)
             .bind(delta.first_token_max_ms)
             .bind(encode_approx_histogram(&merged_first_token_histogram)?)
+            .bind(delta.input_tokens)
+            .bind(delta.output_tokens)
+            .bind(delta.reasoning_tokens)
             .execute(&mut *tx)
             .await?;
         }
@@ -1892,11 +1919,12 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens,
                     output_tokens,
                     cache_input_tokens,
+                    reasoning_tokens,
                     first_seen_at,
                     last_seen_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, upstream_account_id) DO UPDATE SET
                     request_count = upstream_account_usage_hourly.request_count + excluded.request_count,
                     success_count = upstream_account_usage_hourly.success_count + excluded.success_count,
@@ -1907,6 +1935,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens = upstream_account_usage_hourly.input_tokens + excluded.input_tokens,
                     output_tokens = upstream_account_usage_hourly.output_tokens + excluded.output_tokens,
                     cache_input_tokens = upstream_account_usage_hourly.cache_input_tokens + excluded.cache_input_tokens,
+                    reasoning_tokens = upstream_account_usage_hourly.reasoning_tokens + excluded.reasoning_tokens,
                     first_seen_at = MIN(upstream_account_usage_hourly.first_seen_at, excluded.first_seen_at),
                     last_seen_at = MAX(upstream_account_usage_hourly.last_seen_at, excluded.last_seen_at),
                     updated_at = datetime('now')
@@ -1923,6 +1952,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.input_tokens)
             .bind(delta.output_tokens)
             .bind(delta.cache_input_tokens)
+            .bind(delta.reasoning_tokens)
             .bind(&delta.first_seen_at)
             .bind(&delta.last_seen_at)
             .execute(&mut *tx)
@@ -2122,9 +2152,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_sum_ms,
                     first_token_max_ms,
                     first_token_histogram,
+                    reasoning_tokens,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_hourly.total_count + excluded.total_count,
                     success_count = upstream_account_stats_hourly.success_count + excluded.success_count,
@@ -2134,6 +2165,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens = upstream_account_stats_hourly.input_tokens + excluded.input_tokens,
                     output_tokens = upstream_account_stats_hourly.output_tokens + excluded.output_tokens,
                     cache_input_tokens = upstream_account_stats_hourly.cache_input_tokens + excluded.cache_input_tokens,
+                    reasoning_tokens = upstream_account_stats_hourly.reasoning_tokens + excluded.reasoning_tokens,
                     total_cost = upstream_account_stats_hourly.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_hourly.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = upstream_account_stats_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -2182,6 +2214,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_token_sum_ms)
             .bind(delta.first_token_max_ms)
             .bind(encode_approx_histogram(&merged_first_token_histogram)?)
+            .bind(delta.reasoning_tokens)
             .execute(&mut *tx)
             .await?;
         }
@@ -2429,9 +2462,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_sum_ms,
                     first_token_max_ms,
                     first_token_histogram,
+                    reasoning_tokens,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_minute.total_count + excluded.total_count,
                     success_count = upstream_account_stats_minute.success_count + excluded.success_count,
@@ -2441,6 +2475,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens = upstream_account_stats_minute.input_tokens + excluded.input_tokens,
                     output_tokens = upstream_account_stats_minute.output_tokens + excluded.output_tokens,
                     cache_input_tokens = upstream_account_stats_minute.cache_input_tokens + excluded.cache_input_tokens,
+                    reasoning_tokens = upstream_account_stats_minute.reasoning_tokens + excluded.reasoning_tokens,
                     total_cost = upstream_account_stats_minute.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_minute.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = upstream_account_stats_minute.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -2489,6 +2524,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_token_sum_ms)
             .bind(delta.first_token_max_ms)
             .bind(encode_approx_histogram(&merged_first_token_histogram)?)
+            .bind(delta.reasoning_tokens)
             .execute(&mut *tx)
             .await?;
         }
@@ -2712,6 +2748,7 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             {} AS upstream_account_id,
@@ -2858,6 +2895,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             {} AS upstream_account_id,
@@ -2946,6 +2984,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             {} AS upstream_account_id,
@@ -3066,7 +3105,7 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
         r#"
         SELECT
             id, occurred_at, source, status, detail_level, model,
-            input_tokens, output_tokens, cache_input_tokens, total_tokens, cost,
+            input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost,
             {} AS upstream_account_id,
             cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
             error_message, failure_kind, failure_class, is_actionable, payload,
@@ -3624,6 +3663,7 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             {} AS upstream_account_id,
@@ -4413,6 +4453,7 @@ where
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
+                reasoning_tokens,
                 total_tokens,
                 cost,
                 cost_input,
@@ -4524,9 +4565,12 @@ where
                 first_token_sum_ms,
                 first_token_max_ms,
                 first_token_histogram,
+                input_tokens,
+                output_tokens,
+                reasoning_tokens,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                 total_count = excluded.total_count,
                 success_count = excluded.success_count,
@@ -4537,6 +4581,9 @@ where
                 terminal_proof_complete = 1,
                 total_tokens = excluded.total_tokens,
                 cache_input_tokens = excluded.cache_input_tokens,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                reasoning_tokens = excluded.reasoning_tokens,
                 total_cost = excluded.total_cost,
                 non_success_cost = excluded.non_success_cost,
                 total_latency_sample_count = excluded.total_latency_sample_count,
@@ -4584,6 +4631,9 @@ where
         .bind(delta.first_token_sum_ms)
         .bind(delta.first_token_max_ms)
         .bind(encode_approx_histogram(&delta.first_token_histogram)?)
+        .bind(delta.input_tokens)
+        .bind(delta.output_tokens)
+        .bind(delta.reasoning_tokens)
         .execute(tx.as_mut())
         .await?;
         applied_rollups += 1;
@@ -4693,6 +4743,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
+                reasoning_tokens,
                 total_tokens,
                 cost,
                 {} AS upstream_account_id,
@@ -4797,6 +4848,7 @@ mod upstream_host_network_minute_tests {
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
                 total_tokens INTEGER,
                 cost REAL,
                 cost_input REAL,
@@ -4964,6 +5016,9 @@ mod upstream_host_network_minute_tests {
 
         assert_eq!(row.id, 1);
         assert_eq!(row.detail_level, DETAIL_LEVEL_FULL);
+        assert!(row.input_tokens.is_none());
+        assert!(row.output_tokens.is_none());
+        assert!(row.reasoning_tokens.is_none());
         assert!(row.t_total_ms.is_none());
         assert!(row.t_req_read_ms.is_none());
         assert!(row.t_req_parse_ms.is_none());
@@ -5426,6 +5481,7 @@ mod retention_breakdown_materialization_tests {
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
                 total_tokens INTEGER,
                 cost REAL,
                 cost_input REAL,
@@ -5706,6 +5762,7 @@ mod retention_breakdown_materialization_tests {
             input_tokens: Some(10),
             output_tokens: Some(20),
             cache_input_tokens: Some(0),
+            reasoning_tokens: Some(0),
             total_tokens: Some(30),
             cost: Some(0.1),
             upstream_account_id: None,
@@ -5831,6 +5888,7 @@ mod retention_breakdown_materialization_tests {
             input_tokens: Some(10),
             output_tokens: Some(20),
             cache_input_tokens: Some(0),
+            reasoning_tokens: Some(0),
             total_tokens: Some(30),
             cost: Some(0.1),
             upstream_account_id: None,
@@ -6068,6 +6126,7 @@ mod retention_breakdown_materialization_tests {
             input_tokens: Some(10),
             output_tokens: Some(20),
             cache_input_tokens: Some(0),
+            reasoning_tokens: Some(0),
             total_tokens: Some(30),
             cost: Some(0.1),
             upstream_account_id: None,
@@ -6219,6 +6278,7 @@ mod retention_breakdown_materialization_tests {
             input_tokens: Some(25),
             output_tokens: Some(35),
             cache_input_tokens: Some(5),
+            reasoning_tokens: Some(5),
             total_tokens: Some(60),
             cost: Some(0.3),
             upstream_account_id: Some(42),
@@ -6299,6 +6359,7 @@ mod retention_breakdown_materialization_tests {
                 input_tokens: Some(10),
                 output_tokens: Some(20),
                 cache_input_tokens: Some(0),
+                reasoning_tokens: Some(0),
                 total_tokens: Some(30),
                 cost: Some(0.30),
                 upstream_account_id: Some(42),
@@ -6332,6 +6393,7 @@ mod retention_breakdown_materialization_tests {
                 input_tokens: Some(11),
                 output_tokens: Some(21),
                 cache_input_tokens: Some(0),
+                reasoning_tokens: Some(0),
                 total_tokens: Some(32),
                 cost: Some(0.20),
                 upstream_account_id: Some(42),
@@ -6365,6 +6427,7 @@ mod retention_breakdown_materialization_tests {
                 input_tokens: Some(12),
                 output_tokens: Some(22),
                 cache_input_tokens: Some(0),
+                reasoning_tokens: Some(0),
                 total_tokens: Some(34),
                 cost: Some(0.40),
                 upstream_account_id: Some(42),
@@ -6398,6 +6461,7 @@ mod retention_breakdown_materialization_tests {
                 input_tokens: Some(13),
                 output_tokens: Some(23),
                 cache_input_tokens: Some(0),
+                reasoning_tokens: Some(0),
                 total_tokens: Some(36),
                 cost: Some(0.50),
                 upstream_account_id: Some(42),

@@ -86,7 +86,10 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sample_count: i64,
@@ -276,7 +279,10 @@ pub(crate) struct BucketAggregate {
     pub(crate) in_flight_count: i64,
     pub(crate) in_flight_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sum_ms: f64,
@@ -2230,6 +2236,10 @@ pub(crate) fn merge_invocation_hourly_rollup_delta(
     target.terminal_tokens += delta.terminal_tokens;
     target.terminal_cost += delta.terminal_cost;
     target.total_tokens += delta.total_tokens;
+    target.input_tokens += delta.input_tokens;
+    target.output_tokens += delta.output_tokens;
+    target.cache_input_tokens += delta.cache_input_tokens;
+    target.reasoning_tokens += delta.reasoning_tokens;
     target.total_cost += delta.total_cost;
     target.non_success_cost += delta.non_success_cost;
     target.total_latency_sample_count += delta.total_latency_sample_count;
@@ -2438,11 +2448,29 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
     bucket_start_epoch: i64,
     source: &str,
 ) -> Result<Option<InvocationHourlyRollupRecord>> {
+    let input_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "input_tokens").await? {
+            "COALESCE(input_tokens, 0) AS input_tokens"
+        } else {
+            "0 AS input_tokens"
+        };
+    let output_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "output_tokens").await? {
+            "COALESCE(output_tokens, 0) AS output_tokens"
+        } else {
+            "0 AS output_tokens"
+        };
     let cache_input_tokens_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "cache_input_tokens").await? {
             "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
         } else {
             "0 AS cache_input_tokens"
+        };
+    let reasoning_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "reasoning_tokens").await? {
+            "COALESCE(reasoning_tokens, 0) AS reasoning_tokens"
+        } else {
+            "0 AS reasoning_tokens"
         };
     let non_success_cost_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
@@ -2499,7 +2527,10 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
             success_count,
             failure_count,
             total_tokens,
+            {input_tokens_expr},
+            {output_tokens_expr},
             {cache_input_tokens_expr},
+            {reasoning_tokens_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},
@@ -2559,10 +2590,28 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
             .map(|row| row.total_tokens.max(0))
             .unwrap_or(0),
     );
+    let input_tokens = subtract_nonnegative_i64(
+        archive_delta.input_tokens,
+        materialized_row
+            .map(|row| row.input_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let output_tokens = subtract_nonnegative_i64(
+        archive_delta.output_tokens,
+        materialized_row
+            .map(|row| row.output_tokens.max(0))
+            .unwrap_or(0),
+    );
     let cache_input_tokens = subtract_nonnegative_i64(
         archive_delta.cache_input_tokens,
         materialized_row
             .map(|row| row.cache_input_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let reasoning_tokens = subtract_nonnegative_i64(
+        archive_delta.reasoning_tokens,
+        materialized_row
+            .map(|row| row.reasoning_tokens.max(0))
             .unwrap_or(0),
     );
     let total_cost = subtract_nonnegative_f64(
@@ -2651,7 +2700,10 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
         success_count,
         failure_count,
         total_tokens,
+        input_tokens,
+        output_tokens,
         cache_input_tokens,
+        reasoning_tokens,
         total_cost,
         non_success_cost,
         total_latency_sample_count,
@@ -2718,10 +2770,28 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
             .map(|delta| delta.total_tokens.max(0))
             .unwrap_or(0),
     );
+    let input_tokens = subtract_nonnegative_i64(
+        materialized_row.input_tokens.max(0),
+        completed_archive_delta
+            .map(|delta| delta.input_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let output_tokens = subtract_nonnegative_i64(
+        materialized_row.output_tokens.max(0),
+        completed_archive_delta
+            .map(|delta| delta.output_tokens.max(0))
+            .unwrap_or(0),
+    );
     let cache_input_tokens = subtract_nonnegative_i64(
         materialized_row.cache_input_tokens.max(0),
         completed_archive_delta
             .map(|delta| delta.cache_input_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let reasoning_tokens = subtract_nonnegative_i64(
+        materialized_row.reasoning_tokens.max(0),
+        completed_archive_delta
+            .map(|delta| delta.reasoning_tokens.max(0))
             .unwrap_or(0),
     );
     let total_cost = subtract_nonnegative_f64(
@@ -2824,7 +2894,10 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
         success_count,
         failure_count,
         total_tokens,
+        input_tokens,
+        output_tokens,
         cache_input_tokens,
+        reasoning_tokens,
         total_cost,
         non_success_cost,
         total_latency_sample_count,
@@ -3708,6 +3781,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 input_tokens: delta.input_tokens,
                 output_tokens: delta.output_tokens,
                 cache_input_tokens: delta.cache_input_tokens,
+                reasoning_tokens: delta.reasoning_tokens,
                 total_cost: delta.total_cost,
                 non_success_cost: delta.non_success_cost,
                 total_latency_sample_count: delta.total_latency_sample_count,
@@ -4785,11 +4859,29 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
     range_end_epoch: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
+    let input_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "input_tokens").await? {
+            "COALESCE(input_tokens, 0) AS input_tokens"
+        } else {
+            "0 AS input_tokens"
+        };
+    let output_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "output_tokens").await? {
+            "COALESCE(output_tokens, 0) AS output_tokens"
+        } else {
+            "0 AS output_tokens"
+        };
     let cache_input_tokens_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "cache_input_tokens").await? {
             "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
         } else {
             "0 AS cache_input_tokens"
+        };
+    let reasoning_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "reasoning_tokens").await? {
+            "COALESCE(reasoning_tokens, 0) AS reasoning_tokens"
+        } else {
+            "0 AS reasoning_tokens"
         };
     let non_success_cost_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
@@ -4846,7 +4938,10 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             success_count,
             failure_count,
             total_tokens,
+            {input_tokens_expr},
+            {output_tokens_expr},
             {cache_input_tokens_expr},
+            {reasoning_tokens_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},

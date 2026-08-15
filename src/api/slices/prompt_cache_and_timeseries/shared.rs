@@ -316,7 +316,7 @@ where
 {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            id, invoke_id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
+            id, invoke_id, occurred_at, status, total_tokens, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, cost, error_message, ",
     );
     query
         .push(INVOCATION_FAILURE_KIND_SQL)
@@ -450,7 +450,9 @@ where
 {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            id, invoke_id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
+            id, invoke_id, occurred_at, status, total_tokens, \
+            NULL AS input_tokens, NULL AS output_tokens, cache_input_tokens, \
+            NULL AS reasoning_tokens, cost, error_message, ",
     );
     query
         .push(INVOCATION_FAILURE_KIND_SQL)
@@ -812,6 +814,18 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
     range_end_epoch: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<InvocationHourlyRollupRecord>, ApiError> {
+    let input_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "input_tokens").await? {
+            "COALESCE(input_tokens, 0) AS input_tokens"
+        } else {
+            "0 AS input_tokens"
+        };
+    let output_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "output_tokens").await? {
+            "COALESCE(output_tokens, 0) AS output_tokens"
+        } else {
+            "0 AS output_tokens"
+        };
     let cache_input_tokens_expr = if sqlite_table_has_column_tx(
         tx,
         "invocation_rollup_hourly",
@@ -823,6 +837,12 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
     } else {
         "0 AS cache_input_tokens"
     };
+    let reasoning_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "reasoning_tokens").await? {
+            "COALESCE(reasoning_tokens, 0) AS reasoning_tokens"
+        } else {
+            "0 AS reasoning_tokens"
+        };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -876,7 +896,10 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             success_count,
             failure_count,
             total_tokens,
+            {input_tokens_expr},
+            {output_tokens_expr},
             {cache_input_tokens_expr},
+            {reasoning_tokens_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},
@@ -927,6 +950,14 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
         } else {
             "0 AS cache_input_tokens"
         };
+    let reasoning_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "upstream_account_usage_hourly", "reasoning_tokens")
+            .await?
+        {
+            "COALESCE(reasoning_tokens, 0) AS reasoning_tokens"
+        } else {
+            "0 AS reasoning_tokens"
+        };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, "upstream_account_usage_hourly", "non_success_cost")
             .await?
@@ -944,6 +975,7 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
             COALESCE(failure_count, 0) AS failure_count,
             total_tokens,
             {cache_input_tokens_expr},
+            {reasoning_tokens_expr},
             total_cost,
             {non_success_cost_expr}
         FROM upstream_account_usage_hourly
@@ -1035,6 +1067,28 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     source_scope: InvocationSourceScope,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountStatsRollupRecord>, ApiError> {
+    let input_tokens_expr = if sqlite_table_has_column_tx(tx, table_name, "input_tokens").await? {
+        "COALESCE(input_tokens, 0) AS input_tokens"
+    } else {
+        "0 AS input_tokens"
+    };
+    let output_tokens_expr = if sqlite_table_has_column_tx(tx, table_name, "output_tokens").await? {
+        "COALESCE(output_tokens, 0) AS output_tokens"
+    } else {
+        "0 AS output_tokens"
+    };
+    let cache_input_tokens_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "cache_input_tokens").await? {
+            "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
+        } else {
+            "0 AS cache_input_tokens"
+        };
+    let reasoning_tokens_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "reasoning_tokens").await? {
+            "COALESCE(reasoning_tokens, 0) AS reasoning_tokens"
+        } else {
+            "0 AS reasoning_tokens"
+        };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, table_name, "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -1084,9 +1138,10 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
             failure_count,
             in_flight_count,
             total_tokens,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
+            {input_tokens_expr},
+            {output_tokens_expr},
+            {cache_input_tokens_expr},
+            {reasoning_tokens_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},

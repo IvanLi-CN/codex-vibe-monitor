@@ -1897,6 +1897,33 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
         Some(800.0),
     )
     .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET input_tokens = 5,
+            output_tokens = 5,
+            cache_input_tokens = 0,
+            reasoning_tokens = 0
+        WHERE invoke_id LIKE 'ttfb-sample-%'
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed reconciled token components");
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET input_tokens = 30,
+            output_tokens = 20,
+            cache_input_tokens = 10,
+            reasoning_tokens = 5,
+            total_tokens = 50
+        WHERE invoke_id = 'ttfb-sample-1'
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed token components");
 
     let Json(response) = fetch_timeseries(
         State(state),
@@ -1924,6 +1951,14 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
     assert_f64_close(
         bucket.first_byte_p95_ms.expect("p95 should be present"),
         380.0,
+    );
+    assert_eq!(bucket.input_tokens, 45);
+    assert_eq!(bucket.output_tokens, 35);
+    assert_eq!(bucket.cache_input_tokens, 10);
+    assert_eq!(bucket.reasoning_tokens, 5);
+    assert_eq!(
+        bucket.input_tokens + bucket.output_tokens,
+        bucket.total_tokens
     );
 }
 
@@ -11283,12 +11318,13 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             status: None,
             detail_level: DETAIL_LEVEL_FULL.to_string(),
             model: None,
-            input_tokens: None,
-            output_tokens: None,
-            cache_input_tokens: None,
+            input_tokens: Some(4),
+            output_tokens: Some(3),
+            cache_input_tokens: Some(2),
+            reasoning_tokens: Some(1),
             total_tokens: Some(7),
             cost: Some(0.07),
-            upstream_account_id: None,
+            upstream_account_id: Some(42),
             cost_input: None,
             cost_cache_write: None,
             cost_cache_read: None,
@@ -11328,7 +11364,24 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
     assert_eq!(row.success_count, 0);
     assert_eq!(row.failure_count, 0);
     assert_eq!(row.total_tokens, 7);
+    assert_eq!(row.input_tokens, 4);
+    assert_eq!(row.output_tokens, 3);
+    assert_eq!(row.cache_input_tokens, 2);
+    assert_eq!(row.reasoning_tokens, 1);
     assert_f64_close(row.total_cost, 0.07);
+
+    for table in [
+        "upstream_account_stats_hourly",
+        "upstream_account_stats_minute",
+    ] {
+        let account_tokens = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(&format!(
+            "SELECT total_tokens, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens FROM {table} WHERE upstream_account_id = 42",
+        ))
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or_else(|error| panic!("load {table} token components: {error}"));
+        assert_eq!(account_tokens, (7, 4, 3, 2, 1));
+    }
 }
 
 #[tokio::test]
@@ -11355,6 +11408,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(7),
                 cost: Some(0.07),
                 upstream_account_id: None,
@@ -11388,6 +11442,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(9),
                 cost: Some(0.09),
                 upstream_account_id: None,
@@ -11424,6 +11479,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(11),
                 cost: Some(0.11),
                 upstream_account_id: None,
@@ -11460,6 +11516,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(13),
                 cost: Some(0.13),
                 upstream_account_id: None,
@@ -11530,6 +11587,7 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(10),
                 cost: Some(0.10),
                 upstream_account_id: None,
@@ -11563,6 +11621,7 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
+                reasoning_tokens: None,
                 total_tokens: Some(20),
                 cost: Some(0.20),
                 upstream_account_id: None,
@@ -12497,6 +12556,7 @@ async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_arc
             input_tokens: None,
             output_tokens: Some(20_i64),
             cache_input_tokens: None,
+            reasoning_tokens: None,
             total_tokens: Some(20_i64),
             cost: Some(0.20_f64),
             upstream_account_id: None,
@@ -12645,6 +12705,7 @@ async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_r
             input_tokens: None,
             output_tokens: Some(10_i64),
             cache_input_tokens: None,
+            reasoning_tokens: None,
             total_tokens: Some(10_i64),
             cost: Some(0.10_f64),
             upstream_account_id: None,
@@ -12899,6 +12960,7 @@ async fn usage_breakdown_prefers_breakdown_specific_archive_progress_over_shared
             input_tokens: None,
             output_tokens: Some(10_i64),
             cache_input_tokens: None,
+            reasoning_tokens: None,
             total_tokens: Some(10_i64),
             cost: Some(0.10_f64),
             upstream_account_id: None,
@@ -19903,6 +19965,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
+        reasoning_tokens: None,
         total_tokens: None,
         cost: None,
         upstream_account_id: None,
@@ -19941,6 +20004,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
+        reasoning_tokens: None,
         total_tokens: None,
         cost: None,
         upstream_account_id: None,
@@ -19979,6 +20043,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
+        reasoning_tokens: None,
         total_tokens: None,
         cost: None,
         upstream_account_id: None,
