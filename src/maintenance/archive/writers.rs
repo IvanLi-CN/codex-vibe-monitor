@@ -2,7 +2,69 @@ use super::*;
 use anyhow::bail;
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+use std::io::ErrorKind;
 use std::str::FromStr;
+
+fn sync_published_archive_file(final_file_path: &Path) -> Result<()> {
+    fs::File::open(final_file_path)
+        .with_context(|| {
+            format!(
+                "failed to open archive file for sync {}",
+                final_file_path.display()
+            )
+        })?
+        .sync_all()
+        .with_context(|| format!("failed to sync archive file {}", final_file_path.display()))?;
+    if let Some(parent) = final_file_path.parent() {
+        fs::File::open(parent)
+            .with_context(|| {
+                format!(
+                    "failed to open archive directory for sync {}",
+                    parent.display()
+                )
+            })?
+            .sync_all()
+            .with_context(|| format!("failed to sync archive directory {}", parent.display()))?;
+    }
+    Ok(())
+}
+
+fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &Path) -> Result<()> {
+    match fs::hard_link(temporary_file_path, final_file_path) {
+        Ok(()) => fs::remove_file(temporary_file_path).with_context(|| {
+            format!(
+                "failed to remove linked archive staging file {}",
+                temporary_file_path.display()
+            )
+        })?,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            let prepared_sha = sha256_hex_file(temporary_file_path)?;
+            let existing_sha = sha256_hex_file(final_file_path)?;
+            if prepared_sha != existing_sha {
+                bail!(
+                    "archive batch identity collision for {}",
+                    final_file_path.display()
+                );
+            }
+            fs::remove_file(temporary_file_path).with_context(|| {
+                format!(
+                    "failed to remove duplicate archive staging file {}",
+                    temporary_file_path.display()
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to publish prepared archive file: {} -> {}",
+                    temporary_file_path.display(),
+                    final_file_path.display()
+                )
+            });
+        }
+    }
+    sync_published_archive_file(final_file_path)
+}
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
@@ -280,6 +342,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     archive_path.display()
                 )
             })?;
+            sync_published_archive_file(&archive_path)?;
             let _ = fs::remove_file(&work_path);
 
             let sha256 = sha256_hex_file(&archive_path)?;
@@ -604,6 +667,19 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("legacy_archive_file_publish")
+            .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "legacy_archive_file_publish",
+        ));
+    };
+    let prepared_bytes = temporary_file_path
+        .metadata()
+        .map(|metadata| metadata.len() as usize)
+        .unwrap_or_default();
+    let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
@@ -633,7 +709,24 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         tx.rollback().await?;
         return Err(error);
     }
+    if let Err(error) = sync_published_archive_file(final_file_path) {
+        tx.rollback().await?;
+        return Err(error);
+    }
+    let commit_started = Instant::now();
     tx.commit().await?;
+    super::super::retention::retention_record_commit!(
+        "legacy_archive_file_publish",
+        admission.admission_mode(),
+        1,
+        prepared_bytes,
+        Duration::ZERO,
+        admission.lock_wait(),
+        commit_started.duration_since(execute_started),
+        commit_started.elapsed(),
+        admission.p1_waiter_count(),
+        0,
+    );
     Ok(())
 }
 
@@ -651,7 +744,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
         bail!("archive segment writer only supports codex_invocations");
     }
     let month_key = archive_month_key_from_day_key(day_key)?;
-    let part_key = next_archive_segment_part_key(pool, spec.dataset, day_key).await?;
+    let part_key = archive_segment_part_key_for_ids(ids)?;
     let final_path = archive_segment_file_path(
         config,
         spec.dataset,
@@ -757,13 +850,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
     finalize_archive_sqlite_file(&work_path).await?;
 
     deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
-    fs::rename(&temp_gzip_path, &final_path).with_context(|| {
-        format!(
-            "failed to move archive segment into place: {} -> {}",
-            temp_gzip_path.display(),
-            final_path.display()
-        )
-    })?;
+    publish_prepared_archive_file(&temp_gzip_path, &final_path)?;
 
     let sha256 = sha256_hex_file(&final_path)?;
     Ok(ArchiveBatchOutcome {
@@ -969,6 +1056,67 @@ pub(crate) async fn write_archive_batch_upstream_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segment_part_key_is_stable_for_one_prepared_identity() {
+        let forward = archive_segment_part_key_for_ids(&[7, 3, 5]).expect("part key");
+        let reordered = archive_segment_part_key_for_ids(&[5, 7, 3]).expect("part key");
+        let distinct = archive_segment_part_key_for_ids(&[3, 5, 8]).expect("part key");
+
+        assert_eq!(forward, reordered);
+        assert_ne!(forward, distinct);
+    }
+
+    #[test]
+    fn prepared_archive_publish_rejects_conflicting_existing_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-archive-publish-{}",
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create archive root");
+        let temporary = root.join("prepared.sqlite.gz");
+        let final_path = root.join("part.sqlite.gz");
+        fs::write(&temporary, b"prepared").expect("write prepared archive");
+        fs::write(&final_path, b"different").expect("write conflicting archive");
+
+        let error = publish_prepared_archive_file(&temporary, &final_path)
+            .expect_err("conflicting archive identity must fail");
+        assert!(error.to_string().contains("identity collision"));
+        assert!(temporary.exists());
+        assert_eq!(
+            fs::read(&final_path).expect("read final archive"),
+            b"different"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepared_archive_publish_reuses_a_matching_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-archive-publish-{}",
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create archive root");
+        let first_temporary = root.join("first.sqlite.gz");
+        let retry_temporary = root.join("retry.sqlite.gz");
+        let final_path = root.join("part.sqlite.gz");
+        fs::write(&first_temporary, b"prepared").expect("write prepared archive");
+        publish_prepared_archive_file(&first_temporary, &final_path)
+            .expect("publish first prepared archive");
+        fs::write(&retry_temporary, b"prepared").expect("write retry archive");
+        publish_prepared_archive_file(&retry_temporary, &final_path)
+            .expect("reuse matching prepared archive");
+
+        assert!(!first_temporary.exists());
+        assert!(!retry_temporary.exists());
+        assert_eq!(
+            fs::read(&final_path).expect("read final archive"),
+            b"prepared"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[tokio::test]
     async fn legacy_archive_replacement_keeps_pending_cleanup_when_rename_fails() {

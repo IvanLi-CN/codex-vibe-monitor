@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/9aucy-db-retention-archive/SPEC.md`
-- Implementation summary: 已完成
+- Implementation summary: retention source mutations use coordinator-admitted, pressure-gated adaptive microtransactions.
 
 ## Migrated Implementation Notes
 
@@ -15,12 +15,27 @@
 - Note: parallel-work 采用独立的分钟 key 与永久小时标量层。分钟 key 固定保留 30 个完整上海自然日与当前自然日，过期时每小时原子 materialize 并删除 key；这条维护链不读取旧 archive，也不依赖原始明细 retention 开关。
 - Note: detail pruning records the latest unrecoverable-detail epoch in the same write transaction. Regular parallel-work maintenance reads that watermark; only an old database without the marker performs a one-time conservative seed scan.
 - Note: parallel-work coverage emits `watermark_source` and `scan_avoided`; normal maintenance must use the retention-side watermark and never revive the retained-table reverse scan.
+- Note: `RETENTION_BATCH_ROWS` is a candidate preparation limit, not a transaction-size contract. Retention DB mutations use coordinated, pressure-gated microbatches with a bounded fairness path so archival work cannot monopolize the SQLite writer.
+- Note: normal maintenance yields to P1 terminal, synchronous proxy and P2 derived work. After sustained starvation it may receive one fairness admission per 15-second interval, but never while the SQLite pressure cooldown is active.
+- Note: archive artifacts are prepared before admission. A short transaction atomically publishes its manifest and coverage state with the corresponding source mutation; raw owner links are released only after that commit.
+- Note: segment identities are derived from their source row IDs, and publication verifies and syncs the artifact before source mutation. A conflicting existing identity is retained as evidence and aborts the batch instead of replacing archive bytes.
+- Note: fairness preserves queued P1 priority, and a pressure-deferred admission returns its unused token. Shutdown cancels only a queued admission; an already-admitted microtransaction still completes or rolls back at its database boundary.
+- Note: archive expiry and upstream-activity manifest passes use candidate-plus-one probes. Existing manifest rows are cleared, replacement rows are written, and the completion marker is committed through separately budgeted maintenance microtransactions.
+- Note: raw blob path replacement batches owner references before releasing the old file. Archive-driven startup wakeups and raw-metrics inventory reset use the same maintenance admission; the inventory remains `preparing` until its bounded reset completes.
+- Note: startup persistent preparation does not hold a global background permit around nested retention writers. Each writer acquires its own maintenance admission, and a deferred pass remains eligible for the prompt retry schedule instead of being recorded as complete.
+- Note: raw-metrics inventory reset is resumable. The inventory worker checks for an interrupted `resetting` state and advances one pressure-gated reset batch before resuming normal inventory, so a restart or defer cannot strand the snapshot indefinitely.
+- Note: archive publication paths include a process-local monotonic suffix in addition to PID and timestamp, preventing parallel test or worker collisions when timestamp resolution is coarse.
 
 ## Verification
 
 - `cargo test previous7d_summary_matches_daily_timeseries_when_window_spans_archived_and_live_days -- --nocapture`
 - `cargo test archived_range_reads_skip_archive_fallback_rows_already_counted_in_live_tail -- --nocapture`
-- `cargo fmt`
+- `cargo test retention_write_scheduler_fairness -- --nocapture`
+- `cargo test retention_write_scheduler_lock_and_cancel -- --nocapture`
+- `cargo test prepared_archive_publish_reuses_a_matching_identity -- --nocapture`
+- `cargo fmt --check`
+- `cargo check`
+- Shared testbox source build: `cargo test -q` with the repository testbox runner; preserve the run log and exit code for the release gate.
 
 ## Migrated Task-Ticket Sections
 

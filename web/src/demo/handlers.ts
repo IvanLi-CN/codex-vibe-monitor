@@ -1593,6 +1593,27 @@ function systemStatus() {
         invariantViolationCount: accountingError ? 1 : 0,
         degradedReason: accountingError ? "pending_bytes_underflow" : undefined,
       },
+      retentionWriteHealth: {
+        state:
+          runtimeState === "deferred"
+            ? "deferred"
+            : runtimeState === "degraded"
+              ? "degraded"
+              : "healthy",
+        operation: "invocation_detail_prune",
+        admissionMode: runtimeState === "degraded" ? "fairness" : "normal",
+        batchRows: 4,
+        estimatedBytes: 16_384,
+        prepareElapsedMs: 36,
+        lockWaitMs: runtimeState === "degraded" ? 15_004 : 2,
+        executeMs: runtimeState === "degraded" ? 251 : 47,
+        commitMs: runtimeState === "degraded" ? 36 : 18,
+        budgetBreachCount: runtimeState === "degraded" ? 1 : 0,
+        deferReason: runtimeState === "deferred" ? "pressure_cooldown:30000ms" : undefined,
+        starvationAgeMs: runtimeState === "degraded" ? 15_004 : undefined,
+        p1WaiterCount: runtimeState === "degraded" ? 1 : 0,
+        candidateRemainingHint: 1,
+      },
       dashboardProjection: {
         mode: "auto",
         state: runtimeState === "degraded" ? "degraded" : "healthy",

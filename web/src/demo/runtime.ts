@@ -33,6 +33,13 @@ function hashSearchFromLocation(
   return location.hash.slice(location.hash.indexOf("?") + 1);
 }
 
+export function demoSearchParamsFromLocation(
+  location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
+): URLSearchParams {
+  if (!location) return new URLSearchParams();
+  return new URLSearchParams(hashSearchFromLocation(location) || location.search);
+}
+
 export function appRuntime(): "live" | "demo" {
   const value = import.meta.env.VITE_APP_RUNTIME ?? "live";
   if (!RUNTIME_VALUES.has(value)) {
@@ -49,8 +56,7 @@ export function sceneFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ): DemoScene {
   if (!location) return "operational";
-  const hashSearch = hashSearchFromLocation(location);
-  const scene = new URLSearchParams(hashSearch).get("demoScene");
+  const scene = demoSearchParamsFromLocation(location).get("demoScene");
   return scene && SCENE_VALUES.has(scene as DemoScene) ? (scene as DemoScene) : "operational";
 }
 
@@ -58,8 +64,7 @@ export function themeFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ): DemoTheme {
   if (!location) return "light";
-  const hashSearch = hashSearchFromLocation(location);
-  const theme = new URLSearchParams(hashSearch).get("demoTheme");
+  const theme = demoSearchParamsFromLocation(location).get("demoTheme");
   return theme && THEME_VALUES.has(theme as DemoTheme) ? (theme as DemoTheme) : "light";
 }
 
@@ -67,8 +72,7 @@ export function viewportFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ): DemoViewport {
   if (!location) return "default";
-  const hashSearch = hashSearchFromLocation(location);
-  const viewport = new URLSearchParams(hashSearch).get("demoViewport");
+  const viewport = demoSearchParamsFromLocation(location).get("demoViewport");
   return viewport && VIEWPORT_VALUES.has(viewport as DemoViewport)
     ? (viewport as DemoViewport)
     : "default";
@@ -78,23 +82,25 @@ export function isEmbeddedDemoViewport(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ) {
   if (!location) return false;
-  return new URLSearchParams(hashSearchFromLocation(location)).get("demoEmbed") === "1";
+  return demoSearchParamsFromLocation(location).get("demoEmbed") === "1";
+}
+
+export function shouldStartDemoServiceWorker(
+  location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
+): boolean {
+  return !isEmbeddedDemoViewport(location) && viewportFromLocation(location) === "default";
 }
 
 export async function initializeDemoRuntime(): Promise<void> {
   if (!isDemoRuntime()) return;
 
   const [
-    { isCommonAssetRequest },
     { demoModel },
-    { worker },
     { installDemoFetchFallback },
     { installDemoEventSource },
     { handleDemoRequest },
   ] = await Promise.all([
-    import("msw"),
     import("./model"),
-    import("./browser"),
     import("./fallback"),
     import("./event-source"),
     import("./handlers"),
@@ -102,6 +108,12 @@ export async function initializeDemoRuntime(): Promise<void> {
   demoModel.setScene(sceneFromLocation());
   installDemoFetchFallback(handleDemoRequest);
   installDemoEventSource();
+  if (!shouldStartDemoServiceWorker()) return;
+
+  const [{ isCommonAssetRequest }, { worker }] = await Promise.all([
+    import("msw"),
+    import("./browser"),
+  ]);
   await worker.start({
     serviceWorker: {
       url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,

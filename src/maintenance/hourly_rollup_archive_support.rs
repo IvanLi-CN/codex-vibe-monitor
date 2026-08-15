@@ -3,7 +3,6 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc}
 use chrono_tz::Asia::Shanghai;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Sqlite};
 use std::{
     collections::HashSet,
     env, fs,
@@ -13,9 +12,11 @@ use std::{
 use tracing::warn;
 
 use crate::{
-    ARCHIVE_LAYOUT_SEGMENT_V1, AppConfig, ArchiveBatchLayout, ArchiveFileCodec,
-    ArchiveSegmentGranularity, INVOCATION_STATUS_WARNING_SUCCESS, format_naive, start_of_local_day,
+    AppConfig, ArchiveBatchLayout, ArchiveFileCodec, ArchiveSegmentGranularity,
+    INVOCATION_STATUS_WARNING_SUCCESS, format_naive, start_of_local_day,
 };
+
+static RETENTION_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn resolved_raw_path_candidates(
     path: &str,
@@ -255,9 +256,10 @@ pub(crate) fn archive_month_key_from_day_key(day_key: &str) -> Result<String> {
 
 pub(crate) fn retention_temp_suffix() -> String {
     format!(
-        "{}-{}",
+        "{}-{}-{}",
         std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        RETENTION_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
 
@@ -283,35 +285,24 @@ pub(crate) fn invocation_archive_group_key(
     }
 }
 
-pub(crate) async fn next_archive_segment_part_key(
-    pool: &Pool<Sqlite>,
-    dataset: &str,
-    day_key: &str,
-) -> Result<String> {
-    let latest_part_key = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT part_key
-        FROM archive_batches
-        WHERE dataset = ?1
-          AND layout = ?2
-          AND day_key = ?3
-          AND part_key IS NOT NULL
-        ORDER BY part_key DESC, id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(dataset)
-    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
-    .bind(day_key)
-    .fetch_optional(pool)
-    .await?;
-    let next_seq = latest_part_key
-        .as_deref()
-        .and_then(|value| value.strip_prefix("part-"))
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_default()
-        + 1;
-    Ok(format!("part-{next_seq:06}"))
+pub(crate) fn archive_segment_part_key_for_ids(ids: &[i64]) -> Result<String> {
+    if ids.is_empty() {
+        return Err(anyhow!("archive segment requires at least one row id"));
+    }
+    let mut normalized_ids = ids.to_vec();
+    normalized_ids.sort_unstable();
+    normalized_ids.dedup();
+    let mut hasher = Sha256::new();
+    for id in &normalized_ids {
+        hasher.update(id.to_be_bytes());
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    Ok(format!(
+        "part-{:016x}-{:016x}-{}",
+        normalized_ids.first().expect("non-empty ids"),
+        normalized_ids.last().expect("non-empty ids"),
+        &digest[..16]
+    ))
 }
 
 pub(crate) fn is_archive_temp_file_name(name: &str) -> bool {

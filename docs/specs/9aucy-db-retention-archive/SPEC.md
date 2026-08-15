@@ -28,6 +28,7 @@
 
 - SQLite schema 扩展：`codex_invocations.detail_level/detail_pruned_at/detail_prune_reason`、`archive_batches`、`invocation_rollup_daily`。
 - retention/archive 运维配置与 CLI：`XY_RETENTION_*` / `XY_ARCHIVE_DIR` / `--retention-run-once` / `--retention-dry-run`。
+- retention 主库写入仲裁、可恢复微批与压力期公平调度，确保归档不会长期占用 SQLite 单写者。
 - 调用明细 30/90 天分层、月度 `sqlite.gz` 归档、manifest 校验、主库 purge、raw file 删除与 orphan sweep。
 - `forward_proxy_attempts` 与 `codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
 - `summary?window=all` / 总量统计的初始 `invocation_rollup_daily` 承接方案，以及后续迁移到 hourly rollups 前的兼容边界。
@@ -109,11 +110,19 @@
   - `--retention-run-once`
   - `--retention-dry-run`
 
+`XY_RETENTION_BATCH_ROWS` 只限制候选扫描和 archive 准备上限，不得直接决定 SQLite 写事务大小。实际提交使用独立的自适应微批预算，默认从 4 行开始，最大 64 行或 1 MiB 估算写入，以 200ms 为目标、250ms 为告警线。
+
 ## 归档与维护约束
 
 - 所有删除动作都必须遵守 `导出成功 -> manifest 成功 -> 删除源数据`。
 - `archive_batches` 至少记录：`dataset`、`month_key`、`file_path`、`sha256`、`row_count`、`created_at`、`status`。
-- 维护任务按 `XY_RETENTION_BATCH_ROWS` 分批执行，避免一次长事务锁住整个 SQLite。
+- 所有 retention 主库写入必须通过统一写协调器，优先级低于 P1 terminal、同步代理写和 P2 derived。文件压缩、hash 与 archive 准备在主库写 permit 外执行。
+- 正常 maintenance 只有在更高优先级无等待且 pressure gate 开放时才可提交；连续饥饿时每 15 秒最多公平提交一个微事务。fairness 不得绕过 pressure cooldown。
+- 每个微事务只提交一个已准备 batch 的 manifest、rollup/coverage marker 与对应源行裁剪/删除；失败、取消或重启时源行与 raw owner link 保持，未引用 archive artifact 必须可重试或清理。
+- segment batch 的身份由稳定的源行 ID 集合导出，不能在主库事务外依赖“下一个 part”计数。prepared artifact 必须在 source mutation 前完成 file 与父目录同步；已存在但 hash 不同的同一身份必须失败而非覆盖。
+- fairness 不得越过已排队的 P1 terminal；pressure 拒绝后必须归还尚未产生提交的 fairness token。维护准入等待必须响应 shutdown，取消时仅丢弃尚未开始的 microtransaction。
+- archive expiry backfill 与 upstream-activity manifest rebuild 也必须先取有界候选；manifest 的清理、写入和完成 marker 各自是 coordinator-admitted microtransaction，不能在一次 archive pass 内聚集全表行。
+- shared raw blob 的 owner-path replacement 必须按引用分组分批提交；startup backfill wake 和 raw metrics inventory reset 同样经 maintenance admission。多批 reset 期间 inventory 明确处于 preparing，而不是读取半旧基线。
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。
@@ -129,6 +138,7 @@
 - parallel-work 分钟 key 在达到 30 个完整上海自然日边界后，只有对应小时无 key 标量和覆盖标记都已提交时才能删除；历史小时均值仍可精确计算，缺覆盖历史必须显式不可用。
 - `parallel_work_rollup_coverage_state` records the latest unrecoverable-detail watermark transactionally when retention prunes detail. Regular maintenance reads that watermark; the legacy retained-row reverse scan is only allowed once to seed an old database.
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
+- 持续 P1 流量下，retention 不得形成固定大事务或周期性锁风暴；正常 maintenance 让位高优先级写，连续饥饿时最多每 15 秒执行一个预算内微事务。超过 250ms 的提交必须降级告警并缩小后续 batch，而不能扩大事务或静默跳过数据。
 
 ## 参考
 
@@ -136,3 +146,29 @@
 - `docs/deployment.md`
 - `web/src/lib/api.ts`
 - `web/src/features/invocations/InvocationTable.tsx`
+
+## Visual Evidence
+
+以下证据由 mock-only `ui_demo` 在真实浏览器视口生成，不依赖生产数据或登录状态。System Status 仅读取 additive 内存诊断字段，不增加状态页 SQL。
+
+- source_type: `ui_demo`
+  story_id_or_title: `system/status?demoScene=runtime-pressure-degraded&demoTheme=light`
+  scenario: `retention fairness microtransaction exceeds the warning budget`
+  capture_scope: `browser-viewport`
+  requested_viewport: desktop browser viewport
+  viewport_strategy: `ui-demo-source`
+  evidence_note: 验证 degraded 状态、fairness 准入、预算越线与 backlog 提示在同一只读压力详情中可判责。
+  PR: include
+
+![System Status retention write health degraded on desktop](assets/system-status-retention-degraded-desktop.png)
+
+- source_type: `ui_demo`
+  story_id_or_title: `system/status?demoScene=runtime-pressure-deferred&demoViewport=mobile393`
+  scenario: `pressure cooldown defers retention without a writer retry storm`
+  capture_scope: `browser-viewport`
+  requested_viewport: `393x852` CSS px
+  viewport_strategy: `ui-demo-source`
+  evidence_note: 验证 deferred 状态、候选提示与事务行数在移动布局中没有横向溢出。
+  PR: include
+
+![System Status retention write health deferred on mobile](assets/system-status-retention-deferred-mobile.png)

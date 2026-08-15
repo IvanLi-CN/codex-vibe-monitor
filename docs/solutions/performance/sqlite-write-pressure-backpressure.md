@@ -14,6 +14,10 @@
 ## 核心结论
 
 - SQLite 单写者约束下，后台任务必须是可跳过、可退避、可重试的低优先级工作。
+- retention/archive 不能只在整轮开始前检查一次 pressure gate，再以固定大 batch 连续写入。每次主库 mutation 都必须重新经写协调器和 gate 准入；archive 文件准备放在 permit 外，manifest 与源行 mutation 使用可恢复短事务。
+- 对持续写流量，maintenance 可以使用固定间隔的单次 fairness token 防止永久饥饿，但 token 不得绕过 busy/locked cooldown，且单事务必须受行数、估算字节和实测耗时反馈共同约束。超过预算时缩小后续 batch 并将健康状态降级，不能以更长锁窗口追赶 backlog。
+- fairness 只能绕过低优先级等待，不能越过已排队的 P1 terminal；若 pressure gate 在事务开始前拒绝准入，必须归还 token。归档写入使用由源行集合导出的稳定 artifact identity，并在 manifest/source mutation 前同步 artifact 与目录，避免并发覆盖或崩溃后删除唯一源数据。
+- maintenance 任务名不构成绕过仲裁的理由：archive expiry、manifest 重建、raw owner reference 替换、backfill wake 与系统 raw 指标重置都必须有候选上限和独立短事务。多批指标重置期间要暴露 preparing，避免页面把不完整盘点当成健康基线。
 - 前台关键路径不应该和 rollup/backfill/retention/maintenance 使用同等重试预算。
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。

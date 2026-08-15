@@ -66,6 +66,7 @@ pub(crate) async fn run() -> Result<()> {
             missing_manifest_files = prep_summary.missing_manifest_files,
             backfilled_archive_expiries = prep_summary.backfilled_archive_expiries,
             bootstrapped_hourly_rollups = prep_summary.bootstrapped_hourly_rollups,
+            pending_manifest_batches = prep_summary.pending_manifest_batches,
             pending_historical_rollup_archive_batches =
                 prep_summary.pending_historical_rollup_archive_batches,
             "startup persistent prep finished"

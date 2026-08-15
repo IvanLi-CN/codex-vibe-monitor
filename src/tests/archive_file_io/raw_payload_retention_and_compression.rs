@@ -2,6 +2,64 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn shared_raw_path_replacement_updates_all_owners_in_bounded_batches() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("shared-raw-path-replacement-bounded").await;
+    config.retention_batch_rows = 2;
+    let old_path = temp_dir.join("shared-response.bin");
+    let next_path = temp_dir.join("shared-response.bin.gz");
+    let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
+
+    for index in 0..5 {
+        insert_retention_invocation(
+            &pool,
+            &format!("shared-raw-path-owner-{index}"),
+            &occurred_at,
+            SOURCE_PROXY,
+            "success",
+            None,
+            "{}",
+            None,
+            Some(&old_path),
+            Some(1),
+            Some(0.0),
+        )
+        .await;
+    }
+
+    assert!(
+        replace_proxy_raw_path_references(
+            &pool,
+            &config,
+            old_path.to_string_lossy().as_ref(),
+            next_path.to_string_lossy().as_ref(),
+            RAW_CODEC_GZIP,
+        )
+        .await
+        .expect("replace shared raw path references")
+    );
+    let remaining_old_references: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE response_raw_path = ?1")
+            .bind(old_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count old raw references");
+    let updated_references: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE response_raw_path = ?1 AND response_raw_codec = ?2",
+    )
+    .bind(next_path.to_string_lossy().as_ref())
+    .bind(RAW_CODEC_GZIP)
+    .fetch_one(&pool)
+    .await
+    .expect("count updated raw references");
+    assert_eq!(remaining_old_references, 0);
+    assert_eq!(updated_references, 5);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn shared_raw_blob_keeps_file_reference_until_last_owner_is_removed() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("shared-raw-blob-links").await;
     let shared_path = config.proxy_raw_dir.join("shared-response.zst");

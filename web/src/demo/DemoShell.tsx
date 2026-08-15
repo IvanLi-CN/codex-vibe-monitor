@@ -4,6 +4,7 @@ import { useTheme } from "../theme";
 import { DemoInspector } from "./DemoInspector";
 import { demoModel } from "./model";
 import {
+  demoSearchParamsFromLocation,
   isEmbeddedDemoViewport,
   sceneFromLocation,
   themeFromLocation,
@@ -33,12 +34,12 @@ export function DemoShell({ children }: { children: ReactNode }) {
   const embeddedSrc = useMemo(() => {
     if (typeof window === "undefined" || !mobileViewport || embedded) return null;
 
-    const search = new URLSearchParams(location.search);
+    const search = demoSearchParamsFromLocation();
     search.delete("demoViewport");
     search.set("demoEmbed", "1");
     const hash = `${location.pathname}${search.size > 0 ? `?${search.toString()}` : ""}`;
     return `${window.location.pathname}#${hash}`;
-  }, [embedded, location.pathname, location.search, mobileViewport]);
+  }, [embedded, location.pathname, mobileViewport]);
 
   if (mobileViewport && !embedded && embeddedSrc) {
     return (

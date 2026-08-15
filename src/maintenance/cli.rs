@@ -27,7 +27,7 @@ pub(crate) async fn run_cli_command(
             }
             MaintenanceCommand::ArchiveUpstreamActivityManifest(opts) => {
                 let summary =
-                    refresh_archive_upstream_activity_manifest(pool, opts.dry_run).await?;
+                    refresh_archive_upstream_activity_manifest(pool, config, opts.dry_run).await?;
                 info!(
                     dry_run = opts.dry_run,
                     ?summary,

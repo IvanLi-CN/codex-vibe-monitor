@@ -8,6 +8,7 @@ pub(crate) struct StartupPersistentPrepSummary {
     pub(crate) missing_manifest_files: usize,
     pub(crate) backfilled_archive_expiries: usize,
     pub(crate) bootstrapped_hourly_rollups: bool,
+    pub(crate) pending_manifest_batches: usize,
     pub(crate) pending_historical_rollup_archive_batches: usize,
 }
 
@@ -61,7 +62,7 @@ pub(crate) async fn run_startup_persistent_prep_inner(
     }
 
     let janitor_summary = cleanup_stale_archive_temp_files(config, false)?;
-    let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false).await?;
+    let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, config, false).await?;
     let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups_with_parallel_work_coverage(
@@ -80,6 +81,10 @@ pub(crate) async fn run_startup_persistent_prep_inner(
         missing_manifest_files: manifest_refresh.missing_files,
         backfilled_archive_expiries: archive_expiry_backfill_count,
         bootstrapped_hourly_rollups: include_hourly_rollup_bootstrap,
+        pending_manifest_batches: manifest_refresh
+            .pending_batches
+            .saturating_sub(manifest_refresh.refreshed_batches)
+            .max(manifest_refresh.candidate_remaining_hint),
         pending_historical_rollup_archive_batches: historical_rollup_snapshot
             .legacy_archive_pending
             .max(historical_rollup_snapshot.pending_usage_breakdown_batches)

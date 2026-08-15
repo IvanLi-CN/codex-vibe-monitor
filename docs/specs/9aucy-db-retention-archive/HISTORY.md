@@ -11,3 +11,5 @@
 - 2026-06-18: 收口 summary / timeseries 的 mixed archive/live 读路径，明确 `previous7d` 这类自然日 summary 必须复用 hourly rollup + full-hour live tail replay + uncovered archive fallback，不能只靠当前 retention cutoff 决定是否 live-only。
 - parallel-work 的历史均值需要保留活动分钟分子/分母，而不是会话小时 key。分钟层限定为 30 个完整上海自然日和当前日；小时层永久保存无 key 标量，覆盖标记优先于分钟删除，避免持久化风险和历史近似。
 - Retention now emits a durable unrecoverable-detail watermark when it removes full detail. This makes the parallel-work coverage decision write-driven and removes the regular retained-row reverse scan.
+- Retention write admission is explicitly lower priority than terminal and interactive proxy writes. Candidate preparation may be broader, but source mutation is committed only through bounded, recoverable microtransactions with archive manifest integrity preserved.
+- Retention fairness is bounded: normal maintenance yields to higher-priority writes, while a starving maintenance queue receives at most one pressure-gated admission every 15 seconds. Adaptive row and byte budgets shrink after a slow commit instead of extending the SQLite writer hold.

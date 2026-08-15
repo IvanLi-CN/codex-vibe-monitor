@@ -254,6 +254,20 @@ describe("SystemStatusPage", () => {
           retryCount: 0,
           invariantViolationCount: 0,
         },
+        retentionWriteHealth: {
+          state: "deferred",
+          operation: "invocation_detail_prune",
+          batchRows: 4,
+          estimatedBytes: 16_384,
+          prepareElapsedMs: 36,
+          lockWaitMs: 15_000,
+          executeMs: 0,
+          commitMs: 0,
+          budgetBreachCount: 0,
+          deferReason: "pressure_cooldown:30000ms",
+          p1WaiterCount: 2,
+          candidateRemainingHint: 1,
+        },
         dashboardProjection: {
           mode: "auto",
           state: "healthy",
@@ -345,5 +359,9 @@ describe("SystemStatusPage", () => {
       host?.querySelector('[data-testid="system-status-hot-topic-parallelWork"]')?.textContent,
     ).toContain("DB 2");
     expect(host?.querySelectorAll('[data-testid^="system-status-hot-topic-"]')).toHaveLength(7);
+    expect(pageText).toContain("保留写入健康状态");
+    expect(pageText).toContain("已延后");
+    expect(pageText).toContain("4 / 16 KB");
+    expect(pageText).toContain("pressure_cooldown:30000ms");
   });
 });

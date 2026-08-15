@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appRuntime,
+  demoSearchParamsFromLocation,
   isEmbeddedDemoViewport,
   sceneFromLocation,
+  shouldStartDemoServiceWorker,
   themeFromLocation,
   viewportFromLocation,
 } from "./runtime";
@@ -64,5 +66,33 @@ describe("demo runtime selection", () => {
     ) as unknown as Location;
 
     expect(viewportFromLocation(location)).toBe("mobile393");
+  });
+
+  it("keeps shareable scene and theme state when embedding a mobile demo", () => {
+    const location = new URL(
+      "https://demo.invalid/#/system/status?demoScene=runtime-pressure-deferred&demoTheme=dark&demoViewport=mobile393",
+    ) as unknown as Location;
+    const search = demoSearchParamsFromLocation(location);
+
+    search.delete("demoViewport");
+    search.set("demoEmbed", "1");
+
+    expect(search.toString()).toBe(
+      "demoScene=runtime-pressure-deferred&demoTheme=dark&demoEmbed=1",
+    );
+  });
+
+  it("uses fetch and SSE fallbacks instead of a worker for embedded mobile evidence", () => {
+    const desktop = new URL("https://demo.invalid/#/system/status") as unknown as Location;
+    const outerMobile = new URL(
+      "https://demo.invalid/#/system/status?demoViewport=mobile393",
+    ) as unknown as Location;
+    const embeddedMobile = new URL(
+      "https://demo.invalid/#/system/status?demoEmbed=1",
+    ) as unknown as Location;
+
+    expect(shouldStartDemoServiceWorker(desktop)).toBe(true);
+    expect(shouldStartDemoServiceWorker(outerMobile)).toBe(false);
+    expect(shouldStartDemoServiceWorker(embeddedMobile)).toBe(false);
   });
 });

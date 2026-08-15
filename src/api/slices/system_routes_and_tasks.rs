@@ -81,6 +81,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) dashboard_hot_topics: DashboardHotTopicsHealthSnapshot,
     pub(crate) request_pipeline: RequestPipelineHealthSnapshot,
     pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
+    pub(crate) retention_write_health: RetentionWriteHealthSnapshot,
     pub(crate) event_bus: RuntimeMutationBusHealth,
     pub(crate) backfill: StartupBackfillHealthSnapshot,
 }
@@ -143,6 +144,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         .subscription_hub
         .prompt_cache_projection_health()
         .await;
+    let retention_write_health = retention_write_health_snapshot();
     let event_bus = state.subscription_hub.runtime_mutation_bus_health();
     let backfill = startup_backfill_health_snapshot();
     let terminal_projection = state.terminal_projection_hub.health();
@@ -177,7 +179,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let writer_pressure_active = writer_accounting.p2_deferred_age_ms > 0
         || proxy_sqlite_write_coordinator.p1_waiter_count > 0
         || proxy_sqlite_write_coordinator.interactive_waiter_count > 0
-        || proxy_sqlite_write_coordinator.p2_waiter_count > 0;
+        || proxy_sqlite_write_coordinator.p2_waiter_count > 0
+        || proxy_sqlite_write_coordinator.maintenance_waiter_count > 0;
     let state = runtime_pressure_state(
         writer_accounting.state == "degraded",
         memory.pressure_level != "normal"
@@ -187,6 +190,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || dashboard_hot_topics.state == "degraded"
             || prompt_cache_failed_or_stale
             || prompt_cache_live_path_db_read
+            || retention_write_health.state == "degraded"
             || event_bus.state == "degraded"
             || backfill.state == "degraded",
         projection_deferred
@@ -194,6 +198,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || writer_pressure_active
             || prompt_cache_pressure_deferred
             || prompt_cache_bounded_cold_recovery
+            || retention_write_health.state == "deferred"
             || dashboard_hot_topics.state == "deferred"
             || backfill.state == "deferred",
     )
@@ -220,6 +225,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         dashboard_hot_topics,
         request_pipeline,
         prompt_cache_projection,
+        retention_write_health,
         event_bus,
         backfill,
     }
@@ -618,6 +624,14 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     )
     .fetch_one(&state.pool)
     .await?;
+    if snapshot.inventory_state == "resetting" {
+        set_system_raw_metrics_health_override(state, Some("preparing")).await;
+        debug!(
+            metrics_source = "inventory",
+            "system raw metrics inventory is waiting for retention reset batches"
+        );
+        return Ok(0);
+    }
     let rows = sqlx::query_as::<_, SystemRawPayloadInventoryRow>(
         r#"
         SELECT id, request_raw_path, response_raw_path
@@ -777,15 +791,21 @@ pub(crate) async fn set_system_raw_metrics_health_override(
     cache.latest = None;
 }
 
-pub(crate) async fn reset_system_raw_payload_metrics_inventory(state: &AppState) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SystemRawPayloadInventoryResetOutcome {
+    pub(crate) removed_path_count: usize,
+    pub(crate) complete: bool,
+}
+
+pub(crate) async fn reset_system_raw_payload_metrics_inventory_batch(
+    state: &AppState,
+    max_paths: usize,
+) -> Result<SystemRawPayloadInventoryResetOutcome> {
     let mut tx = state.pool.begin().await?;
-    sqlx::query("DELETE FROM system_raw_payload_inventory_paths")
-        .execute(tx.as_mut())
-        .await?;
     sqlx::query(
         r#"
         UPDATE system_raw_payload_metrics
-        SET inventory_state = 'preparing',
+        SET inventory_state = 'resetting',
             inventory_cursor = 0,
             link_inventory_cursor = 0,
             raw_count = 0,
@@ -800,12 +820,56 @@ pub(crate) async fn reset_system_raw_payload_metrics_inventory(state: &AppState)
     )
     .execute(tx.as_mut())
     .await?;
+    let removed_path_count = sqlx::query(
+        r#"
+        DELETE FROM system_raw_payload_inventory_paths
+        WHERE raw_path IN (
+            SELECT raw_path
+            FROM system_raw_payload_inventory_paths
+            ORDER BY raw_path ASC
+            LIMIT ?1
+        )
+        "#,
+    )
+    .bind(max_paths.max(1) as i64)
+    .execute(tx.as_mut())
+    .await?
+    .rows_affected() as usize;
+    let complete =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM system_raw_payload_inventory_paths")
+            .fetch_one(tx.as_mut())
+            .await?
+            == 0;
+    if complete {
+        sqlx::query(
+            "UPDATE system_raw_payload_metrics SET inventory_state = 'preparing', updated_at = datetime('now') WHERE singleton = 1",
+        )
+        .execute(tx.as_mut())
+        .await?;
+    }
     tx.commit().await?;
+    set_system_raw_metrics_health_override(state, Some("preparing")).await;
     debug!(
         metrics_source = "inventory",
-        "system raw metrics inventory reset after retention"
+        removed_path_count,
+        complete,
+        "system raw metrics inventory reset batch completed after retention"
     );
-    Ok(())
+    Ok(SystemRawPayloadInventoryResetOutcome {
+        removed_path_count,
+        complete,
+    })
+}
+
+pub(crate) async fn system_raw_payload_metrics_inventory_reset_pending(
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT inventory_state FROM system_raw_payload_metrics WHERE singleton = 1",
+    )
+    .fetch_one(pool)
+    .await?
+        == "resetting")
 }
 
 pub(crate) fn spawn_system_raw_payload_metrics_inventory(
@@ -814,6 +878,12 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            if let Err(error) =
+                crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
+            {
+                set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
+                warn!(error = %error, "system raw metrics inventory reset resume failed");
+            }
             if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory batch failed");

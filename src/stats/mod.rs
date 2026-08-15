@@ -4700,6 +4700,9 @@ pub(crate) async fn query_invocation_all_time_rollup_totals(
     )
     .await?;
     let tail_cursor = live_progress_cursor.max(repair_live_cursor);
+    // Without a durable live cursor, the rollup may already include an unknown
+    // prefix. Do not add a raw tail and risk double-counting; retention advances
+    // this cursor atomically only after it materializes a contiguous prefix.
     if tail_cursor <= 0 {
         return Ok(AllTimeRollupTotals {
             totals,
