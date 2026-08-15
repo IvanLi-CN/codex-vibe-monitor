@@ -46,7 +46,7 @@
 - 只改后端而不改 Storybook mock，会让本地 stories 继续假装 roster 自带 usage。
 - grouped/grid 若直接 hydrate 全量账号，只是把慢请求从 GET 挪到了 POST，没有真正解决问题。
 - 只看 live cursor 就相信小时桶完整，会在 fresh deploy / upgrade 时把 full-hour usage 漏掉。ID cursor 不能证明 occurred-at bucket 已覆盖；迟到终态需要进入明确缺桶的有界 post-cursor read。
-- legacy 账号归属回填的 progress key 必须包含半开窗口身份。只按账号保存 cursor 会在 reset 前移或窗口扩展时永久跳过旧 ID；回填结构化归属后必须原子重建受影响 rollup，否则 cursor 已追平时仍会从 rollup 读到零。
+- legacy 账号归属回填不能由 owner 请求扫描 JSON payload。schema-startup 的 readiness marker 只决定是否需要后台证明；rolling progress key 使用账号和窗口时长，reset-anchored 窗口再加入 reset generation。这样不会每分钟重扫 rolling 窗口，同时 reset 或时长变化不会错误复用旧 cursor。回填结构化归属后必须原子重建受影响 rollup，否则 cursor 已追平时仍会从 rollup 读到零。
 - stale hydrate 请求如果在 `finally` 里直接清空 pending ids，会把更新一轮的真实请求误判成“已完成”。
 - SQLite 会按结果值保留整数类型；映射到 Rust `f64` 的 `SUM` / `COALESCE` 输出应显式 `CAST(... AS REAL)`，否则整型测试数据会在 SQLx 解码阶段失败。
 - 列表 query key 变化时如果不清空 hydrate generation，旧 usage 响应会覆盖新筛选结果。

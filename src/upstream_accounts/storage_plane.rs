@@ -1,7 +1,8 @@
 use super::*;
 use crate::db_pressure::global_db_pressure_gate;
 use crate::maintenance::{
-    StartupBackfillProgressUpdate, load_startup_backfill_progress, save_startup_backfill_progress,
+    StartupBackfillProgressUpdate, StartupBackfillTask, load_startup_backfill_progress,
+    save_startup_backfill_progress, wake_startup_backfill_tasks,
 };
 use std::{
     collections::HashMap,
@@ -18,6 +19,7 @@ const ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT: i64 = 200;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET: Duration = Duration::from_millis(200);
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
     "account_window_usage_upstream_account_id";
+const ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING: &str = "pending";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +50,25 @@ struct AccountWindowStoredResult {
     completed_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountWindowLegacyReadiness {
+    Unknown,
+    Checking,
+    Ready,
+}
+
+impl Default for AccountWindowLegacyReadiness {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountWindowLegacyBackfillOutcome {
+    Ready,
+    Pending,
+}
+
 #[derive(Debug)]
 struct AccountWindowSelectionEntry {
     in_flight: bool,
@@ -56,6 +77,7 @@ struct AccountWindowSelectionEntry {
     completed: Option<AccountWindowStoredResult>,
     coverage_hole_bucket_count: u64,
     last_error: Option<String>,
+    legacy_readiness: AccountWindowLegacyReadiness,
     notify: Arc<Notify>,
 }
 
@@ -68,6 +90,7 @@ impl Default for AccountWindowSelectionEntry {
             completed: None,
             coverage_hole_bucket_count: 0,
             last_error: None,
+            legacy_readiness: AccountWindowLegacyReadiness::Unknown,
             notify: Arc::new(Notify::new()),
         }
     }
@@ -86,6 +109,8 @@ struct AccountWindowLegacyBackfillRange {
     account_id: i64,
     start_at: String,
     end_at: String,
+    selection_generation: String,
+    window_duration_secs: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +164,10 @@ pub(crate) struct AccountWindowStoragePlane {
     entries: Arc<Mutex<HashMap<String, AccountWindowSelectionEntry>>>,
     health: Arc<std::sync::Mutex<AccountWindowStorageHealthState>>,
     coalesced_waiter_count: AtomicU64,
+    legacy_backfill_state_loaded: AtomicBool,
+    legacy_backfill_required: AtomicBool,
     backfill_running: Arc<AtomicBool>,
+    coverage_repair_running: Arc<AtomicBool>,
     direct_pool_violation_count: AtomicU64,
 }
 
@@ -151,7 +179,10 @@ impl Default for AccountWindowStoragePlane {
                 AccountWindowStorageHealthState::default(),
             )),
             coalesced_waiter_count: AtomicU64::new(0),
+            legacy_backfill_state_loaded: AtomicBool::new(false),
+            legacy_backfill_required: AtomicBool::new(false),
             backfill_running: Arc::new(AtomicBool::new(false)),
+            coverage_repair_running: Arc::new(AtomicBool::new(false)),
             direct_pool_violation_count: AtomicU64::new(0),
         }
     }
@@ -192,8 +223,14 @@ impl AccountWindowStoragePlane {
         let selection_config = account_window_selection_config_key(&normalized_account_ids, &plans);
         let selection = account_window_selection_key(&selection_config, durable_cursor);
         let legacy_ranges = legacy_backfill_ranges_from_plans(&plans);
+        let legacy_backfill_required = self.legacy_backfill_required(&state.pool).await?;
+        let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty() {
+            Self::legacy_backfill_complete(&state.pool, &legacy_ranges).await?
+        } else {
+            true
+        };
 
-        let (waiter, lease) = {
+        let (waiter, lease, schedule_legacy_backfill, immediate_response) = {
             let mut entries = self.entries.lock().await;
             Self::prune_entries(&mut entries);
             Self::make_room_for_selection(&mut entries, &selection);
@@ -217,11 +254,52 @@ impl AccountWindowStoragePlane {
                 entry.last_good = compatible_last_good;
             }
             entry.last_used_at = Instant::now();
-            if entry.in_flight {
+            if legacy_backfill_complete {
+                entry.legacy_readiness = AccountWindowLegacyReadiness::Ready;
+            }
+            if legacy_backfill_required
+                && !legacy_backfill_complete
+                && !legacy_ranges.is_empty()
+                && entry.legacy_readiness != AccountWindowLegacyReadiness::Ready
+            {
+                // A different selection may already own the single bounded pass. Once it
+                // releases the shared worker, the next owner retry may enqueue this selection
+                // instead of leaving it permanently in `checking`.
+                let should_schedule = entry.legacy_readiness
+                    == AccountWindowLegacyReadiness::Unknown
+                    || !self.backfill_running.load(Ordering::Acquire);
+                entry.legacy_readiness = AccountWindowLegacyReadiness::Checking;
+                (
+                    None,
+                    None,
+                    should_schedule,
+                    Some(
+                        entry
+                            .last_good
+                            .as_ref()
+                            .filter(|(_, stored_at)| {
+                                stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
+                            })
+                            .map(|(response, _)| {
+                                AccountWindowStorageResponse::Ready(response.clone())
+                            })
+                            .unwrap_or(AccountWindowStorageResponse::Preparing {
+                                retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                            }),
+                    ),
+                )
+            } else if let Some(result) = entry.completed.as_ref().filter(|result| {
+                result.completed_at.elapsed() <= Duration::from_secs(5)
+                    && matches!(&result.response, AccountWindowStorageResponse::Ready(_))
+                    && entry.coverage_hole_bucket_count == 0
+                    && entry.last_error.is_none()
+            }) {
+                (None, None, false, Some(result.response.clone()))
+            } else if entry.in_flight {
                 self.coalesced_waiter_count.fetch_add(1, Ordering::Relaxed);
                 let mut waiter = Box::pin(entry.notify.clone().notified_owned());
                 waiter.as_mut().enable();
-                (Some(waiter), None)
+                (Some(waiter), None, false, None)
             } else {
                 entry.in_flight = true;
                 (
@@ -231,9 +309,18 @@ impl AccountWindowStoragePlane {
                         selection: selection.clone(),
                         completed: false,
                     }),
+                    false,
+                    None,
                 )
             }
         };
+
+        if let Some(response) = immediate_response {
+            if schedule_legacy_backfill {
+                self.schedule_legacy_backfill(state.pool.clone(), selection, legacy_ranges);
+            }
+            return Ok(response);
+        }
 
         if let Some(waiter) = waiter {
             waiter.await;
@@ -251,46 +338,16 @@ impl AccountWindowStoragePlane {
         }
 
         let mut lease = lease.expect("leader selection must hold an in-flight lease");
-        let response = async {
-            if Self::legacy_backfill_pending(
+        let response = self
+            .build(
                 &state.pool,
-                &legacy_ranges,
+                &state.config,
+                summaries,
+                &normalized_account_ids,
+                durable_cursor,
+                selection_now,
             )
-            .await?
-            {
-                tracing::info!(
-                    route = "upstream_account_window_usage",
-                    builder = "account_window_legacy_backfill",
-                    response_source = "preparing",
-                    readiness_reason = "legacy_account_assignment",
-                    selection_fingerprint = %account_window_selection_fingerprint(&normalized_account_ids),
-                    "upstream account window usage awaits legacy account assignment"
-                );
-                if !legacy_ranges.is_empty() {
-                    self.schedule_legacy_backfill(
-                        state.pool.clone(),
-                        legacy_ranges.clone(),
-                    );
-                }
-                Ok(AccountWindowBuildResult {
-                    response: AccountWindowStorageResponse::Preparing {
-                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                    },
-                    telemetry: AccountWindowUsageBuildTelemetry::default(),
-                })
-            } else {
-                self.build(
-                    &state.pool,
-                    &state.config,
-                    summaries,
-                    &normalized_account_ids,
-                    durable_cursor,
-                    selection_now,
-                )
-                .await
-            }
-        }
-        .await;
+            .await;
         let (response, refresh_last_good, coverage_hole_bucket_count, error) = match response {
             Ok(AccountWindowBuildResult {
                 response: AccountWindowStorageResponse::Ready(response),
@@ -339,22 +396,32 @@ impl AccountWindowStoragePlane {
         Ok(response)
     }
 
-    async fn legacy_backfill_pending(
+    async fn legacy_backfill_required(&self, pool: &Pool<Sqlite>) -> Result<bool> {
+        if !self.legacy_backfill_state_loaded.load(Ordering::Acquire) {
+            let pending = sqlx::query_scalar::<_, String>(
+                "SELECT state FROM upstream_account_attribution_backfill_state WHERE id = 1",
+            )
+            .fetch_optional(pool)
+            .await?
+            .is_some_and(|state| state == ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING);
+            self.legacy_backfill_required
+                .store(pending, Ordering::Release);
+            self.legacy_backfill_state_loaded
+                .store(true, Ordering::Release);
+        }
+        Ok(self.legacy_backfill_required.load(Ordering::Acquire))
+    }
+
+    async fn legacy_backfill_complete(
         pool: &Pool<Sqlite>,
         ranges: &[AccountWindowLegacyBackfillRange],
     ) -> Result<bool> {
-        if ranges.is_empty() {
-            return Ok(false);
-        }
-        let progress_key = legacy_backfill_progress_key(ranges);
-        let progress = load_startup_backfill_progress(pool, &progress_key).await?;
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE upstream_account_id IS NULL AND json_valid(payload) AND id > ",
-        );
-        query.push_bind(progress.cursor_id);
-        push_legacy_backfill_range_predicate(&mut query, ranges);
-        query.push(" LIMIT 1)");
-        Ok(query.build_query_scalar::<i64>().fetch_one(pool).await? != 0)
+        Ok(
+            load_startup_backfill_progress(pool, &legacy_backfill_progress_key(ranges))
+                .await?
+                .last_status
+                == "complete",
+        )
     }
 
     async fn last_good_response(&self, selection: &str) -> Option<AccountWindowStorageResponse> {
@@ -443,6 +510,7 @@ impl AccountWindowStoragePlane {
             "upstream account window usage storage-plane build completed"
         );
         if outcome == AccountWindowUsageBuildOutcome::Preparing {
+            self.schedule_historical_rollup_repair(pool.clone());
             return Ok(AccountWindowBuildResult {
                 response: AccountWindowStorageResponse::Preparing {
                     retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
@@ -469,9 +537,39 @@ impl AccountWindowStoragePlane {
         })
     }
 
+    fn schedule_historical_rollup_repair(&self, pool: Pool<Sqlite>) {
+        if self
+            .coverage_repair_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let running = self.coverage_repair_running.clone();
+        tokio::spawn(async move {
+            struct CoverageRepairGuard(Arc<AtomicBool>);
+            impl Drop for CoverageRepairGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _running = CoverageRepairGuard(running);
+            if let Err(err) = wake_startup_backfill_tasks(
+                &pool,
+                &[StartupBackfillTask::HistoricalRollups],
+                "account_window_usage_coverage_hole",
+            )
+            .await
+            {
+                warn!(error = %err, "failed to wake account window coverage repair");
+            }
+        });
+    }
+
     fn schedule_legacy_backfill(
         &self,
         pool: Pool<Sqlite>,
+        selection: String,
         ranges: Vec<AccountWindowLegacyBackfillRange>,
     ) {
         if self
@@ -483,6 +581,7 @@ impl AccountWindowStoragePlane {
         }
         let running = self.backfill_running.clone();
         let health = self.health.clone();
+        let entries = self.entries.clone();
         tokio::spawn(async move {
             struct BackfillGuard(Arc<AtomicBool>);
             impl Drop for BackfillGuard {
@@ -491,9 +590,29 @@ impl AccountWindowStoragePlane {
                 }
             }
             let _running = BackfillGuard(running);
-            if let Err(err) = Self::run_legacy_backfill_pass(pool, ranges, health).await {
-                warn!(error = %err, "account window legacy backfill pass failed");
+            let outcome = Self::run_legacy_backfill_pass(pool, ranges, health).await;
+            let mut entries = entries.lock().await;
+            let Some(entry) = entries.get_mut(&selection) else {
+                return;
+            };
+            match outcome {
+                Ok(AccountWindowLegacyBackfillOutcome::Ready) => {
+                    entry.legacy_readiness = AccountWindowLegacyReadiness::Ready;
+                    entry.completed = None;
+                    entry.last_error = None;
+                }
+                Ok(AccountWindowLegacyBackfillOutcome::Pending) => {
+                    // The next owner retry reschedules the bounded pass. Do not spin in a
+                    // background task while the pressure gate is closed or work remains.
+                    entry.legacy_readiness = AccountWindowLegacyReadiness::Unknown;
+                }
+                Err(err) => {
+                    entry.legacy_readiness = AccountWindowLegacyReadiness::Unknown;
+                    entry.last_error = Some(err.to_string());
+                    warn!(error = %err, "account window legacy backfill pass failed");
+                }
             }
+            entry.notify.notify_waiters();
         });
     }
 
@@ -501,14 +620,14 @@ impl AccountWindowStoragePlane {
         pool: Pool<Sqlite>,
         ranges: Vec<AccountWindowLegacyBackfillRange>,
         health: Arc<std::sync::Mutex<AccountWindowStorageHealthState>>,
-    ) -> Result<()> {
+    ) -> Result<AccountWindowLegacyBackfillOutcome> {
         if ranges.is_empty() {
-            return Ok(());
+            return Ok(AccountWindowLegacyBackfillOutcome::Ready);
         }
         let Ok(_permit) =
             global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
         else {
-            return Ok(());
+            return Ok(AccountWindowLegacyBackfillOutcome::Pending);
         };
         let progress_key = legacy_backfill_progress_key(&ranges);
         let progress = load_startup_backfill_progress(&pool, &progress_key).await?;
@@ -526,11 +645,25 @@ impl AccountWindowStoragePlane {
             .fetch_all(&pool)
             .await?;
         if rows.is_empty() {
+            save_startup_backfill_progress(
+                &pool,
+                &progress_key,
+                StartupBackfillProgressUpdate {
+                    cursor_id: progress.cursor_id,
+                    scanned: 0,
+                    updated: 0,
+                    zero_update_streak: progress.zero_update_streak.saturating_add(1),
+                    next_run_after: &Utc::now().to_rfc3339(),
+                    status: "complete",
+                    suspension_reason: None,
+                },
+            )
+            .await?;
             health
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .backfill_cursor = progress.cursor_id;
-            return Ok(());
+            return Ok(AccountWindowLegacyBackfillOutcome::Ready);
         }
 
         let mut tx = pool.begin().await?;
@@ -566,6 +699,10 @@ impl AccountWindowStoragePlane {
         tx.commit().await?;
 
         let cursor_id = last_scanned_id;
+        let outcome = (scanned == rows.len() as u64
+            && rows.len() < ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT as usize)
+            .then_some(AccountWindowLegacyBackfillOutcome::Ready)
+            .unwrap_or(AccountWindowLegacyBackfillOutcome::Pending);
         let next_run_after = Utc::now().to_rfc3339();
         save_startup_backfill_progress(
             &pool,
@@ -580,7 +717,10 @@ impl AccountWindowStoragePlane {
                     0
                 },
                 next_run_after: &next_run_after,
-                status: "ok",
+                status: match outcome {
+                    AccountWindowLegacyBackfillOutcome::Ready => "complete",
+                    AccountWindowLegacyBackfillOutcome::Pending => "pending",
+                },
                 suspension_reason: None,
             },
         )
@@ -589,7 +729,7 @@ impl AccountWindowStoragePlane {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .backfill_cursor = cursor_id;
-        Ok(())
+        Ok(outcome)
     }
 
     #[cfg(test)]
@@ -608,6 +748,8 @@ impl AccountWindowStoragePlane {
                         .with_timezone(&Shanghai)
                         .naive_local(),
                 ),
+                selection_generation: format!("test:{account_id}"),
+                window_duration_secs: 60,
             })
             .collect();
         Self::run_legacy_backfill_pass(
@@ -618,6 +760,7 @@ impl AccountWindowStoragePlane {
             )),
         )
         .await
+        .map(|_| ())
     }
 
     pub(crate) async fn health_snapshot(&self) -> AccountWindowStoragePlaneHealthSnapshot {
@@ -638,6 +781,7 @@ impl AccountWindowStoragePlane {
             .count();
         let has_deferred_selection = active_entries.iter().any(|entry| {
             entry.in_flight
+                || entry.legacy_readiness != AccountWindowLegacyReadiness::Ready
                 || entry.completed.as_ref().is_some_and(|result| {
                     matches!(
                         &result.response,
@@ -742,10 +886,15 @@ fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> 
     let mut normalized_ranges = ranges
         .iter()
         .map(|range| {
+            let reset_generation = range
+                .selection_generation
+                .strip_prefix("reset:")
+                .map(|anchor| format!("reset:{anchor}"))
+                .unwrap_or_else(|| "rolling".to_string());
             (
                 range.account_id,
-                range.start_at.as_str(),
-                range.end_at.as_str(),
+                range.window_duration_secs,
+                reset_generation,
             )
         })
         .collect::<Vec<_>>();
@@ -755,7 +904,9 @@ fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> 
         "{ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY}:{}",
         normalized_ranges
             .iter()
-            .map(|(account_id, start_at, end_at)| format!("{account_id}:{start_at}:{end_at}"))
+            .map(|(account_id, duration, reset_generation)| {
+                format!("{account_id}:{duration}:{reset_generation}")
+            })
             .collect::<Vec<_>>()
             .join(",")
     )
@@ -774,6 +925,8 @@ fn legacy_backfill_ranges_from_plans(
                     account_id: *account_id,
                     start_at: range.start_at.clone(),
                     end_at: range.end_at.clone(),
+                    selection_generation: range.selection_generation.clone(),
+                    window_duration_secs: range.window_duration_secs,
                 })
         })
         .collect::<Vec<_>>();
@@ -786,8 +939,8 @@ fn legacy_backfill_ranges_from_plans(
     });
     ranges.dedup_by(|left, right| {
         left.account_id == right.account_id
-            && left.start_at == right.start_at
-            && left.end_at == right.end_at
+            && left.selection_generation == right.selection_generation
+            && left.window_duration_secs == right.window_duration_secs
     });
     ranges
 }
@@ -827,7 +980,12 @@ fn account_window_selection_config_key(
             .join(","),
         ranges
             .iter()
-            .map(|range| format!("{}:{}:{}", range.account_id, range.start_at, range.end_at))
+            .map(|range| {
+                format!(
+                    "{}:{}:{}",
+                    range.account_id, range.selection_generation, range.window_duration_secs
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     )
@@ -961,16 +1119,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_backfill_progress_identity_changes_with_the_window_bounds() {
+    fn legacy_backfill_progress_identity_changes_with_duration_or_reset_generation() {
         let short_window = vec![AccountWindowLegacyBackfillRange {
             account_id: 42,
             start_at: "2026-08-16 10:00:00".to_string(),
             end_at: "2026-08-16 15:00:00".to_string(),
+            selection_generation: "reset:123".to_string(),
+            window_duration_secs: 5 * 60 * 60,
         }];
         let expanded_window = vec![AccountWindowLegacyBackfillRange {
             account_id: 42,
             start_at: "2026-08-16 08:00:00".to_string(),
             end_at: "2026-08-16 15:00:00".to_string(),
+            selection_generation: "reset:124".to_string(),
+            window_duration_secs: 7 * 60 * 60,
         }];
 
         assert_ne!(

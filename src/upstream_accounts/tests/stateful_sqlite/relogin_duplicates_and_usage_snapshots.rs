@@ -3528,6 +3528,24 @@ fn build_window_usage_range_reuses_stale_reset_window_bounds() {
     );
 }
 
+#[test]
+fn build_window_usage_range_reuses_rolling_selection_generation_within_a_minute() {
+    let first_now = parse_rfc3339_utc("2026-03-30T12:30:01Z").expect("first now");
+    let later_now = parse_rfc3339_utc("2026-03-30T12:30:59Z").expect("later now");
+    let first = build_window_usage_range(first_now, 300, None).expect("first range");
+    let later = build_window_usage_range(later_now, 300, None).expect("later range");
+
+    assert_ne!(
+        first.start_at, later.start_at,
+        "exact bounds remain current"
+    );
+    assert_eq!(
+        first.selection_generation, later.selection_generation,
+        "singleflight selection only changes when rolling membership can change"
+    );
+    assert_eq!(first.window_duration_secs, 300 * 60);
+}
+
 #[tokio::test]
 async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -4085,6 +4103,13 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
         .await
         .expect("clear structured account assignment");
 
+    sqlx::query(
+        "UPDATE upstream_account_attribution_backfill_state SET state = 'pending' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark simulated legacy attribution as pending");
+
     let (status, payload) = load_window_usage_response(state.clone(), vec![account_id]).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(payload["readiness"], "preparing");
@@ -4184,7 +4209,7 @@ async fn window_usage_backfill_rebuilds_full_hour_rollups_from_structured_accoun
 }
 
 #[tokio::test]
-async fn account_detail_preserves_actual_usage_while_window_usage_is_preparing() {
+async fn account_detail_uses_storage_readiness_after_window_preparing() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
     let account_id = insert_api_key_account(&state.pool, "Detail Legacy Usage").await;
@@ -4220,6 +4245,13 @@ async fn account_detail_preserves_actual_usage_while_window_usage_is_preparing()
         .await
         .expect("clear structured account assignment");
 
+    sqlx::query(
+        "UPDATE upstream_account_attribution_backfill_state SET state = 'pending' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark simulated legacy attribution as pending");
+
     let (status, payload) = load_window_usage_response(state.clone(), vec![account_id]).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(payload["readiness"], "preparing");
@@ -4233,9 +4265,10 @@ async fn account_detail_preserves_actual_usage_while_window_usage_is_preparing()
             .summary
             .primary_window
             .and_then(|window| window.actual_usage)
-            .expect("detail primary usage remains available")
+            .expect("background storage preparation should make usage available")
             .request_count,
-        1
+        1,
+        "detail usage comes from the shared storage result, never a full-window fallback"
     );
 }
 
@@ -4508,6 +4541,96 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
 }
 
 #[tokio::test]
+async fn get_upstream_account_window_usage_falls_back_by_account_for_missing_hourly_buckets() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let missing_account_id =
+        insert_api_key_account(&state.pool, "Hydrate Usage Missing Hourly Account").await;
+    let covered_account_id =
+        insert_api_key_account(&state.pool, "Hydrate Usage Covered Hourly Account").await;
+    let reset_at = Utc::now();
+    for account_id in [missing_account_id, covered_account_id] {
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: Some("team".to_string()),
+            limit_id: "codex".to_string(),
+            limit_name: Some("Codex".to_string()),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 18.0,
+                window_duration_mins: 300,
+                resets_at: Some(reset_at.to_rfc3339()),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
+            .await
+            .expect("persist single-window usage snapshot");
+    }
+
+    let full_hour_at = shanghai_local_iso(reset_at - ChronoDuration::hours(2));
+    for account_id in [missing_account_id, covered_account_id] {
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &full_hour_at,
+            Some(1200),
+            Some(600),
+            Some(200),
+            Some(2000),
+            Some(0.02),
+        )
+        .await;
+    }
+    insert_upstream_account_usage_hourly_row(
+        &state.pool,
+        covered_account_id,
+        &full_hour_at,
+        1,
+        1200,
+        600,
+        200,
+        0.02,
+    )
+    .await;
+
+    let cursor_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load cursor after covered and missing rows");
+    sqlx::query(
+        r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+    )
+    .bind("codex_invocations")
+    .bind(cursor_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark durable cursor");
+
+    let (status, payload) =
+        load_window_usage_response(state, vec![missing_account_id, covered_account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = payload["items"].as_array().expect("window usage items");
+    for account_id in [missing_account_id, covered_account_id] {
+        let item = items
+            .iter()
+            .find(|item| item["accountId"] == account_id)
+            .expect("account item");
+        assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
+        assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
+        assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
+        assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
+    }
+}
+
+#[tokio::test]
 async fn get_upstream_account_window_usage_returns_preparing_when_cursor_tail_exceeds_budget() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
@@ -4711,7 +4834,7 @@ async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_m
 }
 
 #[tokio::test]
-async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact() {
+async fn get_upstream_account_window_usage_includes_post_cursor_tail_for_existing_minute_rollup() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
 
@@ -4826,7 +4949,7 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
     insert_window_actual_usage_invocation(
         &state.pool,
         account_id,
-        &shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(25)),
+        &shanghai_local_iso(now - ChronoDuration::hours(4) + ChronoDuration::seconds(20)),
         Some(1100),
         Some(400),
         Some(200),

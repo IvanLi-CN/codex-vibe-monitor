@@ -208,6 +208,7 @@ export function useUpstreamAccounts(
     Record<number, HydratedWindowUsage>
   >({});
   const windowUsageRetryTimerRef = useRef<number | null>(null);
+  const windowUsageRetryIdsRef = useRef(new Set<number>());
   const windowUsageAbortControllersRef = useRef(new Set<AbortController>());
   const windowUsageRetryDelayRef = useRef(1_000);
   const windowUsageSelectionKeyRef = useRef<string | null>(null);
@@ -653,13 +654,17 @@ export function useUpstreamAccounts(
       if (response.readiness === "preparing") {
         const delay = Math.max(1_000, windowUsageRetryDelayRef.current, response.retryAfterMs ?? 0);
         windowUsageRetryDelayRef.current = delay < 2_000 ? 2_000 : WINDOW_USAGE_RETRY_MAX_MS;
-        if (windowUsageRetryTimerRef.current != null) {
-          window.clearTimeout(windowUsageRetryTimerRef.current);
+        normalizedAccountIds.forEach((accountId) => {
+          windowUsageRetryIdsRef.current.add(accountId);
+        });
+        if (windowUsageRetryTimerRef.current == null) {
+          windowUsageRetryTimerRef.current = window.setTimeout(() => {
+            windowUsageRetryTimerRef.current = null;
+            const retryAccountIds = Array.from(windowUsageRetryIdsRef.current);
+            windowUsageRetryIdsRef.current.clear();
+            void hydrateWindowUsage(retryAccountIds);
+          }, delay);
         }
-        windowUsageRetryTimerRef.current = window.setTimeout(() => {
-          windowUsageRetryTimerRef.current = null;
-          void hydrateWindowUsage(normalizedAccountIds);
-        }, delay);
         return;
       }
       windowUsageRetryDelayRef.current = 1_000;
@@ -692,6 +697,7 @@ export function useUpstreamAccounts(
 
       normalizedAccountIds.forEach((accountId) => {
         hydratedWindowUsageIdsRef.current.add(accountId);
+        windowUsageRetryIdsRef.current.delete(accountId);
       });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -722,6 +728,7 @@ export function useUpstreamAccounts(
         controller.abort();
       });
       windowUsageAbortControllersRef.current.clear();
+      windowUsageRetryIdsRef.current.clear();
       if (windowUsageRetryTimerRef.current != null) {
         window.clearTimeout(windowUsageRetryTimerRef.current);
         windowUsageRetryTimerRef.current = null;
@@ -740,6 +747,7 @@ export function useUpstreamAccounts(
       controller.abort();
     });
     windowUsageAbortControllersRef.current.clear();
+    windowUsageRetryIdsRef.current.clear();
     if (windowUsageRetryTimerRef.current != null) {
       window.clearTimeout(windowUsageRetryTimerRef.current);
       windowUsageRetryTimerRef.current = null;

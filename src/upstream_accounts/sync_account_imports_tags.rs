@@ -3361,13 +3361,10 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
                 }
             }
         }
-        AccountWindowStorageResponse::Preparing { .. } => {
-            enrich_window_actual_usage_for_summaries_legacy_exact(
-                state,
-                std::slice::from_mut(&mut detail.summary),
-            )
-            .await?;
-        }
+        // A cold read model must not turn an account-detail request into the old full-window
+        // archive/raw query. The dedicated window endpoint retries preparation; this detail
+        // response preserves its existing nullable usage fields until a baseline is ready.
+        AccountWindowStorageResponse::Preparing { .. } => {}
     }
     apply_effective_routing_rules_to_summaries(
         &state.pool,
@@ -4172,7 +4169,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         return Ok((AccountWindowUsageBuildOutcome::Ready, telemetry));
     }
 
-    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
+    let Some((plans, query_start, _query_end)) = collect_account_window_usage_plans(items, now)
     else {
         return Ok((AccountWindowUsageBuildOutcome::Ready, telemetry));
     };
@@ -4190,7 +4187,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         return Ok((AccountWindowUsageBuildOutcome::Ready, telemetry));
     }
 
-    let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
     let retention_cutoff = shanghai_retention_cutoff(config.invocation_max_days);
     let retention_cutoff_epoch = retention_cutoff.timestamp();
     let mut usage = account_ids
@@ -4200,16 +4196,9 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         .collect::<HashMap<_, _>>();
     let partial_hour_keys = collect_account_window_partial_hour_keys(&plans)?;
     let minute_rows = if has_minute_stats_rollups {
-        if let Some((full_minute_start_epoch, full_minute_end_epoch)) =
-            collect_account_window_full_minute_bounds(&plans)
-        {
-            load_window_actual_usage_minute_rows_from_pool(
-                pool,
-                &account_ids,
-                full_minute_start_epoch,
-                full_minute_end_epoch,
-            )
-            .await?
+        let full_minute_ranges = collect_account_window_full_minute_ranges(&plans);
+        if !full_minute_ranges.is_empty() {
+            load_window_actual_usage_minute_rows_from_pool(pool, &full_minute_ranges).await?
         } else {
             Vec::new()
         }
@@ -4241,17 +4230,10 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         .collect::<HashSet<_>>();
     let mut hourly_row_keys = HashSet::new();
     let mut covered_hourly_keys = minute_complete_hourly_keys.clone();
-    if has_hourly_usage_rollups
-        && let Some((full_hour_start_epoch, full_hour_end_epoch)) =
-            collect_account_window_full_hour_bounds(&plans)
-    {
-        let hourly_rows = load_window_actual_usage_hourly_rows_from_pool(
-            pool,
-            &account_ids,
-            full_hour_start_epoch,
-            full_hour_end_epoch,
-        )
-        .await?;
+    let full_hour_ranges = collect_account_window_full_hour_ranges(&plans);
+    if has_hourly_usage_rollups && !full_hour_ranges.is_empty() {
+        let hourly_rows =
+            load_window_actual_usage_hourly_rows_from_pool(pool, &full_hour_ranges).await?;
         hourly_row_keys = collect_account_window_hourly_coverage_keys(&hourly_rows);
         let hourly_rows = hourly_rows
             .into_iter()
@@ -4289,121 +4271,106 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
     if has_live_invocations {
         let live_rollup_cursor =
             load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-        let partial_minute_bucket_epochs =
-            collect_account_window_partial_minute_bucket_epochs(&plans)?;
-        let partial_hour_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
-        let missing_full_hour_bucket_epochs =
-            collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
+        let partial_minute_keys = collect_account_window_partial_minute_keys(&plans)?;
+        let missing_full_hour_keys =
+            collect_account_window_missing_full_hour_keys(&plans, &covered_hourly_keys);
 
-        let archived_partial_minute_bucket_epochs = partial_minute_bucket_epochs
+        let archived_partial_minute_keys = partial_minute_keys
             .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
             .collect::<HashSet<_>>();
-        let archived_partial_hour_bucket_epochs = partial_hour_bucket_epochs
+        let archived_partial_hour_keys = partial_hour_keys
             .iter()
-            .copied()
-            .filter(|bucket_epoch| {
+            .filter(|(_, bucket_epoch)| {
                 Utc.timestamp_opt(*bucket_epoch, 0)
                     .single()
                     .map(|bucket_start_at| bucket_start_at < retention_cutoff)
                     .unwrap_or(false)
             })
-            .collect::<HashSet<_>>();
-        let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
-            .iter()
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        let archived_missing_full_hour_keys = missing_full_hour_keys
+            .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
+            .copied()
             .collect::<HashSet<_>>();
         if query_start < retention_cutoff
-            && (!archived_partial_minute_bucket_epochs.is_empty()
-                || !archived_partial_hour_bucket_epochs.is_empty()
-                || !archived_missing_full_hour_bucket_epochs.is_empty())
+            && (!archived_partial_minute_keys.is_empty()
+                || !archived_partial_hour_keys.is_empty()
+                || !archived_missing_full_hour_keys.is_empty())
         {
-            telemetry.coverage_hole_bucket_count = archived_partial_minute_bucket_epochs.len()
-                + archived_partial_hour_bucket_epochs.len()
-                + archived_missing_full_hour_bucket_epochs.len();
+            telemetry.coverage_hole_bucket_count = archived_partial_minute_keys.len()
+                + archived_partial_hour_keys.len()
+                + archived_missing_full_hour_keys.len();
             return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
         }
 
-        let live_partial_minute_bucket_epochs = partial_minute_bucket_epochs
+        let live_partial_minute_keys = partial_minute_keys
             .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
             .collect::<HashSet<_>>();
-        let live_partial_hour_bucket_epochs = partial_hour_bucket_epochs
+        let live_partial_hour_keys = partial_hour_keys
             .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-            .chain(
-                missing_full_hour_bucket_epochs
-                    .iter()
-                    .copied()
-                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
-            )
             .collect::<HashSet<_>>();
-        // The cursor orders durable IDs, not occurred-at buckets. A delayed terminal can
-        // arrive after the cursor for an older, currently missing hour, so preserve bucket
-        // coverage and let the exact post-cursor tail supply that record.
-        let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+        let live_missing_full_hour_keys = missing_full_hour_keys
             .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch >= retention_cutoff_epoch)
             .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
             .collect::<HashSet<_>>();
-        if !live_partial_minute_bucket_epochs.is_empty() {
-            let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+        let mut exact_fallback_row_ids = HashSet::new();
+        if !live_partial_minute_keys.is_empty() {
+            let live_rows = load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
                 pool,
-                &account_ids,
-                &live_partial_minute_bucket_epochs,
+                &live_partial_minute_keys,
                 60,
                 None,
-                (live_rollup_cursor > 0).then_some(live_rollup_cursor),
+                None,
             )
             .await?;
             telemetry.bounded_raw_row_count += live_rows.len();
+            exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
                 usage.entry(account_id).or_default().merge(summary);
             }
         }
 
-        let live_hour_fallback_bucket_epochs = live_partial_hour_bucket_epochs
-            .iter()
-            .copied()
-            .chain(live_missing_full_hour_bucket_epochs.iter().copied())
-            .collect::<HashSet<_>>();
-        if !live_hour_fallback_bucket_epochs.is_empty() {
-            let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+        let mut live_hour_fallback_keys = live_partial_hour_keys;
+        live_hour_fallback_keys.extend(live_missing_full_hour_keys);
+        if !live_hour_fallback_keys.is_empty() {
+            let live_rows = load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
                 pool,
-                &account_ids,
-                &live_hour_fallback_bucket_epochs,
+                &live_hour_fallback_keys,
                 3_600,
                 None,
-                (live_rollup_cursor > 0).then_some(live_rollup_cursor),
+                None,
             )
             .await?;
-            let live_rows = filter_account_window_usage_rows_for_exact_fallback(
-                live_rows,
-                &live_partial_minute_bucket_epochs,
-                false,
-                &live_partial_hour_bucket_epochs,
-                &live_missing_full_hour_bucket_epochs,
-                &covered_hourly_keys,
-                &minute_covered_keys,
-            )?;
+            let live_rows = live_rows
+                .into_iter()
+                .filter(|row| {
+                    !exact_fallback_row_ids.contains(&row.id)
+                        && invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)
+                            .is_ok_and(|minute_epoch| {
+                                !minute_covered_keys
+                                    .contains(&(row.upstream_account_id, minute_epoch))
+                            })
+                })
+                .collect::<Vec<_>>();
             telemetry.bounded_raw_row_count += live_rows.len();
+            exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
                 usage.entry(account_id).or_default().merge(summary);
             }
         }
 
         if live_rollup_cursor > 0 {
-            let query_end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
-            let live_tail_rows = load_window_actual_usage_rows_from_pool(
+            let live_tail_rows = load_window_actual_usage_rows_for_plans_from_pool(
                 pool,
-                &account_ids,
-                &query_start_at,
-                &query_end_at,
-                None,
+                &plans,
                 Some(live_rollup_cursor),
                 None,
                 Some(ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS + 1),
@@ -4414,18 +4381,10 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                     telemetry.coverage_hole_bucket_count.saturating_add(1);
                 return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
             }
-            let live_tail_rows = filter_account_window_usage_rows_for_exact_fallback(
-                live_tail_rows,
-                &live_partial_minute_bucket_epochs,
-                true,
-                &live_partial_hour_bucket_epochs,
-                // Missing full hours above already read the post-cursor tail for their
-                // bounded buckets. Do not merge that same identity again from the broad
-                // cursor tail.
-                &HashSet::new(),
-                &covered_hourly_keys,
-                &minute_covered_keys,
-            )?;
+            let live_tail_rows = live_tail_rows
+                .into_iter()
+                .filter(|row| !exact_fallback_row_ids.contains(&row.id))
+                .collect::<Vec<_>>();
             telemetry.bounded_raw_row_count += live_tail_rows.len();
             for (account_id, summary) in fold_account_window_usage_rows(live_tail_rows, &plans) {
                 usage.entry(account_id).or_default().merge(summary);
@@ -4435,62 +4394,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
 
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok((AccountWindowUsageBuildOutcome::Ready, telemetry))
-}
-
-pub(crate) async fn enrich_window_actual_usage_for_summaries_legacy_exact(
-    state: &AppState,
-    items: &mut [UpstreamAccountSummary],
-) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-
-    let now = Utc::now();
-    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
-    else {
-        return Ok(());
-    };
-    let account_ids = plans.keys().copied().collect::<Vec<_>>();
-    if account_ids.is_empty() {
-        return Ok(());
-    }
-
-    // This preserves the established detail-response contract only while the new endpoint
-    // storage plane reports preparing. The dedicated window endpoint never uses this path.
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    let mut rows = Vec::new();
-    if query_start < retention_cutoff {
-        let archive_end = query_end.min(retention_cutoff);
-        if query_start < archive_end {
-            rows.extend(
-                load_window_actual_usage_rows_from_archives_with_legacy_account_fallback(
-                    &state.pool,
-                    &account_ids,
-                    &format_naive(query_start.with_timezone(&Shanghai).naive_local()),
-                    &format_naive(archive_end.with_timezone(&Shanghai).naive_local()),
-                    &state.config.archive_dir,
-                )
-                .await?,
-            );
-        }
-    }
-
-    let live_start = query_start.max(retention_cutoff);
-    if live_start < query_end {
-        rows.extend(
-            load_window_actual_usage_rows_with_legacy_account_fallback(
-                &state.pool,
-                &account_ids,
-                &format_naive(live_start.with_timezone(&Shanghai).naive_local()),
-                &format_naive(query_end.with_timezone(&Shanghai).naive_local()),
-            )
-            .await?,
-        );
-    }
-
-    let usage = fold_account_window_usage_rows(rows, &plans);
-    apply_window_actual_usage_to_summaries(items, &usage);
-    Ok(())
 }
 
 #[cfg(test)]

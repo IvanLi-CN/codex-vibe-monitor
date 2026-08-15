@@ -68,7 +68,7 @@ flowchart LR
 - SQLite rollup 保存长期统计、账号活动、usage breakdown、timeseries 与 parallel-work 的可恢复聚合；archive 承担超出 live retention 的历史详情。
 - 历史 HTTP API 从 rollup、archive 与 exact boundary 查询构建；不得把历史重建工作放回 Dashboard 当前态热路径。
 - 价格、归属、archive rewrite/restore 等修正通过目标桶 repair 收敛，而不是周期性重扫宽时间窗。
-- 账号窗口 hydrate 使用私有 StoragePlane。新 terminal 将账号归属持久化到 `codex_invocations.upstream_account_id`；读侧先按账号和窗口范围合并 minute/hourly rollup，再读取范围边界、明确 coverage hole 或 cursor 后 tail。ID cursor 不能代替时间桶 coverage；同账号的 sibling window coverage 也不能吞掉 partial-hour exact tail。legacy 回填以精确窗口身份保存 progress，并与受影响 hourly rollup rebuild 原子提交。无准确 baseline 时显式返回 `202 preparing`，不能以全窗 raw/archive 读取换取表面的成功响应。
+- 账号窗口 hydrate 使用私有 StoragePlane。新 terminal 将账号归属持久化到 `codex_invocations.upstream_account_id`；读侧先按账号和窗口范围合并 minute/hourly rollup，再读取范围边界、明确 coverage hole 或 cursor 后 tail。ID cursor 不能代替时间桶 coverage；同账号的 sibling window coverage 也不能吞掉 partial-hour exact tail。schema-startup 的 legacy readiness marker 使 owner 请求不扫描 payload；rolling 回填以账号和窗口时长保存 progress，reset-anchored 窗口再加入 reset generation，并与受影响 hourly rollup rebuild 原子提交。无准确 baseline 时显式返回 `202 preparing`，不能以全窗 raw/archive 读取换取表面的成功响应。
 
 ## 6. 健康与回退
 

@@ -552,6 +552,58 @@ describe("useUpstreamAccounts", () => {
     }
   });
 
+  it("coalesces preparing retries from separate visible hydration batches", async () => {
+    vi.useFakeTimers();
+    try {
+      apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+        }),
+      );
+      apiMocks.fetchUpstreamAccountWindowUsage
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 1_000,
+        })
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 1_000,
+        })
+        .mockResolvedValueOnce(createWindowUsageResponse([1, 2]));
+
+      render(<Probe query={{ page: 1, pageSize: 20 }} />);
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+        1,
+        [1],
+        expect.objectContaining({ signal: expect.anything() }),
+      );
+
+      click("hydrate-visible");
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+        2,
+        [1, 2],
+        expect.objectContaining({ signal: expect.anything() }),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+        3,
+        [1, 2],
+        expect.objectContaining({ signal: expect.anything() }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels a preparing retry when the selected account changes", async () => {
     vi.useFakeTimers();
     try {

@@ -1450,6 +1450,20 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure structured upstream-account invocation index")?;
 
+    // Legacy account attribution is reconciled off the owner request path. Restrict each
+    // bounded probe to unassigned rows in its active time window instead of scanning the
+    // durable invocation suffix while a page retries preparation.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_unassigned_account_window_backfill
+        ON codex_invocations (occurred_at, id)
+        WHERE upstream_account_id IS NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure unassigned upstream-account backfill index")?;
+
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
     sqlx::query(
@@ -4100,6 +4114,38 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await
             .with_context(|| format!("failed to ensure startup_backfill_progress.{column}"))?;
     }
+
+    // This is a startup-maintained readiness marker, not an owner-request probe. Existing
+    // databases start pending only when they contain rows without the structured account
+    // column; fresh databases and current write paths start ready.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_attribution_backfill_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            state TEXT NOT NULL CHECK (state IN ('ready', 'pending')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream-account attribution backfill state")?;
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO upstream_account_attribution_backfill_state (id, state)
+        SELECT
+            1,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM codex_invocations
+                WHERE upstream_account_id IS NULL
+                LIMIT 1
+            ) THEN 'pending' ELSE 'ready' END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to initialize upstream-account attribution backfill state")?;
 
     sqlx::query(
         r#"
