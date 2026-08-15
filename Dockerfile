@@ -61,10 +61,8 @@ RUN apt-get update \
     && install -m 0644 /tmp/xray/LICENSE /usr/local/share/licenses/xray-core/LICENSE \
     && rm -rf /tmp/xray /tmp/xray.zip
 
-# Stage 4: runtime image
-FROM debian:bookworm-slim AS runtime
-ARG APP_EFFECTIVE_VERSION
-ARG FRONTEND_EFFECTIVE_VERSION
+# Stage 4: shared runtime base
+FROM debian:bookworm-slim AS runtime-base
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
@@ -72,10 +70,16 @@ RUN apt-get update \
 
 WORKDIR /srv/app
 
-COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY scripts/search-raw /usr/local/bin/search-raw
+
+# Stage 5: production runtime image
+FROM runtime-base AS production-runtime
+ARG APP_EFFECTIVE_VERSION
+ARG FRONTEND_EFFECTIVE_VERSION
+
+COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
 COPY --from=web-builder /app/web/dist ./web
 
 RUN chmod 0755 /usr/local/bin/search-raw
@@ -96,3 +100,45 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl --fail --silent http://127.0.0.1:8080/health || exit 1
 
 CMD ["codex-vibe-monitor"]
+
+# Stage 6: PR-only smoke image. The workflow produces the binary, web bundle, and
+# Xray archive outside Docker so this target exercises the runtime without repeating
+# the release compiler or Xray downloader pipelines. GitHub-hosted runners use Ubuntu
+# 24.04; matching its glibc here avoids executing a host-built debug binary against
+# the older production runtime.
+FROM ubuntu:24.04 AS ci-smoke-runtime
+ARG APP_EFFECTIVE_VERSION
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv/app
+
+COPY .ci-smoke/xray /usr/local/bin/xray
+COPY .ci-smoke/xray.LICENSE /usr/local/share/licenses/xray-core/LICENSE
+COPY scripts/search-raw /usr/local/bin/search-raw
+COPY .ci-smoke/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY .ci-smoke/web ./web
+
+RUN chmod 0755 /usr/local/bin/search-raw /usr/local/bin/codex-vibe-monitor
+
+ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
+    HTTP_BIND=0.0.0.0:8080 \
+    STATIC_DIR=/srv/app/web \
+    POLL_INTERVAL_SECS=10 \
+    REQUEST_TIMEOUT_SECS=60 \
+    MALLOC_ARENA_MAX=8 \
+    APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
+
+LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
+
+VOLUME ["/srv/app/data"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl --fail --silent http://127.0.0.1:8080/health || exit 1
+
+CMD ["codex-vibe-monitor"]
+
+# Stage 7: retain the production image as the default Docker build target.
+FROM production-runtime AS runtime

@@ -136,7 +136,8 @@ async fn shared_raw_blob_keeps_file_reference_until_last_owner_is_removed() {
 
 #[tokio::test]
 async fn schema_backfill_links_existing_pool_attempt_response_raw() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("legacy-attempt-raw-link").await;
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("legacy-attempt-raw-link").await;
     let shared_path = config.proxy_raw_dir.join("legacy-attempt-response.zst");
     let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
     insert_retention_invocation(
@@ -200,7 +201,7 @@ async fn schema_backfill_links_existing_pool_attempt_response_raw() {
 #[tokio::test]
 async fn cold_compression_updates_every_shared_raw_blob_owner_before_removing_old_file() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("shared-raw-blob-cold-compression").await;
+        retention_fresh_schema_test_pool_and_config("shared-raw-blob-cold-compression").await;
     let shared_path = config.proxy_raw_dir.join("shared-response.bin");
     fs::write(&shared_path, b"shared response raw").expect("write shared raw");
     let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
@@ -358,7 +359,8 @@ async fn retention_compacts_old_quota_snapshots_by_shanghai_day() {
 
 #[tokio::test]
 async fn retention_orphan_sweep_skips_fresh_raw_files() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-orphan-grace").await;
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-orphan-grace").await;
     let orphan = config.proxy_raw_dir.join("fresh-orphan.bin");
     fs::write(&orphan, b"fresh-orphan").expect("write fresh orphan");
 
@@ -424,7 +426,8 @@ async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
 
 #[tokio::test]
 async fn retention_dry_run_does_not_mutate_database_or_files() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-dry-run").await;
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-dry-run").await;
     let response_raw = config.proxy_raw_dir.join("dry-run-response.bin");
     let orphan = config.proxy_raw_dir.join("dry-run-orphan.bin");
     fs::write(&response_raw, b"dry-run-response").expect("write dry-run response raw");
@@ -485,7 +488,7 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
 #[tokio::test]
 async fn retention_compresses_cold_raw_payloads_and_updates_paths() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-live").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-live").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -583,7 +586,8 @@ async fn retention_compresses_cold_raw_payloads_and_updates_paths() {
 #[tokio::test]
 async fn retention_cold_compression_repair_keeps_relative_db_paths() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-relative-repair").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-relative-repair")
+            .await;
     config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -626,7 +630,7 @@ async fn retention_cold_compression_repair_keeps_relative_db_paths() {
 #[tokio::test]
 async fn retention_skips_cold_compression_for_archive_eligible_rows() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-skip-archive").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-skip-archive").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -669,7 +673,8 @@ async fn retention_continues_when_one_cold_compression_file_fails() {
     use std::os::unix::fs::PermissionsExt;
 
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-continue-on-error").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-continue-on-error")
+            .await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -739,8 +744,10 @@ async fn retention_continues_when_one_cold_compression_file_fails() {
 async fn retention_compresses_other_file_when_same_invocation_request_fails() {
     use std::os::unix::fs::PermissionsExt;
 
-    let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-same-row-continue-on-error").await;
+    let (pool, mut config, temp_dir) = retention_fresh_schema_test_pool_and_config(
+        "retention-cold-compress-same-row-continue-on-error",
+    )
+    .await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -825,7 +832,7 @@ async fn retention_compresses_other_file_when_same_invocation_request_fails() {
 #[tokio::test]
 async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-dry-run").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-dry-run").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -875,7 +882,7 @@ async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files
 #[tokio::test]
 async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-order").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-order").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
     config.retention_batch_rows = 1;
@@ -950,7 +957,7 @@ async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
 #[tokio::test]
 async fn retention_cold_compression_budget_counts_missing_rows() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("retention-cold-compress-missing-budget").await;
+        retention_fresh_schema_test_pool_and_config("retention-cold-compress-missing-budget").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
     config.retention_batch_rows = 1;
@@ -1023,7 +1030,7 @@ async fn retention_cold_compression_budget_counts_missing_rows() {
 #[tokio::test]
 async fn maintenance_raw_compression_cli_supports_dry_run_and_live_modes() {
     let (pool, mut config, temp_dir) =
-        retention_test_pool_and_config("maintenance-raw-compression-cli").await;
+        retention_fresh_schema_test_pool_and_config("maintenance-raw-compression-cli").await;
     config.proxy_raw_hot_secs = 60;
     config.proxy_raw_compression = RawCompressionCodec::Gzip;
 
@@ -1083,7 +1090,7 @@ async fn maintenance_raw_compression_cli_supports_dry_run_and_live_modes() {
 #[tokio::test]
 async fn retention_archives_rows_with_compressed_raw_payload_files() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("retention-archive-compressed-raw").await;
+        retention_fresh_schema_test_pool_and_config("retention-archive-compressed-raw").await;
     let response_raw = config
         .proxy_raw_dir
         .join("archive-compressed-response.bin.gz");

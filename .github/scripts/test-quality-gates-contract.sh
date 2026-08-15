@@ -172,6 +172,121 @@ fi
 
 grep -q "expected_pr_workflows jobs must exactly cover required_checks" "$tmp_dir/coverage.log"
 
+archive_cache_repo="$tmp_dir/archive-cache-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_cache_repo"
+python3 - <<'PY' "$archive_cache_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}"
+replacement = "if: ${{ always() && steps.cargo-test-cache.outputs.cache-hit != 'true' }}"
+if needle not in text:
+    raise SystemExit("failed to rewrite archive target-cache condition")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_cache_repo" --profile final >/dev/null 2>"$tmp_dir/archive-cache.log"; then
+  echo "expected archive target-cache condition fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "target cache must save only after a successful archive build" "$tmp_dir/archive-cache.log"
+
+smoke_producer_repo="$tmp_dir/smoke-producer-repo"
+copy_repo_snapshot "$baseline_repo" "$smoke_producer_repo"
+python3 - <<'PY' "$smoke_producer_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "    needs: build-pr-smoke-artifacts\n"
+replacement = "    needs: backend-test-archive\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite PR smoke artifact dependency")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$smoke_producer_repo" --profile final >/dev/null 2>"$tmp_dir/smoke-producer.log"; then
+  echo "expected PR smoke artifact dependency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
+
+e2e_producer_repo="$tmp_dir/e2e-producer-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_producer_repo"
+python3 - <<'PY' "$e2e_producer_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "    needs: records-overlay-e2e-producer\n"
+replacement = "    needs: backend-test-archive\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite E2E test producer dependency")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_producer_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-producer.log"; then
+  echo "expected E2E test producer dependency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer" "$tmp_dir/e2e-producer.log"
+
+for workflow_file in ci-pr.yml ci-main.yml; do
+lint_target_repo="$tmp_dir/lint-target-${workflow_file%.yml}-repo"
+copy_repo_snapshot "$baseline_repo" "$lint_target_repo"
+python3 - <<'PY' "$lint_target_repo" "$workflow_file"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows" / sys.argv[2]
+text = path.read_text()
+needle = "            ~/.cargo/git\n"
+if needle not in text:
+    raise SystemExit("failed to locate lint cache paths")
+path.write_text(text.replace(needle, f"{needle}            target\n", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$lint_target_repo" --profile final >/dev/null 2>"$tmp_dir/lint-target-${workflow_file%.yml}.log"; then
+  echo "expected $workflow_file lint target-cache fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "legacy cache must not restore Cargo target artifacts" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
+done
+
+e2e_spec_repo="$tmp_dir/e2e-spec-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_spec_repo"
+python3 - <<'PY' "$e2e_spec_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "demo-runtime.spec.ts"
+if needle not in text:
+    raise SystemExit("failed to locate Web Demo Playwright spec")
+path.write_text(text.replace(needle, "demo-runtime-removed.spec.ts", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_spec_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-spec.log"; then
+  echo "expected missing Web Demo Playwright spec fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must run both Playwright regression specs" "$tmp_dir/e2e-spec.log"
+
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
 python3 - <<'PY' "$informational_repo"

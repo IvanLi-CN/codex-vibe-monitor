@@ -37,8 +37,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -46,13 +49,12 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Cache cargo directories
+      - name: Restore legacy Cargo workspace cache
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -62,6 +64,16 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  repository-tooling-checks:
+    name: Repository Tooling Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -276,6 +288,23 @@ jobs:
         working-directory: web
         run: bun run test
 
+  storybook-accessibility-tests:
+    name: Storybook Accessibility Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
       - name: Install Playwright Chromium for Storybook
         working-directory: web
         run: bunx playwright install --with-deps chromium
@@ -284,8 +313,40 @@ jobs:
         working-directory: web
         run: bun run test-storybook
 
-  records-overlay-e2e:
-    name: Records Overlay E2E
+  docs-demo-build:
+    name: Docs & Web Demo Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Build Storybook static site
+        working-directory: web
+        run: bun run storybook:build -- --quiet
+
+      - name: Build docs and demo sites
+        run: |
+          cd docs-site && bun run build
+          cd ../web && bun run demo:build
+
+  records-overlay-e2e-producer:
+    name: PR E2E Test Producer
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -303,7 +364,7 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Start Vite dev server
         working-directory: web
@@ -323,9 +384,40 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Run records overlay Playwright regression
+      - name: Start mock-only Web Demo server
         working-directory: web
-        run: bun run test:e2e -- records-filter-overlay.spec.ts
+        run: |
+          bun run demo:dev -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-demo.pid
+
+      - name: Wait for Web Demo readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60083/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Web Demo server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-demo.log || true
+          exit 1
+
+      - name: Run records overlay and Web Demo Playwright regression
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          records_status=0
+          demo_status=0
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
+            bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
+          records_pid=$!
+          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
+          demo_pid=$!
+          wait "$records_pid" || records_status=$?
+          wait "$demo_pid" || demo_status=$?
+          exit $(( records_status || demo_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -333,7 +425,8 @@ jobs:
         with:
           name: records-overlay-playwright-report
           path: |
-            web/playwright-report
+            web/playwright-report-records
+            web/playwright-report-demo
             web/test-results
           if-no-files-found: ignore
 
@@ -343,8 +436,36 @@ jobs:
           if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
+          if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
+          fi
+
+  records-overlay-e2e:
+    name: Records Overlay E2E
+    needs: records-overlay-e2e-producer
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify E2E test producer
+        env:
+          PRODUCER_RESULT: ${{ needs.records-overlay-e2e-producer.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+  backend-test-archive:
+    name: Backend Test Archive Producer
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build backend test archive
+        id: build-backend-test-archive
+        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+      - name: Save Cargo test artifacts
+        if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
 
   backend-tests-lightweight:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -378,6 +499,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight
 
   backend-tests-stateful-sqlite:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Stateful SQLite)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -411,6 +534,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 
   backend-tests-archive-file-io:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -443,14 +568,37 @@ jobs:
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 
+  build-pr-smoke-artifacts:
+    name: PR Smoke Artifact Producer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build PR smoke artifacts
+        run: mkdir -p .ci-smoke
+
+      - name: Upload PR smoke artifacts
+        uses: actions/upload-artifact@v7
+
   build:
     name: Build Artifacts
-    if: github.event_name == 'pull_request'
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Download PR smoke artifacts
+        uses: actions/download-artifact@v7
+
+      - name: Extract PR smoke artifacts
+        run: mkdir -p .ci-smoke
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

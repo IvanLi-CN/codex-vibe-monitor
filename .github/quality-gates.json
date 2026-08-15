@@ -20,7 +20,10 @@
         "integrations": {
           "Validate PR labels": 15368,
           "Lint & Format Check": 15368,
+          "Repository Tooling Checks": 15368,
           "Front-end Tests": 15368,
+          "Storybook Accessibility Tests": 15368,
+          "Docs & Web Demo Build": 15368,
           "Records Overlay E2E": 15368,
           "Backend Tests (Lightweight)": 15368,
           "Backend Tests (Stateful SQLite)": 15368,
@@ -52,7 +55,10 @@
   "required_checks": [
     "Validate PR labels",
     "Lint & Format Check",
+    "Repository Tooling Checks",
     "Front-end Tests",
+    "Storybook Accessibility Tests",
+    "Docs & Web Demo Build",
     "Records Overlay E2E",
     "Backend Tests (Lightweight)",
     "Backend Tests (Stateful SQLite)",
@@ -73,12 +79,20 @@
       "workflow": "CI PR",
       "jobs": [
         "Lint & Format Check",
+        "Repository Tooling Checks",
         "Front-end Tests",
+        "Storybook Accessibility Tests",
+        "Docs & Web Demo Build",
         "Records Overlay E2E",
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
         "Build Artifacts"
+      ],
+      "auxiliary_jobs": [
+        "Backend Test Archive Producer",
+        "PR E2E Test Producer",
+        "PR Smoke Artifact Producer"
       ]
     },
     {
@@ -93,12 +107,18 @@
       "workflow": "CI Main",
       "jobs": [
         "Lint & Format Check",
+        "Repository Tooling Checks",
         "Front-end Tests",
+        "Storybook Accessibility Tests",
+        "Docs & Web Demo Build",
         "Records Overlay E2E",
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
         "Release Snapshot"
+      ],
+      "auxiliary_jobs": [
+        "Backend Test Archive Producer"
       ]
     }
   ],

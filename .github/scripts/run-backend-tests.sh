@@ -52,14 +52,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 start_epoch="$(date +%s)"
-stateful_schema_template_dir=""
+schema_template_dir=""
 
-cleanup_stateful_schema_template() {
-  if [[ -n "$stateful_schema_template_dir" && -d "$stateful_schema_template_dir" ]]; then
-    rm -rf "$stateful_schema_template_dir"
+cleanup_schema_template() {
+  if [[ -n "$schema_template_dir" && -d "$schema_template_dir" ]]; then
+    rm -rf "$schema_template_dir"
   fi
+  schema_template_dir=""
 }
-trap cleanup_stateful_schema_template EXIT
+trap cleanup_schema_template EXIT
 
 # The pool routing/live-first test profiles now exercise async paths that exceed the
 # default Rust thread stack on CI workers. Raise the per-thread minimum for the
@@ -74,11 +75,25 @@ if ! command -v cargo-nextest >/dev/null 2>&1; then
   exit 1
 fi
 
-prepare_stateful_schema_template() {
-  stateful_schema_template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-stateful-schema.XXXXXX")"
-  local template_path="$stateful_schema_template_dir/current-schema.db"
-  export CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH="$template_path"
-  echo "backend_test_stateful_schema_template=$template_path"
+prepare_schema_template() {
+  local selected_profile="$1"
+  cleanup_schema_template
+  schema_template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-${selected_profile}-schema.XXXXXX")"
+  local template_path="$schema_template_dir/current-schema.db"
+  case "$selected_profile" in
+    stateful-sqlite)
+      export CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH="$template_path"
+      echo "backend_test_stateful_schema_template=$template_path"
+      ;;
+    archive-file-io)
+      export CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH="$template_path"
+      echo "backend_test_archive_schema_template=$template_path"
+      ;;
+    *)
+      echo "::error::schema templates are unsupported for profile: $selected_profile" >&2
+      exit 1
+      ;;
+  esac
 
   local template_filter='test(=tests::prepare_current_schema_template_for_stateful_profile)'
   if [[ -n "$archive_file" ]]; then
@@ -112,17 +127,20 @@ run_profile() {
       ;;
   esac
 
-  # The current-schema template is a Stateful-only acceleration. Ensure a
-  # caller-provided value cannot change the Archive/File I/O fixture contract.
+  # Only the selected profile may consume its private current-schema template.
+  # Caller-provided values must not leak fixture behavior across profiles.
   if [[ "$selected_profile" != "stateful-sqlite" ]]; then
     unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
+  fi
+  if [[ "$selected_profile" != "archive-file-io" ]]; then
+    unset CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH
   fi
 
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
-  if [[ "$selected_profile" == "stateful-sqlite" ]]; then
-    prepare_stateful_schema_template
+  if [[ "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
+    prepare_schema_template "$selected_profile"
   fi
   if [[ -n "$test_threads" ]]; then
     echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
@@ -140,6 +158,9 @@ run_profile() {
   fi
   if [[ "$selected_profile" == "stateful-sqlite" ]]; then
     unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
+  fi
+  if [[ "$selected_profile" == "archive-file-io" ]]; then
+    unset CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH
   fi
   local profile_end_epoch
   profile_end_epoch="$(date +%s)"

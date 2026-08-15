@@ -31,8 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          pkg-config --exists sqlite3
+          test -r /usr/include/sqlite3.h
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -40,13 +43,12 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Cache cargo directories
+      - name: Restore legacy Cargo workspace cache
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -56,6 +58,14 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  repository-tooling-checks:
+    name: Repository Tooling Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -162,6 +172,63 @@ jobs:
         working-directory: web
         run: bun run test
 
+  storybook-accessibility-tests:
+    name: Storybook Accessibility Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
+
+  docs-demo-build:
+    name: Docs & Web Demo Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Build Storybook static site
+        working-directory: web
+        run: bun run storybook:build -- --quiet
+
+      - name: Build docs and demo sites
+        run: |
+          cd docs-site && bun run build
+          cd ../web && bun run demo:build
+
   records-overlay-e2e:
     name: Records Overlay E2E
     runs-on: ubuntu-24.04
@@ -181,7 +248,7 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Start Vite dev server
         working-directory: web
@@ -222,7 +289,21 @@ jobs:
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
 
+  backend-test-archive:
+    name: Backend Test Archive Producer
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build backend test archive
+        id: build-backend-test-archive
+        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+      - name: Save Cargo test artifacts
+        if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+
   backend-tests-lightweight:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -256,6 +337,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight
 
   backend-tests-stateful-sqlite:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Stateful SQLite)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -289,6 +372,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 
   backend-tests-archive-file-io:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -326,7 +411,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs:
       - lint
+      - repository-tooling-checks
       - frontend-tests
+      - storybook-accessibility-tests
+      - docs-demo-build
       - records-overlay-e2e
       - backend-tests-lightweight
       - backend-tests-stateful-sqlite

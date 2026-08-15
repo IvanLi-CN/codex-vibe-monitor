@@ -13,7 +13,9 @@ pub(crate) use support::*;
 
 #[tokio::test]
 async fn prepare_current_schema_template_for_stateful_profile() {
-    let Some(path) = std::env::var_os(stateful_sqlite::STATEFUL_SCHEMA_TEMPLATE_PATH_ENV) else {
+    let path = std::env::var_os(stateful_sqlite::STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
+        .or_else(|| std::env::var_os(stateful_sqlite::ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV));
+    let Some(path) = path else {
         return;
     };
     let path = std::path::PathBuf::from(path);

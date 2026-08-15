@@ -29,7 +29,9 @@ class ContractModel:
     review_exempt_permissions: set[str]
     review_allowed_permissions: set[str]
     expected_pr_workflows: dict[str, tuple[str, ...]]
+    expected_pr_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_main_workflows: dict[str, tuple[str, ...]]
+    expected_main_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_release_workflows: dict[str, tuple[str, ...]]
     label_check_name: str
 
@@ -292,10 +294,11 @@ def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
 
 
-def parse_expected_workflows(payload: dict[str, Any], key: str) -> dict[str, tuple[str, ...]]:
+def parse_expected_workflows(payload: dict[str, Any], key: str) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     raw_expected = payload.get(key)
     require(isinstance(raw_expected, list) and raw_expected, f"quality-gates.json: {key} must be a non-empty array")
     expected: dict[str, tuple[str, ...]] = {}
+    auxiliary: dict[str, tuple[str, ...]] = {}
     for index, raw_entry in enumerate(raw_expected):
         entry = require_mapping(raw_entry, f"quality-gates.json.{key}[{index}]")
         workflow_name = entry.get("workflow")
@@ -304,9 +307,17 @@ def parse_expected_workflows(payload: dict[str, Any], key: str) -> dict[str, tup
             f"quality-gates.json.{key}[{index}].workflow must be a non-empty string",
         )
         jobs = require_string_set(entry.get("jobs"), f"quality-gates.json.{key}[{index}].jobs")
+        auxiliary_jobs = require_string_set(
+            entry.get("auxiliary_jobs", []), f"quality-gates.json.{key}[{index}].auxiliary_jobs"
+        )
+        require(
+            jobs.isdisjoint(auxiliary_jobs),
+            f"quality-gates.json.{key}[{index}]: jobs and auxiliary_jobs must be disjoint",
+        )
         require(workflow_name not in expected, f"quality-gates.json: duplicate {key} entry {workflow_name!r}")
         expected[workflow_name] = tuple(sorted(jobs))
-    return expected
+        auxiliary[workflow_name] = tuple(sorted(auxiliary_jobs))
+    return expected, auxiliary
 
 
 def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
@@ -368,9 +379,13 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     require(isinstance(review_check_name, str) and review_check_name, "quality-gates.json: enforcement.check_name must be a non-empty string")
     require(review_check_name in required_checks, "quality-gates.json: enforcement.check_name must be required")
 
-    expected_pr_workflows = parse_expected_workflows(payload, "expected_pr_workflows")
-    expected_main_workflows = parse_expected_workflows(payload, "expected_main_workflows")
-    expected_release_workflows = parse_expected_workflows(payload, "expected_release_workflows")
+    expected_pr_workflows, expected_pr_auxiliary_workflows = parse_expected_workflows(payload, "expected_pr_workflows")
+    expected_main_workflows, expected_main_auxiliary_workflows = parse_expected_workflows(payload, "expected_main_workflows")
+    expected_release_workflows, expected_release_auxiliary_workflows = parse_expected_workflows(payload, "expected_release_workflows")
+    require(
+        not any(expected_release_auxiliary_workflows.values()),
+        "quality-gates.json: release workflows must not declare auxiliary jobs",
+    )
 
     declared_pr_jobs = {job for jobs in expected_pr_workflows.values() for job in jobs}
     require(
@@ -401,7 +416,9 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         review_exempt_permissions=review_exempt_permissions,
         review_allowed_permissions=review_allowed_permissions,
         expected_pr_workflows=expected_pr_workflows,
+        expected_pr_auxiliary_workflows=expected_pr_auxiliary_workflows,
         expected_main_workflows=expected_main_workflows,
+        expected_main_auxiliary_workflows=expected_main_auxiliary_workflows,
         expected_release_workflows=expected_release_workflows,
         label_check_name=label_required[0],
     )
@@ -427,7 +444,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require(isinstance(workflow_name, str) and workflow_name, "ci-pr.yml: workflow name must stay non-empty")
     expected_jobs = set(contract.expected_pr_workflows.get(workflow_name, ()))
     require(expected_jobs, f"ci-pr.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
-    require_exact_named_jobs(workflow, expected_jobs, "ci-pr.yml")
+    auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
+    require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -450,66 +468,180 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-pr.yml")
     require_no_if(lint_job, "ci-pr.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-pr.yml.jobs.lint")
-    checkout = checkout_step(lint_job, "Checkout", "ci-pr.yml.jobs.lint")
-    require(checkout.get("fetch-depth") == 0, "ci-pr.yml.jobs.lint Checkout must fetch full history for trusted source resolution")
-    trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci-pr.yml.jobs.lint")
+    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-pr.yml.jobs.lint")
+    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
+    require(
+        "target" not in legacy_lint_cache_paths.splitlines(),
+        "ci-pr.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
+    )
+    tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
+    require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
+    require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
+    checkout = checkout_step(tooling_job, "Checkout", "ci-pr.yml.jobs.repository-tooling-checks")
+    require(checkout.get("fetch-depth") == 0, "ci-pr.yml.jobs.repository-tooling-checks Checkout must fetch full history for trusted source resolution")
+    trusted_step = step_config(tooling_job, "Resolve trusted quality-gates sources", "ci-pr.yml.jobs.repository-tooling-checks")
     trusted_run = str(trusted_step.get("run", ""))
-    require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted-source branch handling drifted")
-    require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group queue ref parsing drifted")
-    require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.lint: rollout support flag drifted")
-    require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted source kind drifted")
+    require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group trusted-source branch handling drifted")
+    require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group queue ref parsing drifted")
+    require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: rollout support flag drifted")
+    require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group trusted source kind drifted")
     require(
         'github.event.pull_request.head.repo.full_name' in trusted_run,
-        "ci-pr.yml.jobs.lint: same-repository quality-gates source detection drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: same-repository quality-gates source detection drifted",
     )
     require(
         'changed_quality_gate_paths="$(git diff --name-only "${source_ref}...HEAD" -- "${paths[@]}" "${final_topology_paths[@]}")"' in trusted_run,
-        "ci-pr.yml.jobs.lint: quality-gates change detection drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: quality-gates change detection drifted",
     )
     require(
         'source_kind="current-branch-quality-gates-change"' in trusted_run,
-        "ci-pr.yml.jobs.lint: quality-gates change source kind drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: quality-gates change source kind drifted",
     )
     require(
         "keeping trusted scripts pinned to base and skipping trusted final-topology checks during rollout" in trusted_run,
-        "ci-pr.yml.jobs.lint: rollout warning drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: rollout warning drifted",
     )
 
-    contract_step = step_config(lint_job, "Quality-gates contract check", "ci-pr.yml.jobs.lint")
+    contract_step = step_config(tooling_job, "Quality-gates contract check", "ci-pr.yml.jobs.repository-tooling-checks")
     require(
         contract_step.get("if") == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
-        "ci-pr.yml.jobs.lint: contract check rollout gate drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: contract check rollout gate drifted",
     )
     contract_run = str(contract_step.get("run", ""))
-    require('steps.trusted-quality-gates.outputs.contract_script' in contract_run, "ci-pr.yml.jobs.lint: contract check must use trusted sources")
+    require('steps.trusted-quality-gates.outputs.contract_script' in contract_run, "ci-pr.yml.jobs.repository-tooling-checks: contract check must use trusted sources")
 
-    live_step = step_config(lint_job, "Quality-gates live rules check", "ci-pr.yml.jobs.lint")
+    live_step = step_config(tooling_job, "Quality-gates live rules check", "ci-pr.yml.jobs.repository-tooling-checks")
     require(
         live_step.get("if")
         == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true' && (github.event_name != 'pull_request' || github.base_ref == 'main')",
-        "ci-pr.yml.jobs.lint: live rules rollout gate drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: live rules rollout gate drifted",
     )
-    live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.lint.steps['Quality-gates live rules check'].env")
-    require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci-pr.yml.jobs.lint: live rules mode must stay require")
+    live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.repository-tooling-checks.steps['Quality-gates live rules check'].env")
+    require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci-pr.yml.jobs.repository-tooling-checks: live rules mode must stay require")
 
-    self_tests = step_config(lint_job, "Quality gates self-tests", "ci-pr.yml.jobs.lint")
+    self_tests = step_config(tooling_job, "Quality gates self-tests", "ci-pr.yml.jobs.repository-tooling-checks")
     self_tests_run = str(self_tests.get("run", ""))
     require(
         "test-quality-gates-contract.sh" in self_tests_run
         and "test-build-smoke-image-with-retry.sh" in self_tests_run
         and "test-live-quality-gates.sh" in self_tests_run,
-        "ci-pr.yml.jobs.lint: self-tests step drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: self-tests step drifted",
     )
 
-    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-pr.yml.jobs.lint")
+    scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-pr.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
     require(
         "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
-        "ci-pr.yml.jobs.lint: build smoke retry helper syntax check drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: build smoke retry helper syntax check drifted",
     )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
-    require_exact_if(build_job, "github.event_name == 'pull_request'", "ci-pr.yml.jobs.build")
+    require(
+        build_job.get("needs") == "build-pr-smoke-artifacts",
+        "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer",
+    )
+    require_exact_if(
+        build_job,
+        "${{ always() && github.event_name == 'pull_request' }}",
+        "ci-pr.yml.jobs.build",
+    )
+    producer_result_step = step_config(build_job, "Verify smoke artifact producer", "ci-pr.yml.jobs.build")
+    producer_result_env = require_mapping(
+        producer_result_step.get("env"),
+        "ci-pr.yml.jobs.build.steps['Verify smoke artifact producer'].env",
+    )
+    require(
+        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}",
+        "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
+    )
+    step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
+    step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")
+
+    e2e_job = named_job_config(workflow, "records-overlay-e2e", expected_jobs, "ci-pr.yml")
+    require(
+        e2e_job.get("needs") == "records-overlay-e2e-producer",
+        "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer",
+    )
+    require_exact_if(e2e_job, "always()", "ci-pr.yml.jobs.records-overlay-e2e")
+    e2e_producer_result_step = step_config(e2e_job, "Verify E2E test producer", "ci-pr.yml.jobs.records-overlay-e2e")
+    e2e_producer_result_env = require_mapping(
+        e2e_producer_result_step.get("env"),
+        "ci-pr.yml.jobs.records-overlay-e2e.steps['Verify E2E test producer'].env",
+    )
+    require(
+        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}",
+        "ci-pr.yml.jobs.records-overlay-e2e must fail when the E2E test producer fails",
+    )
+
+    if auxiliary_jobs:
+        e2e_producer_job = job_config(workflow, "records-overlay-e2e-producer", "ci-pr.yml")
+        require(
+            e2e_producer_job.get("name") == "PR E2E Test Producer" and e2e_producer_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must be the declared E2E test producer",
+        )
+        require_no_if(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
+        require_fail_closed(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
+        e2e_run_step = step_config(
+            e2e_producer_job,
+            "Run records overlay and Web Demo Playwright regression",
+            "ci-pr.yml.jobs.records-overlay-e2e-producer",
+        )
+        e2e_run = str(e2e_run_step.get("run", ""))
+        require(
+            "records-filter-overlay.spec.ts" in e2e_run
+            and "demo-runtime.spec.ts" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run both Playwright regression specs",
+        )
+        require(
+            "--output=test-results/records-overlay" in e2e_run
+            and "--output=test-results/demo-runtime" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate both Playwright result directories",
+        )
+        require(
+            "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run Web Demo against its mock-only server",
+        )
+        smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
+        require(
+            smoke_artifact_job.get("name") == "PR Smoke Artifact Producer"
+            and smoke_artifact_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts must be the declared PR smoke artifact producer",
+        )
+        require_exact_if(
+            smoke_artifact_job,
+            "github.event_name == 'pull_request'",
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts",
+        )
+        require_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        step_config(smoke_artifact_job, "Upload PR smoke artifacts", "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
+        require(
+            archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.backend-test-archive must be the declared archive producer",
+        )
+        require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            archive_build_step.get("id") == "build-backend-test-archive",
+            "ci-pr.yml.jobs.backend-test-archive: archive build step id drifted",
+        )
+        target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            target_cache_save_step.get("if")
+            == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
+            "ci-pr.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
+        )
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+            require(
+                job_config(workflow, backend_job_id, "ci-pr.yml").get("needs") == "backend-test-archive",
+                f"ci-pr.yml.jobs.{backend_job_id}.needs must use the archive producer",
+            )
+            require_exact_if(
+                job_config(workflow, backend_job_id, "ci-pr.yml"),
+                "always()",
+                f"ci-pr.yml.jobs.{backend_job_id}",
+            )
 
 
 def validate_ci_main(path: Path, contract: ContractModel) -> None:
@@ -518,7 +650,8 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require(isinstance(workflow_name, str) and workflow_name, "ci-main.yml: workflow name must stay non-empty")
     expected_jobs = set(contract.expected_main_workflows.get(workflow_name, ()))
     require(expected_jobs, f"ci-main.yml: workflow {workflow_name!r} must be declared in expected_main_workflows")
-    require_exact_named_jobs(workflow, expected_jobs, "ci-main.yml")
+    auxiliary_jobs = set(contract.expected_main_auxiliary_workflows.get(workflow_name, ()))
+    require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -537,25 +670,34 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-main.yml")
     require_no_if(lint_job, "ci-main.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-main.yml.jobs.lint")
-    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-main.yml.jobs.lint")
+    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-main.yml.jobs.lint")
+    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
+    require(
+        "target" not in legacy_lint_cache_paths.splitlines(),
+        "ci-main.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
+    )
+    tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
+    require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
+    require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
+    scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-main.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
     require(
         "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
-        "ci-main.yml.jobs.lint: build smoke retry helper syntax check drifted",
+        "ci-main.yml.jobs.repository-tooling-checks: build smoke retry helper syntax check drifted",
     )
-    trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci-main.yml.jobs.lint")
+    trusted_step = step_config(tooling_job, "Resolve trusted quality-gates sources", "ci-main.yml.jobs.repository-tooling-checks")
     trusted_run = str(trusted_step.get("run", ""))
-    require('source_ref="HEAD"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source ref drifted")
-    require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source kind drifted")
-    require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.lint: trusted-source copy drifted")
+    require('source_ref="HEAD"' in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source ref drifted")
+    require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source kind drifted")
+    require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source copy drifted")
 
-    self_tests = step_config(lint_job, "Quality gates self-tests", "ci-main.yml.jobs.lint")
+    self_tests = step_config(tooling_job, "Quality gates self-tests", "ci-main.yml.jobs.repository-tooling-checks")
     self_tests_run = str(self_tests.get("run", ""))
     require(
         "test-quality-gates-contract.sh" in self_tests_run
         and "test-build-smoke-image-with-retry.sh" in self_tests_run
         and "test-live-quality-gates.sh" in self_tests_run,
-        "ci-main.yml.jobs.lint: self-tests step drifted",
+        "ci-main.yml.jobs.repository-tooling-checks: self-tests step drifted",
     )
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
@@ -563,7 +705,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         release_snapshot.get("needs")
         == [
             "lint",
+            "repository-tooling-checks",
             "frontend-tests",
+            "storybook-accessibility-tests",
+            "docs-demo-build",
             "records-overlay-e2e",
             "backend-tests-lightweight",
             "backend-tests-stateful-sqlite",
@@ -571,6 +716,35 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         ],
         "ci-main.yml.jobs.release-snapshot.needs drifted",
     )
+    if auxiliary_jobs:
+        archive_job = job_config(workflow, "backend-test-archive", "ci-main.yml")
+        require(
+            archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,
+            "ci-main.yml.jobs.backend-test-archive must be the declared archive producer",
+        )
+        require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            archive_build_step.get("id") == "build-backend-test-archive",
+            "ci-main.yml.jobs.backend-test-archive: archive build step id drifted",
+        )
+        target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            target_cache_save_step.get("if")
+            == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
+            "ci-main.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
+        )
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+            require(
+                job_config(workflow, backend_job_id, "ci-main.yml").get("needs") == "backend-test-archive",
+                f"ci-main.yml.jobs.{backend_job_id}.needs must use the archive producer",
+            )
+            require_exact_if(
+                job_config(workflow, backend_job_id, "ci-main.yml"),
+                "always()",
+                f"ci-main.yml.jobs.{backend_job_id}",
+            )
     release_snapshot_permissions = require_mapping(
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )
