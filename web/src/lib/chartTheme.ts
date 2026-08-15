@@ -14,6 +14,15 @@ export interface ChartStatusTokens {
   failure: string;
 }
 
+export interface TokenBreakdownTokens {
+  cacheRead: string;
+  cacheWrite: string;
+  output: string;
+  reasoning: string;
+  cacheHitRate: string;
+  hourlyCacheHitRate: string;
+}
+
 type ColorScale = {
   light: string;
   dark: string;
@@ -70,6 +79,25 @@ const CHART_STATUS_TOKENS: Record<ThemeMode, ChartStatusTokens> = {
   },
 };
 
+const TOKEN_BREAKDOWN_TOKENS: Record<ThemeMode, TokenBreakdownTokens> = {
+  light: {
+    cacheRead: "#0f766e",
+    cacheWrite: "#d97706",
+    output: "#2563eb",
+    reasoning: "#7c3aed",
+    cacheHitRate: "#e11d48",
+    hourlyCacheHitRate: "#059669",
+  },
+  dark: {
+    cacheRead: "#2dd4bf",
+    cacheWrite: "#fbbf24",
+    output: "#60a5fa",
+    reasoning: "#a78bfa",
+    cacheHitRate: "#fb7185",
+    hourlyCacheHitRate: "#34d399",
+  },
+};
+
 const PIE_PALETTE: Record<ThemeMode, string[]> = {
   light: [
     "#dc2626",
@@ -118,6 +146,10 @@ export function chartBaseTokens(themeMode: ThemeMode): ChartBaseTokens {
 
 export function chartStatusTokens(themeMode: ThemeMode): ChartStatusTokens {
   return CHART_STATUS_TOKENS[themeMode];
+}
+
+export function tokenBreakdownTokens(themeMode: ThemeMode): TokenBreakdownTokens {
+  return TOKEN_BREAKDOWN_TOKENS[themeMode];
 }
 
 export function piePalette(themeMode: ThemeMode): string[] {

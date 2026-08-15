@@ -3077,6 +3077,8 @@ pub(crate) async fn insert_retention_invocation(
             model,
             input_tokens,
             output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             status,
@@ -3089,7 +3091,7 @@ pub(crate) async fn insert_retention_invocation(
             response_raw_codec,
             response_raw_size
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         "#,
     )
     .bind(invoke_id)
@@ -3098,6 +3100,8 @@ pub(crate) async fn insert_retention_invocation(
     .bind(Some("gpt-5.2-codex"))
     .bind(Some(12_i64))
     .bind(Some(3_i64))
+    .bind(Some(0_i64))
+    .bind(Some(0_i64))
     .bind(total_tokens)
     .bind(cost)
     .bind(status)

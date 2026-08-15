@@ -3,6 +3,7 @@ import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDa
 
 const MINUTE_MS = 60_000;
 const TREND_CHART_BUCKET_MINUTES = 10;
+const HOURLY_CACHE_HIT_WINDOW_MINUTES = 60;
 
 export interface DashboardTodayMinuteDatum {
   index: number;
@@ -25,6 +26,10 @@ export interface DashboardTodayMinuteDatum {
   successCost: number;
   nonSuccessCost: number;
   totalTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheInputTokens: number | null;
+  reasoningTokens: number | null;
   tokensPerMinute: number | null;
   spendRate: number | null;
   firstTokenAvgMs: number | null;
@@ -36,10 +41,22 @@ export interface DashboardTodayMinuteDatum {
   cumulativeSuccessCost: number | null;
   cumulativeNonSuccessCost: number | null;
   cumulativeTokens: number | null;
+  cumulativeCacheReadTokens: number | null;
+  cumulativeCacheWriteTokens: number | null;
+  cumulativeOutputTokens: number | null;
+  cumulativeReasoningTokens: number | null;
+  cacheHitRate: number | null;
+  hourlyCacheHitRate: number | null;
   chartCumulativeCost: number | null;
   chartCumulativeSuccessCost: number | null;
   chartCumulativeNonSuccessCost: number | null;
   chartCumulativeTokens: number | null;
+  chartCumulativeCacheReadTokens: number | null;
+  chartCumulativeCacheWriteTokens: number | null;
+  chartCumulativeOutputTokens: number | null;
+  chartCumulativeReasoningTokens: number | null;
+  chartCacheHitRate: number | null;
+  chartHourlyCacheHitRate: number | null;
 }
 
 export function buildTodayMinuteChartData(
@@ -83,6 +100,10 @@ export function buildTodayMinuteChartData(
       totalCost: number;
       nonSuccessCost: number;
       totalTokens: number;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      cacheInputTokens: number | null;
+      reasoningTokens: number | null;
       firstTokenWeightedMs: number;
       firstTokenSampleCount: number;
     }
@@ -103,6 +124,10 @@ export function buildTodayMinuteChartData(
       totalCost: 0,
       nonSuccessCost: 0,
       totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheInputTokens: 0,
+      reasoningTokens: 0,
       firstTokenWeightedMs: 0,
       firstTokenSampleCount: 0,
     };
@@ -126,6 +151,27 @@ export function buildTodayMinuteChartData(
     current.totalCost += point.totalCost ?? 0;
     current.nonSuccessCost += point.nonSuccessCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
+    if (
+      point.inputTokens == null ||
+      point.outputTokens == null ||
+      point.cacheInputTokens == null ||
+      point.reasoningTokens == null
+    ) {
+      current.inputTokens = null;
+      current.outputTokens = null;
+      current.cacheInputTokens = null;
+      current.reasoningTokens = null;
+    } else if (
+      current.inputTokens != null &&
+      current.outputTokens != null &&
+      current.cacheInputTokens != null &&
+      current.reasoningTokens != null
+    ) {
+      current.inputTokens += point.inputTokens;
+      current.outputTokens += point.outputTokens;
+      current.cacheInputTokens += point.cacheInputTokens;
+      current.reasoningTokens += point.reasoningTokens;
+    }
     const firstTokenAvgMs = point.firstTokenAvgMs ?? null;
     const pointCallCount = Math.max(
       point.totalCount ?? 0,
@@ -148,6 +194,22 @@ export function buildTodayMinuteChartData(
   let cumulativeSuccessCost = 0;
   let cumulativeNonSuccessCost = 0;
   let cumulativeTokens = 0;
+  let cumulativeCacheReadTokens = 0;
+  let cumulativeCacheWriteTokens = 0;
+  let cumulativeOutputTokens = 0;
+  let cumulativeReasoningTokens = 0;
+  const hasCompleteTokenBreakdown = Array.from(pointMap.values()).every((point) => {
+    if (point.totalTokens <= 0) return true;
+    return (
+      point.inputTokens != null &&
+      point.outputTokens != null &&
+      point.cacheInputTokens != null &&
+      point.reasoningTokens != null &&
+      point.inputTokens >= 0 &&
+      point.outputTokens >= 0 &&
+      point.inputTokens + point.outputTokens === point.totalTokens
+    );
+  });
 
   for (let epochMs = startMs, index = 0; epochMs <= endMs; epochMs += MINUTE_MS, index += 1) {
     const point = pointMap.get(epochMs);
@@ -176,6 +238,14 @@ export function buildTodayMinuteChartData(
     // cumulative cost after subtracting explicit non-success usage.
     const successCost = Math.max(0, totalCost - nonSuccessCost);
     const totalTokens = point?.totalTokens ?? 0;
+    const inputTokens = hasCompleteTokenBreakdown ? (point?.inputTokens ?? 0) : null;
+    const outputTokens = hasCompleteTokenBreakdown ? (point?.outputTokens ?? 0) : null;
+    const cacheInputTokens = hasCompleteTokenBreakdown ? (point?.cacheInputTokens ?? 0) : null;
+    const reasoningTokens = hasCompleteTokenBreakdown ? (point?.reasoningTokens ?? 0) : null;
+    const cacheReadTokens = Math.min(Math.max(cacheInputTokens ?? 0, 0), inputTokens ?? 0);
+    const cacheWriteTokens = Math.max((inputTokens ?? 0) - cacheReadTokens, 0);
+    const clampedReasoningTokens = Math.min(Math.max(reasoningTokens ?? 0, 0), outputTokens ?? 0);
+    const visibleOutputTokens = Math.max((outputTokens ?? 0) - clampedReasoningTokens, 0);
     const firstTokenAvgMs =
       point == null || point.firstTokenSampleCount <= 0
         ? null
@@ -184,6 +254,26 @@ export function buildTodayMinuteChartData(
     cumulativeSuccessCost += successCost;
     cumulativeNonSuccessCost += nonSuccessCost;
     cumulativeTokens += totalTokens;
+    cumulativeCacheReadTokens += cacheReadTokens;
+    cumulativeCacheWriteTokens += cacheWriteTokens;
+    cumulativeOutputTokens += visibleOutputTokens;
+    cumulativeReasoningTokens += clampedReasoningTokens;
+
+    const rollingCacheHitRate = (windowMinutes: number) => {
+      if (!hasCompleteTokenBreakdown || isFuture) return null;
+
+      const rollingWindowStart = Math.max(startMs, epochMs - (windowMinutes - 1) * MINUTE_MS);
+      let rollingCacheTokens = 0;
+      let rollingTotalTokens = 0;
+      for (let cursor = rollingWindowStart; cursor <= epochMs; cursor += MINUTE_MS) {
+        const rollingPoint = pointMap.get(cursor);
+        rollingCacheTokens += Math.max(rollingPoint?.cacheInputTokens ?? 0, 0);
+        rollingTotalTokens += Math.max(rollingPoint?.totalTokens ?? 0, 0);
+      }
+      return rollingTotalTokens > 0 ? rollingCacheTokens / rollingTotalTokens : null;
+    };
+    const cacheHitRate = rollingCacheHitRate(TREND_CHART_BUCKET_MINUTES);
+    const hourlyCacheHitRate = rollingCacheHitRate(HOURLY_CACHE_HIT_WINDOW_MINUTES);
 
     const currentDate = new Date(epochMs);
     data.push({
@@ -207,6 +297,10 @@ export function buildTodayMinuteChartData(
       successCost,
       nonSuccessCost,
       totalTokens,
+      inputTokens,
+      outputTokens,
+      cacheInputTokens,
+      reasoningTokens,
       tokensPerMinute: isFuture ? null : totalTokens,
       spendRate: isFuture ? null : totalCost,
       firstTokenAvgMs: isFuture ? null : firstTokenAvgMs,
@@ -218,10 +312,30 @@ export function buildTodayMinuteChartData(
       cumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
       cumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
       cumulativeTokens: isFuture ? null : cumulativeTokens,
+      cumulativeCacheReadTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeCacheReadTokens,
+      cumulativeCacheWriteTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeCacheWriteTokens,
+      cumulativeOutputTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeOutputTokens,
+      cumulativeReasoningTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeReasoningTokens,
+      cacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : cacheHitRate,
+      hourlyCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : hourlyCacheHitRate,
       chartCumulativeCost: isFuture ? null : cumulativeCost,
       chartCumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
       chartCumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
       chartCumulativeTokens: isFuture ? null : cumulativeTokens,
+      chartCumulativeCacheReadTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeCacheReadTokens,
+      chartCumulativeCacheWriteTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeCacheWriteTokens,
+      chartCumulativeOutputTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeOutputTokens,
+      chartCumulativeReasoningTokens:
+        isFuture || !hasCompleteTokenBreakdown ? null : cumulativeReasoningTokens,
+      chartCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : cacheHitRate,
+      chartHourlyCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : hourlyCacheHitRate,
     });
   }
 

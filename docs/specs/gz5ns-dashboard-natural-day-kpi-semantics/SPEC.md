@@ -106,16 +106,17 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                      | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                         | 备注（Notes）                                                             |
-| ------------------------------------------------- | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `StatsResponse.inProgressRetryConversationCount`  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | strict in-progress retry 对话数                                           |
-| `StatsResponse.nonSuccessCost`                    | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` cost；future `warning_success` 不计入              |
-| `StatsResponse.nonSuccessTokens`                  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens；future `warning_success` 不计入            |
-| `TimeseriesPoint.nonSuccessCost`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart | bucket-level `failed + interrupted` cost；future `warning_success` 不计入 |
-| `TodayStatsOverview` metric tile contract         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                                           |
-| `ParallelWorkWindowResponse.activeMinuteCount`    | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard, account detail activity overview                 | `avgCount` 的 nullable 实际分母；不等同于 display bucket 的活动数量       |
-| `DashboardTodayActivityChart` total-cost contract | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | `Success + Non-success` cumulative stacked area                           |
-| same-progress success comparison helper           | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success`                       |
+| 接口（Name）                                               | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                             | 备注（Notes）                                                                  |
+| ---------------------------------------------------------- | ------------------- | ------------- | -------------- | ------------------------ | --------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `StatsResponse.inProgressRetryConversationCount`           | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI       | strict in-progress retry 对话数                                                |
+| `StatsResponse.nonSuccessCost`                             | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI       | `failed + interrupted` cost；future `warning_success` 不计入                   |
+| `StatsResponse.nonSuccessTokens`                           | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI       | `failed + interrupted` tokens；future `warning_success` 不计入                 |
+| `TimeseriesPoint.nonSuccessCost`                           | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart     | bucket-level `failed + interrupted` cost；future `warning_success` 不计入      |
+| `TimeseriesPoint.inputTokens/outputTokens/reasoningTokens` | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day Tokens chart, account detail Tokens chart | 非空 bucket 分量；与既有 `totalTokens/cacheInputTokens` 共同支持分层与兼容回退 |
+| `TodayStatsOverview` metric tile contract                  | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview     | 统一四区布局与 inline secondary                                                |
+| `ParallelWorkWindowResponse.activeMinuteCount`             | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard, account detail activity overview                     | `avgCount` 的 nullable 实际分母；不等同于 display bucket 的活动数量            |
+| `DashboardTodayActivityChart` total-cost contract          | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview     | `Success + Non-success` cumulative stacked area                                |
+| same-progress success comparison helper                    | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                              | `current success / yesterday same-progress success`                            |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -135,6 +136,10 @@
 - Given 自然日金额图切到 `金额` metric，When 某个 bucket 同时包含成功与 `failed/interrupted` 成本，Then tooltip 同时显示累计 `Success`、累计 `Non-success` 与累计总金额，且前两者之和等于总金额。
 - Given 自然日金额图切到 `金额` metric，When 查看图例与面积层，Then 固定展示 `Success` 与 `Non-success` 两层堆叠，不再是单条 `累计总金额` 面积图。
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日金额图，Then 堆叠面积与 tooltip 语义与主 Dashboard 一致，且数据仍严格受账号作用域约束。
+- Given 今日任一有 Token 的分钟都具备可对账的 input/output/cache/reasoning 分量，When 查看 Tokens 图，Then 图例、面积与 tooltip 按“缓存输入、缓存写入、输出、思考、总计、10 分钟缓存命中率、1 小时缓存命中率”固定顺序展示，四层累计和等于累计总 Tokens，右轴固定为 `0–100%`。
+- Given 今日连续分钟存在 Token，When 查看缓存命中率折线，Then 10 分钟线每点使用当前分钟及前 9 分钟、1 小时参考线每点使用当前分钟及前 59 分钟的 `ΣcacheInputTokens / ΣtotalTokens`；无流量窗口与未来分钟返回 `null` 且折线断开。
+- Given 昨日 Tokens 图，When 分量完整，Then 仅展示四层累计面积与总计图例，不展示今日缓存命中率折线或右轴。
+- Given 任一有 Token 的桶缺少新分量或 `inputTokens + outputTokens != totalTokens`，When Dashboard 或账号详情构造 Tokens 图，Then 整张图回退单层累计总 Tokens，不局部混用或以零伪造细分。
 - Given `TodayStatsOverview` 任一主值、右上 comparison 或底部 secondary 在仓库支持的桌面 viewport 内接近溢出，When 自适应格式化生效，Then 标签语义保留且 label 保持单行；若同一 tile 的横向空间仍不足，则右上 comparison、左下 secondary、右下 secondary 必须自动下沉到主值下方逐行展示，数值只允许通过降小数、compact 或 compact 邻近单位回退来缩短，不允许出现省略号截断数值。
 - Given `Today Token` 等 `B/M` 临界值主值在紧张宽度下渲染，When `1.05B` 放不下但 `1.0B` 仍可放下，Then 应优先显示 `1.0B`；只有更高信息量候选都放不下时，才允许进一步退化到 `1B` 或邻近单位整数值。
 - Given 同一 KPI 容器在阈值附近反复收到重复 `ResizeObserver` / resize 回调，When 当前候选仍能在现有可用宽度内放下，Then 共享候选选择器不得在两个不同长度的表示之间来回翻转。
@@ -153,7 +158,7 @@
 ### Testing
 
 - Unit tests: `TodayStatsOverview.test.tsx`、`dashboardKpiComparisons.test.ts`、`DashboardTodayActivityChart.test.tsx`。
-- Integration tests: `DashboardActivityOverview.test.tsx`、账号详情 activity overview 相关测试、summary aggregation / natural-day timeseries 后端测试。
+- Integration tests: `DashboardActivityOverview.test.tsx`、账号详情 activity overview 相关测试、summary aggregation / natural-day timeseries exact/minute/hourly/archive 后端测试。
 - E2E tests (if applicable): None。
 
 ### UI / Storybook (if applicable)
@@ -172,6 +177,37 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+- SHA `b37da68e`
+  source_type: `storybook_canvas`
+  target_program: `mock-only`
+  capture_scope: `element`
+  requested_viewport: `desktop1440`
+  viewport_strategy: `browser-resize-fallback`（Storybook manager 已绑定 desktop1440，但当前浏览器可视区会裁掉原生 iframe 上下边缘）
+  margin_policy: `require_margin`
+  evidence_surface: `component`
+  sensitive_exclusion: `N/A`
+  submission_gate: `approved`
+  story_id_or_title: `dashboard-dashboardtodayactivitychart--tokens-cumulative`
+  scenario: `desktop1440 dark with active tooltip`
+  evidence_note: `验证四层累计面积、右侧 0–100% 轴、10 分钟平滑命中率折线与 1 小时平滑参考线，以及 tooltip/图例按缓存输入、缓存写入、输出、思考、总计、10 分钟缓存命中率、1 小时缓存命中率固定排序。`
+  PR: include
+  ![Tokens breakdown desktop 1440 dark](./assets/tokens-breakdown-desktop1440-dark.png)
+- SHA `b37da68e`
+  source_type: `storybook_canvas`
+  target_program: `mock-only`
+  capture_scope: `element`
+  requested_viewport: `393x852`
+  viewport_strategy: `browser-resize-fallback`（Storybook manager 已绑定 mobile393，但 element clip 需要在同尺寸直达 canvas 中完成）
+  margin_policy: `require_margin`
+  evidence_surface: `component`
+  sensitive_exclusion: `N/A`
+  submission_gate: `approved`
+  story_id_or_title: `dashboard-dashboardtodayactivitychart--mobile-tokens-cumulative`
+  scenario: `mobile393 light with active tooltip`
+  evidence_note: `验证移动端四层面积、0/50/100% 紧凑右轴、双命中率折线、tooltip 完整明细、图例两行换行与无横向溢出。`
+  PR: include
+  ![Tokens breakdown mobile 393 light](./assets/tokens-breakdown-mobile393-light.png)
 
 - SHA `753a5bdf`
 - source_type: `storybook_canvas`
@@ -236,6 +272,19 @@
 - 风险：`TTFT` 主值走 `#6qe6u` 的真实首 Token 读模型，而右下 `响应时间` 走最近 5 分钟完整调用的 `avgTotalMs`；两者必须保持独立字段与样本资格，不能因展示在同一卡片而互相回填。
 - 假设：`每对话` 的分母固定使用 strict `inProgressConversationCount`，分母为 `0/null` 时显示 `—`。
 - 假设：`失败` 成本与 Token 的正式口径为 `failed + interrupted`。
+
+## Tokens 分层与缓存命中率
+
+- Dashboard 总览与账号详情总览必须复用同一套自然日 Tokens 图表语义。
+- Tokens 面积图按本地自然日从 `00:00` 累计四个互斥分量：
+  - `缓存输入 = clamp(cacheInputTokens, 0, inputTokens)`；
+  - `缓存写入 = max(inputTokens - 缓存输入, 0)`；
+  - `思考 = clamp(reasoningTokens, 0, outputTokens)`；
+  - `输出 = max(outputTokens - 思考, 0)`。
+- 四层累计值之和必须与累计 `totalTokens` 对账；若任一有 Token 的桶缺少分量，或分量无法对账，整张图必须回退为原有单层累计总 Tokens，不能以 `0` 伪造细分。
+- 今日 Tokens 图使用右侧 `0–100%` Y 轴显示两条 Token 加权缓存命中率平滑线：10 分钟线使用当前分钟与前 9 分钟，1 小时参考线使用当前分钟与前 59 分钟，均计算 `ΣcacheInputTokens / ΣtotalTokens`。分母为 `0` 时值为 `null`，折线断开且不得沿用旧值；日初窗口仅使用已有分钟。
+- 昨日 Tokens 图显示相同四层累计面积，但不显示“今日”缓存命中率折线。
+- 时间序列响应必须提供 `inputTokens`、`outputTokens`、`reasoningTokens`，并保留 `totalTokens` 与 `cacheInputTokens`；exact、minute projection、hourly rollup、archive fallback 与账号作用域必须保持一致。
 
 ## 参考（References）
 

@@ -7273,17 +7273,17 @@ async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive
         .with_timezone(&Shanghai)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    for (idx, status, failure_kind) in [
-        (1_i64, "success", None),
-        (2_i64, "http_500", Some("upstream_response_failed")),
+    for (idx, status, failure_kind, reasoning_tokens) in [
+        (1_i64, "success", None, 3_i64),
+        (2_i64, "http_500", Some("upstream_response_failed"), 4_i64),
     ] {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                id, invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+                id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, reasoning_tokens,
                 total_tokens, cost, status, error_message, failure_kind, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         )
         .bind(idx)
@@ -7293,6 +7293,7 @@ async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive
         .bind("gpt-5")
         .bind(10_i64)
         .bind(20_i64)
+        .bind(reasoning_tokens)
         .bind(30_i64)
         .bind(0.01_f64)
         .bind(status)
@@ -7391,8 +7392,8 @@ async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive
         .await
         .expect("migrate account usage status counts");
 
-    let live_counts = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT success_count, failure_count FROM upstream_account_usage_hourly WHERE bucket_start_epoch = ?1 AND upstream_account_id = ?2",
+    let live_counts = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT success_count, failure_count, reasoning_tokens FROM upstream_account_usage_hourly WHERE bucket_start_epoch = ?1 AND upstream_account_id = ?2",
     )
     .bind(live_bucket)
     .bind(account_id)
@@ -7426,7 +7427,7 @@ async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive
     .await
     .expect("load stale replay progress count");
 
-    assert_eq!(live_counts, (1, 1));
+    assert_eq!(live_counts, (1, 1, 7));
     assert_eq!(archived_row_count, 0);
     assert!(archive_materialized_at.is_none());
     assert_eq!(stale_markers, 0);
@@ -7462,9 +7463,10 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
         r#"
         INSERT INTO codex_invocations (
             id, invoke_id, occurred_at, source, model, input_tokens, output_tokens,
-            total_tokens, cost, status, error_message, failure_kind, payload, raw_response, created_at
+            cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message,
+            failure_kind, payload, raw_response, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
     )
     .bind(1_i64)
@@ -7474,6 +7476,8 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
     .bind("gpt-5")
     .bind(120_i64)
     .bind(45_i64)
+    .bind(0_i64)
+    .bind(0_i64)
     .bind(165_i64)
     .bind(0.42_f64)
     .bind("success")

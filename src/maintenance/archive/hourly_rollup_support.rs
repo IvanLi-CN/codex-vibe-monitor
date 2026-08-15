@@ -23,7 +23,10 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) terminal_tokens: i64,
     pub(crate) terminal_cost: f64,
     pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sample_count: i64,
@@ -72,6 +75,7 @@ pub(crate) struct UpstreamAccountUsageHourlyDelta {
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
     pub(crate) first_seen_at: String,
     pub(crate) last_seen_at: String,
 }
@@ -114,6 +118,7 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) non_success_count: i64,
@@ -274,7 +279,10 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
             overall_entry.failure_count += 1;
         }
         overall_entry.total_tokens += total_tokens;
+        overall_entry.input_tokens += row.input_tokens.unwrap_or_default();
+        overall_entry.output_tokens += row.output_tokens.unwrap_or_default();
         overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+        overall_entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
         overall_entry.total_cost += cost;
         if invocation_counts_toward_non_success_usage(
             row.status.as_deref(),
@@ -539,6 +547,7 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     entry.input_tokens += row.input_tokens.unwrap_or_default();
     entry.output_tokens += row.output_tokens.unwrap_or_default();
     entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
     entry.total_cost += cost;
     if entry
         .last_invocation_at
@@ -654,6 +663,7 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cache_input_tokens: None,
+            reasoning_tokens: None,
             total_tokens: Some(total_tokens),
             cost: Some(cost),
             upstream_account_id: None,

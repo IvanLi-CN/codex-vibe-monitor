@@ -10,6 +10,8 @@
 
 ## Coverage / rollout summary
 
+- 已实现：自然日 Tokens 图扩展为缓存输入、缓存写入、可见输出、思考四层累计面积，并在今日视图叠加右轴 10 分钟 Token 加权缓存命中率与 1 小时 Token 加权参考线；时间序列分量覆盖 exact、runtime、minute/hourly rollup、archive 与账号作用域，旧服务/快照缺分量时整图回退单层总 Tokens。
+
 - parallel-work 日均已收口为完整活动分钟的去重并行数平均值，并返回 nullable `activeMinuteCount` 作为实际分母。Dashboard 与账号详情保留既有 `日均` 文案和 `avgCount` 消费链路，不新增 owner-facing 字段或卡片说明。
 - 已修复 Dashboard 自然日 KPI 的账号活动 v2 派生覆盖判定：错误或过期 marker 会由 versioned repair generation 自动失效，重建期间 `today / yesterday / 1d / 7d` 统一走 exact fallback，完整回放后再切回 rollup；HTTP 与 `dashboard.activity.current` 继续复用同一快照口径，公开响应字段不变。
 - 已实现：开放窗口 KPI 的累计 totals 由 write-side terminal delta 与 runtime overlay 共同维护，`today / 1d / 7d` 的 owner-facing 5 秒可见时效不再依赖每轮 SQLite full build；`yesterday / previous7d / usage` 继续保留 exact DB 语义。
@@ -45,6 +47,10 @@
 
 - `src/api/slices/invocations_and_summary.rs`
 - `src/stats/mod.rs`
+- `src/schema.rs`
+- `src/maintenance/archive/hourly_rollups.rs`
+- `src/maintenance/archive/hourly_rollup_support.rs`
+- `src/terminal_projection.rs`
 - `src/tests/slices/pool_failover_window_h.rs`
 - `src/api/slices/prompt_cache_and_timeseries/timeseries.rs`
 - `src/api/slices/settings_models_and_cache.rs`

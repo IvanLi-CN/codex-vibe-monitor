@@ -8,6 +8,8 @@ pub(crate) const INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL: &str = "CASE WHEN json_va
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_EXPR_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 pub(crate) const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
 pub(crate) const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
+const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
+    "invocation_rollup_hourly_token_components_v1";
 
 pub(crate) fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
@@ -1016,6 +1018,12 @@ pub(crate) async fn backfill_upstream_account_usage_hourly_status_counts(
                 WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
                   AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
             ),
+            reasoning_tokens = (
+                SELECT COALESCE(SUM(reasoning_tokens), 0)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+            ),
             failure_count = (
                 SELECT COUNT(*)
                 FROM codex_invocations
@@ -1994,7 +2002,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             terminal_cost REAL NOT NULL DEFAULT 0,
             terminal_proof_complete INTEGER NOT NULL DEFAULT 0,
             total_tokens INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2027,13 +2038,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .fetch_one(pool)
             .await?
             != 0;
-    let mut added_invocation_rollup_rebuild_columns = false;
+    let mut added_invocation_rollup_hourly_columns = false;
     for (column, ty) in [
         ("terminal_count", "INTEGER NOT NULL DEFAULT 0"),
         ("terminal_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("terminal_cost", "REAL NOT NULL DEFAULT 0"),
         ("terminal_proof_complete", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
@@ -2062,7 +2076,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ),
     ] {
         if !invocation_rollup_hourly_columns.contains(column) {
-            added_invocation_rollup_rebuild_columns = true;
+            added_invocation_rollup_hourly_columns = true;
             let statement =
                 format!("ALTER TABLE invocation_rollup_hourly ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
@@ -2099,15 +2113,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .await?;
         }
     }
-    if added_invocation_rollup_rebuild_columns {
-        let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
-        info!(
-            rebuilt_rows = reconciliation.applied_rollups,
-            source_complete = reconciliation.source_complete,
-            "backfilled invocation hourly rollups after adding aggregate columns"
-        );
-    }
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS invocation_failure_rollup_hourly (
@@ -2458,6 +2463,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
             cache_input_tokens INTEGER NOT NULL,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2476,6 +2482,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("success_count", "INTEGER NOT NULL DEFAULT 0"),
         ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
     ] {
         if !upstream_account_usage_hourly_columns.contains(column) {
@@ -2585,6 +2592,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2640,6 +2648,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut added_upstream_account_stats_columns = false;
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -2768,6 +2777,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2796,6 +2806,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         load_sqlite_table_columns(pool, "upstream_account_stats_minute").await?;
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -3125,6 +3136,38 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure hourly_rollup_live_progress table existence")?;
 
+    if has_existing_invocation_rollup_hourly_rows {
+        let reconciliation_complete = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE((SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1), 0)",
+        )
+        .bind(INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET)
+        .fetch_one(pool)
+        .await?
+            != 0;
+        if !reconciliation_complete || added_invocation_rollup_hourly_columns {
+            let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
+            if reconciliation.source_complete {
+                sqlx::query(
+                    r#"
+                    INSERT INTO hourly_rollup_live_progress (dataset, cursor_id)
+                    VALUES (?1, 1)
+                    ON CONFLICT(dataset) DO UPDATE SET
+                        cursor_id = excluded.cursor_id,
+                        updated_at = datetime('now')
+                    "#,
+                )
+                .bind(INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET)
+                .execute(pool)
+                .await?;
+            }
+            info!(
+                rebuilt_rows = reconciliation.applied_rollups,
+                source_complete = reconciliation.source_complete,
+                "backfilled invocation hourly rollups after adding aggregate columns"
+            );
+        }
+    }
+
     if upstream_account_usage_hourly_needs_status_backfill {
         backfill_upstream_account_usage_hourly_status_counts(pool).await?;
     }
@@ -3132,7 +3175,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         || upstream_account_stats_minute_count == 0
         || added_upstream_account_stats_columns
     {
-        reopen_upstream_account_stats_rollup_archives(pool).await?;
         rebuild_upstream_account_stats_rollups_from_sources(pool)
             .await
             .context("failed to rebuild upstream account stats rollups from sources")?;

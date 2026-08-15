@@ -550,6 +550,8 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
     pub(crate) first_token_ms: Option<f64>,
@@ -571,6 +573,7 @@ fn invocation_archive_candidate_to_hourly_source_record(
         input_tokens: candidate.input_tokens,
         output_tokens: candidate.output_tokens,
         cache_input_tokens: candidate.cache_input_tokens,
+        reasoning_tokens: candidate.reasoning_tokens,
         total_tokens: candidate.total_tokens,
         cost: candidate.cost,
         upstream_account_id: None,
@@ -610,6 +613,7 @@ mod ttft_retention_tests {
             input_tokens: Some(10),
             output_tokens: Some(2),
             cache_input_tokens: Some(3),
+            reasoning_tokens: None,
             total_tokens: Some(12),
             cost: Some(0.01),
             first_token_ms: Some(321.0),
@@ -830,6 +834,8 @@ pub(crate) struct InvocationHourlySourceRecord {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
     #[sqlx(default)]
@@ -865,6 +871,26 @@ impl InvocationHourlySourceRecord {
     pub(crate) fn resolved_upstream_account_id(&self) -> Option<i64> {
         self.upstream_account_id
             .or_else(|| crate::proxy::upstream_account_id_from_payload(self.payload.as_deref()))
+    }
+
+    pub(crate) fn has_complete_token_components(&self) -> bool {
+        self.total_tokens.unwrap_or_default() <= 0
+            || ((self.input_tokens.is_some()
+                && self.output_tokens.is_some()
+                && self.cache_input_tokens.is_some()
+                && self.reasoning_tokens.is_some())
+                || (self.input_tokens.is_none()
+                    && self.output_tokens.is_none()
+                    && self.cache_input_tokens.is_none()
+                    && self.reasoning_tokens.is_none()))
+    }
+
+    pub(crate) fn has_known_token_components(&self) -> bool {
+        self.total_tokens.unwrap_or_default() <= 0
+            || (self.input_tokens.is_some()
+                && self.output_tokens.is_some()
+                && self.cache_input_tokens.is_some()
+                && self.reasoning_tokens.is_some())
     }
 }
 
@@ -2699,6 +2725,7 @@ pub(crate) async fn archive_old_invocations(
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
+                reasoning_tokens,
                 total_tokens,
                 cost,
                 first_token_ms,
@@ -2759,6 +2786,7 @@ pub(crate) async fn archive_old_invocations(
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
+                reasoning_tokens,
                 total_tokens,
                 cost,
                 first_token_ms,

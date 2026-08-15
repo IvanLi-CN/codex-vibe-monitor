@@ -4024,6 +4024,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
                 input_tokens: record.usage.input_tokens,
                 output_tokens: record.usage.output_tokens,
                 cache_input_tokens: record.usage.cache_input_tokens,
+                reasoning_tokens: record.usage.reasoning_tokens,
                 total_tokens: record.usage.total_tokens,
                 cost: record.cost,
                 upstream_account_id: crate::proxy::upstream_account_id_from_payload(

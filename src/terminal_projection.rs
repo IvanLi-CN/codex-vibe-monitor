@@ -60,7 +60,10 @@ pub(crate) struct TimeseriesTerminalDelta {
     pub(crate) failure_class: Option<String>,
     pub(crate) is_actionable: Option<bool>,
     pub(crate) total_tokens: Option<i64>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
     pub(crate) t_total_ms: Option<f64>,
     pub(crate) t_req_read_ms: Option<f64>,
@@ -96,7 +99,10 @@ impl From<&ApiInvocation> for TimeseriesTerminalDelta {
             failure_class: record.failure_class.clone(),
             is_actionable: record.is_actionable,
             total_tokens: record.total_tokens,
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
             cache_input_tokens: record.cache_input_tokens,
+            reasoning_tokens: record.reasoning_tokens,
             cost: record.cost,
             t_total_ms: record.t_total_ms,
             t_req_read_ms: record.t_req_read_ms,
@@ -127,7 +133,10 @@ impl TimeseriesTerminalDelta {
             && self.failure_class == snapshot.failure_class
             && self.is_actionable == snapshot.is_actionable
             && self.total_tokens == snapshot.total_tokens
+            && self.input_tokens == snapshot.input_tokens
+            && self.output_tokens == snapshot.output_tokens
             && self.cache_input_tokens == snapshot.cache_input_tokens
+            && self.reasoning_tokens == snapshot.reasoning_tokens
             && self.cost == snapshot.cost
             && self.t_total_ms == snapshot.t_total_ms
             && self.t_req_read_ms == snapshot.t_req_read_ms
@@ -577,7 +586,10 @@ mod tests {
             failure_class: None,
             is_actionable: None,
             total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
             cache_input_tokens: None,
+            reasoning_tokens: None,
             cost: None,
             t_total_ms: None,
             t_req_read_ms: None,

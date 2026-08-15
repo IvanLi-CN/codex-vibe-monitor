@@ -310,8 +310,14 @@ pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
         delta.t_upstream_ttfb_ms,
     );
     entry.record_first_token_sample(delta.first_token_ms);
-    entry.total_tokens += delta.total_tokens.unwrap_or_default();
-    entry.cache_input_tokens += delta.cache_input_tokens.unwrap_or_default();
+    add_optional_token_components(
+        entry,
+        delta.total_tokens,
+        delta.input_tokens,
+        delta.output_tokens,
+        delta.cache_input_tokens,
+        delta.reasoning_tokens,
+    );
     let cost = delta.cost.unwrap_or_default();
     entry.total_cost += cost;
     if invocation_counts_toward_non_success_usage(
@@ -322,6 +328,62 @@ pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
         delta.is_actionable.map(i64::from),
     ) {
         entry.non_success_cost += cost;
+    }
+}
+
+fn add_optional_token_components(
+    entry: &mut BucketAggregate,
+    total_tokens: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+) {
+    entry.total_tokens += total_tokens.unwrap_or_default();
+    entry.input_tokens += input_tokens.unwrap_or_default();
+    entry.output_tokens += output_tokens.unwrap_or_default();
+    entry.cache_input_tokens += cache_input_tokens.unwrap_or_default();
+    entry.reasoning_tokens += reasoning_tokens.unwrap_or_default();
+
+    if total_tokens.unwrap_or_default() > 0 {
+        entry.token_components_observed = true;
+        if input_tokens.is_none()
+            || output_tokens.is_none()
+            || cache_input_tokens.is_none()
+            || reasoning_tokens.is_none()
+        {
+            entry.token_component_incomplete_count += 1;
+        }
+    }
+}
+
+fn subtract_optional_token_components(
+    entry: &mut BucketAggregate,
+    record: &InvocationAggregateRecord,
+) {
+    entry.total_tokens = entry
+        .total_tokens
+        .saturating_sub(record.total_tokens.unwrap_or_default());
+    entry.input_tokens = entry
+        .input_tokens
+        .saturating_sub(record.input_tokens.unwrap_or_default());
+    entry.output_tokens = entry
+        .output_tokens
+        .saturating_sub(record.output_tokens.unwrap_or_default());
+    entry.cache_input_tokens = entry
+        .cache_input_tokens
+        .saturating_sub(record.cache_input_tokens.unwrap_or_default());
+    entry.reasoning_tokens = entry
+        .reasoning_tokens
+        .saturating_sub(record.reasoning_tokens.unwrap_or_default());
+    if record.total_tokens.unwrap_or_default() > 0
+        && (record.input_tokens.is_none()
+            || record.output_tokens.is_none()
+            || record.cache_input_tokens.is_none()
+            || record.reasoning_tokens.is_none())
+    {
+        entry.token_component_incomplete_count =
+            entry.token_component_incomplete_count.saturating_sub(1);
     }
 }
 
@@ -912,8 +974,14 @@ fn overlay_runtime_timeseries_snapshot(
             record.t_upstream_ttfb_ms,
         );
         entry.record_first_token_sample(record.first_token_ms);
-        entry.total_tokens += record.total_tokens.unwrap_or_default();
-        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        add_optional_token_components(
+            entry,
+            record.total_tokens,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_input_tokens,
+            record.reasoning_tokens,
+        );
         entry.total_cost += record.cost.unwrap_or_default();
     }
     Ok(())
@@ -936,7 +1004,10 @@ fn timeseries_projection_snapshot_record(
             failure_class: record.failure_class.clone(),
             is_actionable: record.is_actionable.map(|value| value != 0),
             total_tokens: record.total_tokens,
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
             cache_input_tokens: record.cache_input_tokens,
+            reasoning_tokens: record.reasoning_tokens,
             cost: record.cost,
             t_total_ms: record.t_total_ms,
             t_req_read_ms: record.t_req_read_ms,
@@ -1008,7 +1079,12 @@ fn merge_timeseries_bucket_aggregate(target: &mut BucketAggregate, source: Bucke
     target.in_flight_phase_counts.requesting += source.in_flight_phase_counts.requesting;
     target.in_flight_phase_counts.responding += source.in_flight_phase_counts.responding;
     target.total_tokens += source.total_tokens;
+    target.input_tokens += source.input_tokens;
+    target.output_tokens += source.output_tokens;
     target.cache_input_tokens += source.cache_input_tokens;
+    target.reasoning_tokens += source.reasoning_tokens;
+    target.token_components_observed |= source.token_components_observed;
+    target.token_component_incomplete_count += source.token_component_incomplete_count;
     target.total_cost += source.total_cost;
     target.non_success_cost += source.non_success_cost;
     target.total_latency_sum_ms += source.total_latency_sum_ms;
@@ -1383,7 +1459,10 @@ mod minute_projection_tests {
             occurred_at: occurred_at.to_string(),
             status: Some("success".to_string()),
             total_tokens: Some(3),
+            input_tokens: Some(2),
+            output_tokens: Some(1),
             cache_input_tokens: Some(1),
+            reasoning_tokens: Some(0),
             cost: Some(0.25),
             error_message: None,
             failure_kind: None,
@@ -1414,7 +1493,10 @@ mod minute_projection_tests {
             failure_class: None,
             is_actionable: None,
             total_tokens: Some(3),
+            input_tokens: None,
+            output_tokens: None,
             cache_input_tokens: None,
+            reasoning_tokens: None,
             cost: Some(0.25),
             t_total_ms: None,
             t_req_read_ms: None,
@@ -1442,7 +1524,10 @@ mod minute_projection_tests {
             failure_class: None,
             is_actionable: None,
             total_tokens: Some(3),
+            input_tokens: None,
+            output_tokens: None,
             cache_input_tokens: None,
+            reasoning_tokens: None,
             cost: Some(0.25),
             t_total_ms: None,
             t_req_read_ms: None,
@@ -1616,7 +1701,10 @@ mod minute_projection_tests {
             failure_class: None,
             is_actionable: None,
             total_tokens: Some(3),
+            input_tokens: Some(2),
+            output_tokens: Some(1),
             cache_input_tokens: Some(1),
+            reasoning_tokens: Some(0),
             cost: Some(0.25),
             t_total_ms: Some(ttfb_ms * 2.0),
             t_req_read_ms: Some(1.0),
@@ -1674,7 +1762,10 @@ mod minute_projection_tests {
             failure_class: None,
             is_actionable: None,
             total_tokens: Some(3),
+            input_tokens: Some(2),
+            output_tokens: Some(1),
             cache_input_tokens: Some(1),
+            reasoning_tokens: Some(0),
             cost: Some(0.25),
             t_total_ms: Some(20.0),
             t_req_read_ms: None,
@@ -2276,8 +2367,14 @@ pub(crate) async fn fetch_timeseries(
             record.t_upstream_ttfb_ms,
         );
         entry.record_first_token_sample(record.first_token_ms);
-        entry.total_tokens += record.total_tokens.unwrap_or(0);
-        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or(0);
+        add_optional_token_components(
+            entry,
+            record.total_tokens,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_input_tokens,
+            record.reasoning_tokens,
+        );
         let cost = record.cost.unwrap_or(0.0);
         entry.total_cost += cost;
         if invocation_counts_toward_non_success_usage(
@@ -2739,7 +2836,13 @@ pub(crate) async fn fetch_timeseries_for_account(
                 entry.failure_count += row.failure_count;
                 entry.in_flight_count += row.in_flight_count;
                 entry.total_tokens += row.total_tokens;
+                entry.input_tokens += row.input_tokens;
+                entry.output_tokens += row.output_tokens;
                 entry.cache_input_tokens += row.cache_input_tokens;
+                entry.reasoning_tokens += row.reasoning_tokens;
+                if row.total_tokens > 0 {
+                    entry.token_components_observed = true;
+                }
                 entry.total_cost += row.total_cost;
                 entry.non_success_cost += row.non_success_cost;
                 entry.total_latency_sample_count += row.total_latency_sample_count;
@@ -2825,7 +2928,13 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
             entry.failure_count += row.failure_count;
             entry.in_flight_count += row.in_flight_count;
             entry.total_tokens += row.total_tokens;
+            entry.input_tokens += row.input_tokens;
+            entry.output_tokens += row.output_tokens;
             entry.cache_input_tokens += row.cache_input_tokens;
+            entry.reasoning_tokens += row.reasoning_tokens;
+            if row.total_tokens > 0 {
+                entry.token_components_observed = true;
+            }
             entry.total_cost += row.total_cost;
             entry.non_success_cost += row.non_success_cost;
             entry.total_latency_sample_count += row.total_latency_sample_count;
@@ -2937,8 +3046,14 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.t_upstream_ttfb_ms,
     );
     entry.record_first_token_sample(record.first_token_ms);
-    entry.total_tokens += record.total_tokens.unwrap_or_default();
-    entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+    add_optional_token_components(
+        entry,
+        record.total_tokens,
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_input_tokens,
+        record.reasoning_tokens,
+    );
     let cost = record.cost.unwrap_or_default();
     entry.total_cost += cost;
     if invocation_counts_toward_non_success_usage(
@@ -2964,12 +3079,7 @@ pub(crate) fn subtract_stale_in_flight_record_from_timeseries_aggregate(
     entry
         .in_flight_phase_counts
         .decrement_phase_name(record.live_phase.as_deref());
-    entry.total_tokens = entry
-        .total_tokens
-        .saturating_sub(record.total_tokens.unwrap_or_default());
-    entry.cache_input_tokens = entry
-        .cache_input_tokens
-        .saturating_sub(record.cache_input_tokens.unwrap_or_default());
+    subtract_optional_token_components(entry, record);
     entry.total_cost = (entry.total_cost - record.cost.unwrap_or_default()).max(0.0);
     entry.remove_exact_first_response_byte_total_sample(
         record.t_req_read_ms,
@@ -3077,8 +3187,14 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
             record.t_upstream_ttfb_ms,
         );
         entry.record_first_token_sample(record.first_token_ms);
-        entry.total_tokens += record.total_tokens.unwrap_or_default();
-        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        add_optional_token_components(
+            entry,
+            record.total_tokens,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_input_tokens,
+            record.reasoning_tokens,
+        );
         entry.total_cost += record.cost.unwrap_or_default();
         runtime_overlay_row_count += 1;
     }
@@ -3137,6 +3253,10 @@ pub(crate) fn timeseries_point_from_aggregate(
         .total_count
         .max(agg.success_count + agg.failure_count + agg.in_flight_count.max(0))
         > 0;
+    let token_components_complete = agg.total_tokens <= 0
+        || (agg.token_components_observed
+            && agg.token_component_incomplete_count == 0
+            && agg.input_tokens.checked_add(agg.output_tokens) == Some(agg.total_tokens));
     TimeseriesPoint {
         bucket_start: format_utc_iso(start),
         bucket_end: format_utc_iso(end),
@@ -3146,7 +3266,10 @@ pub(crate) fn timeseries_point_from_aggregate(
         in_flight_count: agg.in_flight_count,
         in_flight_phase_counts: agg.in_flight_phase_counts,
         total_tokens: agg.total_tokens,
-        cache_input_tokens: agg.cache_input_tokens,
+        input_tokens: token_components_complete.then_some(agg.input_tokens),
+        output_tokens: token_components_complete.then_some(agg.output_tokens),
+        cache_input_tokens: token_components_complete.then_some(agg.cache_input_tokens),
+        reasoning_tokens: token_components_complete.then_some(agg.reasoning_tokens),
         total_cost: agg.total_cost,
         non_success_cost: agg.non_success_cost,
         avg_total_ms: has_calls.then(|| agg.total_latency_avg_ms()).flatten(),
@@ -3712,7 +3835,13 @@ async fn build_timeseries_hourly_rollup_baseline(
         entry.success_count += row.success_count;
         entry.failure_count += row.failure_count;
         entry.total_tokens += row.total_tokens;
+        entry.input_tokens += row.input_tokens;
+        entry.output_tokens += row.output_tokens;
         entry.cache_input_tokens += row.cache_input_tokens;
+        entry.reasoning_tokens += row.reasoning_tokens;
+        if row.total_tokens > 0 {
+            entry.token_components_observed = true;
+        }
         entry.total_cost += row.total_cost;
         entry.non_success_cost += row.non_success_cost;
         entry.total_latency_sample_count += row.total_latency_sample_count;
@@ -4052,6 +4181,60 @@ mod tests {
     }
 
     #[test]
+    fn timeseries_point_hides_incomplete_token_components() {
+        let aggregate = BucketAggregate {
+            total_tokens: 30,
+            input_tokens: 20,
+            output_tokens: 10,
+            cache_input_tokens: 5,
+            token_components_observed: true,
+            token_component_incomplete_count: 1,
+            ..Default::default()
+        };
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.total_tokens, 30);
+        assert_eq!(point.input_tokens, None);
+        assert_eq!(point.output_tokens, None);
+        assert_eq!(point.cache_input_tokens, None);
+        assert_eq!(point.reasoning_tokens, None);
+    }
+
+    #[test]
+    fn timeseries_point_hides_zero_filled_legacy_token_components() {
+        let aggregate = BucketAggregate {
+            total_tokens: 30,
+            token_components_observed: true,
+            ..Default::default()
+        };
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.total_tokens, 30);
+        assert_eq!(point.input_tokens, None);
+        assert_eq!(point.output_tokens, None);
+        assert_eq!(point.cache_input_tokens, None);
+        assert_eq!(point.reasoning_tokens, None);
+    }
+
+    #[test]
     fn add_rollup_rows_preserves_total_latency_metrics() {
         let bucket_epoch =
             align_reporting_bucket_epoch(1_775_608_200, 3_600, chrono_tz::Asia::Shanghai)
@@ -4066,9 +4249,10 @@ mod tests {
                 failure_count: 1,
                 in_flight_count: 0,
                 total_tokens: 99,
-                input_tokens: 0,
-                output_tokens: 0,
+                input_tokens: 44,
+                output_tokens: 55,
                 cache_input_tokens: 7,
+                reasoning_tokens: 11,
                 total_cost: 1.25,
                 non_success_cost: 0.3,
                 total_latency_sample_count: 2,
@@ -4094,6 +4278,11 @@ mod tests {
 
         let aggregate = aggregates.get(&bucket_epoch).expect("bucket");
         assert_eq!(aggregate.total_count, 3);
+        assert_eq!(aggregate.total_tokens, 99);
+        assert_eq!(aggregate.input_tokens, 44);
+        assert_eq!(aggregate.output_tokens, 55);
+        assert_eq!(aggregate.cache_input_tokens, 7);
+        assert_eq!(aggregate.reasoning_tokens, 11);
         assert_eq!(aggregate.total_latency_sample_count, 2);
         assert_eq!(aggregate.total_latency_sum_ms, 1_100.0);
     }
