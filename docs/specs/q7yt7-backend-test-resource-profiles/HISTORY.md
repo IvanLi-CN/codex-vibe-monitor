@@ -30,6 +30,7 @@
 - host-built PR smoke binary 不能在 Bookworm glibc runtime 运行，私有 smoke target 改为 Ubuntu 24.04；生产 Bookworm runtime 保持默认。hosted runner 已具备 Playwright Chromium runtime 依赖，E2E 仅下载对应浏览器而不重复 apt 安装字体。两个并发的 Playwright 2-worker process 会使 Chromium 协议超时并触发 retry，因此 E2E 保留完整测试，records 保持单 worker，Web Demo 独占两个 workers。
 - archive producer 的 `codegen-units=256` 使 Cargo test profile 与已恢复的 `debug=0` target cache 不兼容，导致依赖重编译。该参数已撤回；维持关闭 debug info，以便与同一 Rust source fingerprint 的 ancestor artifact 复用依赖。
 - blob-link legacy backfill 测试曾错误继承 current-schema template；它现在显式创建 fresh schema，确保 `ensure_schema` 真实重放 trigger migration，而普通 Archive fixture 继续使用唯一文件模板副本。
+- archive producer 同时恢复 legacy workspace 与 source-key target cache 会重复解包 `target` 并把 Stateful critical path 推至 400 秒。producer 现只读分离 cache；Lint 仍保留 legacy read-only compatibility seed。
 
 ## Key Reasons / Replacements
 
