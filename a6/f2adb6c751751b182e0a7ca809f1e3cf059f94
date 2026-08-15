@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.61.0",
+  "base_stable_version": "2.60.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-15T12:52:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.61.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f708c73ce5ba452e359638eed5acdd390a5f74a7",
+  "pr_number": 799,
+  "pr_title": "feat: protect API key model routes from low cache hits",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.61.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.61.0",
+  "target_sha": "a6f2adb6c751751b182e0a7ca809f1e3cf059f94",
+  "type_label": "type:minor"
+}
