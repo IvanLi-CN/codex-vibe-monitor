@@ -16,6 +16,7 @@
 - 每个 topic revision 只序列化一次，并以共享不可变 frame 进入 cache、replay ring、broadcaster 与 subscriber。
 - 修复 writer accounting 的所有权和不变量，使运行健康与内存归因可被验证；生产镜像默认 `MALLOC_ARENA_MAX=8`，同时保留部署环境覆盖能力。
 - `GET /api/system/status` additive 暴露 `runtimePressureHealth`，不改变 Dashboard、统计、raw detail 或 SSE 的既有 wire shape。
+- 建立私有 `StoragePlane`，统一高频域的 typed read transaction、同参 singleflight、P1/P2/maintenance admission 与内存 health counters。账号窗口、长期统计与 open-window timeseries 不得绕过该边界直接竞争 SQLite。
 
 ## Architecture
 
@@ -57,11 +58,21 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - accounting 不变量破坏必须进入 degraded health 并保留证据，不能 wrap 到 `usize::MAX` 或继续报告 healthy。
 - startup backfill 的 supervisor 按持久化 task deadline 或匹配 repair wake 调度，不使用全局固定 ticker。空闲等待不得扫描 task progress、执行无关 maintenance 或写 `system_task_runs`；source-unavailable task 只在相关 archive/payload/coverage 输入变化或每日受限 probe 时运行。
 
+### Governed Storage Plane
+
+- `StoragePlane` 是高频持久化读写的唯一 private boundary。它拥有 typed read transaction、selection-key singleflight、write-class admission 和无需 SQL 的 health snapshot；高频模块不得直接取得 `AppState.pool` 或执行裸 SQL 写入。
+- 高频域仅包括账号窗口 usage、长期统计和 open-window timeseries，以及它们依赖的 terminal/projection maintenance。低频 owner 配置写可以保留在显式、可审计的 exemption list 中，exemption 不得覆盖上述域。
+- `window-usage` 的 selection key 由排序后的账号集合、配置 revision 与 durable cursor 组成。同一 key 只允许一个 in-flight build，不通过 TTL 隐藏变化；其读路径由完整小时 rollup、边界 minute/current-live tail 和明确 coverage hole 组成。coverage hole 只修复受影响 bucket，健康路径不得读取跨全部账号的 raw 范围。
+- 新 terminal 写入结构化 nullable `codex_invocations.upstream_account_id`。旧行按 rowId、活跃窗口优先、pressure-gated 小批回填；索引只有在 readiness 达标后才可作为读路径前提。
+- 长期统计和 timeseries 只由 terminal、归属/价格修正与 archive rewrite/restore 标记受影响 bucket。60 秒 flush 只提交 dirty bucket；空 dirty 集不得删除 interval、写 task run 或把全部历史行改为 warming。
+- 读模型没有 baseline 或 coverage 未就绪时，账号窗口接口返回 `202` 与 `{ items: [], readiness: "preparing", retryAfterMs }`，同时发送 `Retry-After: 1`。已有 last-good 最多服务 60 秒，之后同样返回 preparing；这不改变正常 `200` 的 items shape。
+
 ## Public Contracts
 
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
+- `runtimePressureHealth.storagePlane` 只读内存 counters，至少包含 build/coalesced waiter、rollup/raw bucket、dirty bucket、no-op suppression、backfill cursor、last-good age、direct-pool violation 与最近错误。
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
@@ -81,6 +92,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - request pipeline: `snapshot_kind`, `body_size_bytes`, `semantic_parse_count`, `whole_body_materialization_count`, `rewrite_buffer_peak_bytes`, `fallback_reason`。
 - delivery: `topic_key`, `active_subscriber_count`, `builder_count`, `serialization_count`, `frame_bytes`, `frame_reused`, `cursor_advanced`。
 - accounting/memory: `pending_depth`, `pending_bytes`, `accounting_transfer_bytes`, `accounting_invariant`, `rss_anon_bytes`, `swap_bytes`, `managed_bytes`, `unattributed_anon_bytes`。
+- storage plane: `operation`, `selection_fingerprint`, `rows_read`, `rows_emitted`, `fallback_bucket`, `lock_wait_ms`, `elapsed_ms`, `defer_reason`, `response_source` 与 `no_op_suppressed`。不得记录 payload、调用 ID 或原始 SQL。
 - healthy/no-change 高频事件降为 debug；DB live read、whole-body materialization、accounting invariant violation、持续 stale 与序列化重复保留 warning。
 
 ## Verification
@@ -93,6 +105,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - P2 pressure defer 不是执行失败，不得增加 retry 计数。健康派生写采用固定 250ms 合并；cooldown 到期或 background eligibility generation 变化负责唤醒，P1 的 20ms admission ticker 不得轮询 P2。
 - 高频 Prompt Cache topic 必须使用 active-topic scoped projection。任意 Records 广播不得触发 full-window hydrate；topic delta 500ms 合并，last-good baseline 最多每 60 秒 pressure-gated reconcile 一次。
 - 生产受控 A/B 中新增 Dashboard tab 的 CPU 增量不超过 10 个百分点，subscription lag/skipped 为零；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。该 A/B 是架构完成门槛，不能由“零 SQL”或单 topic Arc 复用测试替代。
+- 42 账号混合 archive/live-tail fixture 的账号窗口 p95 不超过 1 秒；101 健康窗口 p95 不超过 3 秒。二者都必须证明无整窗 raw 扫描、无 no-op SQLite 写入与无正常 P1 lock 冲突。
 
 ## Non-goals
 
@@ -100,6 +113,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - 不降低代理并发、请求体上限、统计精度或 raw/terminal 保留。
 - 不把 closed-range exact 查询和非 Dashboard 页面全部迁入 Runtime Projection。
 - 不用 telemetry 标签代替类型边界、query-count、parse-count 与 A/B 证据。
+- 不通过 summary TTL、stale success、SQLite 连接池扩容或放宽 slow threshold 规避高频存储面问题。
 
 ## Visual Evidence
 

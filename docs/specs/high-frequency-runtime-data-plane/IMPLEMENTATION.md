@@ -4,6 +4,14 @@
 
 Activity、summary 与 network topic 已有 typed projection/materializer。working-conversations、parallel-work open range 与 open-window timeseries 仍可能进入通用 subscription builder；其迁移、健康判责与完整 Dashboard bundle 性能门禁由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/IMPLEMENTATION.md) 跟踪。在该规范验收前，高频 Dashboard delivery 不视为全部完成。
 
+## Governed Storage Plane Coverage
+
+Status: in progress.
+
+`RuntimeProjectionHub` 已限制 Dashboard current-state 的健康 live render，但账号窗口 usage、长期统计和 open-window timeseries 仍存在直接使用 SQLite pool 的路径。这些路径可以重复读取宽范围 invocation 数据、在空投影周期产生写入，并与 P1 terminal 竞争单写者；因此不得把 Dashboard 的零 live SQL 误述为整个高频存储面已经收口。
+
+`StoragePlane` 将把此缺口收敛为受编译/CI guard 约束的单一边界：账号窗口读取使用每账号 rollup 与有界尾部，长期统计和 timeseries 只 flush dirty bucket。其恢复语义要求无 baseline 时显式返回 preparing，已有 last-good 最多 60 秒，且不在 owner 请求链执行整窗 raw fallback。
+
 ## Typed Runtime Event Bus Boundary
 
 The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.

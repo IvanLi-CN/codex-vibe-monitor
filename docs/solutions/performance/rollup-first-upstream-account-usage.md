@@ -28,6 +28,13 @@
 3. retention 边界 partial bucket 再回读 raw rows。
 4. raw fallback 必须按 `(account_id, bucket_epoch)` 去重，保证已有 hourly bucket 不会被重复累计。
 
+### 2.1 选择与恢复边界
+
+- selection key 固定为排序后的账号 ID、配置 revision 与 durable cursor；只合并同 key 的 in-flight build，不用 TTL 掩盖 cursor 或配置变化。
+- 新 invocation 必须结构化保存 nullable account ID。旧行不能让每个请求重新解析 payload；按 rowId、活跃窗口优先和 pressure-gated 小批 backfill 补齐后才启用依赖该列的索引。
+- 没有 baseline 或 coverage 未就绪时返回显式 `202 preparing` 与 `Retry-After: 1`。已有 last-good 最多保留 60 秒，之后仍回到 preparing，不能无限返回静默 stale usage。
+- coverage hole 只允许读取/修复该账号的连续 bucket。整段 7d raw 聚合、联合所有账号 minute/raw 范围和按 payload JSON 归属的全量读取都不是健康 fallback。
+
 ### 3. 为什么不要在列表接口里算 usage
 
 - 首屏列表会被 usage 聚合拖到和账号数线性相关。
@@ -47,6 +54,7 @@
 - 只看 live cursor 就相信小时桶完整，会在 fresh deploy / upgrade 时把 full-hour usage 漏掉。
 - stale hydrate 请求如果在 `finally` 里直接清空 pending ids，会把更新一轮的真实请求误判成“已完成”。
 - SQLite 会按结果值保留整数类型；映射到 Rust `f64` 的 `SUM` / `COALESCE` 输出应显式 `CAST(... AS REAL)`，否则整型测试数据会在 SQLx 解码阶段失败。
+- 只把 SQL 放进一个 repository 不等于建立边界。高频 account builder、长期统计和 timeseries 必须共享 typed storage transaction、write admission 与 direct-pool guard；否则单个热点的修复会被旁路读取重新放大。
 - 列表 query key 变化时如果不清空 hydrate generation，旧 usage 响应会覆盖新筛选结果。
 
 ## 何时不适用

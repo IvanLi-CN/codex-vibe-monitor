@@ -9,6 +9,9 @@
 
 ## Key Decisions
 
+- 高频存储面的性能治理不再把“Dashboard live 零 SQL”视为全链路结论。账号窗口、长期统计和 open-window timeseries 必须统一到 `StoragePlane`，并以 rollup/boundary tail、dirty bucket 与 write admission 证明健康路径没有宽范围读取和 no-op 写入。
+- 冷恢复采用明确 `202 preparing`，而不是无限服务 stale 或在请求链同步整窗回退。正常 200 response 保持既有 items contract；last-good 的服务期受 60 秒上限约束。
+
 - P2 派生写从 P1 的 20ms ticker 中分离，使用 250ms 固定合并、pressure deadline 与分类 lock retry；Prompt Cache window topic 同步改为 500ms active projection，通用 Records 不再触发整窗 SQLite hydrate。
 
 - 统一代理 terminal、attempt、route 与派生写的 SQLite admission，删除 P1 retained batch 固定 250ms 重试语义，并限制 P2 rollup 单事务工作量。

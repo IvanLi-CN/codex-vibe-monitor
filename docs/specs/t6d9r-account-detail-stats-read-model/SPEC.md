@@ -86,7 +86,9 @@
 
 - `/api/pool/upstream-accounts/window-usage` 优先读取 minute read-model，再合并缺失 hourly usage rows 与 cursor 之后的 live raw tail。
 - partial bucket 不得丢失，也不得因为 archive/live overlap 被双计数。
-- 不允许按账号窗口构造大型 live SQL + 内存重算作为常规路径。
+- 不允许按账号窗口构造大型 live SQL + 内存重算作为常规路径。每个账号只读取自身完整小时 rollup、边界 minute/current-live tail 与明确 coverage hole；缺口修复只覆盖对应 bucket。
+- terminal durable row 保存 nullable structured `upstream_account_id`。旧 payload-derived 归属按 rowId 小批回填，活跃窗口优先且受 pressure gate 控制；新索引必须在 readiness 完成后才可假定可用。
+- 同一排序账号集合、配置 revision 和 durable cursor 只允许一个 in-flight build。没有 baseline 或 coverage 未就绪时接口显式返回 `202` preparing 与 `Retry-After: 1`；正常 `200` items shape 不变，last-good 不得超过 60 秒。
 
 ## 前端编排契约
 
@@ -106,7 +108,7 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- 打开账号详情抽屉后，`actualUsage`、概览页活动总览 summary 与活动趋势都必须在 3 秒内完成准确渲染。
+- 打开账号详情抽屉后，`actualUsage`、概览页活动总览 summary 与活动趋势都必须在 3 秒内完成准确渲染；无 baseline 的受控 preparing 状态例外，前端必须保留占位并按退避重试。
 - `/api/pool/upstream-accounts/window-usage` 不再走按账号批量 live 重算热路径；批量账号统计恢复到现有性能预算内，不再出现 10 秒级响应。
 - 账号维度 summary / timeseries 对 success / failure / in-flight、tokens、cost、`firstTokenAvgMs`、`firstTokenP95Ms` 的结果，与 invocation `first_token_ms` 样本逐项一致；旧 `firstResponseByteTotal*` 不得进入 TTFT 聚合。
 - 冷启动或 archive 回放后，read-model 未追平时 readiness 不得通过。

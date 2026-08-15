@@ -11,7 +11,8 @@ flowchart LR
     Semantics --> Upstream["Routing / rewrite / failover"]
     Upstream --> Runtime["RuntimeProjectionHub"]
     Upstream --> Journal["P1 terminal journal"]
-    Journal --> SQLite[(SQLite durable facts)]
+    Journal --> Storage["StoragePlane"]
+    Storage --> SQLite[(SQLite durable facts)]
     Journal --> Terminal["TerminalProjectionHub"]
     Runtime --> Current["Current / phase projection (250ms)"]
     Runtime --> Network["Network projection (1s)"]
@@ -22,6 +23,8 @@ flowchart LR
     Materializer --> Frame["Arc<SerializedTopicFrame>"]
     Frame --> SSE["SSE cache / replay / subscribers"]
     SQLite -. "startup / 60s reconcile / cold fallback" .-> Totals
+    Storage --> AccountUsage["Account rollup + boundary tail"]
+    Storage --> ProjectionFlush["Dirty-bucket projection flush"]
     SQLite --> Historical["Closed-range and historical APIs"]
 ```
 
@@ -31,6 +34,7 @@ flowchart LR
 - projection 接收事件并渲染当前态；健康 `DashboardLiveProjection::snapshot()` 不接受数据库连接。
 - delivery 只接收已序列化的不可变 frame；cache、replay、broadcast 与 subscriber 不构建业务 payload。
 - persistence/reconcile 负责 durable terminal、启动恢复、周期对账、closed-range exact 与明确冷回退。
+- `StoragePlane` 是账号窗口、长期统计与 open-window timeseries 的唯一高频持久化边界：它统一 typed read transaction、selection singleflight、P1/P2/maintenance admission 和 health counters。高频模块不得直接使用 `AppState.pool` 或裸写 SQL；低频 owner 配置写只能经显式 exemption list 保留。
 - System Status 的 runtime health 只读取内存计数器，不为诊断新增 SQL。
 
 ## 2. 代理请求入口
@@ -68,6 +72,8 @@ flowchart LR
 - SQLite rollup 保存长期统计、账号活动、usage breakdown、timeseries 与 parallel-work 的可恢复聚合；archive 承担超出 live retention 的历史详情。
 - 历史 HTTP API 从 rollup、archive 与 exact boundary 查询构建；不得把历史重建工作放回 Dashboard 当前态热路径。
 - 价格、归属、archive rewrite/restore 等修正通过目标桶 repair 收敛，而不是周期性重扫宽时间窗。
+- 账号窗口按账号读取完整小时 rollup、边界 minute/current-live tail 和明确 coverage hole；新 terminal 结构化保存 nullable account id，旧行按活跃窗口优先的小批 backfill 修复。无 baseline 时接口显式返回 preparing，已有 last-good 最多使用 60 秒。
+- 长期统计和 timeseries 只 flush event-marked dirty bucket。空集不得产生 interval 删除、task-run 写入或启动时的大范围 warming update。
 
 ## 6. 健康与回退
 
@@ -92,5 +98,6 @@ flowchart LR
 - `16/64 MiB` file-backed 请求只有一次语义解析，业务峰值缓冲不超过 `64 KiB`。
 - Dashboard current-state 更新 p95 不超过 `400ms`；terminal totals 在 `5s` 内可见。
 - 生产 Dashboard tab A/B 的 CPU 增量不超过 10 个百分点；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。
+- 42 账号 shared-testbox 的 window-usage p95 不超过 1 秒，101 健康窗口 p95 不超过 3 秒；健康路径没有整窗 raw scan、no-op SQLite 写入或正常 P1 lock 冲突。
 
 实现细节、迁移状态和测试证据见 [`docs/specs/high-frequency-runtime-data-plane`](./specs/high-frequency-runtime-data-plane/SPEC.md)。

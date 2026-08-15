@@ -134,6 +134,8 @@
 - Terminal admission, projection updates, and persistence acknowledgements are separate ownership boundaries. P1 raw durability must not wait for P2 rollups, account touches, or maintenance writes; each consumer needs its own cursor and dirty-last-good state.
 - A fixed publish deadline must not invalidate a database snapshot on every terminal event. Publish current-state changes from memory, reconcile baselines on a longer cadence, and defer reconciliation during writer pressure with explicit last-good age and defer telemetry.
 - memory-first 只能排除数据库成本，不能自动排除 CPU 放大。projection snapshot、topic overlay 与 delivery frame 必须形成单向 typed 边界；完整业务对象广播、cached JSON 深拷贝和多 topic 重复序列化仍会在零 SQL 情况下制造高 CPU 与 subscription lag。
+- 账号窗口、长期统计和 open-window timeseries 也必须纳入一个 typed `StoragePlane`，而不是保留为“Dashboard 之外”的 direct-pool 例外。该边界负责同参 singleflight、读写优先级、coverage/last-good 与内存诊断，CI 应拒绝高频模块新增裸 pool/SQL 入口。
+- event-driven projection 的空 dirty 集必须是零写入：不得删除 interval、写 task run 或执行全表 warming。真正的归属、价格、archive rewrite/restore 修正只标记受影响 bucket；pressure 下保留 cursor/last-good 并等待统一 gate。
 
 ## Proxy hot-write coordination
 
