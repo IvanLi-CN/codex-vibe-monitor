@@ -37,8 +37,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          test -r /usr/include/sqlite3.h
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@v1
