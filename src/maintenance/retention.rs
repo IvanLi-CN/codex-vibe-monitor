@@ -872,6 +872,14 @@ impl InvocationHourlySourceRecord {
         self.upstream_account_id
             .or_else(|| crate::proxy::upstream_account_id_from_payload(self.payload.as_deref()))
     }
+
+    pub(crate) fn has_complete_token_components(&self) -> bool {
+        self.total_tokens.unwrap_or_default() <= 0
+            || (self.input_tokens.is_some()
+                && self.output_tokens.is_some()
+                && self.cache_input_tokens.is_some()
+                && self.reasoning_tokens.is_some())
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]

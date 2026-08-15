@@ -3173,7 +3173,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         || upstream_account_stats_minute_count == 0
         || added_upstream_account_stats_columns
     {
-        reopen_upstream_account_stats_rollup_archives(pool).await?;
         rebuild_upstream_account_stats_rollups_from_sources(pool)
             .await
             .context("failed to rebuild upstream account stats rollups from sources")?;

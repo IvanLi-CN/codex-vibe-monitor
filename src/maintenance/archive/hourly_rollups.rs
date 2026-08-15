@@ -4379,6 +4379,18 @@ where
                     if rows.is_empty() {
                         continue;
                     }
+                    if rows
+                        .iter()
+                        .any(|row| !row.has_complete_token_components())
+                    {
+                        source_incomplete = true;
+                        warn!(
+                            dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                            file_path = %archive_path.display(),
+                            "skipping invocation hourly rollup reconciliation because archive token components are incomplete"
+                        );
+                        break;
+                    }
                     accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
                 }
                 Ok(())
@@ -4400,42 +4412,6 @@ where
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
-    }
-
-    if source_incomplete {
-        // A missing archive still makes the active source window unavailable, but it must not
-        // erase proofs for buckets whose sources were intentionally retired by an already-
-        // persisted cleanup boundary. Keep this as a single write so the failure path does not
-        // turn a large retained history into avoidable SQLite lock pressure.
-        let invalidated = if let Some(source_start) = integrity_source_start_date.as_ref() {
-            let boundary_start_epoch =
-                long_term_integrity_source_boundary_start_epoch(source_start)?;
-            sqlx::query(
-                "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0 AND bucket_start_epoch >= ?1",
-            )
-            .bind(boundary_start_epoch)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-        } else {
-            sqlx::query(
-                "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0",
-            )
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-        };
-        warn!(
-            invalidated,
-            "left reconstructable canonical terminal integrity proofs unavailable because at least one invocation archive is unreadable"
-        );
-        tx.commit().await?;
-        return Ok(InvocationHourlyRollupReconciliation {
-            applied_rollups: 0,
-            invalidated_bucket_start_epochs: Vec::new(),
-            unavailable_archive_file_paths,
-            source_complete: false,
-        });
     }
 
     before_live_source_scan().await;
@@ -4494,7 +4470,49 @@ where
         if rows.is_empty() {
             continue;
         }
+        if rows.iter().any(|row| !row.has_complete_token_components()) {
+            source_incomplete = true;
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                "skipping invocation hourly rollup reconciliation because live token components are incomplete"
+            );
+            break;
+        }
         accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+    }
+
+    if source_incomplete {
+        // An incomplete source cannot certify a replacement rollup. Preserve the prior
+        // canonical buckets so a legacy archive cannot turn missing Token components into zero.
+        let invalidated = if let Some(source_start) = integrity_source_start_date.as_ref() {
+            let boundary_start_epoch =
+                long_term_integrity_source_boundary_start_epoch(source_start)?;
+            sqlx::query(
+                "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0 AND bucket_start_epoch >= ?1",
+            )
+            .bind(boundary_start_epoch)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+        } else {
+            sqlx::query(
+                "UPDATE invocation_rollup_hourly SET terminal_proof_complete = 0 WHERE terminal_proof_complete <> 0",
+            )
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+        };
+        warn!(
+            invalidated,
+            "left reconstructable canonical terminal integrity proofs unavailable because an invocation source is incomplete"
+        );
+        tx.commit().await?;
+        return Ok(InvocationHourlyRollupReconciliation {
+            applied_rollups: 0,
+            invalidated_bucket_start_epochs: Vec::new(),
+            unavailable_archive_file_paths,
+            source_complete: false,
+        });
     }
 
     let mut applied_rollups = 0usize;
@@ -4672,6 +4690,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     .await?;
     let mut seen_ids = HashSet::new();
     let mut source_rows = Vec::<InvocationHourlySourceRecord>::new();
+    let mut source_incomplete = false;
 
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
@@ -4681,6 +4700,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during upstream account stats rollup rebuild"
             );
+            source_incomplete = true;
             continue;
         }
 
@@ -4718,6 +4738,18 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 .map(|row| row.id)
                 .unwrap_or(archive_cursor_id);
             archive_rows.retain(|row| seen_ids.insert(row.id));
+            if archive_rows
+                .iter()
+                .any(|row| !row.has_complete_token_components())
+            {
+                source_incomplete = true;
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    "skipping upstream account stats rollup rebuild because archive token components are incomplete"
+                );
+                break;
+            }
             source_rows.extend(archive_rows);
         }
         archive_pool.close().await;
@@ -4783,9 +4815,32 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         }
         cursor_id = live_rows.last().map(|row| row.id).unwrap_or(cursor_id);
         live_rows.retain(|row| seen_ids.insert(row.id));
+        if live_rows
+            .iter()
+            .any(|row| !row.has_complete_token_components())
+        {
+            source_incomplete = true;
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                "skipping upstream account stats rollup rebuild because live token components are incomplete"
+            );
+            break;
+        }
         source_rows.extend(live_rows);
     }
     drop(live_conn);
+
+    if source_incomplete {
+        let hourly_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
+                .fetch_one(pool)
+                .await?;
+        let minute_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
+                .fetch_one(pool)
+                .await?;
+        return Ok((hourly_count.max(0) as usize, minute_count.max(0) as usize));
+    }
 
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM upstream_account_stats_hourly")
@@ -5080,6 +5135,84 @@ mod upstream_host_network_minute_tests {
         assert!(row.output_tokens.is_none());
         assert!(row.cache_input_tokens.is_none());
         assert!(row.reasoning_tokens.is_none());
+    }
+
+    async fn create_upstream_account_stats_rebuild_tables(pool: &Pool<Sqlite>) {
+        for table_name in [
+            "upstream_account_stats_hourly",
+            "upstream_account_stats_minute",
+        ] {
+            sqlx::query(&format!(
+                "CREATE TABLE {table_name} (bucket_start_epoch INTEGER PRIMARY KEY)"
+            ))
+            .execute(pool)
+            .await
+            .expect("create upstream account stats rollup table");
+            sqlx::query(&format!(
+                "INSERT INTO {table_name} (bucket_start_epoch) VALUES (1)"
+            ))
+            .execute(pool)
+            .await
+            .expect("seed upstream account stats rollup");
+        }
+        sqlx::query(
+            r#"
+            CREATE TABLE archive_batches (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                coverage_start_at TEXT,
+                coverage_end_at TEXT,
+                dataset TEXT NOT NULL,
+                status TEXT NOT NULL,
+                month_key TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create archive batches table");
+    }
+
+    #[tokio::test]
+    async fn account_stats_rebuild_preserves_rollups_when_archive_is_missing() {
+        let pool = test_pool().await;
+        create_upstream_account_stats_rebuild_tables(&pool).await;
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, dataset, status, month_key, created_at) VALUES (1, '/missing/invocations.sqlite.gz', 'codex_invocations', 'completed', '2026-07', '2026-07-01 00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed missing invocation archive");
+
+        let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
+            .await
+            .expect("rebuild should preserve existing rollups");
+
+        assert_eq!(counts, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn account_stats_rebuild_preserves_rollups_when_live_token_components_are_partial() {
+        let pool = test_pool().await;
+        create_upstream_account_stats_rebuild_tables(&pool).await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, created_at, detail_level,
+                input_tokens, output_tokens, total_tokens
+            ) VALUES (1, 'partial-components', '2026-07-23 10:00:00', 'proxy', '2026-07-23 10:00:00', 'full', 80, 20, 100)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed partial live invocation");
+
+        let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
+            .await
+            .expect("rebuild should preserve existing rollups");
+
+        assert_eq!(counts, (1, 1));
     }
 
     async fn save_progress(pool: &Pool<Sqlite>, dataset: &str, cursor_id: i64) {
