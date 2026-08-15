@@ -382,7 +382,7 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Start Vite dev server
         working-directory: web

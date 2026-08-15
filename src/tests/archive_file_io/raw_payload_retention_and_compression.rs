@@ -136,7 +136,8 @@ async fn shared_raw_blob_keeps_file_reference_until_last_owner_is_removed() {
 
 #[tokio::test]
 async fn schema_backfill_links_existing_pool_attempt_response_raw() {
-    let (pool, config, temp_dir) = retention_test_pool_and_config("legacy-attempt-raw-link").await;
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("legacy-attempt-raw-link").await;
     let shared_path = config.proxy_raw_dir.join("legacy-attempt-response.zst");
     let occurred_at = shanghai_local_days_ago(1, 12, 0, 0);
     insert_retention_invocation(

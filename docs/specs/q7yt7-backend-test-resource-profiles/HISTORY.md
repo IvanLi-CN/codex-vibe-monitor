@@ -27,7 +27,9 @@
 - Rust cache 从 lockfile-only 的 registry/target 混合 key 改为 registry/git 与 source-fingerprinted nextest target keys 分离。迁移实验表明 target-only restore 不能解包旧三路径 cache，故固定先以原三路径只读恢复 ancestor，再写入新 source-key；clippy 不再写入自己的 target cache。PR smoke 并行生成当前 debug binary 与 web bundle，只封装私有 runtime target，生产默认 Docker target 与 release profile 保持不变。
 - Archive ordinary current-schema tests 采用唯一 file template copy；migration/backfill、gzip、路径、文件锁和文件损坏保持真实 fresh schema/file fixture。前端 test coverage 不变，Rust lint 与 repository tooling 也分离；Vitest、Storybook accessibility 和 docs/demo static build 拆为独立 required jobs，release snapshot 与 branch-protection contract 同步等待完整拓扑。
 - 冷 SHA 即使恢复 ancestor target，仍必须重新链接当前测试二进制；因此引入不进入 branch protection 的 archive producer，让三个固定 backend required checks 并行回放同一 current-head archive。该拓扑只有在同一 PR head 两次同时满足 180 秒 required job、390 秒 Stateful critical path 和 runner 成本门槛时保留。
-- host-built PR smoke binary 不能在 Bookworm glibc runtime 运行，私有 smoke target 改为 Ubuntu 24.04；生产 Bookworm runtime 保持默认。两个并发的 Playwright 2-worker process 会使 Chromium 协议超时并触发 retry，因此 E2E 保留完整测试，records 保持单 worker，Web Demo 独占两个 workers。
+- host-built PR smoke binary 不能在 Bookworm glibc runtime 运行，私有 smoke target 改为 Ubuntu 24.04；生产 Bookworm runtime 保持默认。hosted runner 已具备 Playwright Chromium runtime 依赖，E2E 仅下载对应浏览器而不重复 apt 安装字体。两个并发的 Playwright 2-worker process 会使 Chromium 协议超时并触发 retry，因此 E2E 保留完整测试，records 保持单 worker，Web Demo 独占两个 workers。
+- archive producer 的 `codegen-units=256` 使 Cargo test profile 与已恢复的 `debug=0` target cache 不兼容，导致依赖重编译。该参数已撤回；维持关闭 debug info，以便与同一 Rust source fingerprint 的 ancestor artifact 复用依赖。
+- blob-link legacy backfill 测试曾错误继承 current-schema template；它现在显式创建 fresh schema，确保 `ensure_schema` 真实重放 trigger migration，而普通 Archive fixture 继续使用唯一文件模板副本。
 
 ## Key Reasons / Replacements
 

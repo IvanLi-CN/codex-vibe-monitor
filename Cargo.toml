@@ -54,4 +54,3 @@ libsqlite3-sys = "=0.30.1"
 
 [profile.test]
 debug = 0
-codegen-units = 256

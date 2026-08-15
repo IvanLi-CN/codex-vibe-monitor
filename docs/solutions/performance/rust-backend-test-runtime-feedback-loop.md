@@ -35,6 +35,7 @@ related_specs:
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
 - PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。最终 PR 指标是每个 required job 的 job wall time 在同一 head 的冷/热两轮都 `<= 180s`，并使 required runner 总秒数至少下降 `20%`。
 - 分离 Cargo registry/git cache 与 nextest target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，并保留 lockfile-only restore prefix。首次迁移 namespace 时，ancestor cache 的恢复路径必须与旧缓存完全一致，否则 Actions cache 的版本校验会拒绝解包；随后只写入新的 source-key。clippy 可读 ancestor，但不应保存或争用 nextest target。
+- Cargo profile 参数本身是 target cache ABI 的一部分。若 producer 恢复 `debug=0` artifact 后切换 `codegen-units`，所有依赖都会重新编译；先保持 profile 与 cache producer 一致，再用 CI critical path 验证任何编译参数实验。
 - 当冷 SHA 的单次链接无法落入 required job 预算时，使用一个显式 auxiliary archive producer 一次编译 current head，再让原有 backend required jobs 下载并回放各自完整 profile。必须把 auxiliary job 与 branch protection 分开记录，并用同一 head 两次 CI 同时验证 critical path、每个 required job 与总 runner 成本。
 - PR smoke image 可以把当前 debug binary 与 web bundle 在 host 侧并行构建，再封装到私有 runtime target；私有 runtime 的 glibc 必须兼容 host runner。生产 release profile 和默认 Docker target 不得借此改变。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
@@ -42,6 +43,7 @@ related_specs:
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
 - 两个 CI archive 原型都说明“编译复用”不等于关键路径改善：独立 producer 的 run `31811122919` Stateful critical path 为 `504s`、backend runner 为 `872s`；Stateful job 内构建并分发的 run `31813566813` 为 `433s`、`750s`。新的 auxiliary producer 仍是受控实验，只有同一 head 的冷/热两轮同时满足门槛才可替换三次独立编译。
 - 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；Archive 的普通 current-schema file-DB tests 可从 runner 生成的私有 template 复制唯一文件。legacy migration、文件路径、gzip、文件损坏和 write-lock 保留真实 fresh schema/file fixture。
+- 给 Archive template 分类时，识别 "再次调用 `ensure_schema` 模拟旧版数据库" 的用例。它们必须显式选择 fresh schema；仅删除 migration marker 而保留 current trigger 会把 fixture 缺陷误报为 schema migration 失败。
 - runner 先由一次真实 `ensure_schema` 生成私有 file template；每个唯一 shared-memory SQLite 再通过 SQLite backup API 获得副本。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize、逐条 SQL dump 和为 shared-memory state 直接复制文件都不是最终路径。
 - current-schema-only 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试应优先复用 template pool；不得把 legacy migration、文件路径、gzip 或 write-lock 测试迁入该路径。
 - 检查共享 test-state helper，而不只查单个测试里的 `ensure_schema`。若一个 helper 被 Stateful 复用且只需要 current schema，可在 schema-template 环境变量存在时委托给 template pool；无变量时仍按原 helper 建库。这样同一 helper 在 Archive/File I/O 和本地直跑中保留真实 schema/file 语义，Stateful 则避免每个 `AppState` 重复 DDL。
@@ -70,6 +72,7 @@ bash .github/scripts/test-live-quality-gates.sh
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
 - 不要用 lockfile-only key 缓存整个 `target`，也不要让 clippy 写入 nextest target archive；两者会产生不稳定的编译收益与 cache 写入竞争。
 - 不要把同一 hosted runner 上的多个 Playwright worker pool 相乘。浏览器协议超时触发 retry 时，表面并行会比一个独占的两-worker suite 更慢且更不稳定。
+- hosted runner 已包含 Chromium 所需运行库时，不要为每个 E2E job 重复执行 `playwright install --with-deps`；只下载版本匹配的 browser，避免无关 apt/font 安装占用 required job 预算。
 - 切换到 nextest 前先修掉并发暴露的测试竞态；真实时间窗口断言要以行为结果为主，毫秒上限只作为防挂死保护。
 - 对 retry/backoff 与 no-available-account 轮询，测试 harness 可注入零等待，但 production wrapper/default 与需要验证时间预算的测试必须保留正式值。
 - 大请求的 file-backed 语义可由私有 memory threshold 注入较小输入；仍要保留一条正式阈值边界测试，不能把生产 threshold 改成测试值。
