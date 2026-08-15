@@ -1,5 +1,8 @@
 use super::*;
 use crate::db_pressure::global_db_pressure_gate;
+use crate::maintenance::{
+    StartupBackfillProgressUpdate, load_startup_backfill_progress, save_startup_backfill_progress,
+};
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -12,6 +15,8 @@ const ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(60);
 const ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS: u64 = 1_000;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT: i64 = 200;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET: Duration = Duration::from_millis(200);
+const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
+    "account_window_usage_upstream_account_id";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -296,78 +301,122 @@ impl AccountWindowStoragePlane {
                 }
             }
             let _running = BackfillGuard(running);
-            let started_at = Instant::now();
-            let Ok(_permit) =
-                global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
-            else {
-                return;
-            };
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "SELECT id, payload FROM codex_invocations WHERE upstream_account_id IS NULL AND json_valid(payload) AND ",
-            );
-            query.push("CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) IN (");
+            if let Err(err) =
+                Self::run_legacy_backfill_pass(pool, account_ids, active_window_start, health).await
             {
-                let mut separated = query.separated(", ");
-                for account_id in &account_ids {
-                    separated.push_bind(account_id);
-                }
-            }
-            query
-                .push(") ORDER BY CASE WHEN occurred_at >= ")
-                .push_bind(active_window_start.to_rfc3339())
-                .push(" THEN 0 ELSE 1 END, id ASC LIMIT ")
-                .push_bind(ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT);
-            let rows = match query
-                .build_query_as::<(i64, Option<String>)>()
-                .fetch_all(&pool)
-                .await
-            {
-                Ok(rows) => rows,
-                Err(err) => {
-                    warn!(error = %err, "account window legacy backfill query failed");
-                    return;
-                }
-            };
-            if rows.is_empty() {
-                return;
-            }
-            let mut tx = match pool.begin().await {
-                Ok(tx) => tx,
-                Err(err) => {
-                    warn!(error = %err, "account window legacy backfill transaction failed");
-                    return;
-                }
-            };
-            let mut last_updated_id = None;
-            for (id, payload) in &rows {
-                if started_at.elapsed() >= ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET {
-                    break;
-                }
-                let account_id = crate::proxy::upstream_account_id_from_payload(payload.as_deref());
-                if let Some(account_id) = account_id {
-                    if let Err(err) = sqlx::query(
-                        "UPDATE codex_invocations SET upstream_account_id = ?2 WHERE id = ?1 AND upstream_account_id IS NULL",
-                    )
-                    .bind(id)
-                    .bind(account_id)
-                    .execute(&mut *tx)
-                    .await
-                    {
-                        warn!(error = %err, "account window legacy backfill update failed");
-                        return;
-                    }
-                    last_updated_id = Some(*id);
-                }
-            }
-            if let Err(err) = tx.commit().await {
-                warn!(error = %err, "account window legacy backfill commit failed");
-            } else if let Some(cursor) = last_updated_id {
-                health
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .backfill_cursor = cursor;
+                warn!(error = %err, "account window legacy backfill pass failed");
             }
         });
+    }
+
+    async fn run_legacy_backfill_pass(
+        pool: Pool<Sqlite>,
+        account_ids: Vec<i64>,
+        active_window_start: DateTime<Utc>,
+        health: Arc<std::sync::Mutex<AccountWindowStorageHealthState>>,
+    ) -> Result<()> {
+        let Ok(_permit) =
+            global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
+        else {
+            return Ok(());
+        };
+        let progress =
+            load_startup_backfill_progress(&pool, ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY)
+                .await?;
+        let started_at = Instant::now();
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, payload FROM codex_invocations WHERE upstream_account_id IS NULL AND json_valid(payload) AND ",
+        );
+        query.push("CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) IN (");
+        {
+            let mut separated = query.separated(", ");
+            for account_id in &account_ids {
+                separated.push_bind(account_id);
+            }
+        }
+        query
+            .push(") ORDER BY CASE WHEN occurred_at >= ")
+            .push_bind(active_window_start.to_rfc3339())
+            .push(" THEN 0 ELSE 1 END, id ASC LIMIT ")
+            .push_bind(ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT);
+        let rows = query
+            .build_query_as::<(i64, Option<String>)>()
+            .fetch_all(&pool)
+            .await?;
+        if rows.is_empty() {
+            health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .backfill_cursor = progress.cursor_id;
+            return Ok(());
+        }
+
+        let mut tx = pool.begin().await?;
+        let mut last_updated_id = None;
+        let mut updated = 0_u64;
+        for (id, payload) in &rows {
+            if started_at.elapsed() >= ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET {
+                break;
+            }
+            let Some(account_id) =
+                crate::proxy::upstream_account_id_from_payload(payload.as_deref())
+            else {
+                continue;
+            };
+            let result = sqlx::query(
+                "UPDATE codex_invocations SET upstream_account_id = ?2 WHERE id = ?1 AND upstream_account_id IS NULL",
+            )
+            .bind(id)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+            updated += result.rows_affected();
+            last_updated_id = Some(*id);
+        }
+        tx.commit().await?;
+
+        let cursor_id = last_updated_id.unwrap_or(progress.cursor_id);
+        let next_run_after = Utc::now().to_rfc3339();
+        save_startup_backfill_progress(
+            &pool,
+            ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY,
+            StartupBackfillProgressUpdate {
+                cursor_id,
+                scanned: rows.len() as u64,
+                updated,
+                zero_update_streak: if updated == 0 {
+                    progress.zero_update_streak.saturating_add(1)
+                } else {
+                    0
+                },
+                next_run_after: &next_run_after,
+                status: "ok",
+                suspension_reason: None,
+            },
+        )
+        .await?;
+        health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .backfill_cursor = cursor_id;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn run_legacy_backfill_pass_for_test(
+        pool: Pool<Sqlite>,
+        account_ids: Vec<i64>,
+        active_window_start: DateTime<Utc>,
+    ) -> Result<()> {
+        Self::run_legacy_backfill_pass(
+            pool,
+            account_ids,
+            active_window_start,
+            Arc::new(std::sync::Mutex::new(
+                AccountWindowStorageHealthState::default(),
+            )),
+        )
+        .await
     }
 
     pub(crate) async fn health_snapshot(&self) -> AccountWindowStoragePlaneHealthSnapshot {

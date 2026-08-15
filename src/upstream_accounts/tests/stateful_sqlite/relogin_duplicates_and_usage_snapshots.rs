@@ -3985,6 +3985,62 @@ async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
 }
 
 #[tokio::test]
+async fn window_usage_account_backfill_persists_structured_account_assignment_progress() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Structured Account Backfill").await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear structured account assignment");
+
+    AccountWindowStoragePlane::run_legacy_backfill_pass_for_test(
+        state.pool.clone(),
+        vec![account_id],
+        Utc::now() - ChronoDuration::days(7),
+    )
+    .await
+    .expect("run account window legacy backfill");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT upstream_account_id FROM codex_invocations WHERE id = ?1",
+        )
+        .bind(invocation_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load structured account assignment"),
+        Some(account_id)
+    );
+    let progress =
+        load_startup_backfill_progress(&state.pool, "account_window_usage_upstream_account_id")
+            .await
+            .expect("load account window backfill progress");
+    assert_eq!(progress.cursor_id, invocation_id);
+    assert_eq!(progress.last_scanned, 1);
+    assert_eq!(progress.last_updated, 1);
+}
+
+#[tokio::test]
 async fn get_upstream_account_window_usage_does_not_double_count_partial_live_rows_without_cursor()
 {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
