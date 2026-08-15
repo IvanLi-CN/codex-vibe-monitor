@@ -328,8 +328,10 @@ where
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
+    // Use selected dimensions: `codex_invocations` now also has a persisted
+    // `upstream_account_id`, which must not shadow this legacy payload projection.
     query
-        .push(" GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name\
+        .push(" GROUP BY 1, 2, 3, 4\
          ), combined AS (\
             SELECT prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name, request_count, total_tokens, total_cost, last_activity_at \
               FROM historical \

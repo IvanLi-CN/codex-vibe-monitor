@@ -9913,7 +9913,9 @@ async fn query_live_upstream_account_prompt_cache_created_at_rows(
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
     push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
-    query.push(" GROUP BY upstream_account_id, prompt_cache_key");
+    // The persisted column and resolved select alias share this name. Group by the
+    // selected dimensions so legacy payload/attempt account attribution remains intact.
+    query.push(" GROUP BY 1, 2");
     query
         .build_query_as::<UpstreamAccountPromptCacheCreatedAtRow>()
         .fetch_all(pool)
