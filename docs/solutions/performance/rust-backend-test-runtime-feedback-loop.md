@@ -73,7 +73,7 @@ bash .github/scripts/test-live-quality-gates.sh
 
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
-- 不要用 lockfile-only key 缓存整个 `target`，也不要让 clippy 写入 nextest target archive；两者会产生不稳定的编译收益与 cache 写入竞争。
+- 不要用 lockfile-only key 缓存整个 `target`，也不要让 Clippy 恢复或写入 legacy `target`；Lint 只可复用 registry/git，nextest target archive 必须保持 source fingerprint 隔离。
 - 不要把同一 hosted runner 上的多个 Playwright worker pool 无上限相乘。即使 tests 使用独立 browser context，只要它们并发命中同一个 Vite server，也可能在 route/module transform 时出现 protocol 或 navigation timeout；这类 suite 应固定单 worker。若完整 E2E 的稳定成本无法落在 required job 预算，用 explicit auxiliary producer 执行全量 tests，并让 required gate 以 `always()` 检查 producer result，绝不能把 producer failure 变为 skipped。
 - hosted runner 已包含 Chromium 所需运行库时，不要为每个 E2E job 重复执行 `playwright install --with-deps`；只下载版本匹配的 browser，避免无关 apt/font 安装占用 required job 预算。
 - E2E 采用 producer/gate 拆分时，contract checker 必须同时断言 producer 命令覆盖每一套 spec、各自结果目录及专用 base URL；只检查 gate 的 `needs` 关系无法证明完整覆盖仍在执行。
