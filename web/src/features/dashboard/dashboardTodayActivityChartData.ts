@@ -3,6 +3,7 @@ import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDa
 
 const MINUTE_MS = 60_000;
 const TREND_CHART_BUCKET_MINUTES = 10;
+const HOURLY_CACHE_HIT_WINDOW_MINUTES = 60;
 
 export interface DashboardTodayMinuteDatum {
   index: number;
@@ -45,6 +46,7 @@ export interface DashboardTodayMinuteDatum {
   cumulativeOutputTokens: number | null;
   cumulativeReasoningTokens: number | null;
   cacheHitRate: number | null;
+  hourlyCacheHitRate: number | null;
   chartCumulativeCost: number | null;
   chartCumulativeSuccessCost: number | null;
   chartCumulativeNonSuccessCost: number | null;
@@ -54,6 +56,7 @@ export interface DashboardTodayMinuteDatum {
   chartCumulativeOutputTokens: number | null;
   chartCumulativeReasoningTokens: number | null;
   chartCacheHitRate: number | null;
+  chartHourlyCacheHitRate: number | null;
 }
 
 export function buildTodayMinuteChartData(
@@ -256,20 +259,21 @@ export function buildTodayMinuteChartData(
     cumulativeOutputTokens += visibleOutputTokens;
     cumulativeReasoningTokens += clampedReasoningTokens;
 
-    const rollingWindowStart = Math.max(
-      startMs,
-      epochMs - (TREND_CHART_BUCKET_MINUTES - 1) * MINUTE_MS,
-    );
-    let rollingCacheTokens = 0;
-    let rollingTotalTokens = 0;
-    if (hasCompleteTokenBreakdown && !isFuture) {
+    const rollingCacheHitRate = (windowMinutes: number) => {
+      if (!hasCompleteTokenBreakdown || isFuture) return null;
+
+      const rollingWindowStart = Math.max(startMs, epochMs - (windowMinutes - 1) * MINUTE_MS);
+      let rollingCacheTokens = 0;
+      let rollingTotalTokens = 0;
       for (let cursor = rollingWindowStart; cursor <= epochMs; cursor += MINUTE_MS) {
         const rollingPoint = pointMap.get(cursor);
         rollingCacheTokens += Math.max(rollingPoint?.cacheInputTokens ?? 0, 0);
         rollingTotalTokens += Math.max(rollingPoint?.totalTokens ?? 0, 0);
       }
-    }
-    const cacheHitRate = rollingTotalTokens > 0 ? rollingCacheTokens / rollingTotalTokens : null;
+      return rollingTotalTokens > 0 ? rollingCacheTokens / rollingTotalTokens : null;
+    };
+    const cacheHitRate = rollingCacheHitRate(TREND_CHART_BUCKET_MINUTES);
+    const hourlyCacheHitRate = rollingCacheHitRate(HOURLY_CACHE_HIT_WINDOW_MINUTES);
 
     const currentDate = new Date(epochMs);
     data.push({
@@ -317,6 +321,7 @@ export function buildTodayMinuteChartData(
       cumulativeReasoningTokens:
         isFuture || !hasCompleteTokenBreakdown ? null : cumulativeReasoningTokens,
       cacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : cacheHitRate,
+      hourlyCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : hourlyCacheHitRate,
       chartCumulativeCost: isFuture ? null : cumulativeCost,
       chartCumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
       chartCumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
@@ -330,6 +335,7 @@ export function buildTodayMinuteChartData(
       chartCumulativeReasoningTokens:
         isFuture || !hasCompleteTokenBreakdown ? null : cumulativeReasoningTokens,
       chartCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : cacheHitRate,
+      chartHourlyCacheHitRate: isFuture || !hasCompleteTokenBreakdown ? null : hourlyCacheHitRate,
     });
   }
 

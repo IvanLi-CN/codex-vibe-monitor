@@ -20,6 +20,7 @@ export interface TokenBreakdownTokens {
   output: string;
   reasoning: string;
   cacheHitRate: string;
+  hourlyCacheHitRate: string;
 }
 
 type ColorScale = {
@@ -85,6 +86,7 @@ const TOKEN_BREAKDOWN_TOKENS: Record<ThemeMode, TokenBreakdownTokens> = {
     output: "#2563eb",
     reasoning: "#7c3aed",
     cacheHitRate: "#e11d48",
+    hourlyCacheHitRate: "#059669",
   },
   dark: {
     cacheRead: "#2dd4bf",
@@ -92,6 +94,7 @@ const TOKEN_BREAKDOWN_TOKENS: Record<ThemeMode, TokenBreakdownTokens> = {
     output: "#60a5fa",
     reasoning: "#a78bfa",
     cacheHitRate: "#fb7185",
+    hourlyCacheHitRate: "#34d399",
   },
 };
 

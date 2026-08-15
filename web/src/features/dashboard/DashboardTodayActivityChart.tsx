@@ -552,6 +552,7 @@ function DashboardTodayActivityChartImpl({
       reasoning: t("chart.tokenBreakdown.reasoning"),
       total: t("chart.tokenBreakdown.total"),
       cacheHitRate: t("chart.tokenBreakdown.cacheHitRate"),
+      hourlyCacheHitRate: t("chart.tokenBreakdown.hourlyCacheHitRate"),
     }),
     [t],
   );
@@ -947,6 +948,15 @@ function DashboardTodayActivityChartImpl({
                       label: tokenSeriesNames.cacheHitRate,
                       value: percentFormatter.format(point.cacheHitRate),
                       color: chartColors.tokenBreakdown.cacheHitRate,
+                    },
+                  ]),
+              ...(closedNaturalDay || point.hourlyCacheHitRate == null
+                ? []
+                : [
+                    {
+                      label: tokenSeriesNames.hourlyCacheHitRate,
+                      value: percentFormatter.format(point.hourlyCacheHitRate),
+                      color: chartColors.tokenBreakdown.hourlyCacheHitRate,
                     },
                   ]),
             ]
@@ -1361,6 +1371,12 @@ function DashboardTodayActivityChartImpl({
                                     color: chartColors.tokenBreakdown.cacheHitRate,
                                     line: true,
                                   },
+                                  {
+                                    id: "hourlyCacheHitRate",
+                                    label: tokenSeriesNames.hourlyCacheHitRate,
+                                    color: chartColors.tokenBreakdown.hourlyCacheHitRate,
+                                    line: true,
+                                  },
                                 ]
                               : []),
                           ]}
@@ -1416,18 +1432,33 @@ function DashboardTodayActivityChartImpl({
                       isAnimationActive={animate}
                     />
                     {!closedNaturalDay ? (
-                      <Line
-                        yAxisId="cacheHitRate"
-                        type="monotone"
-                        dataKey="chartCacheHitRate"
-                        name={tokenSeriesNames.cacheHitRate}
-                        stroke={chartColors.tokenBreakdown.cacheHitRate}
-                        strokeWidth={2.25}
-                        dot={false}
-                        activeDot={{ r: 4, strokeWidth: 2 }}
-                        connectNulls={false}
-                        isAnimationActive={animate}
-                      />
+                      <>
+                        <Line
+                          yAxisId="cacheHitRate"
+                          type="monotone"
+                          dataKey="chartCacheHitRate"
+                          name={tokenSeriesNames.cacheHitRate}
+                          stroke={chartColors.tokenBreakdown.cacheHitRate}
+                          strokeWidth={2.25}
+                          dot={false}
+                          activeDot={{ r: 4, strokeWidth: 2 }}
+                          connectNulls={false}
+                          isAnimationActive={animate}
+                        />
+                        <Line
+                          yAxisId="cacheHitRate"
+                          type="monotone"
+                          dataKey="chartHourlyCacheHitRate"
+                          name={tokenSeriesNames.hourlyCacheHitRate}
+                          stroke={chartColors.tokenBreakdown.hourlyCacheHitRate}
+                          strokeWidth={2}
+                          strokeDasharray="6 4"
+                          dot={false}
+                          activeDot={{ r: 4, strokeWidth: 2 }}
+                          connectNulls={false}
+                          isAnimationActive={animate}
+                        />
+                      </>
                     ) : null}
                   </>
                 ) : (

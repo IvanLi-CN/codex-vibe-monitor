@@ -1449,7 +1449,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(tokenHtml).toContain('data-data-key="chartCumulativeTokens"');
   });
 
-  it("builds mutually exclusive cumulative token layers and a weighted rolling cache rate", () => {
+  it("builds mutually exclusive cumulative token layers and weighted rolling cache rates", () => {
     const data = buildTodayMinuteChartData(tokenBreakdownResponse, {
       now: new Date("2026-04-08T00:03:22"),
       localeTag: "en-US",
@@ -1467,6 +1467,45 @@ describe("DashboardTodayActivityChart", () => {
         (point.cumulativeReasoningTokens ?? 0),
     ).toBe(point.cumulativeTokens);
     expect(point.cacheHitRate).toBeCloseTo(150 / 320, 8);
+    expect(point.hourlyCacheHitRate).toBeCloseTo(150 / 320, 8);
+  });
+
+  it("uses the current minute and previous 59 minutes for the hourly cache reference", () => {
+    const hourlyResponse = {
+      ...tokenBreakdownResponse,
+      rangeEnd: "2026-04-08 01:00:22",
+      points: [
+        {
+          ...tokenBreakdownResponse.points[0],
+          bucketStart: "2026-04-08 00:05:00",
+          bucketEnd: "2026-04-08 00:05:59",
+          totalTokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          cacheInputTokens: 0,
+          reasoningTokens: 0,
+        },
+        {
+          ...tokenBreakdownResponse.points[1],
+          bucketStart: "2026-04-08 01:00:00",
+          bucketEnd: "2026-04-08 01:00:59",
+          totalTokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          cacheInputTokens: 80,
+          reasoningTokens: 0,
+        },
+      ],
+    };
+    const data = buildTodayMinuteChartData(hourlyResponse, {
+      now: new Date("2026-04-08T01:00:22"),
+      localeTag: "en-US",
+    });
+    const point = data[60];
+
+    expect(point.cacheHitRate).toBeCloseTo(0.8, 8);
+    expect(point.hourlyCacheHitRate).toBeCloseTo(0.4, 8);
+    expect(data[61]?.hourlyCacheHitRate).toBeNull();
   });
 
   it("clamps negative reasoning without discarding an otherwise reconciled breakdown", () => {
@@ -1482,7 +1521,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[0]?.chartCumulativeCacheReadTokens).not.toBeNull();
   });
 
-  it("renders four token areas and the disconnected cache-rate line only for today", () => {
+  it("renders four token areas and both disconnected cache-rate lines only for today", () => {
     const todayHtml = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={tokenBreakdownResponse}
@@ -1508,9 +1547,11 @@ describe("DashboardTodayActivityChart", () => {
     expect(todayHtml).toContain('data-data-key="chartCumulativeOutputTokens"');
     expect(todayHtml).toContain('data-data-key="chartCumulativeReasoningTokens"');
     expect(todayHtml).toContain('data-data-key="chartCacheHitRate"');
+    expect(todayHtml).toContain('data-data-key="chartHourlyCacheHitRate"');
     expect(todayHtml).toContain('data-y-axis-id="cacheHitRate"');
     expect(todayHtml).toContain('data-connect-nulls="false"');
     expect(yesterdayHtml).not.toContain('data-data-key="chartCacheHitRate"');
+    expect(yesterdayHtml).not.toContain('data-data-key="chartHourlyCacheHitRate"');
     expect(yesterdayHtml).not.toContain('data-y-axis-id="cacheHitRate"');
   });
 
@@ -1542,6 +1583,7 @@ describe("DashboardTodayActivityChart", () => {
       expect(html).toContain('data-data-key="chartCumulativeTokens"');
       expect(html).not.toContain('data-stack-id="tokens"');
       expect(html).not.toContain('data-data-key="chartCacheHitRate"');
+      expect(html).not.toContain('data-data-key="chartHourlyCacheHitRate"');
     }
   });
 

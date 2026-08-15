@@ -275,6 +275,13 @@ export const CostCumulativeZeroNonSuccess: Story = {
 
 export const TokensCumulative: Story = {
   globals: { themeMode: "dark" },
+  decorators: [
+    (Story) => (
+      <div className="p-2">
+        <Story />
+      </div>
+    ),
+  ],
   args: {
     response: sampleResponse,
     loading: false,
@@ -284,10 +291,25 @@ export const TokensCumulative: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1440" },
   },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-data-key="chartCacheHitRate"]')).not.toBeNull();
+      expect(
+        canvasElement.querySelector('[data-data-key="chartHourlyCacheHitRate"]'),
+      ).not.toBeNull();
+    });
+  },
 };
 
 export const MobileTokensCumulative: Story = {
   globals: { themeMode: "light" },
+  decorators: [
+    (Story) => (
+      <div className="p-2">
+        <Story />
+      </div>
+    ),
+  ],
   args: {
     response: sampleResponse,
     loading: false,
@@ -304,6 +326,10 @@ export const MobileTokensCumulative: Story = {
         "data-chart-metric",
         "totalTokens",
       );
+      expect(canvasElement.querySelector('[data-data-key="chartCacheHitRate"]')).not.toBeNull();
+      expect(
+        canvasElement.querySelector('[data-data-key="chartHourlyCacheHitRate"]'),
+      ).not.toBeNull();
     });
   },
 };
