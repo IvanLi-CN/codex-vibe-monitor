@@ -2036,7 +2036,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .fetch_one(pool)
             .await?
             != 0;
-    let mut added_invocation_rollup_rebuild_columns = false;
     for (column, ty) in [
         ("terminal_count", "INTEGER NOT NULL DEFAULT 0"),
         ("terminal_tokens", "INTEGER NOT NULL DEFAULT 0"),
@@ -2074,7 +2073,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ),
     ] {
         if !invocation_rollup_hourly_columns.contains(column) {
-            added_invocation_rollup_rebuild_columns = true;
             let statement =
                 format!("ALTER TABLE invocation_rollup_hourly ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
@@ -2111,7 +2109,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .await?;
         }
     }
-    if added_invocation_rollup_rebuild_columns {
+    if has_existing_invocation_rollup_hourly_rows {
         let reconciliation = backfill_invocation_rollup_hourly_from_sources(pool).await?;
         info!(
             rebuilt_rows = reconciliation.applied_rollups,

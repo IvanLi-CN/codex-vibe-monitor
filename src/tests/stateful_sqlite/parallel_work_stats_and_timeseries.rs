@@ -1952,12 +1952,12 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
         bucket.first_byte_p95_ms.expect("p95 should be present"),
         380.0,
     );
-    assert_eq!(bucket.input_tokens, 45);
-    assert_eq!(bucket.output_tokens, 35);
-    assert_eq!(bucket.cache_input_tokens, 10);
-    assert_eq!(bucket.reasoning_tokens, 5);
+    assert_eq!(bucket.input_tokens, Some(45));
+    assert_eq!(bucket.output_tokens, Some(35));
+    assert_eq!(bucket.cache_input_tokens, Some(10));
+    assert_eq!(bucket.reasoning_tokens, Some(5));
     assert_eq!(
-        bucket.input_tokens + bucket.output_tokens,
+        bucket.input_tokens.unwrap_or_default() + bucket.output_tokens.unwrap_or_default(),
         bucket.total_tokens
     );
 }

@@ -283,6 +283,10 @@ pub(crate) struct BucketAggregate {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
+    #[serde(default)]
+    pub(crate) token_components_observed: bool,
+    #[serde(default)]
+    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sum_ms: f64,
@@ -1136,6 +1140,7 @@ pub(crate) async fn load_invocation_hourly_source_rows_after_id(
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             cost_input,
@@ -4329,6 +4334,7 @@ pub(crate) async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reasoning_tokens,
             total_tokens,
             cost,
             error_message,
