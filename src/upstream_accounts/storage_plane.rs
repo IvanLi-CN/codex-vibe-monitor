@@ -165,21 +165,19 @@ impl AccountWindowStoragePlane {
         }
         .await;
         let response = match response {
+            Ok(AccountWindowStorageResponse::Preparing { retry_after_ms }) => self
+                .last_good_response(&selection)
+                .await
+                .unwrap_or(AccountWindowStorageResponse::Preparing { retry_after_ms }),
             Ok(response) => response,
             Err(err) => {
                 let message = err.to_string();
                 self.record_error(message.clone());
-                let entries = self.entries.lock().await;
-                entries
-                    .get(&selection)
-                    .and_then(|entry| entry.last_good.as_ref())
-                    .filter(|(_, stored_at)| {
-                        stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
-                    })
-                    .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
-                    .unwrap_or(AccountWindowStorageResponse::Preparing {
+                self.last_good_response(&selection).await.unwrap_or(
+                    AccountWindowStorageResponse::Preparing {
                         retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                    })
+                    },
+                )
             }
         };
 
@@ -207,6 +205,16 @@ impl AccountWindowStoragePlane {
             Utc::now() - ChronoDuration::days(7),
         );
         Ok(response)
+    }
+
+    async fn last_good_response(&self, selection: &str) -> Option<AccountWindowStorageResponse> {
+        self.entries
+            .lock()
+            .await
+            .get(selection)
+            .and_then(|entry| entry.last_good.as_ref())
+            .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
+            .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
     }
 
     async fn build(
