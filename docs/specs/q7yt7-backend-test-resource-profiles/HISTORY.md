@@ -32,7 +32,8 @@
 - blob-link legacy backfill 测试曾错误继承 current-schema template；它现在显式创建 fresh schema，确保 `ensure_schema` 真实重放 trigger migration，而普通 Archive fixture 继续使用唯一文件模板副本。
 - archive producer 同时恢复 legacy workspace 与 source-key target cache 会重复解包 `target` 并把 Stateful critical path 推至 400 秒。producer 现只读分离 cache；Lint 仍保留 legacy read-only compatibility seed。
 - archive build 失败时保存 source-key target 会让不完整产物进入后续 cold receipt。PR/Main 现在仅在 archive build 成功且 cache miss 时写入 target cache。
-- PR run `31872991137` 的 archive cache guard 已生效，Stateful critical path 为 `384s`、required runner 为 `1297s`，但 `Records Overlay E2E` 为 `187s`、`Build Artifacts` 为 `194s`，尚不能作为收口证据。receipt 显示后者解包 `2,050,706,186` bytes source-key target cache 用 `59s`，再组装 smoke artifacts 用 `76s`；前者的 Web Demo 7 个测试以单 worker 串行运行 `2.6m`。因此完整 smoke artifact 组装移为不进入 branch protection 的 producer，required `Build Artifacts` 只执行 Docker runtime smoke 且显式传播 producer 失败；Web Demo 改为有上限的两 worker fully-parallel，而 Records Overlay 继续单 worker。
+- PR run `31872991137` 的 archive cache guard 已生效，Stateful critical path 为 `384s`、required runner 为 `1297s`，但 `Records Overlay E2E` 为 `187s`、`Build Artifacts` 为 `194s`，尚不能作为收口证据。receipt 显示后者解包 `2,050,706,186` bytes source-key target cache 用 `59s`，再组装 smoke artifacts 用 `76s`；前者的 Web Demo 7 个测试以单 worker 串行运行 `2.6m`。因此完整 smoke artifact 组装移为不进入 branch protection 的 producer，required `Build Artifacts` 只执行 Docker runtime smoke 且显式传播 producer 失败。
+- PR run `31873891811` 验证 smoke 拆分后 `Build Artifacts` 为 `41s`、Stateful critical path 为 `332s`；但将 Web Demo 改为两个 fully-parallel worker 后，两条 scene route 在同一 Vite server 上反复 `page.goto` 超时，E2E job 以 `317s` 失败。该并行实验被撤回。完整 E2E 继续采用两个隔离 server 和每套单 worker；它移入显式 `PR E2E Test Producer`，`Records Overlay E2E` required gate 以 `always()` 运行并检查 producer result，确保每个 PR 和 merge-group 仍失败关闭而不是跳过覆盖。
 
 ## Key Reasons / Replacements
 

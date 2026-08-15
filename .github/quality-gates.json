@@ -91,6 +91,7 @@
       ],
       "auxiliary_jobs": [
         "Backend Test Archive Producer",
+        "PR E2E Test Producer",
         "PR Smoke Artifact Producer"
       ]
     },

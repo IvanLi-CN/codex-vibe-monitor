@@ -73,7 +73,7 @@ bash .github/scripts/test-live-quality-gates.sh
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
 - 不要用 lockfile-only key 缓存整个 `target`，也不要让 clippy 写入 nextest target archive；两者会产生不稳定的编译收益与 cache 写入竞争。
-- 不要把同一 hosted runner 上的多个 Playwright worker pool 无上限相乘。对彼此隔离且不共享 server 状态的 spec，可以在单个 pool 中使用少量 fully-parallel worker；保留每个 test 的 browser context、结果和报告目录，并用 CI receipt 确认不会引入 retry。对共享状态或出现协议超时的 spec，仍固定单 worker。
+- 不要把同一 hosted runner 上的多个 Playwright worker pool 无上限相乘。即使 tests 使用独立 browser context，只要它们并发命中同一个 Vite server，也可能在 route/module transform 时出现 protocol 或 navigation timeout；这类 suite 应固定单 worker。若完整 E2E 的稳定成本无法落在 required job 预算，用 explicit auxiliary producer 执行全量 tests，并让 required gate 以 `always()` 检查 producer result，绝不能把 producer failure 变为 skipped。
 - hosted runner 已包含 Chromium 所需运行库时，不要为每个 E2E job 重复执行 `playwright install --with-deps`；只下载版本匹配的 browser，避免无关 apt/font 安装占用 required job 预算。
 - 切换到 nextest 前先修掉并发暴露的测试竞态；真实时间窗口断言要以行为结果为主，毫秒上限只作为防挂死保护。
 - 对 retry/backoff 与 no-available-account 轮询，测试 harness 可注入零等待，但 production wrapper/default 与需要验证时间预算的测试必须保留正式值。

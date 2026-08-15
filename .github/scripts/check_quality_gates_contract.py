@@ -551,7 +551,30 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
     step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")
 
+    e2e_job = named_job_config(workflow, "records-overlay-e2e", expected_jobs, "ci-pr.yml")
+    require(
+        e2e_job.get("needs") == "records-overlay-e2e-producer",
+        "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer",
+    )
+    require_exact_if(e2e_job, "always()", "ci-pr.yml.jobs.records-overlay-e2e")
+    e2e_producer_result_step = step_config(e2e_job, "Verify E2E test producer", "ci-pr.yml.jobs.records-overlay-e2e")
+    e2e_producer_result_env = require_mapping(
+        e2e_producer_result_step.get("env"),
+        "ci-pr.yml.jobs.records-overlay-e2e.steps['Verify E2E test producer'].env",
+    )
+    require(
+        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}",
+        "ci-pr.yml.jobs.records-overlay-e2e must fail when the E2E test producer fails",
+    )
+
     if auxiliary_jobs:
+        e2e_producer_job = job_config(workflow, "records-overlay-e2e-producer", "ci-pr.yml")
+        require(
+            e2e_producer_job.get("name") == "PR E2E Test Producer" and e2e_producer_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must be the declared E2E test producer",
+        )
+        require_no_if(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
+        require_fail_closed(e2e_producer_job, "ci-pr.yml.jobs.records-overlay-e2e-producer")
         smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
         require(
             smoke_artifact_job.get("name") == "PR Smoke Artifact Producer"

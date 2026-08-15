@@ -218,6 +218,29 @@ fi
 
 grep -q "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
 
+e2e_producer_repo="$tmp_dir/e2e-producer-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_producer_repo"
+python3 - <<'PY' "$e2e_producer_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "    needs: records-overlay-e2e-producer\n"
+replacement = "    needs: backend-test-archive\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite E2E test producer dependency")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_producer_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-producer.log"; then
+  echo "expected E2E test producer dependency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer" "$tmp_dir/e2e-producer.log"
+
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
 python3 - <<'PY' "$informational_repo"

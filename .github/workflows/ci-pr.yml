@@ -363,8 +363,8 @@ jobs:
           test -f .tmp/pages-site/storybook.html
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
 
-  records-overlay-e2e:
-    name: Records Overlay E2E
+  records-overlay-e2e-producer:
+    name: PR E2E Test Producer
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -431,7 +431,7 @@ jobs:
             bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts &
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
           demo_pid=$!
           wait "$records_pid" || records_status=$?
           wait "$demo_pid" || demo_status=$?
@@ -457,6 +457,18 @@ jobs:
           if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
           fi
+
+  records-overlay-e2e:
+    name: Records Overlay E2E
+    needs: records-overlay-e2e-producer
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Verify E2E test producer
+        env:
+          PRODUCER_RESULT: ${{ needs.records-overlay-e2e-producer.result }}
+        run: test "$PRODUCER_RESULT" = success
 
   backend-test-archive:
     name: Backend Test Archive Producer

@@ -343,8 +343,8 @@ jobs:
           cd docs-site && bun run build
           cd ../web && bun run demo:build
 
-  records-overlay-e2e:
-    name: Records Overlay E2E
+  records-overlay-e2e-producer:
+    name: PR E2E Test Producer
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -402,6 +402,17 @@ jobs:
           if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
+
+  records-overlay-e2e:
+    name: Records Overlay E2E
+    needs: records-overlay-e2e-producer
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify E2E test producer
+        env:
+          PRODUCER_RESULT: ${{ needs.records-overlay-e2e-producer.result }}
+        run: test "$PRODUCER_RESULT" = success
 
   backend-test-archive:
     name: Backend Test Archive Producer
