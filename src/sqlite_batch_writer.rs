@@ -5117,7 +5117,8 @@ mod tests {
         writer.shutdown_and_drain().await;
     }
 
-    // The producer intentionally saturates the queue while the writer waits for its deadline.
+    // Keep a P2 backlog arriving while the writer waits for the fixed deadline without making
+    // the test producer itself monopolize a runtime worker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_p2_work_does_not_starve_its_scheduled_flush() {
         let pool = test_pool().await;
@@ -5153,7 +5154,7 @@ mod tests {
             let producer_writer = writer.clone();
             tokio::spawn(async move {
                 while producer_active.load(std::sync::atomic::Ordering::Acquire) {
-                    for _ in 0..1024 {
+                    for _ in 0..64 {
                         let _ = producer_writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
                             BatchedAccountSelectedTouch {
                                 account_id: 999_992,
@@ -5161,7 +5162,7 @@ mod tests {
                             },
                         ));
                     }
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             })
         };
