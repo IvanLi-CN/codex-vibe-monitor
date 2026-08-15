@@ -613,6 +613,10 @@ describe("fetchTimeseries", () => {
                 failureCount: 1,
                 inFlightCount: 2,
                 totalTokens: 193414,
+                inputTokens: 121000,
+                outputTokens: 72414,
+                cacheInputTokens: 83000,
+                reasoningTokens: 18400,
                 totalCost: 0.0543,
                 firstByteSampleCount: 10,
                 firstByteAvgMs: 81.7,
@@ -648,6 +652,15 @@ describe("fetchTimeseries", () => {
     expect(response.bucketSeconds).toBe(900);
     expect(response.points).toHaveLength(2);
     expect(response.points[0].inFlightCount).toBe(2);
+    expect(response.points[0]).toMatchObject({
+      inputTokens: 121000,
+      outputTokens: 72414,
+      cacheInputTokens: 83000,
+      reasoningTokens: 18400,
+    });
+    expect(response.points[1].inputTokens).toBeUndefined();
+    expect(response.points[1].outputTokens).toBeUndefined();
+    expect(response.points[1].reasoningTokens).toBeUndefined();
     expect(response.points[0].firstTokenSampleCount).toBe(10);
     expect(response.points[0].firstTokenAvgMs).toBe(43890);
     expect(response.points[0].firstTokenP95Ms).toBe(52340);

@@ -30,6 +30,7 @@ import {
   chartBaseTokens,
   chartStatusTokens,
   metricAccent,
+  tokenBreakdownTokens,
   withOpacity,
 } from "../../lib/chartTheme";
 import {
@@ -374,6 +375,32 @@ function ChartTooltipContent({
   );
 }
 
+function TokenBreakdownLegend({
+  items,
+  compact,
+}: {
+  items: Array<{ id: string; label: string; color: string; line?: boolean }>;
+  compact: boolean;
+}) {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-2"
+      style={{ fontSize: compact ? 10 : 12 }}
+    >
+      {items.map((item) => (
+        <span key={item.id} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <span
+            className={item.line ? "h-0 w-3 border-t-2" : "h-2.5 w-2.5"}
+            style={item.line ? { borderColor: item.color } : { backgroundColor: item.color }}
+            aria-hidden="true"
+          />
+          <span>{item.label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function DashboardTodayActivityChartImpl({
   response,
   loading,
@@ -420,12 +447,17 @@ function DashboardTodayActivityChartImpl({
       }),
     [localeTag],
   );
+  const percentFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { style: "percent", maximumFractionDigits: 1 }),
+    [localeTag],
+  );
   const chartColors = useMemo(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
     const accent =
       metric === "trend" ? metricAccent("totalTokens", themeMode) : metricAccent(metric, themeMode);
     const spend = metricAccent("totalCost", themeMode);
+    const tokenBreakdown = tokenBreakdownTokens(themeMode);
     return {
       ...base,
       success: status.success,
@@ -439,6 +471,7 @@ function DashboardTodayActivityChartImpl({
       spend,
       spendFill: withOpacity(spend, 0.18),
       firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
+      tokenBreakdown,
     };
   }, [metric, themeMode]);
 
@@ -511,6 +544,17 @@ function DashboardTodayActivityChartImpl({
     }),
     [t],
   );
+  const tokenSeriesNames = useMemo(
+    () => ({
+      cacheRead: t("chart.tokenBreakdown.cacheRead"),
+      cacheWrite: t("chart.tokenBreakdown.cacheWrite"),
+      output: t("chart.tokenBreakdown.output"),
+      reasoning: t("chart.tokenBreakdown.reasoning"),
+      total: t("chart.tokenBreakdown.total"),
+      cacheHitRate: t("chart.tokenBreakdown.cacheHitRate"),
+    }),
+    [t],
+  );
   const trendSeriesNames = useMemo(
     () => ({
       tokensPerMinute: t("chart.tokensPerMinute"),
@@ -522,6 +566,7 @@ function DashboardTodayActivityChartImpl({
     data.length > 0 ? data : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
   const visibleWindow = normalizeViewport(viewport, chartData.length);
   const visibleChartData = chartData.slice(visibleWindow.startIndex, visibleWindow.endIndex + 1);
+  const hasTokenBreakdown = chartData.some((point) => point.chartCumulativeCacheReadTokens != null);
   const tenMinuteTrendData = chartData.filter(
     (point) => point.chartTokensPerMinute != null || point.chartSpendRate != null,
   );
@@ -868,13 +913,50 @@ function DashboardTodayActivityChartImpl({
           ]
       : point.cumulativeTokens == null
         ? []
-        : [
-            {
-              label: areaSeriesName,
-              value: formatTokensShort(point.cumulativeTokens, localeTag),
-              color: chartColors.accent,
-            },
-          ]),
+        : hasTokenBreakdown
+          ? [
+              {
+                label: tokenSeriesNames.cacheRead,
+                value: formatTokensShort(point.cumulativeCacheReadTokens ?? 0, localeTag),
+                color: chartColors.tokenBreakdown.cacheRead,
+              },
+              {
+                label: tokenSeriesNames.cacheWrite,
+                value: formatTokensShort(point.cumulativeCacheWriteTokens ?? 0, localeTag),
+                color: chartColors.tokenBreakdown.cacheWrite,
+              },
+              {
+                label: tokenSeriesNames.output,
+                value: formatTokensShort(point.cumulativeOutputTokens ?? 0, localeTag),
+                color: chartColors.tokenBreakdown.output,
+              },
+              {
+                label: tokenSeriesNames.reasoning,
+                value: formatTokensShort(point.cumulativeReasoningTokens ?? 0, localeTag),
+                color: chartColors.tokenBreakdown.reasoning,
+              },
+              {
+                label: tokenSeriesNames.total,
+                value: formatTokensShort(point.cumulativeTokens, localeTag),
+                color: chartColors.accent,
+              },
+              ...(closedNaturalDay || point.cacheHitRate == null
+                ? []
+                : [
+                    {
+                      label: tokenSeriesNames.cacheHitRate,
+                      value: percentFormatter.format(point.cacheHitRate),
+                      color: chartColors.tokenBreakdown.cacheHitRate,
+                    },
+                  ]),
+            ]
+          : [
+              {
+                label: areaSeriesName,
+                value: formatTokensShort(point.cumulativeTokens, localeTag),
+                color: chartColors.accent,
+              },
+            ]),
   ];
   const renderTrendTooltip = (point: DashboardTodayMinuteDatum) => [
     ...(point.chartTokensPerMinute == null
@@ -896,6 +978,7 @@ function DashboardTodayActivityChartImpl({
           },
         ]),
   ];
+  const CumulativeChart = metric === "totalCost" || !hasTokenBreakdown ? AreaChart : ComposedChart;
 
   return (
     <section
@@ -1147,7 +1230,7 @@ function DashboardTodayActivityChartImpl({
                 />
               </ComposedChart>
             ) : (
-              <AreaChart
+              <CumulativeChart
                 data={visibleChartData}
                 margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               >
@@ -1167,6 +1250,7 @@ function DashboardTodayActivityChartImpl({
                   }}
                 />
                 <YAxis
+                  yAxisId="tokens"
                   tickFormatter={(value) =>
                     metric === "totalCost"
                       ? currencyFormatter.format(Number(value))
@@ -1177,6 +1261,19 @@ function DashboardTodayActivityChartImpl({
                   tickLine={{ stroke: chartColors.gridLine }}
                   tick={{ fill: chartColors.axisText, fontSize: 12 }}
                 />
+                {metric === "totalTokens" && hasTokenBreakdown && !closedNaturalDay ? (
+                  <YAxis
+                    yAxisId="cacheHitRate"
+                    orientation="right"
+                    domain={[0, 1]}
+                    ticks={isCompactViewport ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1]}
+                    tickFormatter={(value) => percentFormatter.format(Number(value))}
+                    width={isCompactViewport ? 42 : 64}
+                    axisLine={{ stroke: chartColors.gridLine }}
+                    tickLine={{ stroke: chartColors.gridLine }}
+                    tick={{ fill: chartColors.axisText, fontSize: isCompactViewport ? 10 : 12 }}
+                  />
+                ) : null}
                 <Tooltip
                   labelFormatter={(value) => {
                     const item =
@@ -1199,6 +1296,7 @@ function DashboardTodayActivityChartImpl({
                   <>
                     <Legend wrapperStyle={{ color: chartColors.axisText }} />
                     <Area
+                      yAxisId="tokens"
                       type="monotone"
                       dataKey="chartCumulativeSuccessCost"
                       name={costSeriesNames.success}
@@ -1210,6 +1308,7 @@ function DashboardTodayActivityChartImpl({
                       isAnimationActive={animate}
                     />
                     <Area
+                      yAxisId="tokens"
                       type="monotone"
                       dataKey="chartCumulativeNonSuccessCost"
                       name={costSeriesNames.nonSuccess}
@@ -1221,8 +1320,119 @@ function DashboardTodayActivityChartImpl({
                       isAnimationActive={animate}
                     />
                   </>
+                ) : hasTokenBreakdown ? (
+                  <>
+                    <Legend
+                      content={() => (
+                        <TokenBreakdownLegend
+                          compact={isCompactViewport}
+                          items={[
+                            {
+                              id: "cacheRead",
+                              label: tokenSeriesNames.cacheRead,
+                              color: chartColors.tokenBreakdown.cacheRead,
+                            },
+                            {
+                              id: "cacheWrite",
+                              label: tokenSeriesNames.cacheWrite,
+                              color: chartColors.tokenBreakdown.cacheWrite,
+                            },
+                            {
+                              id: "output",
+                              label: tokenSeriesNames.output,
+                              color: chartColors.tokenBreakdown.output,
+                            },
+                            {
+                              id: "reasoning",
+                              label: tokenSeriesNames.reasoning,
+                              color: chartColors.tokenBreakdown.reasoning,
+                            },
+                            {
+                              id: "total",
+                              label: tokenSeriesNames.total,
+                              color: chartColors.axisText,
+                              line: true,
+                            },
+                            ...(!closedNaturalDay
+                              ? [
+                                  {
+                                    id: "cacheHitRate",
+                                    label: tokenSeriesNames.cacheHitRate,
+                                    color: chartColors.tokenBreakdown.cacheHitRate,
+                                    line: true,
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
+                      )}
+                      wrapperStyle={{
+                        color: chartColors.axisText,
+                        fontSize: isCompactViewport ? 10 : 12,
+                      }}
+                    />
+                    <Area
+                      yAxisId="tokens"
+                      type="monotone"
+                      dataKey="chartCumulativeCacheReadTokens"
+                      name={tokenSeriesNames.cacheRead}
+                      stackId="tokens"
+                      stroke={chartColors.tokenBreakdown.cacheRead}
+                      fill={withOpacity(chartColors.tokenBreakdown.cacheRead, 0.42)}
+                      strokeWidth={1.5}
+                      isAnimationActive={animate}
+                    />
+                    <Area
+                      yAxisId="tokens"
+                      type="monotone"
+                      dataKey="chartCumulativeCacheWriteTokens"
+                      name={tokenSeriesNames.cacheWrite}
+                      stackId="tokens"
+                      stroke={chartColors.tokenBreakdown.cacheWrite}
+                      fill={withOpacity(chartColors.tokenBreakdown.cacheWrite, 0.38)}
+                      strokeWidth={1.5}
+                      isAnimationActive={animate}
+                    />
+                    <Area
+                      yAxisId="tokens"
+                      type="monotone"
+                      dataKey="chartCumulativeOutputTokens"
+                      name={tokenSeriesNames.output}
+                      stackId="tokens"
+                      stroke={chartColors.tokenBreakdown.output}
+                      fill={withOpacity(chartColors.tokenBreakdown.output, 0.38)}
+                      strokeWidth={1.5}
+                      isAnimationActive={animate}
+                    />
+                    <Area
+                      yAxisId="tokens"
+                      type="monotone"
+                      dataKey="chartCumulativeReasoningTokens"
+                      name={tokenSeriesNames.reasoning}
+                      stackId="tokens"
+                      stroke={chartColors.tokenBreakdown.reasoning}
+                      fill={withOpacity(chartColors.tokenBreakdown.reasoning, 0.42)}
+                      strokeWidth={1.5}
+                      isAnimationActive={animate}
+                    />
+                    {!closedNaturalDay ? (
+                      <Line
+                        yAxisId="cacheHitRate"
+                        type="monotone"
+                        dataKey="chartCacheHitRate"
+                        name={tokenSeriesNames.cacheHitRate}
+                        stroke={chartColors.tokenBreakdown.cacheHitRate}
+                        strokeWidth={2.25}
+                        dot={false}
+                        activeDot={{ r: 4, strokeWidth: 2 }}
+                        connectNulls={false}
+                        isAnimationActive={animate}
+                      />
+                    ) : null}
+                  </>
                 ) : (
                   <Area
+                    yAxisId="tokens"
                     type="monotone"
                     dataKey="chartCumulativeTokens"
                     name={areaSeriesName}
@@ -1233,7 +1443,7 @@ function DashboardTodayActivityChartImpl({
                     isAnimationActive={animate}
                   />
                 )}
-              </AreaChart>
+              </CumulativeChart>
             )}
           </ResponsiveContainer>
         </div>

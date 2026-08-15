@@ -107,6 +107,7 @@ vi.mock("recharts", () => ({
     name,
     strokeWidth,
     strokeOpacity,
+    connectNulls,
   }: {
     data?: Array<Record<string, unknown>>;
     dataKey?: string;
@@ -115,6 +116,7 @@ vi.mock("recharts", () => ({
     name?: string;
     strokeWidth?: number;
     strokeOpacity?: number;
+    connectNulls?: boolean;
   }) => (
     <div
       data-testid="line-series"
@@ -124,6 +126,7 @@ vi.mock("recharts", () => ({
       data-stroke-width={String(strokeWidth ?? "")}
       data-stroke-opacity={String(strokeOpacity ?? "")}
       data-dot={dot === false ? "false" : dot ? "visible" : ""}
+      data-connect-nulls={String(connectNulls ?? "")}
       data-data-length={String(data?.length ?? "")}
     />
   ),
@@ -216,6 +219,35 @@ const response = {
       nonSuccessCost: 0,
     },
   ],
+};
+
+const tokenBreakdownResponse = {
+  ...response,
+  points: [
+    {
+      ...response.points[0],
+      totalTokens: 120,
+      inputTokens: 80,
+      outputTokens: 40,
+      cacheInputTokens: 50,
+      reasoningTokens: 10,
+    },
+    {
+      ...response.points[1],
+      totalTokens: 200,
+      inputTokens: 140,
+      outputTokens: 60,
+      cacheInputTokens: 100,
+      reasoningTokens: 20,
+    },
+  ],
+};
+
+const invalidReasoningBreakdownResponse = {
+  ...tokenBreakdownResponse,
+  points: tokenBreakdownResponse.points.map((point, index) =>
+    index === 0 ? { ...point, reasoningTokens: -1 } : point,
+  ),
 };
 
 beforeAll(() => {
@@ -1415,6 +1447,102 @@ describe("DashboardTodayActivityChart", () => {
     expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
     expect(tokenHtml).toContain('data-testid="area-chart"');
     expect(tokenHtml).toContain('data-data-key="chartCumulativeTokens"');
+  });
+
+  it("builds mutually exclusive cumulative token layers and a weighted rolling cache rate", () => {
+    const data = buildTodayMinuteChartData(tokenBreakdownResponse, {
+      now: new Date("2026-04-08T00:03:22"),
+      localeTag: "en-US",
+    });
+    const point = data[2];
+
+    expect(point.cumulativeCacheReadTokens).toBe(150);
+    expect(point.cumulativeCacheWriteTokens).toBe(70);
+    expect(point.cumulativeOutputTokens).toBe(70);
+    expect(point.cumulativeReasoningTokens).toBe(30);
+    expect(
+      (point.cumulativeCacheReadTokens ?? 0) +
+        (point.cumulativeCacheWriteTokens ?? 0) +
+        (point.cumulativeOutputTokens ?? 0) +
+        (point.cumulativeReasoningTokens ?? 0),
+    ).toBe(point.cumulativeTokens);
+    expect(point.cacheHitRate).toBeCloseTo(150 / 320, 8);
+  });
+
+  it("clamps negative reasoning without discarding an otherwise reconciled breakdown", () => {
+    const data = buildTodayMinuteChartData(invalidReasoningBreakdownResponse, {
+      now: new Date("2026-04-08T00:03:22"),
+      localeTag: "en-US",
+    });
+
+    expect(data[0]).toMatchObject({
+      cumulativeOutputTokens: 40,
+      cumulativeReasoningTokens: 0,
+    });
+    expect(data[0]?.chartCumulativeCacheReadTokens).not.toBeNull();
+  });
+
+  it("renders four token areas and the disconnected cache-rate line only for today", () => {
+    const todayHtml = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={tokenBreakdownResponse}
+        loading={false}
+        error={null}
+        metric="totalTokens"
+      />,
+    );
+    const yesterdayHtml = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={tokenBreakdownResponse}
+        loading={false}
+        error={null}
+        metric="totalTokens"
+        closedNaturalDay
+      />,
+    );
+
+    expect(todayHtml).toContain('data-testid="composed-chart"');
+    expect(todayHtml.match(/data-stack-id="tokens"/g)).toHaveLength(4);
+    expect(todayHtml).toContain('data-data-key="chartCumulativeCacheReadTokens"');
+    expect(todayHtml).toContain('data-data-key="chartCumulativeCacheWriteTokens"');
+    expect(todayHtml).toContain('data-data-key="chartCumulativeOutputTokens"');
+    expect(todayHtml).toContain('data-data-key="chartCumulativeReasoningTokens"');
+    expect(todayHtml).toContain('data-data-key="chartCacheHitRate"');
+    expect(todayHtml).toContain('data-y-axis-id="cacheHitRate"');
+    expect(todayHtml).toContain('data-connect-nulls="false"');
+    expect(yesterdayHtml).not.toContain('data-data-key="chartCacheHitRate"');
+    expect(yesterdayHtml).not.toContain('data-y-axis-id="cacheHitRate"');
+  });
+
+  it("falls back to the original total-token area for legacy or unreconciled points", () => {
+    const legacyHtml = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalTokens"
+      />,
+    );
+    const unreconciled = {
+      ...tokenBreakdownResponse,
+      points: tokenBreakdownResponse.points.map((point, index) =>
+        index === 0 ? { ...point, outputTokens: point.outputTokens + 1 } : point,
+      ),
+    };
+    const unreconciledHtml = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={unreconciled}
+        loading={false}
+        error={null}
+        metric="totalTokens"
+      />,
+    );
+    for (const html of [legacyHtml, unreconciledHtml]) {
+      expect(html).toContain('data-testid="area-chart"');
+      expect(html).toContain('data-data-key="chartCumulativeTokens"');
+      expect(html).not.toContain('data-stack-id="tokens"');
+      expect(html).not.toContain('data-data-key="chartCacheHitRate"');
+    }
   });
 
   it("renders trend mode as 10-minute TPM and spend-rate area charts", () => {

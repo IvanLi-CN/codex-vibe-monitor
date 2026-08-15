@@ -1169,7 +1169,10 @@ export interface TimeseriesPoint {
   inFlightCount?: number;
   inFlightPhaseCounts?: InvocationPhaseCounts | null;
   totalTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
   cacheInputTokens?: number;
+  reasoningTokens?: number;
   totalCost: number;
   nonSuccessCost?: number;
   avgTotalMs?: number | null;
@@ -2539,7 +2542,10 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     inFlightCount,
     inFlightPhaseCounts,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    inputTokens: normalizeFiniteNumber(payload.inputTokens) ?? undefined,
+    outputTokens: normalizeFiniteNumber(payload.outputTokens) ?? undefined,
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens) ?? 0,
+    reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens) ?? undefined,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost) ?? 0,
     avgTotalMs: hasCalls ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null) : null,

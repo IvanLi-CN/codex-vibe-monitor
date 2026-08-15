@@ -54,6 +54,11 @@ function buildRealisticPoint(index: number, intensity = 1) {
     Math.round(gaussian(hour, 9.3, 0.9) * 460) +
     Math.round(deterministicNoise(index, 4.2) * 360);
   const totalTokens = completedCount * avgTokens;
+  const inputTokens = Math.round(totalTokens * 0.72);
+  const outputTokens = totalTokens - inputTokens;
+  const cacheShare = 0.38 + gaussian(hour, 10.4, 2.2) * 0.42;
+  const cacheInputTokens = Math.round(inputTokens * cacheShare);
+  const reasoningTokens = Math.round(outputTokens * (0.18 + deterministicNoise(index, 6.2) * 0.28));
   const latencyBase =
     410 + officeRamp * 90 + gaussian(hour, 9.25, 0.18) * 210 + gaussian(hour, 11.55, 0.18) * 140;
 
@@ -70,6 +75,10 @@ function buildRealisticPoint(index: number, intensity = 1) {
       responding: 0,
     },
     totalTokens,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+    reasoningTokens,
     totalCost: Number((totalTokens * 0.000018).toFixed(4)),
     nonSuccessCost: Number((failureCount * avgTokens * 0.000018).toFixed(4)),
     firstTokenSampleCount: completedCount,
@@ -265,11 +274,37 @@ export const CostCumulativeZeroNonSuccess: Story = {
 };
 
 export const TokensCumulative: Story = {
+  globals: { themeMode: "dark" },
   args: {
     response: sampleResponse,
     loading: false,
     error: null,
     metric: "totalTokens",
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1440" },
+  },
+};
+
+export const MobileTokensCumulative: Story = {
+  globals: { themeMode: "light" },
+  args: {
+    response: sampleResponse,
+    loading: false,
+    error: null,
+    metric: "totalTokens",
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-today-activity-chart")).toHaveAttribute(
+        "data-chart-metric",
+        "totalTokens",
+      );
+    });
   },
 };
 
