@@ -875,6 +875,18 @@ impl InvocationHourlySourceRecord {
 
     pub(crate) fn has_complete_token_components(&self) -> bool {
         self.total_tokens.unwrap_or_default() <= 0
+            || ((self.input_tokens.is_some()
+                && self.output_tokens.is_some()
+                && self.cache_input_tokens.is_some()
+                && self.reasoning_tokens.is_some())
+                || (self.input_tokens.is_none()
+                    && self.output_tokens.is_none()
+                    && self.cache_input_tokens.is_none()
+                    && self.reasoning_tokens.is_none()))
+    }
+
+    pub(crate) fn has_known_token_components(&self) -> bool {
+        self.total_tokens.unwrap_or_default() <= 0
             || (self.input_tokens.is_some()
                 && self.output_tokens.is_some()
                 && self.cache_input_tokens.is_some()
