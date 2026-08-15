@@ -32,6 +32,8 @@ export type {
   BulkUpstreamAccountSyncRowEventPayload,
   BulkUpstreamAccountSyncSnapshot,
   BulkUpstreamAccountSyncSnapshotEventPayload,
+  CacheHitOverflowMode,
+  CacheHitProtectionSettings,
   CapabilityOverride,
   CapabilitySupport,
   CodexImagegenRewriteMode,

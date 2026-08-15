@@ -3035,6 +3035,9 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
     assert_eq!(row.default_first_byte_timeout_secs, None);
     assert_eq!(row.upstream_handshake_timeout_secs, None);
     assert_eq!(row.request_read_timeout_secs, None);
+    assert_eq!(row.cache_hit_protection_enabled, Some(0));
+    assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
+    assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
 }
 
 #[tokio::test]
@@ -3058,6 +3061,35 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     .execute(&pool)
     .await
     .expect("create legacy pool_routing_settings");
+    sqlx::query(
+        r#"
+            CREATE TABLE pool_upstream_account_model_routes (
+                account_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                state TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                streak_started_at TEXT,
+                changed_at TEXT,
+                last_seen_at TEXT NOT NULL,
+                last_success_at TEXT,
+                last_failure_at TEXT,
+                last_failure_kind TEXT,
+                last_failure_message TEXT,
+                cooldown_until TEXT,
+                UNIQUE(account_id, model)
+            )
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy model routing table");
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, last_seen_at) VALUES (7, 'gpt-legacy', 'degraded', 'demoted', datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy model routing row");
     sqlx::query(
         r#"
             INSERT INTO pool_routing_settings (
@@ -3100,12 +3132,49 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
         "default_first_byte_timeout_secs",
         "upstream_handshake_timeout_secs",
         "request_read_timeout_secs",
+        "cache_hit_protection_enabled",
+        "cache_hit_low_rate_threshold_percent",
+        "cache_hit_overflow_mode",
     ] {
         assert!(
             columns.contains(column),
             "expected upgraded schema to contain {column}"
         );
     }
+    let model_route_columns =
+        sqlx::query("PRAGMA table_info('pool_upstream_account_model_routes')")
+            .fetch_all(&pool)
+            .await
+            .expect("load model routing table info")
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<std::collections::HashSet<_>>();
+    for column in [
+        "reset_fence_at",
+        "cache_concurrency_limit",
+        "cache_recovery_limit",
+        "cache_low_hit_streak",
+        "cache_cooldown_level",
+        "cache_last_hit_rate_percent",
+    ] {
+        assert!(
+            model_route_columns.contains(column),
+            "expected upgraded model routing schema to contain {column}"
+        );
+    }
+    let persisted_model_route = sqlx::query_as::<_, (String, String, Option<i64>, Option<i64>, i64, i64, Option<i64>)>(
+        "SELECT state, priority, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE account_id = 7 AND model = 'gpt-legacy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load upgraded legacy model route");
+    assert_eq!(persisted_model_route.0, "degraded");
+    assert_eq!(persisted_model_route.1, "demoted");
+    assert_eq!(persisted_model_route.2, None);
+    assert_eq!(persisted_model_route.3, None);
+    assert_eq!(persisted_model_route.4, 0);
+    assert_eq!(persisted_model_route.5, 0);
+    assert_eq!(persisted_model_route.6, None);
 
     let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     let row = load_pool_routing_settings_seeded(&pool, &config)
@@ -3123,6 +3192,9 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     assert_eq!(row.default_first_byte_timeout_secs, None);
     assert_eq!(row.upstream_handshake_timeout_secs, None);
     assert_eq!(row.request_read_timeout_secs, None);
+    assert_eq!(row.cache_hit_protection_enabled, Some(0));
+    assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
+    assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
 
     let resolved = resolve_pool_routing_timeouts(&pool, &config)
         .await
@@ -6232,6 +6304,7 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             available_models_mode: None,
             timeout_updates: None,
             maintenance_settings: None,
+            cache_hit_protection: None,
         },
     )
     .await

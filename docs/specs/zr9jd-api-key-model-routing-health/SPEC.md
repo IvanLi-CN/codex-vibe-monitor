@@ -14,6 +14,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 让模型失败只影响该账号与该模型组合，并保留其他模型的账号资格。
 - 在账号详情健康与事件页展示模型路由状态、优先级、变更时间、预计恢复时间和具体变更事件。
 - 支持单模型手动恢复，且不覆盖静态模型规则或账号级禁用状态。
+- 为 API Key 的精确 `(upstream_account_id, model)` 组合提供可选的缓存命中保护，在异常低命中时限制未来并行并通过单探针恢复。
 
 ### Non-goals
 
@@ -27,6 +28,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 - 模型状态表、事件字段、七天清理和候选排序。
 - API Key 模型错误分类、真实调用成功/失败观察和并发时序保护。
+- 全局缓存命中保护设置、组合级动态并行限制、缓存冷却与队列/改路溢出处理。
 - 模型状态读取、单模型 reset API，以及账号详情健康与事件 UI。
 - Storybook 状态/交互覆盖和 mock-only `ui_demo` 视觉证据。
 
@@ -49,16 +51,25 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - API Key 调用缺少精确模型、HTTP 413、其他未列明非硬错误或后台同步临时失败时，只保留调用、尝试或同步诊断，不修改账号或模型健康，也不创建 `unknown` 模型。
 - 继承后的 `statusChangeReasons` 开关继续控制同原因是否改变健康状态：对 API Key 可归属临时失败控制模型状态，对 OAuth 和明确账号硬错误控制账号状态；关闭时仅保留中性诊断事件。
 - 仅状态、优先级、冷却、恢复或手动 reset 变化时写结构化事件。
+- `GET/PUT /api/pool/routing-settings` 的 `cacheHitProtection` 为局部更新字段：默认 `enabled=false`、`lowHitRateThresholdPercent=10`、`overflowMode=queue`；阈值必须在 `1..=100`，溢出模式仅为 `queue` 或 `reroute`。
+- 仅 API Key 成功请求、具备完整 usage、`input_tokens >= 3840` 且 `cache_input_tokens / input_tokens < threshold` 的严格低于阈值样本参与缓存保护。缺 usage、分母为零或小于样本下限时为未知观测。
+- 首个低命中样本以当时在途数作为恢复上限，并将未来组合并行上限设为 `max(1, floor(active / 2))`；后续低命中继续减半，健康样本每次加一，到达恢复上限后解除限制。
+- 组合处于最低并行时，连续第三个低命中样本进入 15/30/60 秒缓存冷却；开始冷却时重置最低并行计数。健康观测或手动 reset 清零缓存冷却阶梯。
+- 任何模型冷却到期后只能原子放行一个探针。启用缓存保护时，探针仅在合格且不低命中时完全恢复；未知样本继续单探针，低命中样本从最低并行的连续第 1 次重新计数。禁用缓存保护时，HTTP 成功探针可按既有成功语义恢复。
+- 超过组合上限的请求遵守既有总超时与无可用候选等待边界：`queue` 进入有界等待；`reroute` 排除该组合后继续选择其他合法候选。显式禁止切换、强制绑定或无替代候选时回退有界等待。粘性复用同样受组合上限约束。
+- 关闭缓存保护或修改阈值时，仅清除缓存保护状态和缓存原因冷却，不清除仍有效的非缓存失败状态；仅修改溢出模式保留已学习的缓存保护状态。
 
 ### SHOULD
 
 - 状态更新使用请求开始时间或等价版本保护，较晚完成的请求不得覆盖较新的失败状态。
-- 冷却到期后允许作为降权候选重新尝试，成功后清零失败计数并恢复正常优先级。
+- 冷却到期后允许作为受控单探针候选重新尝试；非缓存冷却成功后按既有规则恢复，缓存冷却依赖合格健康样本后才完全恢复。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
 - 请求开始时记录精确模型的 `last_seen_at`；成功观察清除该模型动态失败状态。
+- 成功终态使用请求原模型归属缓存 usage，避免上游响应模型别名改变组合边界；缓存动态上限只限制此后的预留，不伪造或中断已在途请求。
 - 模型级失败更新该模型的失败计数、失败原因和路由状态，不修改账号级 `cooldown_until`、账号连续失败计数或 sticky route。
+- 活跃缓存冷却期间才完成的在途请求只更新最近可观测命中率，不缩短冷却且不占用到期后的探针资格。
 - 临时失败模型事件保留原始 HTTP 状态、reason code、failure kind、attempt 关联和精确模型；现有 JSON 字段与数据库 schema 保持兼容。
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
@@ -73,6 +84,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 | ------------------------------------------------------------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | --------------------------------------------------------------------------------------- |
 | `GET /api/pool/upstream-accounts/:account_id/model-routing`        | HTTP         | external      | New            | None                     | backend         | account detail      | API Key only; returns seven-day states                                                  |
 | `POST /api/pool/upstream-accounts/:account_id/model-routing/reset` | HTTP         | external      | New            | None                     | backend         | health tab          | Body contains exact `model`                                                             |
+| `GET/PUT /api/pool/routing-settings`                               | HTTP         | external      | Modify         | None                     | backend/web     | settings/routing    | Adds `cacheHitProtection`; PUT remains partial and backward-compatible                  |
 | `UpstreamAccountActionEvent` model-routing fields                  | JSON         | external      | Modify         | None                     | backend/web     | event list          | Model falls back through event, attempt, invocation; routing fields define impact scope |
 
 ## 验收标准（Acceptance Criteria）
@@ -93,6 +105,9 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
 - Given the health tab is rendered on desktop or mobile, Then model status, change time, ETA, failure summary, and reset action remain readable without overflow.
+- Given a successful API Key request has 3839 input tokens, exactly the configured hit rate, or incomplete usage, When it completes, Then it does not trigger a low-hit transition; a 3840-token request strictly below the threshold does.
+- Given repeated low-hit samples for one account/model combination, When its future concurrency reaches one, Then the third consecutive low-hit sample enters 15/30/60-second cache cooldown and an expired cooldown permits exactly one probe.
+- Given a limited combination has a legal alternative and `overflowMode=reroute`, When its limit is full, Then routing can select the alternative; with `queue`, forced binding, no-switch, or no alternative, it waits only within existing bounded request deadlines.
 
 ## 验收清单（Acceptance checklist）
 
@@ -100,6 +115,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - [x] 冷却、恢复、并发时序和七天清理已覆盖测试。
 - [x] API 与事件字段已稳定。
 - [x] 健康与事件 UI、Storybook 和视觉证据已覆盖。
+- [x] 缓存低命中限流、缓存冷却与单探针恢复已覆盖。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -120,6 +136,8 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 ## Visual Evidence
 
 Storybook覆盖=通过（组件级）；页面级使用 ui_demo
+缓存命中保护组件故事=通过（`PoolRoutingSettingsCard/CacheHitProtection`，覆盖启用开关、10% 阈值和改路模式）
+缓存命中保护截图=已在本地 Storybook 目标组件中检查并展示；不作为 PR 资产
 视觉证据目标源=ui_demo
 视觉证据=存在
 空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）

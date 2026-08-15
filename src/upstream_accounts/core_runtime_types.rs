@@ -1833,6 +1833,12 @@ pub(crate) struct ModelRoutingState {
     pub(crate) last_failure_kind: Option<String>,
     pub(crate) last_failure_message: Option<String>,
     pub(crate) cooldown_until: Option<String>,
+    pub(crate) cache_concurrency_limit: Option<i64>,
+    pub(crate) cache_recovery_limit: Option<i64>,
+    pub(crate) cache_low_hit_streak: i64,
+    pub(crate) cache_cooldown_level: i64,
+    pub(crate) cache_last_hit_rate_percent: Option<i64>,
+    pub(crate) probe_required: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1960,6 +1966,16 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) available_models: Vec<String>,
     pub(crate) available_models_mode: AvailableModelsMode,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
+    pub(crate) cache_hit_protection: CacheHitProtectionSettingsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CacheHitProtectionSettingsResponse {
+    pub(crate) enabled: bool,
+    pub(crate) low_hit_rate_threshold_percent: u8,
+    pub(crate) overflow_mode: String,
+    pub(crate) minimum_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1989,6 +2005,19 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) available_models_mode: Option<String>,
     #[serde(default)]
     pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
+    #[serde(default)]
+    pub(crate) cache_hit_protection: Option<UpdateCacheHitProtectionSettingsRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateCacheHitProtectionSettingsRequest {
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) low_hit_rate_threshold_percent: Option<u8>,
+    #[serde(default)]
+    pub(crate) overflow_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

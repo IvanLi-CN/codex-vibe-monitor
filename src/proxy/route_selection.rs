@@ -1920,7 +1920,12 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     };
 
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
+    reserve_pool_routing_account_for_model(
+        state.as_ref(),
+        &reservation_key,
+        &account,
+        trace_context.and_then(|trace| trace.request_model.as_deref()),
+    );
     let request_connection_scoped = connection_scoped_header_names(headers);
     let connect_started = Instant::now();
     let attempt_started_at_utc = Utc::now();
@@ -4102,7 +4107,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         let initial_account = if prompt_cache_binding_constraint.is_some()
                             || conversation_override.is_some()
                         {
-                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -4117,6 +4122,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
 	                        capability_endpoint,
 	                        request_image_intent,
 	                        codex_imagegen_request,
+                            Some(&pool_routing_reservation_key),
 	                    )
                     .await;
                             let (initial_account, updated_no_available_wait_deadline) =
@@ -4153,7 +4159,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     account
                                 } else {
                                     let resolution =
-                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
                                         state.as_ref(),
                                         body_sticky_key.as_deref(),
                                         requested_model.as_deref(),
@@ -4166,6 +4172,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         capability_endpoint,
                                         request_image_intent,
                                         codex_imagegen_request,
+                                        Some(&pool_routing_reservation_key),
                                     )
                                     .await;
                                     let (initial_account, updated_no_available_wait_deadline) =
@@ -4189,7 +4196,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 }
                             } else {
                                 let resolution =
-                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
                                         state.as_ref(),
                                         body_sticky_key.as_deref(),
                                         requested_model.as_deref(),
@@ -4202,6 +4209,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         capability_endpoint,
                                         request_image_intent,
                                         codex_imagegen_request,
+                                        Some(&pool_routing_reservation_key),
                                     )
                                     .await;
                                 let (initial_account, updated_no_available_wait_deadline) =
@@ -4225,7 +4233,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             }
                         } else {
                             let resolution =
-                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
                                     state.as_ref(),
                                     body_sticky_key.as_deref(),
                                     requested_model.as_deref(),
@@ -4238,6 +4246,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
+                                    Some(&pool_routing_reservation_key),
                                 )
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
@@ -4335,7 +4344,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             let resolution = if prompt_cache_binding_constraint.is_some()
                                 || conversation_override.is_some()
                             {
-                                resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+                                resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -4350,10 +4359,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             capability_endpoint,
                             request_image_intent,
                             codex_imagegen_request,
+                            Some(&pool_routing_reservation_key),
                         )
                         .await
                             } else {
-                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
                                     state.as_ref(),
                                     live_body_sticky_key.as_deref(),
                                     live_requested_model.as_deref(),
@@ -4366,6 +4376,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
+                                    Some(&pool_routing_reservation_key),
                                 )
                                 .await
                             };
@@ -5018,7 +5029,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let mut no_available_wait_deadline = None;
-                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     requested_model.as_deref(),
@@ -5033,6 +5044,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         capability_endpoint,
                         request_image_intent,
                         codex_imagegen_request,
+                        Some(&pool_routing_reservation_key),
                 )
                 .await;
                         let (initial_account, no_available_wait_deadline) =

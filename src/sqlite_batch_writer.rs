@@ -3680,6 +3680,7 @@ pub(crate) async fn flush_pending_batch_inner(
                     .map(|record| crate::TerminalPayloadMetadata {
                         prompt_cache_key: record.prompt_cache_key.clone(),
                         upstream_account_id: record.upstream_account_id,
+                        request_model: None,
                     });
             persisted_terminals.push((terminal, invocation_id, occurred_at, payload_metadata));
         }

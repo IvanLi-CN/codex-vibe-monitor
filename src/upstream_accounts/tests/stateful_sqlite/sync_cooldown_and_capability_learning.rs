@@ -119,6 +119,714 @@ async fn insert_model_failure_attempt(
     .last_insert_rowid()
 }
 
+async fn enable_cache_hit_protection(state: &AppState) {
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_low_rate_threshold_percent = 10, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable cache-hit protection");
+}
+
+async fn cache_hit_route_state(
+    state: &AppState,
+    account_id: i64,
+    model: &str,
+) -> (
+    String,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+) {
+    sqlx::query_as(
+        "SELECT state, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load cache-hit route state")
+}
+
+#[tokio::test]
+async fn cache_hit_protection_observation_respects_sample_boundary_and_threshold() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Boundary",
+        "cache-boundary-key",
+        None,
+        Some("https://cache-boundary.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-boundary";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_839),
+        Some(0),
+        8,
+    )
+    .await
+    .expect("ignore undersized sample");
+    let state_after_small = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(state_after_small.1, None);
+    assert_eq!(state_after_small.5, None);
+
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(384),
+        8,
+    )
+    .await
+    .expect("observe threshold-equal sample");
+    let state_after_equal = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(state_after_equal.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(state_after_equal.1, None);
+    assert_eq!(state_after_equal.5, Some(10));
+
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(383),
+        8,
+    )
+    .await
+    .expect("observe low cache-hit sample");
+    let state_after_low = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(state_after_low.0, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(state_after_low.1, Some(4));
+    assert_eq!(state_after_low.2, Some(8));
+    assert_eq!(state_after_low.5, Some(9));
+    let visible_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load visible cache-hit route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("cache-hit route is visible");
+    assert_eq!(visible_route.cache_concurrency_limit, Some(4));
+    assert_eq!(visible_route.cache_recovery_limit, Some(8));
+    assert_eq!(visible_route.cache_last_hit_rate_percent, Some(9));
+    assert!(!visible_route.probe_required);
+
+    observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 8)
+        .await
+        .expect("ignore unknown usage");
+    assert_eq!(
+        cache_hit_route_state(&state, account_id, model).await,
+        state_after_low
+    );
+}
+
+#[tokio::test]
+async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Settings Cleanup",
+        "cache-settings-cleanup-key",
+        None,
+        Some("https://cache-settings-cleanup.example.com/backend-api/codex"),
+    )
+    .await;
+    let cache_model = "gpt-cache-settings-cleanup";
+    let failure_model = "gpt-cache-settings-non-cache-failure";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(cache_model))
+        .await
+        .expect("seed cache model route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(cache_model),
+        Some(3_840),
+        Some(0),
+        2,
+    )
+    .await
+    .expect("create cache-owned protection state");
+    observe_model_route_seen(&state.pool, account_id, Some(failure_model))
+        .await
+        .expect("seed independent failed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = 'cooling_down', priority = 'excluded', last_failure_kind = 'upstream_transport_error', last_failure_message = 'transport failure', cooldown_until = ?3 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(failure_model)
+    .bind((Utc::now() + chrono::Duration::seconds(30)).to_rfc3339())
+    .execute(&state.pool)
+    .await
+    .expect("seed non-cache cooldown");
+
+    let Json(updated) = update_pool_routing_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(UpdatePoolRoutingSettingsRequest {
+            api_key: None,
+            maintenance: None,
+            request_compression_algorithm: None,
+            request_compression_level_preset: None,
+            codex_imagegen_rewrite_mode: None,
+            available_models: None,
+            available_models_mode: None,
+            timeouts: None,
+            cache_hit_protection: Some(UpdateCacheHitProtectionSettingsRequest {
+                enabled: None,
+                low_hit_rate_threshold_percent: Some(15),
+                overflow_mode: None,
+            }),
+        }),
+    )
+    .await
+    .expect("change cache-hit threshold");
+    assert_eq!(
+        updated.cache_hit_protection.low_hit_rate_threshold_percent,
+        15
+    );
+    let cache_route = cache_hit_route_state(&state, account_id, cache_model).await;
+    assert_eq!(cache_route.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(cache_route.1, None);
+    assert_eq!(cache_route.2, None);
+    assert_eq!(cache_route.3, 0);
+    assert_eq!(cache_route.4, 0);
+    assert_eq!(cache_route.5, None);
+    let non_cache_route = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT state, priority, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(failure_model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load non-cache cooldown after cache settings update");
+    assert_eq!(non_cache_route.0, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(non_cache_route.1, MODEL_ROUTE_PRIORITY_EXCLUDED);
+    assert!(non_cache_route.2.is_some());
+    let cleanup_event = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT action, reason_code, model FROM pool_upstream_account_events WHERE account_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(cache_model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load cache settings cleanup event");
+    assert_eq!(cleanup_event.0, UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RESET);
+    assert_eq!(cleanup_event.1, "cache_hit_threshold_changed");
+    assert_eq!(cleanup_event.2, cache_model);
+}
+
+#[tokio::test]
+async fn cache_hit_protection_concurrency_halves_then_recovers() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Concurrency",
+        "cache-concurrency-key",
+        None,
+        Some("https://cache-concurrency.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-concurrency";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+
+    for expected_limit in [4, 2, 1] {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(0),
+            8,
+        )
+        .await
+        .expect("apply low cache-hit protection");
+        assert_eq!(
+            cache_hit_route_state(&state, account_id, model).await.1,
+            Some(expected_limit)
+        );
+    }
+    assert_eq!(cache_hit_route_state(&state, account_id, model).await.3, 1);
+
+    for expected_limit in [2, 3, 4, 5, 6, 7] {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(3_840),
+            8,
+        )
+        .await
+        .expect("apply healthy cache-hit observation");
+        assert_eq!(
+            cache_hit_route_state(&state, account_id, model).await.1,
+            Some(expected_limit)
+        );
+    }
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(3_840),
+        8,
+    )
+    .await
+    .expect("fully recover cache-hit route");
+    let recovered = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(recovered.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(recovered.1, None);
+    assert_eq!(recovered.2, None);
+}
+
+#[tokio::test]
+async fn cache_hit_protection_serializes_concurrent_observations() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Serialized Observations",
+        "cache-serialized-observations-key",
+        None,
+        Some("https://cache-serialized-observations.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-serialized-observations";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+
+    let first = observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        8,
+    );
+    let second = observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        8,
+    );
+    let (first, second) = tokio::join!(first, second);
+    first.expect("first low-hit observation should persist");
+    second.expect("second low-hit observation should persist");
+
+    let route = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(route.1, Some(2));
+    assert_eq!(route.2, Some(8));
+}
+
+#[tokio::test]
+async fn cache_hit_protection_atomically_reserves_single_model_slot() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Reservation",
+        "cache-reservation-key",
+        None,
+        Some("https://cache-reservation.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-reservation";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        2,
+    )
+    .await
+    .expect("limit the combination to one request");
+    assert_eq!(
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load model concurrency limit"),
+        Some(1)
+    );
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_overflow_mode = 'reroute' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("switch cache-hit overflow mode to reroute");
+
+    let excluded_ids = Vec::new();
+    let excluded_routes = HashSet::new();
+    let first = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-reservation-a"),
+    );
+    let second = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-reservation-b"),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let resolutions = [
+        first.expect("first selection should complete"),
+        second.expect("second selection should complete"),
+    ];
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::Resolved(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .count(),
+        1
+    );
+
+    release_pool_routing_reservation(&state, "cache-hit-reservation-a");
+    release_pool_routing_reservation(&state, "cache-hit-reservation-b");
+}
+
+#[tokio::test]
+async fn cache_hit_protection_reroutes_to_another_legal_combination() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let limited_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Reroute Limited",
+        "cache-reroute-limited-key",
+        None,
+        Some("https://cache-reroute-limited.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-reroute";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, limited_account_id, Some(model))
+        .await
+        .expect("seed limited model route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        limited_account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        2,
+    )
+    .await
+    .expect("limit first account to one request");
+
+    let excluded_ids = Vec::new();
+    let excluded_routes = HashSet::new();
+    let busy = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-reroute-busy"),
+    )
+    .await
+    .expect("reserve the limited account");
+    let PoolAccountResolution::Resolved(busy) = busy else {
+        panic!("limited account should be selected while it has capacity");
+    };
+    assert_eq!(busy.account_id, limited_account_id);
+
+    let alternative_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Reroute Alternative",
+        "cache-reroute-alternative-key",
+        None,
+        Some("https://cache-reroute-alternative.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_overflow_mode = 'reroute' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("switch cache-hit overflow mode to reroute");
+
+    let rerouted = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-reroute-alternative"),
+    )
+    .await
+    .expect("reroute selection should complete");
+    let PoolAccountResolution::Resolved(rerouted) = rerouted else {
+        panic!("an alternate account should remain selectable");
+    };
+    assert_eq!(rerouted.account_id, alternative_account_id);
+
+    release_pool_routing_reservation(&state, "cache-reroute-busy");
+    release_pool_routing_reservation(&state, "cache-reroute-alternative");
+}
+
+#[tokio::test]
+async fn model_route_single_probe_recovery_is_atomic_for_non_cache_cooldowns() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Single Probe Recovery",
+        "single-probe-recovery-key",
+        None,
+        Some("https://single-probe-recovery.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-single-probe-recovery";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = 'cooling_down', priority = 'excluded', cooldown_until = ?3, last_failure_kind = 'http_5xx', last_failure_message = 'upstream unavailable' WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind((Utc::now() - chrono::Duration::seconds(1)).to_rfc3339())
+    .execute(&state.pool)
+    .await
+    .expect("expire non-cache model cooldown");
+    assert_eq!(
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load non-cache probe limit"),
+        Some(1)
+    );
+
+    let excluded_ids = Vec::new();
+    let excluded_routes = HashSet::new();
+    let first = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("single-probe-reservation-a"),
+    );
+    let second = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("single-probe-reservation-b"),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let resolutions = [
+        first.expect("first probe selection should complete"),
+        second.expect("second probe selection should complete"),
+    ];
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::Resolved(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .count(),
+        1
+    );
+
+    release_pool_routing_reservation(&state, "single-probe-reservation-a");
+    release_pool_routing_reservation(&state, "single-probe-reservation-b");
+
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(3_840),
+        1,
+    )
+    .await
+    .expect("recover successful non-cache probe");
+    let recovered = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT state, last_failure_kind, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered non-cache model route");
+    assert_eq!(recovered.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert!(recovered.1.is_none());
+    assert!(recovered.2.is_none());
+}
+
+#[tokio::test]
+async fn cache_hit_protection_cooldown_restarts_with_single_probe() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Cooldown",
+        "cache-cooldown-key",
+        None,
+        Some("https://cache-cooldown.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-cooldown";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+
+    for _ in 0..5 {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(0),
+            8,
+        )
+        .await
+        .expect("apply low cache-hit protection");
+    }
+    let first_cooldown = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(first_cooldown.0, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(first_cooldown.3, 0);
+    assert_eq!(first_cooldown.4, 1);
+    assert!(first_cooldown.6.is_some());
+
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cooldown_until = ?3 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind((Utc::now() - chrono::Duration::seconds(1)).to_rfc3339())
+    .execute(&state.pool)
+    .await
+    .expect("expire cooldown");
+    assert_eq!(
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load expired cooldown probe limit"),
+        Some(1)
+    );
+    assert!(
+        load_model_routing_states(&state.pool, account_id)
+            .await
+            .expect("load expired cache-hit route")
+            .into_iter()
+            .find(|route| route.model == model)
+            .expect("expired cache-hit route is visible")
+            .probe_required
+    );
+
+    observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 1)
+        .await
+        .expect("unknown probe observation");
+    assert_eq!(
+        cache_hit_route_state(&state, account_id, model).await.0,
+        MODEL_ROUTE_STATE_COOLING_DOWN
+    );
+
+    for expected_streak in [1, 2] {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(0),
+            1,
+        )
+        .await
+        .expect("apply low probe observation");
+        let state_after_low = cache_hit_route_state(&state, account_id, model).await;
+        assert_eq!(state_after_low.0, MODEL_ROUTE_STATE_DEGRADED);
+        assert_eq!(state_after_low.1, Some(1));
+        assert_eq!(state_after_low.3, expected_streak);
+    }
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        1,
+    )
+    .await
+    .expect("re-enter cache cooldown");
+    let second_cooldown = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(second_cooldown.0, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(second_cooldown.4, 2);
+}
+
 #[tokio::test]
 async fn api_key_temporary_http_failure_changes_only_the_exact_model_route() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -2117,6 +2825,7 @@ async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_gro
             "test-node-shunt-sync-reservation".to_string(),
             PoolRoutingReservation {
                 account_id,
+                model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 created_at: Instant::now(),
             },
@@ -2211,6 +2920,7 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
             "test-node-shunt-refresh-reservation".to_string(),
             PoolRoutingReservation {
                 account_id,
+                model: None,
                 proxy_key: Some(secondary_proxy_key),
                 created_at: Instant::now(),
             },

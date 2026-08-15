@@ -202,6 +202,12 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) default_first_byte_timeout_secs: Option<i64>,
     pub(crate) upstream_handshake_timeout_secs: Option<i64>,
     pub(crate) request_read_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) cache_hit_protection_enabled: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) cache_hit_low_rate_threshold_percent: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) cache_hit_overflow_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

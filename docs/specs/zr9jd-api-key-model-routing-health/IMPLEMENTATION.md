@@ -11,6 +11,8 @@
 ## Coverage / rollout summary
 
 - `pool_upstream_account_model_routes` stores exact `account_id + model` state with seven-day retention, failure windows, cooldown ETA, last success/failure and last-seen timestamps.
+- The same model-route record persists cache-hit protection state: dynamic concurrency and recovery limits, minimum-limit streak, cache cooldown ladder, last observed hit rate and expired-cooldown probe status. Cache observations are API Key-only and require success usage with at least 3840 input tokens; a strictly-low sample halves only future combination reservations, while healthy samples recover one slot at a time.
+- `cacheHitProtection` extends global routing settings with disabled-by-default 10% threshold and `queue`/`reroute` overflow behavior. Disabling the feature or changing its threshold clears only cache-owned state; changing overflow mode preserves learned protection state. Cache cooldowns use 15/30/60 seconds, and every expired model cooldown, including non-cache failures, is routed through a single-probe gate.
 - API Key model-specific errors and exact-model 5xx, 429, logical overload, transport, handshake, and stream failures are isolated in `failure_recording.rs` and use the same model state machine without account cooldown or sticky deletion. Missing-model, 413, other non-hard, and background-sync failures remain diagnostic-only. OAuth and explicit authentication/payment hard failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
 - `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA. Event projections recover a missing request model from the linked upstream attempt or invocation for both account detail and global event-list reads.
 - The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent event impact scope and a single-model reset action. Recent events omit request-model labels: route-transition events affect only that model, while generic account failures affect the entire account and omit empty route transitions. Direct health-tab routes wait for the selected account before hydrating recent actions.
@@ -19,10 +21,10 @@
 ## Implementation map
 
 - Backend schema and maintenance: `src/schema.rs`, `src/upstream_accounts/core_schema_maintenance.rs`, `src/maintenance/retention.rs`, `src/maintenance/archive/{writers.rs}`.
-- State machine and routing: `src/upstream_accounts/routing/model_health.rs`, `src/upstream_accounts/routing/failure_recording.rs`, `src/upstream_accounts/routing/selection.rs`.
-- Attempt model propagation: `src/proxy/{request_entry.rs,dispatch.rs,failover.rs,websocket.rs,usage_persistence.rs}`.
+- State machine and routing: `src/upstream_accounts/routing/{model_health.rs,failure_recording.rs,selection.rs,settings_runtime.rs}`.
+- Attempt model propagation and combination reservations: `src/proxy/{payload_utils.rs,request_entry.rs,dispatch.rs,failover.rs,route_selection.rs,websocket.rs,usage_persistence.rs}`.
 - API and event projection: `src/upstream_accounts/{core_runtime_types.rs,core_models_rows.rs,crud_group_notes.rs,sync_account_imports_tags.rs,sync_group_sessions.rs}`, `src/maintenance/hourly_rollups.rs`.
-- Web UI and demo: `web/src/features/account-pool/ModelRoutingHealthPanel.tsx`, its Storybook story, `web/src/pages/account-pool/UpstreamAccounts.page-local-shared.tsx`, `web/src/lib/api/core-upstream.ts`, `web/src/demo/handlers.ts`.
+- Web UI and demo: `web/src/features/settings/PoolRoutingSettingsCard.tsx` and its `CacheHitProtection` Storybook story, `web/src/features/account-pool/ModelRoutingHealthPanel.tsx`, `web/src/pages/account-pool/UpstreamAccounts.page-local-shared.tsx`, `web/src/lib/api/core-upstream.ts`, `web/src/demo/handlers.ts`.
 
 ## Validation
 
@@ -44,8 +46,10 @@
 - Mock-only `ui_demo` desktop 1440x1100 and mobile 393x852 captures: the HTTP 502 model impact and route transition are visible without request-model labels, account-wide impact, or horizontal overflow.
 - API Key HTTP, transport/stream (including exact-model failures before attempt creation), missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
-- `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
+- `bun run lint:web`: passed with the repository's existing 85 warnings; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.
+- Cache-hit protection state-machine, settings-contract and atomic reservation regression tests: passed. The reservation test races two candidate selections for a cap of one and admits exactly one request.
+- `PoolRoutingSettingsCard/CacheHitProtection` Storybook play coverage and the Settings/API Vitest coverage: passed. A local-only component capture confirmed the enabled control, 10% threshold and reroute selector without including it as a PR image asset.
 
 ## Delivery Status
 

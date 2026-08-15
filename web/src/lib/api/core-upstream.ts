@@ -338,6 +338,12 @@ export interface ModelRoutingState {
   lastFailureKind?: string | null;
   lastFailureMessage?: string | null;
   cooldownUntil?: string | null;
+  cacheConcurrencyLimit?: number | null;
+  cacheRecoveryLimit?: number | null;
+  cacheLowHitStreak?: number;
+  cacheCooldownLevel?: number;
+  cacheLastHitRatePercent?: number | null;
+  probeRequired?: boolean;
 }
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
@@ -382,6 +388,7 @@ export interface UpdatePoolRoutingSettingsPayload {
   availableModels?: string[];
   availableModelsMode?: AvailableModelsMode;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
+  cacheHitProtection?: Partial<CacheHitProtectionSettings>;
 }
 
 export interface PoolRoutingSettings {
@@ -395,6 +402,16 @@ export interface PoolRoutingSettings {
   availableModels?: string[];
   availableModelsMode?: AvailableModelsMode;
   timeouts?: PoolRoutingTimeoutSettings;
+  cacheHitProtection?: CacheHitProtectionSettings;
+}
+
+export type CacheHitOverflowMode = "queue" | "reroute";
+
+export interface CacheHitProtectionSettings {
+  enabled: boolean;
+  lowHitRateThresholdPercent: number;
+  overflowMode: CacheHitOverflowMode;
+  minimumInputTokens: number;
 }
 
 export interface PoolRoutingMaintenanceSettings {
@@ -1467,6 +1484,18 @@ function normalizeModelRoutingState(raw: unknown): ModelRoutingState | null {
     lastFailureMessage:
       typeof payload.lastFailureMessage === "string" ? payload.lastFailureMessage : null,
     cooldownUntil: typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
+    cacheConcurrencyLimit: normalizeFiniteNumber(payload.cacheConcurrencyLimit),
+    cacheRecoveryLimit: normalizeFiniteNumber(payload.cacheRecoveryLimit),
+    cacheLowHitStreak: Math.max(
+      0,
+      Math.trunc(normalizeFiniteNumber(payload.cacheLowHitStreak) ?? 0),
+    ),
+    cacheCooldownLevel: Math.max(
+      0,
+      Math.trunc(normalizeFiniteNumber(payload.cacheCooldownLevel) ?? 0),
+    ),
+    cacheLastHitRatePercent: normalizeFiniteNumber(payload.cacheLastHitRatePercent),
+    probeRequired: payload.probeRequired === true,
   };
 }
 

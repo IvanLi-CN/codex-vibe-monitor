@@ -1844,6 +1844,12 @@ describe("account pool frontend API helpers", () => {
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
+      cacheHitProtection: {
+        enabled: false,
+        lowHitRateThresholdPercent: 10,
+        overflowMode: "queue",
+        minimumInputTokens: 3840,
+      },
     });
   });
 
@@ -2555,6 +2561,11 @@ describe("account pool frontend API helpers", () => {
           responsesStreamTimeoutSecs: 360,
           compactStreamTimeoutSecs: 540,
         },
+        cacheHitProtection: {
+          enabled: true,
+          lowHitRateThresholdPercent: 15,
+          overflowMode: "reroute",
+        },
       });
       return new Response(
         JSON.stringify({
@@ -2572,6 +2583,12 @@ describe("account pool frontend API helpers", () => {
             responsesStreamTimeoutSecs: 360,
             compactStreamTimeoutSecs: 540,
           },
+          cacheHitProtection: {
+            enabled: true,
+            lowHitRateThresholdPercent: 15,
+            overflowMode: "reroute",
+            minimumInputTokens: 3840,
+          },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -2586,6 +2603,11 @@ describe("account pool frontend API helpers", () => {
         imageFirstByteTimeoutSecs: 480,
         responsesStreamTimeoutSecs: 360,
         compactStreamTimeoutSecs: 540,
+      },
+      cacheHitProtection: {
+        enabled: true,
+        lowHitRateThresholdPercent: 15,
+        overflowMode: "reroute",
       },
     });
 
@@ -2603,6 +2625,12 @@ describe("account pool frontend API helpers", () => {
       imageFirstByteTimeoutSecs: 480,
       responsesStreamTimeoutSecs: 360,
       compactStreamTimeoutSecs: 540,
+    });
+    expect(response.cacheHitProtection).toEqual({
+      enabled: true,
+      lowHitRateThresholdPercent: 15,
+      overflowMode: "reroute",
+      minimumInputTokens: 3840,
     });
   });
 

@@ -3401,6 +3401,10 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
         ? Math.trunc(maintenanceRaw.priorityAvailableAccountCap)
         : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
   };
+  const cacheHitProtectionRaw =
+    payload.cacheHitProtection && typeof payload.cacheHitProtection === "object"
+      ? (payload.cacheHitProtection as Record<string, unknown>)
+      : null;
   const normalized: PoolRoutingSettings = {
     writesEnabled: typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
@@ -3428,6 +3432,16 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
         ? (payload.codexImagegenRewriteMode as CodexImagegenRewriteMode)
         : "keep_original",
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
+    cacheHitProtection: {
+      enabled: cacheHitProtectionRaw?.enabled === true,
+      lowHitRateThresholdPercent:
+        typeof cacheHitProtectionRaw?.lowHitRateThresholdPercent === "number" &&
+        Number.isFinite(cacheHitProtectionRaw.lowHitRateThresholdPercent)
+          ? Math.min(100, Math.max(1, Math.trunc(cacheHitProtectionRaw.lowHitRateThresholdPercent)))
+          : 10,
+      overflowMode: cacheHitProtectionRaw?.overflowMode === "reroute" ? "reroute" : "queue",
+      minimumInputTokens: normalizeFiniteNumber(cacheHitProtectionRaw?.minimumInputTokens) ?? 3840,
+    },
   };
   if (Array.isArray(payload.availableModels)) {
     normalized.availableModels = payload.availableModels.filter(

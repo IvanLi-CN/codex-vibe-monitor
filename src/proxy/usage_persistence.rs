@@ -35,6 +35,7 @@ pub(crate) fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<Str
 pub(crate) struct TerminalPayloadMetadata {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) request_model: Option<String>,
 }
 
 pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloadMetadata {
@@ -56,9 +57,16 @@ pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloa
             .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
             .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
     });
+    let request_model = value
+        .get("requestModel")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     TerminalPayloadMetadata {
         prompt_cache_key,
         upstream_account_id,
+        request_model,
     }
 }
 
@@ -3612,6 +3620,34 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
+    if record.status == "success" {
+        let metadata = terminal_payload_metadata(record.payload.as_deref());
+        if let Some(account_id) = metadata.upstream_account_id {
+            let model = metadata
+                .request_model
+                .as_deref()
+                .or(record.model.as_deref());
+            let active_concurrency =
+                pool_routing_model_reservation_count(state, account_id, model).saturating_add(1);
+            if let Err(err) = observe_model_route_cache_hit(
+                &state.pool,
+                account_id,
+                model,
+                record.usage.input_tokens,
+                record.usage.cache_input_tokens,
+                active_concurrency,
+            )
+            .await
+            {
+                warn!(
+                    account_id,
+                    model = ?model,
+                    error = %err,
+                    "failed to observe model route cache hit"
+                );
+            }
+        }
+    }
     let enqueue_started = Instant::now();
     let persisted_record = api_invocation_from_runtime_record(&record);
     let invoke_id = persisted_record.invoke_id.clone();

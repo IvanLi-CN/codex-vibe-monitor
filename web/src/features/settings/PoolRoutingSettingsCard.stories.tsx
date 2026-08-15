@@ -29,6 +29,9 @@ const meta = {
       imageFirstByteTimeoutSecs: "300",
       responsesStreamTimeoutSecs: "300",
       compactStreamTimeoutSecs: "300",
+      cacheHitProtectionEnabled: false,
+      cacheHitRateThresholdPercent: "10",
+      cacheHitOverflowMode: "queue",
     },
     busy: false,
     writesEnabled: true,
@@ -40,6 +43,7 @@ const meta = {
     onAvailableModelsChange: () => undefined,
     onAvailableModelsModeChange: () => undefined,
     onTimeoutChange: () => undefined,
+    onCacheHitProtectionChange: () => undefined,
     onSave: () => undefined,
   },
   decorators: [
@@ -78,6 +82,9 @@ export const ModelPolicy: Story = {
           imageFirstByteTimeoutSecs: "300",
           responsesStreamTimeoutSecs: "300",
           compactStreamTimeoutSecs: "300",
+          cacheHitProtectionEnabled: false,
+          cacheHitRateThresholdPercent: "10",
+          cacheHitOverflowMode: "queue",
         }}
         busy={false}
         writesEnabled
@@ -89,9 +96,38 @@ export const ModelPolicy: Story = {
         onAvailableModelsChange={setAvailableModels}
         onAvailableModelsModeChange={setAvailableModelsMode}
         onTimeoutChange={() => undefined}
+        onCacheHitProtectionChange={() => undefined}
         onSave={() => undefined}
       />
     );
+  },
+};
+
+export const CacheHitProtection: Story = {
+  args: {
+    draft: {
+      requestCompressionAlgorithm: "zstd",
+      requestCompressionLevelPreset: "best",
+      codexImagegenRewriteMode: "keep_original",
+      availableModels: ["gpt-image-2", "gpt-5.4-mini"],
+      availableModelsMode: "allowlist",
+      responsesFirstByteTimeoutSecs: "120",
+      compactFirstByteTimeoutSecs: "300",
+      imageFirstByteTimeoutSecs: "300",
+      responsesStreamTimeoutSecs: "300",
+      compactStreamTimeoutSecs: "300",
+      cacheHitProtectionEnabled: true,
+      cacheHitRateThresholdPercent: "10",
+      cacheHitOverflowMode: "reroute",
+    },
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("switch", { name: /缓存命中保护|Cache-hit protection/ }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(canvas.getByDisplayValue("10")).toBeEnabled();
   },
 };
 
