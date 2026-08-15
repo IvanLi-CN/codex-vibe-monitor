@@ -565,6 +565,32 @@ pub(crate) fn collect_account_window_partial_bucket_epochs(
     Ok(bucket_epochs)
 }
 
+/// A bucket can be complete for one account window and partial for another.
+/// Keep the coverage identity account-scoped so a rollup never suppresses the
+/// exact boundary tail required by a sibling range.
+pub(crate) fn collect_account_window_partial_hour_keys(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Result<HashSet<(i64, i64)>> {
+    let mut keys = HashSet::new();
+    for (account_id, plan) in plans {
+        for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let start_bucket_epoch = invocation_bucket_start_epoch(&range.start_at)?;
+            if range.full_hour_start_epoch != Some(start_bucket_epoch) {
+                keys.insert((*account_id, start_bucket_epoch));
+            }
+
+            let end_bucket_epoch = invocation_bucket_start_epoch(&range.end_at)?;
+            if range.end_at_epoch.rem_euclid(3_600) != 0 {
+                keys.insert((*account_id, end_bucket_epoch));
+            }
+        }
+    }
+    Ok(keys)
+}
+
 pub(crate) fn collect_account_window_partial_minute_bucket_epochs(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Result<HashSet<i64>> {

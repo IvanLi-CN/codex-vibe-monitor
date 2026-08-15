@@ -2137,6 +2137,7 @@ export async function fetchUpstreamAccountActionEvents(
 
 export async function fetchUpstreamAccountWindowUsage(
   accountIds: number[],
+  options?: { signal?: AbortSignal },
 ): Promise<UpstreamAccountWindowUsageResponse> {
   const normalizedAccountIds = Array.from(
     new Set(accountIds.filter((accountId) => Number.isFinite(accountId) && accountId > 0)),
@@ -2152,6 +2153,7 @@ export async function fetchUpstreamAccountWindowUsage(
     body: JSON.stringify({
       accountIds: normalizedAccountIds,
     }),
+    signal: options?.signal,
   });
   await ensureJsonRequestOk(response);
   const raw = (await response.json()) as unknown;

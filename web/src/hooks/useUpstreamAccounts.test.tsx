@@ -28,7 +28,12 @@ const apiMocks = vi.hoisted(() => ({
       ) => Promise<UpstreamAccountDetail>
     >(),
   fetchUpstreamAccountWindowUsage:
-    vi.fn<(accountIds: number[]) => Promise<UpstreamAccountWindowUsageResponse>>(),
+    vi.fn<
+      (
+        accountIds: number[],
+        options?: { signal?: AbortSignal },
+      ) => Promise<UpstreamAccountWindowUsageResponse>
+    >(),
   updateUpstreamAccountGroup:
     vi.fn<
       (
@@ -484,7 +489,10 @@ describe("useUpstreamAccounts", () => {
 
     expect(text("window-usage-pending")).toBe("true");
     expect(text("first-item-primary-requests")).toBe("");
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith(
+      [1],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
 
     hydration.resolve(createWindowUsageResponse([1]));
     await flushAsync();
@@ -562,13 +570,21 @@ describe("useUpstreamAccounts", () => {
 
       render(<Probe query={{ page: 1, pageSize: 20 }} />);
       await flushAsync();
-      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1]);
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+        1,
+        [1],
+        expect.objectContaining({ signal: expect.anything() }),
+      );
 
       await act(async () => {
         document.querySelector<HTMLButtonElement>("[data-testid='select-beta']")?.click();
       });
       await flushAsync();
-      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [2]);
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+        2,
+        [2],
+        expect.objectContaining({ signal: expect.anything() }),
+      );
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);
@@ -593,7 +609,10 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ includeAll: true }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith(
+      [1],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(text("window-usage-pending")).toBe("false");
     expect(text("first-item-primary-requests")).toBe("10");
 
@@ -601,7 +620,10 @@ describe("useUpstreamAccounts", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith(
+      [2],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(text("first-item-primary-requests")).toBe("10");
   });
 
@@ -627,7 +649,10 @@ describe("useUpstreamAccounts", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith(
+      [1, 2],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(text("first-item-primary-requests")).toBe("10");
     expect(text("first-item-secondary-requests")).toBe("30");
   });
@@ -655,12 +680,18 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith(
+      [1],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+    const firstSignal = apiMocks.fetchUpstreamAccountWindowUsage.mock.calls[0]?.[1]?.signal;
+    expect(firstSignal?.aborted).toBe(false);
     expect(text("window-usage-pending")).toBe("true");
 
     rerender(<Probe query={{ includeAll: true }} />);
     await flushAsync();
 
+    expect(firstSignal?.aborted).toBe(true);
     expect(text("first-item-id")).toBe("3");
     expect(text("window-usage-pending")).toBe("false");
     expect(text("first-item-primary-requests")).toBe("");
@@ -695,13 +726,21 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+      1,
+      [1],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(text("window-usage-pending")).toBe("true");
 
     click("hydrate-visible");
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
+      2,
+      [2],
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(text("window-usage-pending")).toBe("true");
 
     firstHydration.resolve(createWindowUsageResponse([1]));

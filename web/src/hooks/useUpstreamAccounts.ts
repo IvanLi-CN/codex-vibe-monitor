@@ -208,6 +208,7 @@ export function useUpstreamAccounts(
     Record<number, HydratedWindowUsage>
   >({});
   const windowUsageRetryTimerRef = useRef<number | null>(null);
+  const windowUsageAbortControllersRef = useRef(new Set<AbortController>());
   const windowUsageRetryDelayRef = useRef(1_000);
   const windowUsageSelectionKeyRef = useRef<string | null>(null);
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
@@ -632,9 +633,13 @@ export function useUpstreamAccounts(
       pendingWindowUsageGenerationByIdRef.current.set(accountId, generation);
     });
     setIsWindowUsagePending(true);
+    const controller = new AbortController();
+    windowUsageAbortControllersRef.current.add(controller);
 
     try {
-      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds);
+      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds, {
+        signal: controller.signal,
+      });
       if (
         generation !== usageHydrationGenerationRef.current ||
         requestQueryKey !== currentListQueryKeyRef.current ||
@@ -688,7 +693,12 @@ export function useUpstreamAccounts(
       normalizedAccountIds.forEach((accountId) => {
         hydratedWindowUsageIdsRef.current.add(accountId);
       });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        throw error;
+      }
     } finally {
+      windowUsageAbortControllersRef.current.delete(controller);
       const isStillCurrent =
         generation === usageHydrationGenerationRef.current &&
         requestQueryKey === currentListQueryKeyRef.current &&
@@ -708,6 +718,10 @@ export function useUpstreamAccounts(
 
   useEffect(
     () => () => {
+      windowUsageAbortControllersRef.current.forEach((controller) => {
+        controller.abort();
+      });
+      windowUsageAbortControllersRef.current.clear();
       if (windowUsageRetryTimerRef.current != null) {
         window.clearTimeout(windowUsageRetryTimerRef.current);
         windowUsageRetryTimerRef.current = null;
@@ -722,6 +736,10 @@ export function useUpstreamAccounts(
       return;
     }
     windowUsageSelectionKeyRef.current = selectionKey;
+    windowUsageAbortControllersRef.current.forEach((controller) => {
+      controller.abort();
+    });
+    windowUsageAbortControllersRef.current.clear();
     if (windowUsageRetryTimerRef.current != null) {
       window.clearTimeout(windowUsageRetryTimerRef.current);
       windowUsageRetryTimerRef.current = null;

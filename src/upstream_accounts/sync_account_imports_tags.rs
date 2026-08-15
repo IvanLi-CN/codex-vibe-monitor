@@ -4155,12 +4155,23 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     AccountWindowUsageBuildOutcome,
     AccountWindowUsageBuildTelemetry,
 )> {
+    enrich_window_actual_usage_for_summaries_from_storage_at(pool, config, items, Utc::now()).await
+}
+
+pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    items: &mut [UpstreamAccountSummary],
+    now: DateTime<Utc>,
+) -> Result<(
+    AccountWindowUsageBuildOutcome,
+    AccountWindowUsageBuildTelemetry,
+)> {
     let mut telemetry = AccountWindowUsageBuildTelemetry::default();
     if items.is_empty() {
         return Ok((AccountWindowUsageBuildOutcome::Ready, telemetry));
     }
 
-    let now = Utc::now();
     let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
     else {
         return Ok((AccountWindowUsageBuildOutcome::Ready, telemetry));
@@ -4187,6 +4198,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
         .copied()
         .map(|account_id| (account_id, AccountWindowUsageSummary::default()))
         .collect::<HashMap<_, _>>();
+    let partial_hour_keys = collect_account_window_partial_hour_keys(&plans)?;
     let minute_rows = if has_minute_stats_rollups {
         if let Some((full_minute_start_epoch, full_minute_end_epoch)) =
             collect_account_window_full_minute_bounds(&plans)
@@ -4204,6 +4216,15 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     } else {
         Vec::new()
     };
+    let minute_rows = minute_rows
+        .into_iter()
+        .filter(|row| {
+            !partial_hour_keys.contains(&(
+                row.upstream_account_id,
+                align_bucket_epoch(row.bucket_start_epoch, 3_600, 0),
+            ))
+        })
+        .collect::<Vec<_>>();
     let minute_covered_keys = minute_rows
         .iter()
         .map(|row| (row.upstream_account_id, row.bucket_start_epoch))
@@ -4237,6 +4258,8 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
             .filter(|row| {
                 !minute_complete_hourly_keys
                     .contains(&(row.upstream_account_id, row.bucket_start_epoch))
+                    && !partial_hour_keys
+                        .contains(&(row.upstream_account_id, row.bucket_start_epoch))
             })
             .collect::<Vec<_>>();
         telemetry.rollup_row_count = hourly_rows.len();
@@ -4319,19 +4342,14 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
                     .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
             )
             .collect::<HashSet<_>>();
-        // A live-rollup cursor proves every invocation at or before that cursor has already
-        // been folded into the account rollups. A missing account/hour row is therefore a
-        // verified zero rather than a read-side coverage hole; only the post-cursor tail
-        // needs exact raw handling below.
-        let live_missing_full_hour_bucket_epochs = if live_rollup_cursor == 0 {
-            missing_full_hour_bucket_epochs
-                .iter()
-                .copied()
-                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-                .collect::<HashSet<_>>()
-        } else {
-            HashSet::new()
-        };
+        // The cursor orders durable IDs, not occurred-at buckets. A delayed terminal can
+        // arrive after the cursor for an older, currently missing hour, so preserve bucket
+        // coverage and let the exact post-cursor tail supply that record.
+        let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+            .iter()
+            .copied()
+            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
         if !live_partial_minute_bucket_epochs.is_empty() {
             let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
                 pool,
@@ -4401,7 +4419,10 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
                 &live_partial_minute_bucket_epochs,
                 true,
                 &live_partial_hour_bucket_epochs,
-                &live_missing_full_hour_bucket_epochs,
+                // Missing full hours above already read the post-cursor tail for their
+                // bounded buckets. Do not merge that same identity again from the broad
+                // cursor tail.
+                &HashSet::new(),
                 &covered_hourly_keys,
                 &minute_covered_keys,
             )?;

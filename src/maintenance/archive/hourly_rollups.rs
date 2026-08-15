@@ -168,7 +168,7 @@ fn live_invocation_upstream_account_id_sql(
     invocation_ref: &str,
     capability: PoolAttemptFallbackCapability,
 ) -> String {
-    match capability {
+    let fallback = match capability {
         PoolAttemptFallbackCapability::Unavailable => {
             payload_upstream_account_id_sql(invocation_ref)
         }
@@ -178,7 +178,10 @@ fn live_invocation_upstream_account_id_sql(
         PoolAttemptFallbackCapability::Full => {
             crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref)
         }
-    }
+    };
+    // New terminal rows persist the account assignment structurally. Prefer it during
+    // rebuilds so legacy backfill can repair the affected rollup without reopening payload.
+    format!("COALESCE({invocation_ref}.upstream_account_id, {fallback})")
 }
 
 pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
@@ -2715,30 +2718,16 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
         return Ok(Vec::new());
     }
 
-    let min_bucket_epoch = *bucket_epochs
-        .iter()
-        .min()
-        .ok_or_else(|| anyhow!("missing minimum invocation bucket epoch"))?;
-    let max_bucket_epoch = *bucket_epochs
-        .iter()
-        .max()
-        .ok_or_else(|| anyhow!("missing maximum invocation bucket epoch"))?;
-    let min_bucket_start = Utc
-        .timestamp_opt(min_bucket_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid minimum invocation bucket epoch"))?;
-    let max_bucket_end = Utc
-        .timestamp_opt(max_bucket_epoch + 3_600, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid maximum invocation bucket epoch"))?;
-    let bucket_epoch_set = bucket_epochs.iter().copied().collect::<HashSet<_>>();
+    let mut normalized_bucket_epochs = bucket_epochs.to_vec();
+    normalized_bucket_epochs.sort_unstable();
+    normalized_bucket_epochs.dedup();
     let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(tx).await?,
     );
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
 
-    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT \
             id,
             occurred_at,
@@ -2773,23 +2762,33 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             t_resp_parse_ms,
             t_persist_ms
          FROM codex_invocations
-         WHERE occurred_at >= ?1
-           AND occurred_at < ?2
-         ORDER BY id ASC",
+         WHERE ",
         upstream_account_id_sql, first_token_ms_sql,
-    ))
-    .bind(db_occurred_at_lower_bound(min_bucket_start))
-    .bind(db_occurred_at_lower_bound(max_bucket_end))
-    .fetch_all(&mut *tx)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| {
-            invocation_bucket_start_epoch(&row.occurred_at)
-                .map(|bucket_epoch| bucket_epoch_set.contains(&bucket_epoch))
-                .unwrap_or(false)
-        })
-        .collect())
+    ));
+    for (index, bucket_epoch) in normalized_bucket_epochs.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid invocation bucket epoch"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(3_600), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid invocation bucket end epoch"))?;
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(bucket_start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_lower_bound(bucket_end))
+            .push(")");
+    }
+    query.push(" ORDER BY id ASC");
+    Ok(query
+        .build_query_as::<InvocationHourlySourceRecord>()
+        .fetch_all(&mut *tx)
+        .await?)
 }
 
 pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(

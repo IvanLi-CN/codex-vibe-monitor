@@ -4031,15 +4031,21 @@ async fn window_usage_account_backfill_persists_structured_account_assignment_pr
         .expect("load structured account assignment"),
         Some(account_id)
     );
-    let progress = load_startup_backfill_progress(
-        &state.pool,
-        &format!("account_window_usage_upstream_account_id:{account_id}"),
+    let progress = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT cursor_id, last_scanned, last_updated
+         FROM startup_backfill_progress
+         WHERE task_name LIKE ?1
+         LIMIT 1",
     )
+    .bind(format!(
+        "account_window_usage_upstream_account_id:{account_id}:%"
+    ))
+    .fetch_one(&state.pool)
     .await
-    .expect("load account window backfill progress");
-    assert_eq!(progress.cursor_id, invocation_id);
-    assert_eq!(progress.last_scanned, 1);
-    assert_eq!(progress.last_updated, 1);
+    .expect("load window-scoped account backfill progress");
+    assert_eq!(progress.0, invocation_id);
+    assert_eq!(progress.1, 1);
+    assert_eq!(progress.2, 1);
 }
 
 #[tokio::test]
@@ -4095,6 +4101,86 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
     let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+}
+
+#[tokio::test]
+async fn window_usage_backfill_rebuilds_full_hour_rollups_from_structured_account_assignment() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Structured Hourly Backfill").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    let full_hour_at = shanghai_local_iso(
+        Utc::now()
+            .with_minute(15)
+            .and_then(|value| value.with_second(0))
+            .expect("align full-hour invocation")
+            - ChronoDuration::hours(2),
+    );
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &full_hour_at,
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy full-hour invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear structured account assignment");
+
+    AccountWindowStoragePlane::run_legacy_backfill_pass_for_test(
+        state.pool.clone(),
+        vec![account_id],
+        Utc::now() - ChronoDuration::days(7),
+    )
+    .await
+    .expect("backfill full-hour structured account assignment");
+    sqlx::query("UPDATE codex_invocations SET payload = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("remove legacy payload after rollup repair");
+    sqlx::query(
+        r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+    )
+    .bind("codex_invocations")
+    .bind(invocation_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark repaired full-hour row as durable");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+    assert_eq!(
+        payload["items"][0]["secondaryActualUsage"]["requestCount"],
+        1
+    );
 }
 
 #[tokio::test]
@@ -4230,6 +4316,133 @@ async fn get_upstream_account_window_usage_does_not_double_count_partial_live_ro
     assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
     assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
     assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
+}
+
+#[tokio::test]
+async fn get_upstream_account_window_usage_keeps_partial_boundary_exact_when_secondary_covers_hour()
+{
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Overlap Boundary").await;
+    let anchor = Utc::now();
+    let reset_at = anchor + ChronoDuration::minutes(5);
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: Some("team".to_string()),
+        limit_id: "codex".to_string(),
+        limit_name: Some("Codex".to_string()),
+        primary: Some(NormalizedUsageWindow {
+            used_percent: 18.0,
+            window_duration_mins: 300,
+            resets_at: Some(reset_at.to_rfc3339()),
+        }),
+        secondary: Some(NormalizedUsageWindow {
+            used_percent: 9.0,
+            window_duration_mins: 60 * 24 * 7,
+            resets_at: Some(reset_at.to_rfc3339()),
+        }),
+        credits: None,
+    };
+    persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
+        .await
+        .expect("persist overlap usage snapshot");
+
+    // This is in the primary range's leading partial hour but in a full secondary hour.
+    let boundary_row_at =
+        shanghai_local_iso(reset_at - ChronoDuration::minutes(300) + ChronoDuration::minutes(1));
+    insert_upstream_account_usage_hourly_row(
+        &state.pool,
+        account_id,
+        &boundary_row_at,
+        1,
+        1200,
+        600,
+        200,
+        0.02,
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &boundary_row_at,
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+    assert_eq!(
+        payload["items"][0]["primaryActualUsage"]["totalTokens"],
+        2000
+    );
+    assert_eq!(
+        payload["items"][0]["secondaryActualUsage"]["requestCount"],
+        1
+    );
+    assert_eq!(
+        payload["items"][0]["secondaryActualUsage"]["totalTokens"],
+        2000
+    );
+}
+
+#[tokio::test]
+async fn get_upstream_account_window_usage_reads_post_cursor_delayed_terminal_for_missing_hour() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Delayed Terminal").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    let cursor_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load rollup cursor before delayed terminal");
+    sqlx::query(
+        r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+    )
+    .bind("codex_invocations")
+    .bind(cursor_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark rollup cursor before delayed terminal");
+
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(2)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+    assert_eq!(
+        payload["items"][0]["secondaryActualUsage"]["requestCount"],
+        1
+    );
 }
 
 #[tokio::test]
