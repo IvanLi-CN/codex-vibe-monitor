@@ -7463,9 +7463,10 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
         r#"
         INSERT INTO codex_invocations (
             id, invoke_id, occurred_at, source, model, input_tokens, output_tokens,
-            total_tokens, cost, status, error_message, failure_kind, payload, raw_response, created_at
+            cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message,
+            failure_kind, payload, raw_response, created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
     )
     .bind(1_i64)
@@ -7475,6 +7476,8 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
     .bind("gpt-5")
     .bind(120_i64)
     .bind(45_i64)
+    .bind(0_i64)
+    .bind(0_i64)
     .bind(165_i64)
     .bind(0.42_f64)
     .bind("success")

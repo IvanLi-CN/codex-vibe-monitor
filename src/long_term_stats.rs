@@ -6121,7 +6121,7 @@ mod tests {
 
     async fn insert_long_term_test_invocation(pool: &Pool<Sqlite>, id: i64, occurred_at: String) {
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (?1, ?2, ?3, 'success', 'gpt-5', '{}', 100, 40, 0.1)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost) VALUES (?1, ?2, ?3, 'success', 'gpt-5', '{}', 60, 40, 0, 0, 100, 0.1)",
         )
         .bind(id)
         .bind(format!("invoke-{id}"))
@@ -6140,7 +6140,7 @@ mod tests {
         for offset in 0..source_rows {
             let hour = 10 + offset;
             sqlx::query(
-                "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, model, payload, total_tokens, output_tokens, cost) VALUES (?1, ?2, ?3, ?4, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 100, 40, 0.1)",
+                "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, model, payload, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost) VALUES (?1, ?2, ?3, ?4, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 60, 40, 0, 0, 100, 0.1)",
             )
             .bind(offset + 1)
             .bind(format!("invoke-{}", offset + 1))
@@ -6895,7 +6895,7 @@ mod tests {
         let (day_start, _) = long_term_day_epoch_bounds(date).expect("Shanghai day bounds");
         insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (2, 'active', ?1, 'running', 'gpt-5', '{}', 100, 40, 0.1)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost) VALUES (2, 'active', ?1, 'running', 'gpt-5', '{}', 60, 40, 0, 0, 100, 0.1)",
         )
         .bind(format!("{date}T10:10:00+08:00"))
         .execute(&pool)
@@ -7068,7 +7068,7 @@ mod tests {
         let hour_start = day_start + 10 * 60 * 60;
 
         sqlx::query(
-            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, detail_level, model, payload, raw_response, total_tokens, output_tokens, cost) VALUES ('reconciliation-source', ?1, ?2, 'success', 'full', 'gpt-5', '{}', '{}', 100, 40, 0.1)",
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, detail_level, model, payload, raw_response, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost) VALUES ('reconciliation-source', ?1, ?2, 'success', 'full', 'gpt-5', '{}', '{}', 60, 40, 0, 0, 100, 0.1)",
         )
         .bind(format!("{date} 10:00:00"))
         .bind(SOURCE_XY)
@@ -7918,7 +7918,7 @@ mod tests {
         let (day_start, _) = long_term_day_epoch_bounds(date).expect("Shanghai day bounds");
         create_long_term_integrity_oracle(&pool).await;
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, 'test-invoke-1', ?1, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 12, 4, 0.2, 100, 10, 5, 5, 20, 80)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, 'test-invoke-1', ?1, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 8, 4, 0, 0, 12, 0.2, 100, 10, 5, 5, 20, 80)",
         )
         .bind(format!("{date}T12:00:00+08:00"))
         .execute(&pool)
