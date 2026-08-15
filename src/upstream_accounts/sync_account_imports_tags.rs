@@ -4138,6 +4138,11 @@ pub(crate) enum AccountWindowUsageBuildOutcome {
     Preparing,
 }
 
+#[cfg(not(test))]
+pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5_000;
+#[cfg(test)]
+pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5;
+
 pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -4379,8 +4384,14 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
                 None,
                 Some(live_rollup_cursor),
                 None,
+                Some(ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS + 1),
             )
             .await?;
+            if live_tail_rows.len() > ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS {
+                telemetry.coverage_hole_bucket_count =
+                    telemetry.coverage_hole_bucket_count.saturating_add(1);
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
             let live_tail_rows = filter_account_window_usage_rows_for_exact_fallback(
                 live_tail_rows,
                 &live_partial_minute_bucket_epochs,

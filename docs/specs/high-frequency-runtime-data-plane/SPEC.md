@@ -39,7 +39,7 @@
 `/api/pool/upstream-accounts/window-usage` is a high-frequency read path and uses the account-window StoragePlane rather than calling the pool directly from the handler. The StoragePlane owns selection coalescing, bounded LRU lifecycle, rollup coverage, exact boundary/live tails, and the last-good/preparing state machine.
 
 - New terminal writes populate nullable `codex_invocations.upstream_account_id`; legacy rows are filled by a pressure-gated, cursor-ordered backfill.
-- Complete minute/hour rollups are read first. Only partial boundaries, uncovered live buckets, and a cursor-bounded live tail may use exact invocation rows. A missing archive coverage bucket returns `202` preparing instead of opening a full archive/raw scan.
+- Complete minute/hour rollups are read first. Only partial boundaries, uncovered live buckets, and a cursor-bounded live tail may use exact invocation rows. The cursor tail has a fixed row budget; an over-budget tail or missing archive coverage bucket returns `202` preparing instead of opening a full archive/raw scan.
 - A cold selection without a complete baseline returns `{items: [], readiness: "preparing", retryAfterMs}` with `Retry-After: 1`; a last-good response is usable for at most 60 seconds.
 - The account-window selection has a bounded 128-entry LRU and a 10-minute idle eviction. This bounds coordination state without imposing a data TTL on a ready response.
 

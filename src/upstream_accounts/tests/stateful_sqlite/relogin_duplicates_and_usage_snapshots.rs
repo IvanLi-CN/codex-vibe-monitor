@@ -4089,6 +4089,73 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
 }
 
 #[tokio::test]
+async fn get_upstream_account_window_usage_returns_preparing_when_cursor_tail_exceeds_budget() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Tail Budget").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let cursor_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load rollup cursor before tail");
+    sqlx::query(
+        r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+    )
+    .bind("codex_invocations")
+    .bind(cursor_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark bounded tail cursor");
+
+    for offset in 0..=ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS {
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(offset as i64 + 1)),
+            Some(1200),
+            Some(600),
+            Some(200),
+            Some(2000),
+            Some(0.02),
+        )
+        .await;
+    }
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["items"], json!([]));
+    assert_eq!(payload["readiness"], "preparing");
+    assert_eq!(payload["retryAfterMs"], 1000);
+}
+
+#[tokio::test]
 async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_missing() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;

@@ -79,6 +79,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
     end_before: Option<&str>,
     min_id_exclusive: Option<i64>,
     max_id_inclusive: Option<i64>,
+    limit: Option<usize>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if account_ids.is_empty() {
         return Ok(Vec::new());
@@ -123,6 +124,9 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         }
     }
     query.push(") ORDER BY occurred_at ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
 
     query
         .build_query_as::<AccountWindowUsageRow>()
@@ -364,6 +368,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
                 account_ids,
                 start_at,
                 end_at,
+                None,
                 None,
                 None,
                 None,
