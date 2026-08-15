@@ -1421,6 +1421,7 @@ pub(crate) async fn generate_unique_proxy_invoke_id(pool: &Pool<Sqlite>) -> Stri
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingReservation {
     pub(crate) account_id: i64,
+    pub(crate) model: Option<String>,
     pub(crate) proxy_key: Option<String>,
     #[allow(dead_code)]
     pub(crate) created_at: Instant,
@@ -1520,6 +1521,54 @@ pub(crate) fn pool_routing_reservation_count(state: &AppState, account_id: i64) 
         .count() as i64
 }
 
+pub(crate) fn pool_routing_model_reservation_count(
+    state: &AppState,
+    account_id: i64,
+    model: Option<&str>,
+) -> i64 {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return 0;
+    };
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    reservations
+        .values()
+        .filter(|reservation| {
+            reservation.account_id == account_id
+                && reservation
+                    .model
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(model))
+        })
+        .count() as i64
+}
+
+pub(crate) fn pool_routing_reservation_matches_model(
+    state: &AppState,
+    reservation_key: &str,
+    account_id: i64,
+    model: Option<&str>,
+) -> bool {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    reservations
+        .get(reservation_key)
+        .is_some_and(|reservation| {
+            reservation.account_id == account_id
+                && reservation
+                    .model
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(model))
+        })
+}
+
 pub(crate) fn pool_routing_reservation_snapshot(
     state: &AppState,
 ) -> PoolRoutingReservationSnapshot {
@@ -1550,25 +1599,81 @@ pub(crate) fn reserve_pool_routing_account(
     reservation_key: &str,
     account: &PoolResolvedAccount,
 ) {
+    reserve_pool_routing_account_for_model(state, reservation_key, account, None);
+}
+
+pub(crate) fn reserve_pool_routing_account_for_model(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+) {
+    let _ =
+        try_reserve_pool_routing_account_for_model(state, reservation_key, account, model, None);
+}
+
+/// Atomically checks a model-route cap and records the request reservation.
+///
+/// The caller resolves the database-backed cap before entering this process-local
+/// mutex. The capacity check and reservation insertion themselves must share one
+/// lock so concurrent candidate selection cannot admit more than the configured
+/// number of requests for the same account/model pair.
+pub(crate) fn try_reserve_pool_routing_account_for_model(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+) -> bool {
     let proxy_key = match &account.forward_proxy_scope {
         ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
         _ => None,
     };
-    if account.routing_source == PoolRoutingSelectionSource::StickyReuse && proxy_key.is_none() {
-        return;
-    }
     let mut reservations = state
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            reservations
+                .get(reservation_key)
+                .and_then(|reservation| reservation.model.clone())
+        });
+    if account.routing_source == PoolRoutingSelectionSource::StickyReuse
+        && proxy_key.is_none()
+        && model.is_none()
+    {
+        return true;
+    }
+    if let (Some(limit), Some(model)) = (model_concurrency_limit, model.as_deref()) {
+        let active = reservations
+            .iter()
+            .filter(|(key, reservation)| {
+                key.as_str() != reservation_key
+                    && reservation.account_id == account.account_id
+                    && reservation
+                        .model
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case(model))
+            })
+            .count() as i64;
+        if active >= limit.max(1) {
+            return false;
+        }
+    }
     reservations.insert(
         reservation_key.to_string(),
         PoolRoutingReservation {
             account_id: account.account_id,
+            model,
             proxy_key,
             created_at: Instant::now(),
         },
     );
+    true
 }
 
 pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {

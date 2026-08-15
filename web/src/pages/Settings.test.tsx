@@ -85,6 +85,12 @@ function createRoutingPayload(): PoolRoutingSettings {
       responsesStreamTimeoutSecs: 300,
       compactStreamTimeoutSecs: 300,
     },
+    cacheHitProtection: {
+      enabled: false,
+      lowHitRateThresholdPercent: 10,
+      overflowMode: "queue",
+      minimumInputTokens: 3840,
+    },
   };
 }
 
@@ -259,6 +265,15 @@ describe("Settings forward proxy table", () => {
     renderSettingsPage();
 
     expect(host?.textContent).toContain("上游请求默认值");
+    expect(host?.textContent).toContain("缓存命中保护");
+
+    const cacheHitToggle = host?.querySelector('button[aria-label="缓存命中保护"]');
+    if (!(cacheHitToggle instanceof HTMLButtonElement)) {
+      throw new Error("Missing cache-hit protection toggle");
+    }
+    act(() => {
+      cacheHitToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     const timeoutInput = host?.querySelector('input[name="responsesFirstByteTimeoutSecs"]');
     if (!(timeoutInput instanceof HTMLInputElement)) {
@@ -288,6 +303,11 @@ describe("Settings forward proxy table", () => {
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
+      cacheHitProtection: {
+        enabled: true,
+        lowHitRateThresholdPercent: 10,
+        overflowMode: "queue",
+      },
       timeouts: {
         responsesFirstByteTimeoutSecs: 180,
         compactFirstByteTimeoutSecs: 300,

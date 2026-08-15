@@ -10,6 +10,7 @@ import {
 import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
+import { Switch } from "../../components/ui/switch";
 import { useTranslation } from "../../i18n";
 import type {
   AvailableModelsMode,
@@ -47,6 +48,9 @@ type PoolRoutingSettingsCardProps = {
     imageFirstByteTimeoutSecs: string;
     responsesStreamTimeoutSecs: string;
     compactStreamTimeoutSecs: string;
+    cacheHitProtectionEnabled: boolean;
+    cacheHitRateThresholdPercent: string;
+    cacheHitOverflowMode: "queue" | "reroute";
   };
   busy: boolean;
   writesEnabled: boolean;
@@ -59,6 +63,11 @@ type PoolRoutingSettingsCardProps = {
   onAvailableModelsChange: (value: string[]) => void;
   onAvailableModelsModeChange: (value: AvailableModelsMode) => void;
   onTimeoutChange: (key: RoutingTimeoutFieldKey, value: string) => void;
+  onCacheHitProtectionChange: (patch: {
+    cacheHitProtectionEnabled?: boolean;
+    cacheHitRateThresholdPercent?: string;
+    cacheHitOverflowMode?: "queue" | "reroute";
+  }) => void;
   onSave: () => void;
 };
 
@@ -75,6 +84,7 @@ export function PoolRoutingSettingsCard({
   onAvailableModelsChange,
   onAvailableModelsModeChange,
   onTimeoutChange,
+  onCacheHitProtectionChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
   const { t } = useTranslation();
@@ -161,6 +171,58 @@ export function PoolRoutingSettingsCard({
       </CardHeader>
 
       <CardContent className="mobile-flat-surface-body space-y-5 pt-4">
+        <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="font-medium leading-snug">{t("settings.routing.cacheHit.title")}</div>
+              <div className="text-sm leading-snug text-base-content/70">
+                {t("settings.routing.cacheHit.description", { tokens: 3840 })}
+              </div>
+            </div>
+            <Switch
+              checked={draft.cacheHitProtectionEnabled}
+              disabled={!writesEnabled || busy}
+              aria-label={t("settings.routing.cacheHit.title")}
+              onCheckedChange={(checked) =>
+                onCacheHitProtectionChange({ cacheHitProtectionEnabled: checked })
+              }
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="field">
+              <span className="field-label">{t("settings.routing.cacheHit.threshold")}</span>
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                inputMode="numeric"
+                value={draft.cacheHitRateThresholdPercent}
+                disabled={!writesEnabled || busy || !draft.cacheHitProtectionEnabled}
+                onChange={(event) =>
+                  onCacheHitProtectionChange({
+                    cacheHitRateThresholdPercent: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <SelectField
+              className="field"
+              label={t("settings.routing.cacheHit.overflow")}
+              name="settingsRoutingCacheHitOverflow"
+              value={draft.cacheHitOverflowMode}
+              disabled={!writesEnabled || busy || !draft.cacheHitProtectionEnabled}
+              options={[
+                { value: "queue", label: t("settings.routing.cacheHit.queue") },
+                { value: "reroute", label: t("settings.routing.cacheHit.reroute") },
+              ]}
+              onValueChange={(value) =>
+                onCacheHitProtectionChange({
+                  cacheHitOverflowMode: value as "queue" | "reroute",
+                })
+              }
+            />
+          </div>
+        </div>
         <div className="space-y-4 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
           <div className="space-y-1">
             <div className="font-medium leading-snug">
@@ -332,7 +394,7 @@ export function PoolRoutingSettingsCard({
                   step="1"
                   value={field.value}
                   disabled={!writesEnabled || busy}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 font-mono text-sm"
                   onChange={(event) => onTimeoutChange(field.key, event.target.value)}
                 />
               </label>

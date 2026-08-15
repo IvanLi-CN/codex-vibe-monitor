@@ -657,6 +657,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         "",
         crate::ImageIntent::Unknown,
         false,
+        None,
     )
     .await
 }
@@ -729,6 +730,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         "",
         crate::ImageIntent::Unknown,
         false,
+        None,
     )
     .await
 }
@@ -778,6 +780,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         "",
         crate::ImageIntent::Unknown,
         false,
+        None,
     )
     .await
 }
@@ -850,6 +853,37 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
 ) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        conversation_override,
+        endpoint,
+        image_intent,
+        codex_imagegen_request,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolution> {
     // This selection state machine is intentionally large. Keep it off callers'
     // async task stacks, including the live-first request reader.
     Box::pin(
@@ -865,6 +899,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
             endpoint,
             image_intent,
             codex_imagegen_request,
+            reservation_key,
         ),
     )
     .await
@@ -882,6 +917,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     endpoint: &str,
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolution> {
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
@@ -891,6 +927,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut saw_excluded_route_candidate = false;
     let mut saw_non_required_route_candidate = false;
     let mut saw_non_routing_candidate = false;
+    let mut saw_model_concurrency_limited_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
     let mut sticky_source_cut_out_guard_applies = false;
@@ -1178,11 +1215,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         || sticky_fallback_handoff_policy_enabled
                                     {
                                         if sticky_source_cut_out_guard_applies {
-                                            return Ok(PoolAccountResolution::Resolved(
-                                                account.with_sticky_affinity_generation(
-                                                    sticky_affinity_generation,
-                                                ),
-                                            ));
+                                            let account = account.with_sticky_affinity_generation(
+                                                sticky_affinity_generation,
+                                            );
+                                            if reserve_sticky_model_route(
+                                                state,
+                                                reservation_key,
+                                                &account,
+                                                requested_model,
+                                            )
+                                            .await?
+                                            {
+                                                return Ok(PoolAccountResolution::Resolved(
+                                                    account,
+                                                ));
+                                            }
+                                            return Ok(PoolAccountResolution::NoCandidate);
                                         }
                                         evaluation.score.route_binding_failure_penalty =
                                             route_binding_failure_penalty;
@@ -1193,11 +1241,35 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             || sticky_model_penalty != ModelRoutePenalty::Normal;
                                         saw_other_non_rate_limited_routing_candidate = true;
                                     } else {
-                                        return Ok(PoolAccountResolution::Resolved(
-                                            account.with_sticky_affinity_generation(
-                                                sticky_affinity_generation,
-                                            ),
-                                        ));
+                                        let account = account.with_sticky_affinity_generation(
+                                            sticky_affinity_generation,
+                                        );
+                                        if reserve_sticky_model_route(
+                                            state,
+                                            reservation_key,
+                                            &account,
+                                            requested_model,
+                                        )
+                                        .await?
+                                        {
+                                            return Ok(PoolAccountResolution::Resolved(account));
+                                        }
+                                        let cache_hit_protection =
+                                            resolve_cache_hit_protection_settings(
+                                                &load_pool_routing_settings(&state.pool).await?,
+                                            );
+                                        if cache_hit_protection.overflow_mode
+                                            == CacheHitOverflowMode::Queue
+                                        {
+                                            return Ok(PoolAccountResolution::NoCandidate);
+                                        }
+                                        // A normal sticky route may be handed off when reroute is
+                                        // selected. Preserve it as a scored candidate so the common
+                                        // loop below keeps the atomic cap check for any retry.
+                                        evaluation.resolved_account = Some(account);
+                                        resolved_candidates.push(evaluation);
+                                        saw_model_concurrency_limited_candidate = true;
+                                        saw_other_non_rate_limited_routing_candidate = true;
                                     }
                                 } else {
                                     sticky_route_excluded_by_route_key = true;
@@ -1699,8 +1771,28 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             excluded_candidates: selection_audit_exclusions,
         })
     });
+    let cache_hit_protection =
+        resolve_cache_hit_protection_settings(&load_pool_routing_settings(&state.pool).await?);
     for evaluation in resolved_candidates {
         if let Some(account) = evaluation.resolved_account {
+            if let Some(reservation_key) = reservation_key {
+                let concurrency_limit =
+                    model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
+                        .await?;
+                if !try_reserve_pool_routing_account_for_model(
+                    state,
+                    reservation_key,
+                    &account,
+                    requested_model,
+                    concurrency_limit,
+                ) {
+                    if cache_hit_protection.overflow_mode == CacheHitOverflowMode::Queue {
+                        return Ok(PoolAccountResolution::NoCandidate);
+                    }
+                    saw_model_concurrency_limited_candidate = true;
+                    continue;
+                }
+            }
             let account = account.with_sticky_affinity_generation(sticky_affinity_generation);
             let account = if account.routing_source == PoolRoutingSelectionSource::FreshAssignment {
                 account.with_routing_selection_audit(
@@ -1711,6 +1803,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             };
             return Ok(PoolAccountResolution::Resolved(account));
         }
+    }
+
+    // Reroute only falls through to an ordinary unavailable result when capacity
+    // was not the limiting condition. A forced/sticky route with no legal
+    // alternate must wait on the existing bounded no-account path.
+    if saw_model_concurrency_limited_candidate {
+        return Ok(PoolAccountResolution::NoCandidate);
     }
 
     if sticky_route_still_reusable
@@ -1751,6 +1850,26 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     Ok(PoolAccountResolution::NoCandidate)
+}
+
+async fn reserve_sticky_model_route(
+    state: &AppState,
+    reservation_key: Option<&str>,
+    account: &PoolResolvedAccount,
+    requested_model: Option<&str>,
+) -> Result<bool> {
+    let Some(reservation_key) = reservation_key else {
+        return Ok(true);
+    };
+    let concurrency_limit =
+        model_route_concurrency_limit(&state.pool, account.account_id, requested_model).await?;
+    Ok(try_reserve_pool_routing_account_for_model(
+        state,
+        reservation_key,
+        account,
+        requested_model,
+        concurrency_limit,
+    ))
 }
 
 pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(

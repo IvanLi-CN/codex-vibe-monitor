@@ -2695,6 +2695,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
@@ -2733,6 +2734,68 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
 }
 
 #[tokio::test]
+async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
+    let state = test_state_from_config(test_config(), true).await;
+    let Json(initial) = get_pool_routing_settings(State(state.clone()))
+        .await
+        .expect("load default routing settings");
+    assert!(!initial.cache_hit_protection.enabled);
+    assert_eq!(
+        initial.cache_hit_protection.low_hit_rate_threshold_percent,
+        10
+    );
+    assert_eq!(initial.cache_hit_protection.overflow_mode, "queue");
+    assert_eq!(initial.cache_hit_protection.minimum_input_tokens, 3_840);
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
+        codex_imagegen_rewrite_mode: None,
+        available_models: None,
+        available_models_mode: None,
+        timeouts: None,
+        cache_hit_protection: Some(UpdateCacheHitProtectionSettingsRequest {
+            enabled: Some(true),
+            low_hit_rate_threshold_percent: Some(15),
+            overflow_mode: Some("reroute".to_string()),
+        }),
+    };
+    let Json(updated) =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("save cache-hit routing settings");
+    assert!(updated.cache_hit_protection.enabled);
+    assert_eq!(
+        updated.cache_hit_protection.low_hit_rate_threshold_percent,
+        15
+    );
+    assert_eq!(updated.cache_hit_protection.overflow_mode, "reroute");
+
+    let invalid = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
+        codex_imagegen_rewrite_mode: None,
+        available_models: None,
+        available_models_mode: None,
+        timeouts: None,
+        cache_hit_protection: Some(UpdateCacheHitProtectionSettingsRequest {
+            enabled: None,
+            low_hit_rate_threshold_percent: Some(0),
+            overflow_mode: None,
+        }),
+    };
+    let error = update_pool_routing_settings(State(state), HeaderMap::new(), Json(invalid))
+        .await
+        .expect_err("reject invalid cache-hit threshold");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(error.1.contains("lowHitRateThresholdPercent"));
+}
+
+#[tokio::test]
 async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
     let state = test_state_from_config(test_config(), true).await;
     let _env_guard = EnvVarGuard::set(&[(ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET, None)]);
@@ -2750,6 +2813,7 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2795,6 +2859,7 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2844,6 +2909,7 @@ async fn pool_routing_settings_api_key_updates_require_crypto_key() {
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: None,
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
@@ -2865,6 +2931,7 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2901,6 +2968,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         codex_imagegen_rewrite_mode: None,
         available_models: None,
         available_models_mode: None,
+        cache_hit_protection: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),

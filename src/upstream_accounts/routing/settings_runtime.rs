@@ -7,6 +7,98 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS: u64 = 3_840;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheHitOverflowMode {
+    Queue,
+    Reroute,
+}
+
+impl CacheHitOverflowMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Reroute => "reroute",
+        }
+    }
+
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("reroute") => Self::Reroute,
+            _ => Self::Queue,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CacheHitProtectionSettings {
+    pub(crate) enabled: bool,
+    pub(crate) low_hit_rate_threshold_percent: u8,
+    pub(crate) overflow_mode: CacheHitOverflowMode,
+}
+
+impl CacheHitProtectionSettings {
+    pub(crate) fn into_response(self) -> CacheHitProtectionSettingsResponse {
+        CacheHitProtectionSettingsResponse {
+            enabled: self.enabled,
+            low_hit_rate_threshold_percent: self.low_hit_rate_threshold_percent,
+            overflow_mode: self.overflow_mode.as_str().to_string(),
+            minimum_input_tokens: CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS,
+        }
+    }
+}
+
+pub(crate) fn resolve_cache_hit_protection_settings(
+    row: &PoolRoutingSettingsRow,
+) -> CacheHitProtectionSettings {
+    CacheHitProtectionSettings {
+        enabled: row.cache_hit_protection_enabled.unwrap_or_default() != 0,
+        low_hit_rate_threshold_percent: row
+            .cache_hit_low_rate_threshold_percent
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| (1..=100).contains(value))
+            .unwrap_or(10),
+        overflow_mode: CacheHitOverflowMode::parse(row.cache_hit_overflow_mode.as_deref()),
+    }
+}
+
+pub(crate) fn merge_cache_hit_protection_settings(
+    current: CacheHitProtectionSettings,
+    patch: Option<&UpdateCacheHitProtectionSettingsRequest>,
+) -> Result<CacheHitProtectionSettings, (StatusCode, String)> {
+    let Some(patch) = patch else {
+        return Ok(current);
+    };
+    let low_hit_rate_threshold_percent = patch
+        .low_hit_rate_threshold_percent
+        .unwrap_or(current.low_hit_rate_threshold_percent);
+    if !(1..=100).contains(&low_hit_rate_threshold_percent) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "cacheHitProtection.lowHitRateThresholdPercent must be between 1 and 100".to_string(),
+        ));
+    }
+    let overflow_mode = match patch.overflow_mode.as_deref() {
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "queue" => CacheHitOverflowMode::Queue,
+            "reroute" => CacheHitOverflowMode::Reroute,
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "cacheHitProtection.overflowMode must be queue or reroute".to_string(),
+                ));
+            }
+        },
+        None => current.overflow_mode,
+    };
+    Ok(CacheHitProtectionSettings {
+        enabled: patch.enabled.unwrap_or(current.enabled),
+        low_hit_rate_threshold_percent,
+        overflow_mode,
+    })
+}
+
 pub(crate) fn pool_routing_timeouts_from_config(
     config: &AppConfig,
 ) -> PoolRoutingTimeoutSettingsResolved {
@@ -588,6 +680,9 @@ pub(crate) async fn load_pool_routing_settings(
             default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
             request_read_timeout_secs
+            ,cache_hit_protection_enabled
+            ,cache_hit_low_rate_threshold_percent
+            ,cache_hit_overflow_mode
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -663,6 +758,7 @@ pub(crate) fn build_pool_routing_settings_response(
             AvailableModelsMode::from_str(row.available_models_mode.as_deref())
         },
         timeouts: pool_routing_timeouts_response(timeouts),
+        cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
     }
 }
 
@@ -790,6 +886,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) available_models_mode: Option<AvailableModelsMode>,
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
+    pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -892,6 +989,9 @@ pub(crate) async fn save_pool_routing_settings(
     let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
     let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
     let request_read_timeout_secs = current.request_read_timeout_secs;
+    let cache_hit_protection = update
+        .cache_hit_protection
+        .unwrap_or_else(|| resolve_cache_hit_protection_settings(&current));
     let now_iso = format_utc_iso(Utc::now());
 
     let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
@@ -984,6 +1084,20 @@ pub(crate) async fn save_pool_routing_settings(
             .map_err(internal_error_tuple)?;
         }
         (None, None) => {}
+    }
+
+    if update.cache_hit_protection.is_some() {
+        sqlx::query(
+            "UPDATE pool_routing_settings SET cache_hit_protection_enabled = ?2, cache_hit_low_rate_threshold_percent = ?3, cache_hit_overflow_mode = ?4, updated_at = ?5 WHERE id = ?1",
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .bind(if cache_hit_protection.enabled { 1_i64 } else { 0_i64 })
+        .bind(i64::from(cache_hit_protection.low_hit_rate_threshold_percent))
+        .bind(cache_hit_protection.overflow_mode.as_str())
+        .bind(format_utc_iso(Utc::now()))
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
     }
 
     tx.commit().await.map_err(internal_error_tuple)?;

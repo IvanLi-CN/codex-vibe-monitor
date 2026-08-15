@@ -1337,6 +1337,8 @@ const baseTranslations = {
       "Model quota exhausted",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx":
       "Upstream service error",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.cache_hit_rate":
+      "Cache hit rate below threshold",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "Model route unavailable",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "Last failure",
@@ -1441,6 +1443,11 @@ const baseTranslations = {
       "Maintenance request returned HTTP {{status}}.",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "Sync completed successfully",
     "accountPool.upstreamAccounts.latestAction.reasons.model_route": "Model route",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_rate": "Cache hit protection",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_threshold_changed":
+      "Cache hit threshold changed",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_protection_disabled":
+      "Cache hit protection disabled",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
@@ -1754,6 +1761,18 @@ const baseTranslations = {
     "settings.routing.timeout.responsesStream": "Standard stream completion timeout",
     "settings.routing.timeout.compactStream": "Compact stream completion timeout",
     "settings.routing.errors.timeoutPositiveInteger": "{{field}} must be a positive integer.",
+    "settings.routing.cacheHit.title": "Cache hit protection",
+    "settings.routing.cacheHit.description":
+      "Protect an API key model route after low cache reads. Samples start at {{tokens}} input tokens.",
+    "settings.routing.cacheHit.threshold": "Low hit threshold (%)",
+    "settings.routing.cacheHit.overflow": "When the route is limited",
+    "settings.routing.cacheHit.queue": "Queue requests",
+    "settings.routing.cacheHit.reroute": "Route to another account",
+    "settings.routing.errors.cacheHitThreshold":
+      "Cache hit threshold must be an integer from 1 to 100.",
+    "accountPool.upstreamAccounts.modelRouting.cacheProbe": "Recovery probe: one request at a time",
+    "accountPool.upstreamAccounts.modelRouting.cacheLimit":
+      "Cache limit {{limit}} / {{recovery}} · hit {{hitRate}}% · floor streak {{streak}} · cooldown {{cooldownLevel}}/3",
     "settings.externalApiKeys.title": "External API Keys",
     "settings.externalApiKeys.description":
       "Manage third-party API keys for external upstream-account operations.",
@@ -4322,6 +4341,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429_quota_exhausted":
       "模型额度已耗尽",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx": "上游服务异常",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.cache_hit_rate": "缓存命中率低于阈值",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
       "模型路由不可用",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "最近失败",
@@ -4409,6 +4429,11 @@ const baseTranslations = {
       "维护请求返回 HTTP {{status}}。",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
     "accountPool.upstreamAccounts.latestAction.reasons.model_route": "模型路由",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_rate": "缓存命中保护",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_threshold_changed":
+      "缓存命中阈值已变更",
+    "accountPool.upstreamAccounts.latestAction.reasons.cache_hit_protection_disabled":
+      "缓存命中保护已关闭",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",
@@ -4693,6 +4718,17 @@ const baseTranslations = {
     "settings.routing.timeout.responsesStream": "一般请求流结束超时",
     "settings.routing.timeout.compactStream": "压缩请求流结束超时",
     "settings.routing.errors.timeoutPositiveInteger": "{{field}} 必须填写为正整数。",
+    "settings.routing.cacheHit.title": "缓存命中保护",
+    "settings.routing.cacheHit.description":
+      "当 API Key 模型路由缓存读取异常偏低时限制后续请求；样本从 {{tokens}} 个输入 token 开始。",
+    "settings.routing.cacheHit.threshold": "低命中阈值（%）",
+    "settings.routing.cacheHit.overflow": "路由受限时",
+    "settings.routing.cacheHit.queue": "请求排队",
+    "settings.routing.cacheHit.reroute": "改路到其他账号",
+    "settings.routing.errors.cacheHitThreshold": "缓存命中阈值必须是 1 到 100 的整数。",
+    "accountPool.upstreamAccounts.modelRouting.cacheProbe": "恢复探针：一次只放行一个请求",
+    "accountPool.upstreamAccounts.modelRouting.cacheLimit":
+      "缓存并行上限 {{limit}} / {{recovery}} · 命中 {{hitRate}}% · 最低并行连续 {{streak}} · 冷却阶梯 {{cooldownLevel}}/3",
     "settings.externalApiKeys.title": "External API Keys",
     "settings.externalApiKeys.description":
       "管理第三方开放接口使用的 API Key，用于外部上游账号操作。",

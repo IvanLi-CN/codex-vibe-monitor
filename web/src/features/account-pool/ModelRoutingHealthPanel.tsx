@@ -104,6 +104,19 @@ export function ModelRoutingHealthPanel({
                     {t("accountPool.upstreamAccounts.modelRouting.lastSeen")}:{" "}
                     {formatDateTime(route.lastSeenAt)}
                   </p>
+                  {route.cacheConcurrencyLimit != null || route.probeRequired ? (
+                    <p className="mt-1 text-xs leading-4 text-base-content/72">
+                      {route.probeRequired
+                        ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
+                        : t("accountPool.upstreamAccounts.modelRouting.cacheLimit", {
+                            limit: route.cacheConcurrencyLimit ?? 1,
+                            recovery: route.cacheRecoveryLimit ?? route.cacheConcurrencyLimit ?? 1,
+                            hitRate: route.cacheLastHitRatePercent ?? "-",
+                            streak: route.cacheLowHitStreak ?? 0,
+                            cooldownLevel: route.cacheCooldownLevel ?? 0,
+                          })}
+                    </p>
+                  ) : null}
                 </div>
                 <dl className="contents">
                   <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.state")}>

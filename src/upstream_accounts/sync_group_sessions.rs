@@ -1968,6 +1968,7 @@ pub(crate) fn reserve_imported_oauth_node_shunt_scope(
             reservation_key.clone(),
             crate::PoolRoutingReservation {
                 account_id: account_id.unwrap_or_default(),
+                model: None,
                 proxy_key: Some(proxy_key.clone()),
                 created_at: Instant::now(),
             },

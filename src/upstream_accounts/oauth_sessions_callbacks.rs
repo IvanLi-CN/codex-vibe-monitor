@@ -36,6 +36,26 @@ pub(crate) async fn update_pool_routing_settings(
         payload.maintenance.as_ref(),
     );
     validate_pool_routing_maintenance_settings(merged_maintenance)?;
+    let current_cache_hit_protection = resolve_cache_hit_protection_settings(&current);
+    let merged_cache_hit_protection = merge_cache_hit_protection_settings(
+        current_cache_hit_protection,
+        payload.cache_hit_protection.as_ref(),
+    )?;
+    let cache_hit_protection_reset_reason = payload
+        .cache_hit_protection
+        .is_some()
+        .then_some({
+            if !merged_cache_hit_protection.enabled {
+                Some("cache_hit_protection_disabled")
+            } else if merged_cache_hit_protection.low_hit_rate_threshold_percent
+                != current_cache_hit_protection.low_hit_rate_threshold_percent
+            {
+                Some("cache_hit_threshold_changed")
+            } else {
+                None
+            }
+        })
+        .flatten();
 
     let api_key = payload
         .api_key
@@ -118,6 +138,7 @@ pub(crate) async fn update_pool_routing_settings(
         || available_models.is_some()
         || available_models_mode.is_some()
         || payload.maintenance.is_some()
+        || payload.cache_hit_protection.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -132,9 +153,18 @@ pub(crate) async fn update_pool_routing_settings(
                 available_models_mode,
                 timeout_updates: timeout_updates.as_ref(),
                 maintenance_settings: payload.maintenance.as_ref().map(|_| merged_maintenance),
+                cache_hit_protection: payload
+                    .cache_hit_protection
+                    .as_ref()
+                    .map(|_| merged_cache_hit_protection),
             },
         )
         .await?;
+        if let Some(reason) = cache_hit_protection_reset_reason {
+            clear_cache_hit_protection_state(&state.pool, reason)
+                .await
+                .map_err(internal_error_tuple)?;
+        }
         if api_key.is_some() {
             refresh_pool_routing_runtime_cache(state.as_ref())
                 .await

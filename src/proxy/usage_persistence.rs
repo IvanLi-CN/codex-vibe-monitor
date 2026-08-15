@@ -35,6 +35,7 @@ pub(crate) fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<Str
 pub(crate) struct TerminalPayloadMetadata {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) request_model: Option<String>,
 }
 
 pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloadMetadata {
@@ -56,9 +57,16 @@ pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloa
             .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
             .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
     });
+    let request_model = value
+        .get("requestModel")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     TerminalPayloadMetadata {
         prompt_cache_key,
         upstream_account_id,
+        request_model,
     }
 }
 
@@ -1622,7 +1630,11 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
 }
 
 pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String> {
-    let request_id = invoke_id.strip_prefix("proxy-")?.split('-').next()?;
+    let request_id = invoke_id
+        .strip_prefix("proxy-")
+        .or_else(|| invoke_id.strip_prefix("pool-ws-"))?
+        .split('-')
+        .next()?;
     request_id
         .parse::<u64>()
         .ok()
@@ -3629,6 +3641,43 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             "duplicate_runtime_terminal",
         );
         return Ok(());
+    }
+    if record.status == "success" {
+        let metadata = terminal_payload_metadata(record.payload.as_deref());
+        if let Some(account_id) = metadata.upstream_account_id {
+            let model = metadata
+                .request_model
+                .as_deref()
+                .or(record.model.as_deref());
+            let reservation_held = pool_routing_reservation_key_for_invoke_id(&record.invoke_id)
+                .is_some_and(|reservation_key| {
+                    pool_routing_reservation_matches_model(
+                        state,
+                        &reservation_key,
+                        account_id,
+                        model,
+                    )
+                });
+            let active_concurrency = pool_routing_model_reservation_count(state, account_id, model)
+                + if reservation_held { 0 } else { 1 };
+            if let Err(err) = observe_model_route_cache_hit(
+                &state.pool,
+                account_id,
+                model,
+                record.usage.input_tokens,
+                record.usage.cache_input_tokens,
+                active_concurrency,
+            )
+            .await
+            {
+                warn!(
+                    account_id,
+                    model = ?model,
+                    error = %err,
+                    "failed to observe model route cache hit"
+                );
+            }
+        }
     }
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
     let delta = &projection.dashboard;

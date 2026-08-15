@@ -803,6 +803,11 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_failure_kind TEXT,
             last_failure_message TEXT,
             cooldown_until TEXT,
+            cache_concurrency_limit INTEGER,
+            cache_recovery_limit INTEGER,
+            cache_low_hit_streak INTEGER NOT NULL DEFAULT 0,
+            cache_cooldown_level INTEGER NOT NULL DEFAULT 0,
+            cache_last_hit_rate_percent INTEGER,
             UNIQUE(account_id, model),
             FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
         )
@@ -814,6 +819,43 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_account_model_routes", "reset_fence_at")
         .await
         .context("failed to ensure pool_upstream_account_model_routes.reset_fence_at")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_concurrency_limit",
+    )
+    .await
+    .context("failed to ensure model route cache_concurrency_limit")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_recovery_limit",
+    )
+    .await
+    .context("failed to ensure model route cache_recovery_limit")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_low_hit_streak",
+        "0",
+    )
+    .await
+    .context("failed to ensure model route cache_low_hit_streak")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_cooldown_level",
+        "0",
+    )
+    .await
+    .context("failed to ensure model route cache_cooldown_level")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_last_hit_rate_percent",
+    )
+    .await
+    .context("failed to ensure model route cache_last_hit_rate_percent")?;
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_account_seen
@@ -1600,6 +1642,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             default_first_byte_timeout_secs INTEGER,
             upstream_handshake_timeout_secs INTEGER,
             request_read_timeout_secs INTEGER,
+            cache_hit_protection_enabled INTEGER NOT NULL DEFAULT 0,
+            cache_hit_low_rate_threshold_percent INTEGER NOT NULL DEFAULT 10,
+            cache_hit_overflow_mode TEXT NOT NULL DEFAULT 'queue',
             capability_axis_split_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -1724,6 +1769,30 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
         .await
         .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "cache_hit_protection_enabled",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.cache_hit_protection_enabled")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "cache_hit_low_rate_threshold_percent",
+        "10",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.cache_hit_low_rate_threshold_percent")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "cache_hit_overflow_mode",
+        "'queue'",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.cache_hit_overflow_mode")?;
     ensure_integer_column_with_default(
         pool,
         "pool_routing_settings",

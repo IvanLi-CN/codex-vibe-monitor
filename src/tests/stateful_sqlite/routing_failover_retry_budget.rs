@@ -228,6 +228,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
             "reservation-old".to_string(),
             PoolRoutingReservation {
                 account_id: preferred_id,
+                model: None,
                 proxy_key: None,
                 created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
             },

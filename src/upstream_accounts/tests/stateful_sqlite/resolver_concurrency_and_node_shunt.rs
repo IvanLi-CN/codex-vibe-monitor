@@ -257,6 +257,7 @@ async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reser
             "test-node-shunt-reservation".to_string(),
             PoolRoutingReservation {
                 account_id: reserved_account_id,
+                model: None,
                 proxy_key: Some(secondary_proxy_key.clone()),
                 created_at: Instant::now(),
             },
@@ -375,6 +376,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
         "test-node-shunt-reservation-direct".to_string(),
         PoolRoutingReservation {
             account_id: reserved_account_id,
+            model: None,
             proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
             created_at: Instant::now(),
         },
@@ -383,6 +385,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
         "test-node-shunt-reservation-secondary".to_string(),
         PoolRoutingReservation {
             account_id: reserved_account_id,
+            model: None,
             proxy_key: Some(secondary_proxy_key.clone()),
             created_at: Instant::now(),
         },
@@ -571,6 +574,7 @@ async fn node_shunt_assignments_keep_globally_reserved_proxy_keys_occupied() {
             "test-node-shunt-global-reservation".to_string(),
             PoolRoutingReservation {
                 account_id: 0,
+                model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 created_at: Instant::now(),
             },
@@ -738,6 +742,7 @@ async fn node_shunt_sticky_reuse_preserves_slot_for_in_flight_account() {
             "test-node-shunt-sticky-reservation".to_string(),
             PoolRoutingReservation {
                 account_id: reserved_account_id,
+                model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 created_at: Instant::now(),
             },
@@ -1141,6 +1146,7 @@ async fn provisioning_scope_skips_proxy_keys_reserved_by_other_accounts() {
             "test-provisioning-live-reservation".to_string(),
             PoolRoutingReservation {
                 account_id: 0,
+                model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 created_at: Instant::now(),
             },
@@ -1259,6 +1265,7 @@ async fn provisioning_scope_reuses_live_reserved_proxy_key_for_same_account() {
             "test-provisioning-self-reservation".to_string(),
             PoolRoutingReservation {
                 account_id,
+                model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 created_at: Instant::now(),
             },

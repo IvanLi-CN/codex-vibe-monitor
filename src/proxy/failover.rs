@@ -98,6 +98,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         "",
         crate::ImageIntent::Unknown,
         false,
+        None,
     )
     .await
 }
@@ -146,7 +147,40 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent_
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
 ) -> Result<PoolAccountResolutionWithWait> {
-    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        codex_imagegen_request,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         state,
         sticky_key,
         requested_model,
@@ -161,6 +195,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent_
         endpoint,
         image_intent,
         codex_imagegen_request,
+        reservation_key,
     )
     .await
 }
@@ -192,6 +227,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         "",
         crate::ImageIntent::Unknown,
         false,
+        None,
     )
     .await
 }
@@ -244,7 +280,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
-    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         state,
         sticky_key,
         requested_model,
@@ -259,6 +295,43 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         endpoint,
         image_intent,
         false,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        conversation_override,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        false,
+        reservation_key,
     )
     .await
 }
@@ -279,6 +352,43 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
 ) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        conversation_override,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        codex_imagegen_request,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
         state,
         sticky_key,
@@ -294,6 +404,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         endpoint,
         image_intent,
         codex_imagegen_request,
+        reservation_key,
     )
     .await
 }
@@ -313,6 +424,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     endpoint: &str,
     image_intent: crate::ImageIntent,
     codex_imagegen_request: bool,
+    reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
@@ -322,7 +434,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         let resolution =
-            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
+            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                 state,
                 sticky_key,
                 requested_model,
@@ -334,6 +446,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 endpoint,
                 image_intent,
                 codex_imagegen_request,
+                reservation_key,
             )
             .await?;
         if wait_for_no_available
@@ -1012,7 +1125,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                 });
             let route_scoped_overload_selection = overload_required_upstream_route_key.clone();
-            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                 state.as_ref(),
                 sticky_key,
                 requested_model.as_deref(),
@@ -1027,6 +1140,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 capability_endpoint,
                 image_intent,
                 codex_imagegen_request,
+                Some(&reservation_key),
             )
             .await
             {
@@ -1518,7 +1632,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         if responses_total_timeout_started_at.is_none() && no_available_wait_deadline.is_some() {
             responses_total_timeout_started_at = pre_attempt_total_timeout_started_at;
         }
-        reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
+        reserve_pool_routing_account_for_model(
+            state.as_ref(),
+            &reservation_key,
+            &account,
+            trace_context
+                .as_ref()
+                .and_then(|trace| trace.request_model.as_deref()),
+        );
         timeout_route_failover_pending = false;
 
         let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(

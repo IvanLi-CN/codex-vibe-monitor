@@ -61,6 +61,9 @@ type RoutingDraft = {
   imageFirstByteTimeoutSecs: string;
   responsesStreamTimeoutSecs: string;
   compactStreamTimeoutSecs: string;
+  cacheHitProtectionEnabled: boolean;
+  cacheHitRateThresholdPercent: string;
+  cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
 };
 
 type ForwardProxyValidationState =
@@ -264,6 +267,11 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),
     responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
     compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
+    cacheHitProtectionEnabled: routing.cacheHitProtection?.enabled ?? false,
+    cacheHitRateThresholdPercent: String(
+      routing.cacheHitProtection?.lowHitRateThresholdPercent ?? 10,
+    ),
+    cacheHitOverflowMode: routing.cacheHitProtection?.overflowMode ?? "queue",
   };
 }
 
@@ -743,6 +751,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       }
       parsedTimeouts[key] = parsed;
     }
+    const cacheHitRateThresholdPercent = parsePositiveInteger(
+      routingDraft.cacheHitRateThresholdPercent,
+    );
+    if (cacheHitRateThresholdPercent == null || cacheHitRateThresholdPercent > 100) {
+      setRoutingValidationMessage(t("settings.routing.errors.cacheHitThreshold"));
+      return;
+    }
 
     const payload: UpdatePoolRoutingSettingsPayload = {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
@@ -751,6 +766,11 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       availableModels: routingDraft.availableModels,
       availableModelsMode: routingDraft.availableModelsMode,
       timeouts: parsedTimeouts,
+      cacheHitProtection: {
+        enabled: routingDraft.cacheHitProtectionEnabled,
+        lowHitRateThresholdPercent: cacheHitRateThresholdPercent,
+        overflowMode: routingDraft.cacheHitOverflowMode,
+      },
     };
 
     try {
@@ -2055,6 +2075,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   updateRoutingDraft({ availableModelsMode: value })
                 }
                 onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
+                onCacheHitProtectionChange={(patch) => updateRoutingDraft(patch)}
                 onSave={() => void saveRoutingDefaults()}
               />
             ) : (
