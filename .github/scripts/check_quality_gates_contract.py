@@ -530,9 +530,41 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
-    require_exact_if(build_job, "github.event_name == 'pull_request'", "ci-pr.yml.jobs.build")
+    require(
+        build_job.get("needs") == "build-pr-smoke-artifacts",
+        "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer",
+    )
+    require_exact_if(
+        build_job,
+        "${{ always() && github.event_name == 'pull_request' }}",
+        "ci-pr.yml.jobs.build",
+    )
+    producer_result_step = step_config(build_job, "Verify smoke artifact producer", "ci-pr.yml.jobs.build")
+    producer_result_env = require_mapping(
+        producer_result_step.get("env"),
+        "ci-pr.yml.jobs.build.steps['Verify smoke artifact producer'].env",
+    )
+    require(
+        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}",
+        "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
+    )
+    step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
+    step_config(build_job, "Extract PR smoke artifacts", "ci-pr.yml.jobs.build")
 
     if auxiliary_jobs:
+        smoke_artifact_job = job_config(workflow, "build-pr-smoke-artifacts", "ci-pr.yml")
+        require(
+            smoke_artifact_job.get("name") == "PR Smoke Artifact Producer"
+            and smoke_artifact_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts must be the declared PR smoke artifact producer",
+        )
+        require_exact_if(
+            smoke_artifact_job,
+            "github.event_name == 'pull_request'",
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts",
+        )
+        require_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        step_config(smoke_artifact_job, "Upload PR smoke artifacts", "ci-pr.yml.jobs.build-pr-smoke-artifacts")
         archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
         require(
             archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,

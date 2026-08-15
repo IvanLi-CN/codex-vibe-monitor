@@ -195,6 +195,29 @@ fi
 
 grep -q "target cache must save only after a successful archive build" "$tmp_dir/archive-cache.log"
 
+smoke_producer_repo="$tmp_dir/smoke-producer-repo"
+copy_repo_snapshot "$baseline_repo" "$smoke_producer_repo"
+python3 - <<'PY' "$smoke_producer_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "    needs: build-pr-smoke-artifacts\n"
+replacement = "    needs: backend-test-archive\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite PR smoke artifact dependency")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$smoke_producer_repo" --profile final >/dev/null 2>"$tmp_dir/smoke-producer.log"; then
+  echo "expected PR smoke artifact dependency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
+
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
 python3 - <<'PY' "$informational_repo"

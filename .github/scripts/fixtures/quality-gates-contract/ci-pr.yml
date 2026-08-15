@@ -520,14 +520,37 @@ jobs:
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 
+  build-pr-smoke-artifacts:
+    name: PR Smoke Artifact Producer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build PR smoke artifacts
+        run: mkdir -p .ci-smoke
+
+      - name: Upload PR smoke artifacts
+        uses: actions/upload-artifact@v7
+
   build:
     name: Build Artifacts
-    if: github.event_name == 'pull_request'
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Download PR smoke artifacts
+        uses: actions/download-artifact@v7
+
+      - name: Extract PR smoke artifacts
+        run: mkdir -p .ci-smoke
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

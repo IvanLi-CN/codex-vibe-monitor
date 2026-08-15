@@ -32,6 +32,7 @@
 - blob-link legacy backfill 测试曾错误继承 current-schema template；它现在显式创建 fresh schema，确保 `ensure_schema` 真实重放 trigger migration，而普通 Archive fixture 继续使用唯一文件模板副本。
 - archive producer 同时恢复 legacy workspace 与 source-key target cache 会重复解包 `target` 并把 Stateful critical path 推至 400 秒。producer 现只读分离 cache；Lint 仍保留 legacy read-only compatibility seed。
 - archive build 失败时保存 source-key target 会让不完整产物进入后续 cold receipt。PR/Main 现在仅在 archive build 成功且 cache miss 时写入 target cache。
+- PR run `31872991137` 的 archive cache guard 已生效，Stateful critical path 为 `384s`、required runner 为 `1297s`，但 `Records Overlay E2E` 为 `187s`、`Build Artifacts` 为 `194s`，尚不能作为收口证据。receipt 显示后者解包 `2,050,706,186` bytes source-key target cache 用 `59s`，再组装 smoke artifacts 用 `76s`；前者的 Web Demo 7 个测试以单 worker 串行运行 `2.6m`。因此完整 smoke artifact 组装移为不进入 branch protection 的 producer，required `Build Artifacts` 只执行 Docker runtime smoke 且显式传播 producer 失败；Web Demo 改为有上限的两 worker fully-parallel，而 Records Overlay 继续单 worker。
 
 ## Key Reasons / Replacements
 

@@ -39,7 +39,7 @@ related_specs:
 - Cargo profile 参数本身是 target cache ABI 的一部分。若 producer 恢复 `debug=0` artifact 后切换 `codegen-units`，所有依赖都会重新编译；先保持 profile 与 cache producer 一致，再用 CI critical path 验证任何编译参数实验。
 - 缓存迁移完成后，不要在 archive producer 先恢复 legacy workspace cache、再恢复 source-key target cache：两次 `target` 解包会串行占用 critical path。保留 legacy 兼容读路径给非关键 lint job，producer 只读 registry/git 与 source-key target。
 - 当冷 SHA 的单次链接无法落入 required job 预算时，使用一个显式 auxiliary archive producer 一次编译 current head，再让原有 backend required jobs 下载并回放各自完整 profile。必须把 auxiliary job 与 branch protection 分开记录，并用同一 head 两次 CI 同时验证 critical path、每个 required job 与总 runner 成本。
-- PR smoke image 可以把当前 debug binary、web bundle 与其需要的 Xray archive 在 host 侧并行生成，再封装到私有 runtime target；私有 runtime 的 glibc 必须兼容 host runner。生产 release profile、Xray downloader stage 和默认 Docker target 不得借此改变。
+- PR smoke image 可以把当前 debug binary、web bundle 与其需要的 Xray archive 在 host 侧并行生成，再封装到私有 runtime target。若 source-key target cache 的解包本身会令 required build 越过预算，将产物组装移到明确的 auxiliary producer；required `Build Artifacts` 必须显式检查 producer result、下载产物并继续执行真实 Docker smoke，不能以 skipped 隐藏上游失败。私有 runtime 的 glibc 必须兼容 host runner。生产 release profile、Xray downloader stage 和默认 Docker target 不得借此改变。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
 - 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `134.108s` / `83.952s`，6 threads 为 `63.593s` / `62.874s`，8 threads 为 `57.287s` / `67.727s`；8 的平均值最快，但 6 在线 10% 内，因此 runner 选择 6。
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
@@ -73,7 +73,7 @@ bash .github/scripts/test-live-quality-gates.sh
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
 - 不要用 lockfile-only key 缓存整个 `target`，也不要让 clippy 写入 nextest target archive；两者会产生不稳定的编译收益与 cache 写入竞争。
-- 不要把同一 hosted runner 上的多个 Playwright worker pool 相乘。Web Demo scene routes 在同一 worker pool 内并发会触发浏览器协议超时和 retry；保留完整 spec，给每个隔离 server 一个 worker 并行执行，会更快且更稳定。
+- 不要把同一 hosted runner 上的多个 Playwright worker pool 无上限相乘。对彼此隔离且不共享 server 状态的 spec，可以在单个 pool 中使用少量 fully-parallel worker；保留每个 test 的 browser context、结果和报告目录，并用 CI receipt 确认不会引入 retry。对共享状态或出现协议超时的 spec，仍固定单 worker。
 - hosted runner 已包含 Chromium 所需运行库时，不要为每个 E2E job 重复执行 `playwright install --with-deps`；只下载版本匹配的 browser，避免无关 apt/font 安装占用 required job 预算。
 - 切换到 nextest 前先修掉并发暴露的测试竞态；真实时间窗口断言要以行为结果为主，毫秒上限只作为防挂死保护。
 - 对 retry/backoff 与 no-available-account 轮询，测试 harness 可注入零等待，但 production wrapper/default 与需要验证时间预算的测试必须保留正式值。

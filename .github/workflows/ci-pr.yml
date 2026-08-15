@@ -431,7 +431,7 @@ jobs:
             bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts &
           demo_pid=$!
           wait "$records_pid" || records_status=$?
           wait "$demo_pid" || demo_status=$?
@@ -618,8 +618,8 @@ jobs:
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
-  build:
-    name: Build Artifacts
+  build-pr-smoke-artifacts:
+    name: PR Smoke Artifact Producer
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -712,6 +712,41 @@ jobs:
           fi
           install -m 0755 target/debug/codex-vibe-monitor .ci-smoke/codex-vibe-monitor
           cp -R web/dist .ci-smoke/web
+          tar -C .ci-smoke -cf "$RUNNER_TEMP/pr-smoke-artifacts.tar" .
+
+      - name: Upload PR smoke artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build Artifacts
+    needs: build-pr-smoke-artifacts
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download PR smoke artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-smoke-artifacts
+
+      - name: Extract PR smoke artifacts
+        run: |
+          mkdir .ci-smoke
+          tar -C .ci-smoke -xf "$RUNNER_TEMP/pr-smoke-artifacts/pr-smoke-artifacts.tar"
 
       - name: Build smoke image (linux/amd64, load)
         shell: bash

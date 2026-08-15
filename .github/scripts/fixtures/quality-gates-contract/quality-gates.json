@@ -90,7 +90,8 @@
         "Build Artifacts"
       ],
       "auxiliary_jobs": [
-        "Backend Test Archive Producer"
+        "Backend Test Archive Producer",
+        "PR Smoke Artifact Producer"
       ]
     },
     {
