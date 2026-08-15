@@ -450,62 +450,65 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-pr.yml")
     require_no_if(lint_job, "ci-pr.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-pr.yml.jobs.lint")
-    checkout = checkout_step(lint_job, "Checkout", "ci-pr.yml.jobs.lint")
-    require(checkout.get("fetch-depth") == 0, "ci-pr.yml.jobs.lint Checkout must fetch full history for trusted source resolution")
-    trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci-pr.yml.jobs.lint")
+    tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
+    require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
+    require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
+    checkout = checkout_step(tooling_job, "Checkout", "ci-pr.yml.jobs.repository-tooling-checks")
+    require(checkout.get("fetch-depth") == 0, "ci-pr.yml.jobs.repository-tooling-checks Checkout must fetch full history for trusted source resolution")
+    trusted_step = step_config(tooling_job, "Resolve trusted quality-gates sources", "ci-pr.yml.jobs.repository-tooling-checks")
     trusted_run = str(trusted_step.get("run", ""))
-    require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted-source branch handling drifted")
-    require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group queue ref parsing drifted")
-    require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.lint: rollout support flag drifted")
-    require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted source kind drifted")
+    require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group trusted-source branch handling drifted")
+    require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group queue ref parsing drifted")
+    require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: rollout support flag drifted")
+    require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.repository-tooling-checks: merge_group trusted source kind drifted")
     require(
         'github.event.pull_request.head.repo.full_name' in trusted_run,
-        "ci-pr.yml.jobs.lint: same-repository quality-gates source detection drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: same-repository quality-gates source detection drifted",
     )
     require(
         'changed_quality_gate_paths="$(git diff --name-only "${source_ref}...HEAD" -- "${paths[@]}" "${final_topology_paths[@]}")"' in trusted_run,
-        "ci-pr.yml.jobs.lint: quality-gates change detection drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: quality-gates change detection drifted",
     )
     require(
         'source_kind="current-branch-quality-gates-change"' in trusted_run,
-        "ci-pr.yml.jobs.lint: quality-gates change source kind drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: quality-gates change source kind drifted",
     )
     require(
         "keeping trusted scripts pinned to base and skipping trusted final-topology checks during rollout" in trusted_run,
-        "ci-pr.yml.jobs.lint: rollout warning drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: rollout warning drifted",
     )
 
-    contract_step = step_config(lint_job, "Quality-gates contract check", "ci-pr.yml.jobs.lint")
+    contract_step = step_config(tooling_job, "Quality-gates contract check", "ci-pr.yml.jobs.repository-tooling-checks")
     require(
         contract_step.get("if") == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
-        "ci-pr.yml.jobs.lint: contract check rollout gate drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: contract check rollout gate drifted",
     )
     contract_run = str(contract_step.get("run", ""))
-    require('steps.trusted-quality-gates.outputs.contract_script' in contract_run, "ci-pr.yml.jobs.lint: contract check must use trusted sources")
+    require('steps.trusted-quality-gates.outputs.contract_script' in contract_run, "ci-pr.yml.jobs.repository-tooling-checks: contract check must use trusted sources")
 
-    live_step = step_config(lint_job, "Quality-gates live rules check", "ci-pr.yml.jobs.lint")
+    live_step = step_config(tooling_job, "Quality-gates live rules check", "ci-pr.yml.jobs.repository-tooling-checks")
     require(
         live_step.get("if")
         == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true' && (github.event_name != 'pull_request' || github.base_ref == 'main')",
-        "ci-pr.yml.jobs.lint: live rules rollout gate drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: live rules rollout gate drifted",
     )
-    live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.lint.steps['Quality-gates live rules check'].env")
-    require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci-pr.yml.jobs.lint: live rules mode must stay require")
+    live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.repository-tooling-checks.steps['Quality-gates live rules check'].env")
+    require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci-pr.yml.jobs.repository-tooling-checks: live rules mode must stay require")
 
-    self_tests = step_config(lint_job, "Quality gates self-tests", "ci-pr.yml.jobs.lint")
+    self_tests = step_config(tooling_job, "Quality gates self-tests", "ci-pr.yml.jobs.repository-tooling-checks")
     self_tests_run = str(self_tests.get("run", ""))
     require(
         "test-quality-gates-contract.sh" in self_tests_run
         and "test-build-smoke-image-with-retry.sh" in self_tests_run
         and "test-live-quality-gates.sh" in self_tests_run,
-        "ci-pr.yml.jobs.lint: self-tests step drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: self-tests step drifted",
     )
 
-    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-pr.yml.jobs.lint")
+    scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-pr.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
     require(
         "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
-        "ci-pr.yml.jobs.lint: build smoke retry helper syntax check drifted",
+        "ci-pr.yml.jobs.repository-tooling-checks: build smoke retry helper syntax check drifted",
     )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
@@ -537,25 +540,28 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-main.yml")
     require_no_if(lint_job, "ci-main.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-main.yml.jobs.lint")
-    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-main.yml.jobs.lint")
+    tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
+    require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
+    require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
+    scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-main.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
     require(
         "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
-        "ci-main.yml.jobs.lint: build smoke retry helper syntax check drifted",
+        "ci-main.yml.jobs.repository-tooling-checks: build smoke retry helper syntax check drifted",
     )
-    trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci-main.yml.jobs.lint")
+    trusted_step = step_config(tooling_job, "Resolve trusted quality-gates sources", "ci-main.yml.jobs.repository-tooling-checks")
     trusted_run = str(trusted_step.get("run", ""))
-    require('source_ref="HEAD"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source ref drifted")
-    require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source kind drifted")
-    require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.lint: trusted-source copy drifted")
+    require('source_ref="HEAD"' in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source ref drifted")
+    require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source kind drifted")
+    require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.repository-tooling-checks: trusted-source copy drifted")
 
-    self_tests = step_config(lint_job, "Quality gates self-tests", "ci-main.yml.jobs.lint")
+    self_tests = step_config(tooling_job, "Quality gates self-tests", "ci-main.yml.jobs.repository-tooling-checks")
     self_tests_run = str(self_tests.get("run", ""))
     require(
         "test-quality-gates-contract.sh" in self_tests_run
         and "test-build-smoke-image-with-retry.sh" in self_tests_run
         and "test-live-quality-gates.sh" in self_tests_run,
-        "ci-main.yml.jobs.lint: self-tests step drifted",
+        "ci-main.yml.jobs.repository-tooling-checks: self-tests step drifted",
     )
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
@@ -563,7 +569,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         release_snapshot.get("needs")
         == [
             "lint",
+            "repository-tooling-checks",
             "frontend-tests",
+            "storybook-accessibility-tests",
+            "docs-demo-build",
             "records-overlay-e2e",
             "backend-tests-lightweight",
             "backend-tests-stateful-sqlite",

@@ -23,6 +23,9 @@
 - archive 的两种 CI 拓扑都已按相同门槛拒绝：run `31811122919` 以独立 producer 分发 archive，Stateful critical path 为 `504s`；run `31813566813` 在 Stateful required job 中构建并分发 archive，critical path 为 `433s`。两次虽然 backend runner 总秒数分别为 `872s` 与 `750s`，仍因未达到 `390s` 关键路径预算而撤回 workflow 变更。
 - 在最终独立-job 候选中，进一步把只依赖 current schema 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试迁入 schema template pool；legacy migration、文件路径、gzip 与 write-lock 测试继续走真实 `ensure_schema` 和 file fixture。
 - 上游账户 Stateful tests 曾经通过共享 `test_pool()` 为每个 `AppState` 调用 `ensure_schema`，使远端执行被重复 DDL 主导。该 helper 现在只在 runner 已提供 template 时调用 current-schema template pool；无 template 的直跑和 Archive/File I/O profile 继续走原始 schema 初始化。该收口把本地完整 Stateful execution 降至 `42.507s`，并保留 `1213` 个用例。
+- PR run `31825458818` 证明后端关键路径恢复不足以保证全量反馈：Lint、三个 backend jobs 与 Build Artifacts 仍分别达到 `348s`、`277s` / `324s` / `382s` 与 `537s`。因此预算改为全部 required job 的 cold/hot 两轮 `<= 180s`，并要求 required runner 总秒数至少下降 `20%`。
+- Rust cache 从 lockfile-only 的 registry/target 混合 key 改为 registry/git 与 source-fingerprinted target keys 分离，clippy 与 nextest 不再争用同一个 target cache。PR smoke image 使用专用低优化 `ci-smoke` profile，生产 release profile 保持不变。
+- Archive ordinary current-schema tests 采用唯一 file template copy；migration/backfill、gzip、路径、文件锁和文件损坏保持真实 fresh schema/file fixture。前端 test coverage 不变，Rust lint 与 repository tooling 也分离；Vitest、Storybook accessibility 和 docs/demo static build 拆为独立 required jobs，release snapshot 与 branch-protection contract 同步等待完整拓扑。
 
 ## Key Reasons / Replacements
 

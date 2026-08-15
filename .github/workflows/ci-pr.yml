@@ -46,22 +46,39 @@ jobs:
           toolchain: 1.96.0
           components: rustfmt, clippy
 
-      - name: Cache cargo directories
+      - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo clippy artifacts
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}-
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  repository-tooling-checks:
+    name: Repository Tooling Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -223,6 +240,75 @@ jobs:
       - name: Docs-site lint
         run: bun run lint:docs
 
+  frontend-tests:
+    name: Front-end Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Run front-end Vitest suite
+        working-directory: web
+        run: bun run test
+
+  storybook-accessibility-tests:
+    name: Storybook Accessibility Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
+
+  docs-demo-build:
+    name: Docs & Web Demo Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
       - name: Build Storybook static site
         working-directory: web
         run: bun run storybook:build -- --quiet
@@ -261,35 +347,6 @@ jobs:
           test -f .tmp/pages-site/demo/mockServiceWorker.js
           test -f .tmp/pages-site/storybook.html
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
-
-  frontend-tests:
-    name: Front-end Tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Run front-end Vitest suite
-        working-directory: web
-        run: bun run test
-
-      - name: Install Playwright Chromium for Storybook
-        working-directory: web
-        run: bunx playwright install --with-deps chromium
-
-      - name: Run Storybook accessibility suite
-        working-directory: web
-        run: bun run test-storybook
 
   records-overlay-e2e:
     name: Records Overlay E2E
@@ -390,16 +447,23 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
+      - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo test artifacts
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -423,16 +487,23 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
+      - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo test artifacts
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -456,16 +527,23 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
+      - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo test artifacts
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -495,6 +573,7 @@ jobs:
           tags: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             APP_EFFECTIVE_VERSION=pr-${{ github.run_id }}-${{ github.run_attempt }}
+            CARGO_BUILD_PROFILE=ci-smoke
           cache-from: type=gha,scope=pr-smoke-amd64
           cache-to: type=gha,mode=max,scope=pr-smoke-amd64
 

@@ -57,6 +57,14 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+  repository-tooling-checks:
+    name: Repository Tooling Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -161,6 +169,63 @@ jobs:
       - name: Run front-end Vitest suite
         working-directory: web
         run: bun run test
+
+  storybook-accessibility-tests:
+    name: Storybook Accessibility Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
+
+  docs-demo-build:
+    name: Docs & Web Demo Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Build Storybook static site
+        working-directory: web
+        run: bun run storybook:build -- --quiet
+
+      - name: Build docs and demo sites
+        run: |
+          cd docs-site && bun run build
+          cd ../web && bun run demo:build
 
   records-overlay-e2e:
     name: Records Overlay E2E
@@ -326,7 +391,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs:
       - lint
+      - repository-tooling-checks
       - frontend-tests
+      - storybook-accessibility-tests
+      - docs-demo-build
       - records-overlay-e2e
       - backend-tests-lightweight
       - backend-tests-stateful-sqlite

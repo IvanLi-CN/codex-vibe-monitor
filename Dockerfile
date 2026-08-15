@@ -15,6 +15,7 @@ RUN bun run build
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
 FROM rust:1.96.0-bookworm AS rust-builder
 ARG APP_EFFECTIVE_VERSION
+ARG CARGO_BUILD_PROFILE=release
 WORKDIR /app
 
 RUN apt-get update \
@@ -25,14 +26,14 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src \
     && printf '%s\n' 'fn main() {}' > src/main.rs \
-    && cargo build --release --locked
+    && cargo build --profile "${CARGO_BUILD_PROFILE}" --locked
 
 # Copy app sources and build the real binary.
 COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 RUN find src -type f -name '*.rs' -exec touch {} + \
-    && rm -f target/release/codex-vibe-monitor \
-    && cargo build --release --locked
+    && rm -f "target/${CARGO_BUILD_PROFILE}/codex-vibe-monitor" \
+    && cargo build --profile "${CARGO_BUILD_PROFILE}" --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
@@ -65,6 +66,7 @@ RUN apt-get update \
 FROM debian:bookworm-slim AS runtime
 ARG APP_EFFECTIVE_VERSION
 ARG FRONTEND_EFFECTIVE_VERSION
+ARG CARGO_BUILD_PROFILE=release
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
@@ -72,7 +74,7 @@ RUN apt-get update \
 
 WORKDIR /srv/app
 
-COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY --from=rust-builder /app/target/${CARGO_BUILD_PROFILE}/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY scripts/search-raw /usr/local/bin/search-raw

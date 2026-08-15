@@ -27,18 +27,21 @@ related_specs:
 - Stateful 端到端测试会继承生产保护性的 retry/backoff 与 no-available-account 等待；若 harness 没有显式区分行为验证和真实时间验证，睡眠会累计为 CI 关键路径。
 - 大请求 file-backed 语义测试若用远高于分支阈值的 payload，会把内存分配、序列化与文件 I/O 成本误当成覆盖价值。
 - schema 模板只有在 schema/default-data parity、pooled connection 可见性、并发写和跨测试隔离都成立时才会快；每个 nextest 子进程内再生成模板会重复 setup，必须由 runner 先生成一次，并用 SQLite backup API 复制到各自的 shared-memory 数据库。
+- 只按 lockfile 缓存 `target` 会让源码已变化的 clippy 与 nextest 复用陈旧产物，既不能稳定缩短编译，也会让不同 job 争用同一不可变 cache。
 
 ## 核心结论
 
 - 先分离冷编译、热 profile、单 fixture 初始化、真实等待和线程并发成本。热数据只能帮助定位测试执行，不能替代 CI critical path 验收。
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
-- CI 主指标是从 PR workflow start 到 `Backend Tests (Stateful SQLite)` completed。当前预算 `<= 390s`，且同一 PR head 必须连续两次通过。
+- PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。最终 PR 指标是每个 required job 的 job wall time 在同一 head 的冷/热两轮都 `<= 180s`，并使 required runner 总秒数至少下降 `20%`。
+- 分离 Cargo registry/git cache 与 target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，clippy 与 nextest 使用独立 target namespace，并保留 lockfile-only restore prefix。
+- `profile.test` 可关闭 debug information；PR smoke image 使用专用低优化 `ci-smoke` profile，生产 release profile 不得借此改变。
 - backend runner 应固定用 resource-profile filter 跑 `cargo nextest run --locked --all-features --no-fail-fast -E ...`，不要再把整个后端测试树塞回单个 required check。
 - 当前 1213 个 Stateful SQLite 用例在 4、6、8 threads 各两次热运行均通过。4 threads 为 `134.108s` / `83.952s`，6 threads 为 `63.593s` / `62.874s`，8 threads 为 `57.287s` / `67.727s`；8 的平均值最快，但 6 在线 10% 内，因此 runner 选择 6。
 - `run-backend-tests.sh --archive-file <path>` 可复用预先生成的 nextest archive，但 CI 保留它前必须同一 PR head 两次满足 Stateful `<= 390s`，且 backend runner 秒数 `<= 1005s`。单次 archive 命令或本地速度不是保留依据。
 - 两个 CI archive 原型都说明“编译复用”不等于关键路径改善：独立 producer 的 run `31811122919` Stateful critical path 为 `504s`、backend runner 为 `872s`；Stateful job 内构建并分发的 run `31813566813` 为 `433s`、`750s`。两者都应从最终 workflow 移除，并仅保留 runner 的可选 archive 参数供后续受控实验。
-- 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；legacy migration、文件路径、gzip 和 write-lock 保留真实 schema/file fixture。
-- runner 先由一次真实 `ensure_schema` 生成私有 file template；每个唯一 shared-memory SQLite 再通过 SQLite backup API 获得副本。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize、逐条 SQL dump 和直接文件副本都不是最终路径。
+- 对只验证 DB 行为、不验证主库文件路径的测试，使用唯一命名的 in-memory SQLite；Archive 的普通 current-schema file-DB tests 可从 runner 生成的私有 template 复制唯一文件。legacy migration、文件路径、gzip、文件损坏和 write-lock 保留真实 fresh schema/file fixture。
+- runner 先由一次真实 `ensure_schema` 生成私有 file template；每个唯一 shared-memory SQLite 再通过 SQLite backup API 获得副本。必须验证 schema/default-data parity、pooled connection visibility、双向写入与跨测试隔离；shared-memory serialize/deserialize、逐条 SQL dump 和为 shared-memory state 直接复制文件都不是最终路径。
 - current-schema-only 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试应优先复用 template pool；不得把 legacy migration、文件路径、gzip 或 write-lock 测试迁入该路径。
 - 检查共享 test-state helper，而不只查单个测试里的 `ensure_schema`。若一个 helper 被 Stateful 复用且只需要 current schema，可在 schema-template 环境变量存在时委托给 template pool；无变量时仍按原 helper 建库。这样同一 helper 在 Archive/File I/O 和本地直跑中保留真实 schema/file 语义，Stateful 则避免每个 `AppState` 重复 DDL。
 - 如果测试只需要“已 materialized archive metadata”或“缺失 replay marker”状态，直接构造窄表状态，不要为了 setup 跑完整 retention/archive pipeline。
@@ -55,12 +58,16 @@ bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 bash .github/scripts/run-backend-tests.sh --profile archive-file-io
 cargo nextest archive --locked --all-features --archive-file /tmp/backend-tests.tar.zst
 bash .github/scripts/run-backend-tests.sh --archive-file /tmp/backend-tests.tar.zst
+cargo check --profile ci-smoke --locked --all-targets --all-features
+bash .github/scripts/test-quality-gates-contract.sh
+bash .github/scripts/test-live-quality-gates.sh
 ```
 
 ## 常见坑
 
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
-- 不要只报告局部单测变快；PR 要同时报告两次 workflow-start Stateful wall time、三个 profile 完整通过、backend runner 总秒数与 top offenders。
+- 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
+- 不要用 lockfile-only key 缓存整个 `target`，也不要让 clippy 与 nextest 从同一个 target archive 恢复；两者会产生不稳定的编译收益与 cache 写入竞争。
 - 切换到 nextest 前先修掉并发暴露的测试竞态；真实时间窗口断言要以行为结果为主，毫秒上限只作为防挂死保护。
 - 对 retry/backoff 与 no-available-account 轮询，测试 harness 可注入零等待，但 production wrapper/default 与需要验证时间预算的测试必须保留正式值。
 - 大请求的 file-backed 语义可由私有 memory threshold 注入较小输入；仍要保留一条正式阈值边界测试，不能把生产 threshold 改成测试值。
@@ -71,7 +78,8 @@ bash .github/scripts/run-backend-tests.sh --archive-file /tmp/backend-tests.tar.
 
 ## Top-offender 排查顺序
 
-1. 先排除测试默认 retry/backoff 与 no-available-account wait，确认慢点不是为生产保护而设计的真实 sleep。
-2. 再检查大请求是否为 threshold 分支分配了不必要的多十 MiB payload，缩小测试输入但保留正式阈值边界覆盖。
-3. 然后检查 State fixture、schema 初始化和 SQLite pool contention；只有完整隔离证据成立才引入 schema 模板。
-4. 最后保留并标记真正的 write-lock、retention、archive/gzip、文件路径慢例；这些是行为覆盖，不是可删除的“膨胀”。
+1. 先拆分 cache restore、compile/link、test execution、Docker smoke build 和 job wall time，确认慢点位于哪个资源边界。
+2. 排除测试默认 retry/backoff 与 no-available-account wait，确认慢点不是为生产保护而设计的真实 sleep。
+3. 检查大请求是否为 threshold 分支分配了不必要的多十 MiB payload，缩小测试输入但保留正式阈值边界覆盖。
+4. 检查 State/Archive fixture、schema 初始化和 SQLite pool contention；只有完整隔离证据成立才引入 schema template 或唯一文件副本。
+5. 最后保留并标记真正的 write-lock、retention、archive/gzip、文件路径慢例；这些是行为覆盖，不是可删除的“膨胀”。
