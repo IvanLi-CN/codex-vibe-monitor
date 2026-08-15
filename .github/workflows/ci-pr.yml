@@ -40,6 +40,7 @@ jobs:
       - name: Verify Rust system dependencies
         run: |
           command -v pkg-config
+          pkg-config --exists sqlite3
           test -r /usr/include/sqlite3.h
 
       - name: Set up Rust toolchain

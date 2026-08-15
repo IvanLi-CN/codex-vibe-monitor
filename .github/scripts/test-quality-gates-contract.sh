@@ -241,14 +241,15 @@ fi
 
 grep -q "ci-pr.yml.jobs.records-overlay-e2e.needs must use the E2E test producer" "$tmp_dir/e2e-producer.log"
 
-lint_target_repo="$tmp_dir/lint-target-repo"
+for workflow_file in ci-pr.yml ci-main.yml; do
+lint_target_repo="$tmp_dir/lint-target-${workflow_file%.yml}-repo"
 copy_repo_snapshot "$baseline_repo" "$lint_target_repo"
-python3 - <<'PY' "$lint_target_repo"
+python3 - <<'PY' "$lint_target_repo" "$workflow_file"
 from pathlib import Path
 import sys
 
 repo = Path(sys.argv[1])
-path = repo / ".github/workflows/ci-pr.yml"
+path = repo / ".github/workflows" / sys.argv[2]
 text = path.read_text()
 needle = "            ~/.cargo/git\n"
 if needle not in text:
@@ -256,12 +257,13 @@ if needle not in text:
 path.write_text(text.replace(needle, f"{needle}            target\n", 1))
 PY
 
-if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$lint_target_repo" --profile final >/dev/null 2>"$tmp_dir/lint-target.log"; then
-  echo "expected lint target-cache fixture to fail" >&2
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$lint_target_repo" --profile final >/dev/null 2>"$tmp_dir/lint-target-${workflow_file%.yml}.log"; then
+  echo "expected $workflow_file lint target-cache fixture to fail" >&2
   exit 1
 fi
 
-grep -q "legacy cache must not restore Cargo target artifacts" "$tmp_dir/lint-target.log"
+grep -q "legacy cache must not restore Cargo target artifacts" "$tmp_dir/lint-target-${workflow_file%.yml}.log"
+done
 
 e2e_spec_repo="$tmp_dir/e2e-spec-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_spec_repo"

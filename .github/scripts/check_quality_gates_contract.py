@@ -468,17 +468,12 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-pr.yml")
     require_no_if(lint_job, "ci-pr.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-pr.yml.jobs.lint")
-    lint_cache_paths = "\n".join(
-        str(step.get("with", {}).get("path", ""))
-        for step in lint_job.get("steps", [])
-        if isinstance(step, dict)
-        and "cargo-${{ hashFiles('Cargo.lock') }}" in str(step.get("with", {}).get("key", ""))
+    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-pr.yml.jobs.lint")
+    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
+    require(
+        "target" not in legacy_lint_cache_paths.splitlines(),
+        "ci-pr.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
     )
-    if lint_cache_paths:
-        require(
-            "target" not in lint_cache_paths,
-            "ci-pr.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
-        )
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
     require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
@@ -675,17 +670,12 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-main.yml")
     require_no_if(lint_job, "ci-main.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-main.yml.jobs.lint")
-    lint_cache_paths = "\n".join(
-        str(step.get("with", {}).get("path", ""))
-        for step in lint_job.get("steps", [])
-        if isinstance(step, dict)
-        and "cargo-${{ hashFiles('Cargo.lock') }}" in str(step.get("with", {}).get("key", ""))
+    legacy_lint_cache = step_config(lint_job, "Restore legacy Cargo workspace cache", "ci-main.yml.jobs.lint")
+    legacy_lint_cache_paths = str(legacy_lint_cache.get("with", {}).get("path", ""))
+    require(
+        "target" not in legacy_lint_cache_paths.splitlines(),
+        "ci-main.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
     )
-    if lint_cache_paths:
-        require(
-            "target" not in lint_cache_paths,
-            "ci-main.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
-        )
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
     require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
