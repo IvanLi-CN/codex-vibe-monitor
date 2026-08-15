@@ -35,6 +35,7 @@ related_specs:
 - 当前基线是 `CI Main` run `31706131099`：Stateful SQLite wall time `617s`，compile `143s`，test execution `404s`；backend-related jobs 总计 `1257s`。
 - PR run `31825458818` 说明关键路径之外仍有成本：Lint `348s`、Lightweight / Stateful / Archive `277s` / `324s` / `382s`、Build Artifacts `537s`。最终 PR 指标是每个 required job 的 job wall time 在同一 head 的冷/热两轮都 `<= 180s`，并使 required runner 总秒数至少下降 `20%`。
 - 分离 Cargo registry/git cache 与 nextest target cache；target key 同时包含 lockfile、manifest 和 Rust source fingerprint，并保留 lockfile-only restore prefix。首次迁移 namespace 时，ancestor cache 的恢复路径必须与旧缓存完全一致，否则 Actions cache 的版本校验会拒绝解包；随后只写入新的 source-key。clippy 可读 ancestor，但不应保存或争用 nextest target。
+- source-key `target` cache 只能由成功完成的 archive build 保存。失败 producer 的部分目录不能用 `always()` 发布，否则后续 retry 会恢复不完整状态并失去冷缓存验收意义。
 - Cargo profile 参数本身是 target cache ABI 的一部分。若 producer 恢复 `debug=0` artifact 后切换 `codegen-units`，所有依赖都会重新编译；先保持 profile 与 cache producer 一致，再用 CI critical path 验证任何编译参数实验。
 - 缓存迁移完成后，不要在 archive producer 先恢复 legacy workspace cache、再恢复 source-key target cache：两次 `target` 解包会串行占用 critical path。保留 legacy 兼容读路径给非关键 lint job，producer 只读 registry/git 与 source-key target。
 - 当冷 SHA 的单次链接无法落入 required job 预算时，使用一个显式 auxiliary archive producer 一次编译 current head，再让原有 backend required jobs 下载并回放各自完整 profile。必须把 auxiliary job 与 branch protection 分开记录，并用同一 head 两次 CI 同时验证 critical path、每个 required job 与总 runner 成本。

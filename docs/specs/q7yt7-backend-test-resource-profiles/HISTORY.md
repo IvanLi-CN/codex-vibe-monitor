@@ -31,6 +31,7 @@
 - archive producer 的 `codegen-units=256` 使 Cargo test profile 与已恢复的 `debug=0` target cache 不兼容，导致依赖重编译。该参数已撤回；维持关闭 debug info，以便与同一 Rust source fingerprint 的 ancestor artifact 复用依赖。
 - blob-link legacy backfill 测试曾错误继承 current-schema template；它现在显式创建 fresh schema，确保 `ensure_schema` 真实重放 trigger migration，而普通 Archive fixture 继续使用唯一文件模板副本。
 - archive producer 同时恢复 legacy workspace 与 source-key target cache 会重复解包 `target` 并把 Stateful critical path 推至 400 秒。producer 现只读分离 cache；Lint 仍保留 legacy read-only compatibility seed。
+- archive build 失败时保存 source-key target 会让不完整产物进入后续 cold receipt。PR/Main 现在仅在 archive build 成功且 cache miss 时写入 target cache。
 
 ## Key Reasons / Replacements
 

@@ -172,6 +172,29 @@ fi
 
 grep -q "expected_pr_workflows jobs must exactly cover required_checks" "$tmp_dir/coverage.log"
 
+archive_cache_repo="$tmp_dir/archive-cache-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_cache_repo"
+python3 - <<'PY' "$archive_cache_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}"
+replacement = "if: ${{ always() && steps.cargo-test-cache.outputs.cache-hit != 'true' }}"
+if needle not in text:
+    raise SystemExit("failed to rewrite archive target-cache condition")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_cache_repo" --profile final >/dev/null 2>"$tmp_dir/archive-cache.log"; then
+  echo "expected archive target-cache condition fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "target cache must save only after a successful archive build" "$tmp_dir/archive-cache.log"
+
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"
 python3 - <<'PY' "$informational_repo"

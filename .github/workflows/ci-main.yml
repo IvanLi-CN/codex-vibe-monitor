@@ -419,6 +419,7 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Build backend test archive
+        id: build-backend-test-archive
         run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
       - name: Upload backend test archive
@@ -439,7 +440,7 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
       - name: Save Cargo test artifacts
-        if: ${{ always() && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
         with:
           path: target

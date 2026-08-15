@@ -540,6 +540,17 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            archive_build_step.get("id") == "build-backend-test-archive",
+            "ci-pr.yml.jobs.backend-test-archive: archive build step id drifted",
+        )
+        target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            target_cache_save_step.get("if")
+            == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
+            "ci-pr.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
+        )
         for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-pr.yml").get("needs") == "backend-test-archive",
@@ -626,6 +637,17 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         )
         require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
         require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            archive_build_step.get("id") == "build-backend-test-archive",
+            "ci-main.yml.jobs.backend-test-archive: archive build step id drifted",
+        )
+        target_cache_save_step = step_config(archive_job, "Save Cargo test artifacts", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            target_cache_save_step.get("if")
+            == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
+            "ci-main.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
+        )
         for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-main.yml").get("needs") == "backend-test-archive",
