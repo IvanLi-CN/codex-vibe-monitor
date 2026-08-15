@@ -90,7 +90,6 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
-    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sample_count: i64,
@@ -2507,17 +2506,6 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
         } else {
             "0 AS reasoning_tokens"
         };
-    let token_component_incomplete_count_expr = if sqlite_table_has_column(
-        pool,
-        "invocation_rollup_hourly",
-        "token_component_incomplete_count",
-    )
-    .await?
-    {
-        "COALESCE(token_component_incomplete_count, 1) AS token_component_incomplete_count"
-    } else {
-        "1 AS token_component_incomplete_count"
-    };
     let non_success_cost_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -2577,7 +2565,6 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
             {output_tokens_expr},
             {cache_input_tokens_expr},
             {reasoning_tokens_expr},
-            {token_component_incomplete_count_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},
@@ -2751,7 +2738,6 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
         output_tokens,
         cache_input_tokens,
         reasoning_tokens,
-        token_component_incomplete_count: archive_delta.token_component_incomplete_count,
         total_cost,
         non_success_cost,
         total_latency_sample_count,
@@ -2946,7 +2932,6 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
         output_tokens,
         cache_input_tokens,
         reasoning_tokens,
-        token_component_incomplete_count: materialized_row.token_component_incomplete_count,
         total_cost,
         non_success_cost,
         total_latency_sample_count,
@@ -3831,7 +3816,6 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 output_tokens: delta.output_tokens,
                 cache_input_tokens: delta.cache_input_tokens,
                 reasoning_tokens: delta.reasoning_tokens,
-                token_component_incomplete_count: delta.token_component_incomplete_count,
                 total_cost: delta.total_cost,
                 non_success_cost: delta.non_success_cost,
                 total_latency_sample_count: delta.total_latency_sample_count,
@@ -4934,17 +4918,6 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         } else {
             "0 AS reasoning_tokens"
         };
-    let token_component_incomplete_count_expr = if sqlite_table_has_column(
-        pool,
-        "invocation_rollup_hourly",
-        "token_component_incomplete_count",
-    )
-    .await?
-    {
-        "COALESCE(token_component_incomplete_count, 1) AS token_component_incomplete_count"
-    } else {
-        "1 AS token_component_incomplete_count"
-    };
     let non_success_cost_expr =
         if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -5004,7 +4977,6 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             {output_tokens_expr},
             {cache_input_tokens_expr},
             {reasoning_tokens_expr},
-            {token_component_incomplete_count_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},

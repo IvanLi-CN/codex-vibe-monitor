@@ -561,7 +561,6 @@ pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
-    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
 }
@@ -610,7 +609,6 @@ pub(crate) struct UpstreamAccountStatsRollupRecord {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
-    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sample_count: i64,

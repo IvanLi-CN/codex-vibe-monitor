@@ -27,7 +27,6 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
-    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) total_latency_sample_count: i64,
@@ -120,7 +119,6 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) reasoning_tokens: i64,
-    pub(crate) token_component_incomplete_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
     pub(crate) non_success_count: i64,
@@ -285,8 +283,6 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         overall_entry.output_tokens += row.output_tokens.unwrap_or_default();
         overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
         overall_entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
-        overall_entry.token_component_incomplete_count +=
-            i64::from(!row.has_known_token_components());
         overall_entry.total_cost += cost;
         if invocation_counts_toward_non_success_usage(
             row.status.as_deref(),
@@ -552,7 +548,6 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     entry.output_tokens += row.output_tokens.unwrap_or_default();
     entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
     entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
-    entry.token_component_incomplete_count += i64::from(!row.has_known_token_components());
     entry.total_cost += cost;
     if entry
         .last_invocation_at
