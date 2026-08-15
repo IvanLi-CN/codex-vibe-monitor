@@ -101,10 +101,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl 
 
 CMD ["codex-vibe-monitor"]
 
-# Stage 6: PR-only smoke image. The workflow produces the binary and web bundle
-# outside Docker so this target exercises the runtime without repeating the release
-# compiler pipeline. GitHub-hosted runners use Ubuntu 24.04; matching its glibc here
-# avoids executing a host-built debug binary against the older production runtime.
+# Stage 6: PR-only smoke image. The workflow produces the binary, web bundle, and
+# Xray archive outside Docker so this target exercises the runtime without repeating
+# the release compiler or Xray downloader pipelines. GitHub-hosted runners use Ubuntu
+# 24.04; matching its glibc here avoids executing a host-built debug binary against
+# the older production runtime.
 FROM ubuntu:24.04 AS ci-smoke-runtime
 ARG APP_EFFECTIVE_VERSION
 
@@ -114,8 +115,8 @@ RUN apt-get update \
 
 WORKDIR /srv/app
 
-COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
-COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
+COPY .ci-smoke/xray /usr/local/bin/xray
+COPY .ci-smoke/xray.LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY scripts/search-raw /usr/local/bin/search-raw
 COPY .ci-smoke/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
 COPY .ci-smoke/web ./web

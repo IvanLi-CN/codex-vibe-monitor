@@ -428,7 +428,7 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
             bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -459,8 +459,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          test -r /usr/include/sqlite3.h
+          command -v unzip
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -650,6 +653,8 @@ jobs:
           set -euo pipefail
           rm -rf .ci-smoke
           mkdir -p .ci-smoke
+          xray_core_version="$(awk -F= '$1 == "ARG XRAY_CORE_VERSION" { print $2; exit }' Dockerfile)"
+          test -n "$xray_core_version"
           cargo build --locked > /tmp/codex-vibe-monitor-smoke-rust.log 2>&1 &
           rust_pid=$!
           (
@@ -658,13 +663,29 @@ jobs:
             VITE_APP_VERSION="$APP_EFFECTIVE_VERSION" bun scripts/write-version.mjs
           ) > /tmp/codex-vibe-monitor-smoke-web.log 2>&1 &
           web_pid=$!
+          (
+            xray_staging_dir="$(mktemp -d)"
+            xray_archive="${xray_staging_dir}/Xray-linux-64.zip"
+            xray_primary_url="https://github.com/XTLS/Xray-core/releases/download/v${xray_core_version}/Xray-linux-64.zip"
+            xray_fallback_url="https://downloads.sourceforge.net/project/xray-core.mirror/v${xray_core_version}/Xray-linux-64.zip"
+            if ! curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$xray_archive" "$xray_primary_url"; then
+              curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$xray_archive" "$xray_fallback_url"
+            fi
+            unzip -q "$xray_archive" -d "$xray_staging_dir/unpacked"
+            install -m 0755 "$xray_staging_dir/unpacked/xray" .ci-smoke/xray
+            install -m 0644 "$xray_staging_dir/unpacked/LICENSE" .ci-smoke/xray.LICENSE
+          ) > /tmp/codex-vibe-monitor-smoke-xray.log 2>&1 &
+          xray_pid=$!
           rust_status=0
           web_status=0
+          xray_status=0
           wait "$rust_pid" || rust_status=$?
           wait "$web_pid" || web_status=$?
-          if [[ "$rust_status" -ne 0 || "$web_status" -ne 0 ]]; then
+          wait "$xray_pid" || xray_status=$?
+          if [[ "$rust_status" -ne 0 || "$web_status" -ne 0 || "$xray_status" -ne 0 ]]; then
             cat /tmp/codex-vibe-monitor-smoke-rust.log || true
             cat /tmp/codex-vibe-monitor-smoke-web.log || true
+            cat /tmp/codex-vibe-monitor-smoke-xray.log || true
             exit 1
           fi
           install -m 0755 target/debug/codex-vibe-monitor .ci-smoke/codex-vibe-monitor

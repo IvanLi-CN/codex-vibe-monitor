@@ -346,7 +346,7 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
             bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts
 
       - name: Upload Playwright diagnostics
         if: failure()
