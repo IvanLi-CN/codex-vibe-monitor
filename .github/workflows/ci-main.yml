@@ -52,9 +52,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
@@ -325,9 +326,22 @@ jobs:
 
       - name: Run records overlay and Web Demo Playwright regression
         working-directory: web
+        shell: bash
         run: |
-          bun run test:e2e -- records-filter-overlay.spec.ts
-          E2E_BASE_URL=http://127.0.0.1:60083 bun run test:e2e -- demo-runtime.spec.ts
+          set -euo pipefail
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
+            bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts &
+          records_pid=$!
+          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
+            bun run test:e2e -- --output=test-results/demo-runtime demo-runtime.spec.ts &
+          demo_pid=$!
+          records_status=0
+          demo_status=0
+          wait "$records_pid" || records_status=$?
+          wait "$demo_pid" || demo_status=$?
+          if [[ "$records_status" -ne 0 || "$demo_status" -ne 0 ]]; then
+            exit 1
+          fi
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -335,7 +349,8 @@ jobs:
         with:
           name: records-overlay-playwright-report
           path: |
-            web/playwright-report
+            web/playwright-report-records
+            web/playwright-report-demo
             web/test-results
           if-no-files-found: ignore
 
@@ -379,9 +394,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -419,9 +435,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -459,9 +476,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-test-v2-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest

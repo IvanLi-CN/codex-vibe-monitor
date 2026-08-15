@@ -11,7 +11,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: [
     ["list"],
-    process.env.CI ? ["html", { outputFolder: "playwright-report" }] : ["html", { open: "never" }],
+    process.env.CI
+      ? ["html", { outputFolder: process.env.PLAYWRIGHT_HTML_OUTPUT_DIR ?? "playwright-report" }]
+      : ["html", { open: "never" }],
   ],
   use: {
     baseURL,
