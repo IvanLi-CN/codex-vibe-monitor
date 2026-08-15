@@ -50,17 +50,12 @@ struct AccountWindowStoredResult {
     completed_at: Instant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum AccountWindowLegacyReadiness {
+    #[default]
     Unknown,
     Checking,
     Ready,
-}
-
-impl Default for AccountWindowLegacyReadiness {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,10 +694,13 @@ impl AccountWindowStoragePlane {
         tx.commit().await?;
 
         let cursor_id = last_scanned_id;
-        let outcome = (scanned == rows.len() as u64
-            && rows.len() < ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT as usize)
-            .then_some(AccountWindowLegacyBackfillOutcome::Ready)
-            .unwrap_or(AccountWindowLegacyBackfillOutcome::Pending);
+        let outcome = if scanned == rows.len() as u64
+            && rows.len() < ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT as usize
+        {
+            AccountWindowLegacyBackfillOutcome::Ready
+        } else {
+            AccountWindowLegacyBackfillOutcome::Pending
+        };
         let next_run_after = Utc::now().to_rfc3339();
         save_startup_backfill_progress(
             &pool,

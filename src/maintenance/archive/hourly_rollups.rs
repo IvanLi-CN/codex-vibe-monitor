@@ -167,6 +167,7 @@ async fn live_invocation_first_token_ms_sql_tx(tx: &mut SqliteConnection) -> Res
 fn live_invocation_upstream_account_id_sql(
     invocation_ref: &str,
     capability: PoolAttemptFallbackCapability,
+    has_structured_account_id: bool,
 ) -> String {
     let fallback = match capability {
         PoolAttemptFallbackCapability::Unavailable => {
@@ -179,9 +180,31 @@ fn live_invocation_upstream_account_id_sql(
             crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref)
         }
     };
-    // New terminal rows persist the account assignment structurally. Prefer it during
-    // rebuilds so legacy backfill can repair the affected rollup without reopening payload.
-    format!("COALESCE({invocation_ref}.upstream_account_id, {fallback})")
+    // New terminal rows persist the account assignment structurally. Legacy archive tables
+    // predate that additive column, so preserve their attempt/payload resolution instead.
+    if has_structured_account_id {
+        format!("COALESCE({invocation_ref}.upstream_account_id, {fallback})")
+    } else {
+        fallback
+    }
+}
+
+async fn live_invocation_upstream_account_id_sql_tx(
+    tx: &mut SqliteConnection,
+    invocation_ref: &str,
+) -> Result<String> {
+    let has_structured_account_id = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('codex_invocations') WHERE name = 'upstream_account_id' LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    let capability = load_pool_attempt_fallback_capability_tx(tx).await?;
+    Ok(live_invocation_upstream_account_id_sql(
+        invocation_ref,
+        capability,
+        has_structured_account_id,
+    ))
 }
 
 pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
@@ -2721,10 +2744,8 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
     let mut normalized_bucket_epochs = bucket_epochs.to_vec();
     normalized_bucket_epochs.sort_unstable();
     normalized_bucket_epochs.dedup();
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
 
     let mut query = QueryBuilder::<Sqlite>::new(format!(
@@ -2878,10 +2899,8 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
     .await?;
     let rows = {
         let mut conn = pool.acquire().await?;
-        let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-            "codex_invocations",
-            load_pool_attempt_fallback_capability_tx(&mut conn).await?,
-        );
+        let upstream_account_id_sql =
+            live_invocation_upstream_account_id_sql_tx(&mut conn, "codex_invocations").await?;
         let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut conn).await?;
         sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
@@ -2967,10 +2986,8 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
         INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
     )
     .await?;
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -3096,10 +3113,8 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
         return Ok(0);
     }
 
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx.as_mut(), "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -3646,10 +3661,8 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
         return Ok(0);
     }
 
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx.as_mut(), "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -4757,10 +4770,8 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 
     let mut cursor_id = 0_i64;
     let mut live_conn = pool.acquire().await?;
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(&mut live_conn).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(&mut live_conn, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut live_conn).await?;
     loop {
         let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
