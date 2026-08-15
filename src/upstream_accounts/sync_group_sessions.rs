@@ -135,6 +135,92 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_window_actual_usage_rows_with_legacy_account_fallback(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    load_window_actual_usage_rows_with_account_id_sql(
+        pool,
+        account_ids,
+        start_at,
+        end_at,
+        "COALESCE(upstream_account_id, CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END)",
+    )
+    .await
+}
+
+async fn load_window_actual_usage_rows_with_json_account_fallback(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    load_window_actual_usage_rows_with_account_id_sql(
+        pool,
+        account_ids,
+        start_at,
+        end_at,
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END",
+    )
+    .await
+}
+
+async fn load_window_actual_usage_rows_with_account_id_sql(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+    account_id_sql: &str,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Account detail keeps its legacy exact-response contract while the dedicated window
+    // endpoint warms structured attribution. This path is never used by the hot endpoint.
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+        "#,
+    );
+    query.push(account_id_sql).push(
+        r#"
+            AS upstream_account_id,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost
+        FROM codex_invocations
+        WHERE occurred_at >=
+        "#,
+    );
+    query
+        .push_bind(start_at)
+        .push(" AND occurred_at < ")
+        .push_bind(end_at)
+        .push(" AND ")
+        .push(account_id_sql)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -372,6 +458,76 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
                 None,
                 None,
                 None,
+            )
+            .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(rows)
+}
+
+pub(crate) async fn load_window_actual_usage_rows_from_archives_with_legacy_account_fallback(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+    archive_dir: &Path,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if account_ids.is_empty() || !sqlite_table_exists(pool, "archive_batches").await? {
+        return Ok(Vec::new());
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND (coverage_end_at IS NULL OR coverage_end_at >= ?2)
+          AND (coverage_start_at IS NULL OR coverage_start_at <= ?3)
+        ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(start_at)
+    .bind(end_at)
+    .fetch_all(pool)
+    .await?;
+
+    let mut rows = Vec::new();
+    for archive_file in archive_files {
+        let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                file_path = %archive_path.display(),
+                "skipping missing invocation archive batch while calculating legacy account window usage"
+            );
+            continue;
+        }
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        rows.extend(
+            load_window_actual_usage_rows_with_json_account_fallback(
+                &archive_pool,
+                account_ids,
+                start_at,
+                end_at,
             )
             .await?,
         );

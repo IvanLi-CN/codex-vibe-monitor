@@ -4098,6 +4098,99 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
 }
 
 #[tokio::test]
+async fn account_detail_preserves_actual_usage_while_window_usage_is_preparing() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Detail Legacy Usage").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear structured account assignment");
+
+    let (status, payload) = load_window_usage_response(state.clone(), vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
+
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+        .await
+        .expect("load account detail")
+        .expect("account detail exists");
+    assert_eq!(
+        detail
+            .summary
+            .primary_window
+            .and_then(|window| window.actual_usage)
+            .expect("detail primary usage remains available")
+            .request_count,
+        1
+    );
+}
+
+#[tokio::test]
+async fn window_usage_does_not_prepare_for_legacy_rows_outside_active_windows() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Inactive Legacy Usage").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::days(30)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET upstream_account_id = NULL WHERE upstream_account_id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("clear historical structured account assignment");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 0);
+}
+
+#[tokio::test]
 async fn get_upstream_account_window_usage_does_not_double_count_partial_live_rows_without_cursor()
 {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;

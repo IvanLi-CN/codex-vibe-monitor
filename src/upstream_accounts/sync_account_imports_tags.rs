@@ -3362,7 +3362,11 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
             }
         }
         AccountWindowStorageResponse::Preparing { .. } => {
-            // The detail contract has no preparation status; preserve the absent usage state.
+            enrich_window_actual_usage_for_summaries_legacy_exact(
+                state,
+                std::slice::from_mut(&mut detail.summary),
+            )
+            .await?;
         }
     }
     apply_effective_routing_rules_to_summaries(
@@ -4410,6 +4414,62 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
 
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok((AccountWindowUsageBuildOutcome::Ready, telemetry))
+}
+
+pub(crate) async fn enrich_window_actual_usage_for_summaries_legacy_exact(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
+    else {
+        return Ok(());
+    };
+    let account_ids = plans.keys().copied().collect::<Vec<_>>();
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+
+    // This preserves the established detail-response contract only while the new endpoint
+    // storage plane reports preparing. The dedicated window endpoint never uses this path.
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let mut rows = Vec::new();
+    if query_start < retention_cutoff {
+        let archive_end = query_end.min(retention_cutoff);
+        if query_start < archive_end {
+            rows.extend(
+                load_window_actual_usage_rows_from_archives_with_legacy_account_fallback(
+                    &state.pool,
+                    &account_ids,
+                    &format_naive(query_start.with_timezone(&Shanghai).naive_local()),
+                    &format_naive(archive_end.with_timezone(&Shanghai).naive_local()),
+                    &state.config.archive_dir,
+                )
+                .await?,
+            );
+        }
+    }
+
+    let live_start = query_start.max(retention_cutoff);
+    if live_start < query_end {
+        rows.extend(
+            load_window_actual_usage_rows_with_legacy_account_fallback(
+                &state.pool,
+                &account_ids,
+                &format_naive(live_start.with_timezone(&Shanghai).naive_local()),
+                &format_naive(query_end.with_timezone(&Shanghai).naive_local()),
+            )
+            .await?,
+        );
+    }
+
+    let usage = fold_account_window_usage_rows(rows, &plans);
+    apply_window_actual_usage_to_summaries(items, &usage);
+    Ok(())
 }
 
 #[cfg(test)]
