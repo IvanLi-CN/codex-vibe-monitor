@@ -1215,11 +1215,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         || sticky_fallback_handoff_policy_enabled
                                     {
                                         if sticky_source_cut_out_guard_applies {
-                                            return Ok(PoolAccountResolution::Resolved(
-                                                account.with_sticky_affinity_generation(
-                                                    sticky_affinity_generation,
-                                                ),
-                                            ));
+                                            let account = account.with_sticky_affinity_generation(
+                                                sticky_affinity_generation,
+                                            );
+                                            if reserve_sticky_model_route(
+                                                state,
+                                                reservation_key,
+                                                &account,
+                                                requested_model,
+                                            )
+                                            .await?
+                                            {
+                                                return Ok(PoolAccountResolution::Resolved(
+                                                    account,
+                                                ));
+                                            }
+                                            return Ok(PoolAccountResolution::NoCandidate);
                                         }
                                         evaluation.score.route_binding_failure_penalty =
                                             route_binding_failure_penalty;
@@ -1230,11 +1241,35 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             || sticky_model_penalty != ModelRoutePenalty::Normal;
                                         saw_other_non_rate_limited_routing_candidate = true;
                                     } else {
-                                        return Ok(PoolAccountResolution::Resolved(
-                                            account.with_sticky_affinity_generation(
-                                                sticky_affinity_generation,
-                                            ),
-                                        ));
+                                        let account = account.with_sticky_affinity_generation(
+                                            sticky_affinity_generation,
+                                        );
+                                        if reserve_sticky_model_route(
+                                            state,
+                                            reservation_key,
+                                            &account,
+                                            requested_model,
+                                        )
+                                        .await?
+                                        {
+                                            return Ok(PoolAccountResolution::Resolved(account));
+                                        }
+                                        let cache_hit_protection =
+                                            resolve_cache_hit_protection_settings(
+                                                &load_pool_routing_settings(&state.pool).await?,
+                                            );
+                                        if cache_hit_protection.overflow_mode
+                                            == CacheHitOverflowMode::Queue
+                                        {
+                                            return Ok(PoolAccountResolution::NoCandidate);
+                                        }
+                                        // A normal sticky route may be handed off when reroute is
+                                        // selected. Preserve it as a scored candidate so the common
+                                        // loop below keeps the atomic cap check for any retry.
+                                        evaluation.resolved_account = Some(account);
+                                        resolved_candidates.push(evaluation);
+                                        saw_model_concurrency_limited_candidate = true;
+                                        saw_other_non_rate_limited_routing_candidate = true;
                                     }
                                 } else {
                                     sticky_route_excluded_by_route_key = true;
@@ -1815,6 +1850,26 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     Ok(PoolAccountResolution::NoCandidate)
+}
+
+async fn reserve_sticky_model_route(
+    state: &AppState,
+    reservation_key: Option<&str>,
+    account: &PoolResolvedAccount,
+    requested_model: Option<&str>,
+) -> Result<bool> {
+    let Some(reservation_key) = reservation_key else {
+        return Ok(true);
+    };
+    let concurrency_limit =
+        model_route_concurrency_limit(&state.pool, account.account_id, requested_model).await?;
+    Ok(try_reserve_pool_routing_account_for_model(
+        state,
+        reservation_key,
+        account,
+        requested_model,
+        concurrency_limit,
+    ))
 }
 
 pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(

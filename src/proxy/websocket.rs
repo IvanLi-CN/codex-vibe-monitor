@@ -2571,7 +2571,7 @@ pub(crate) async fn persist_ws_usage_event(
         compaction_request_kind: None,
         compaction_response_kind: None,
         image_intent: None,
-        request_model: None,
+        request_model: trace.request_model.as_deref(),
         requested_service_tier: None,
         billing_service_tier: billing_service_tier.as_deref(),
         reasoning_effort: None,

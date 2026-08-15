@@ -531,6 +531,269 @@ async fn cache_hit_protection_atomically_reserves_single_model_slot() {
 }
 
 #[tokio::test]
+async fn cache_hit_protection_reserves_sticky_fast_path_before_returning_it() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Sticky Reservation",
+        "cache-sticky-reservation-key",
+        None,
+        Some("https://cache-sticky-reservation.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-sticky-reservation";
+    let sticky_key = "cache-hit-sticky-reservation";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_recovery_limit = 2 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("seed sticky model concurrency limit");
+    upsert_sticky_route(
+        &state.pool,
+        sticky_key,
+        account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed sticky route");
+
+    let excluded_ids = Vec::new();
+    let excluded_routes = HashSet::new();
+    let first = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        Some(sticky_key),
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-sticky-reservation-a"),
+    );
+    let second = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        Some(sticky_key),
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-sticky-reservation-b"),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let resolutions = [
+        first.expect("first sticky selection should complete"),
+        second.expect("second sticky selection should complete"),
+    ];
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::Resolved(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        resolutions
+            .iter()
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .count(),
+        1
+    );
+
+    release_pool_routing_reservation(&state, "cache-hit-sticky-reservation-a");
+    release_pool_routing_reservation(&state, "cache-hit-sticky-reservation-b");
+}
+
+#[tokio::test]
+async fn cache_hit_protection_reroutes_a_capped_normal_sticky_route() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Sticky Reroute Source",
+        "cache-sticky-reroute-source-key",
+        None,
+        Some("https://cache-sticky-reroute-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let alternative_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Sticky Reroute Alternative",
+        "cache-sticky-reroute-alternative-key",
+        None,
+        Some("https://cache-sticky-reroute-alternative.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-sticky-reroute";
+    let sticky_key = "cache-hit-sticky-reroute";
+    enable_cache_hit_protection(&state).await;
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_overflow_mode = 'reroute' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable cache-hit reroute mode");
+    observe_model_route_seen(&state.pool, sticky_account_id, Some(model))
+        .await
+        .expect("seed sticky model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_recovery_limit = 2 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(sticky_account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("seed sticky model concurrency limit");
+    upsert_sticky_route(
+        &state.pool,
+        sticky_key,
+        sticky_account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed reroutable sticky route");
+
+    let excluded_ids = Vec::new();
+    let excluded_routes = HashSet::new();
+    let first = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        Some(sticky_key),
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-sticky-reroute-a"),
+    )
+    .await
+    .expect("reserve normal sticky route");
+    let PoolAccountResolution::Resolved(first) = first else {
+        panic!("expected sticky route to be selected before its cap is full");
+    };
+    assert_eq!(first.account_id, sticky_account_id);
+
+    let second = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        Some(sticky_key),
+        Some(model),
+        &excluded_ids,
+        &excluded_routes,
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("cache-hit-sticky-reroute-b"),
+    )
+    .await
+    .expect("reroute after sticky model cap is full");
+    let PoolAccountResolution::Resolved(second) = second else {
+        panic!("expected a legal alternative after sticky model cap is full");
+    };
+    assert_eq!(second.account_id, alternative_account_id);
+
+    release_pool_routing_reservation(&state, "cache-hit-sticky-reroute-a");
+    release_pool_routing_reservation(&state, "cache-hit-sticky-reroute-b");
+}
+
+#[tokio::test]
+async fn model_route_reservation_keeps_resolved_model_when_retry_context_lacks_one() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Retry Reservation",
+        "cache-retry-reservation-key",
+        None,
+        Some("https://cache-retry-reservation.example.com/backend-api/codex"),
+    )
+    .await;
+    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve account for reservation");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected a pool account for reservation");
+    };
+    assert_eq!(account.account_id, account_id);
+
+    reserve_pool_routing_account_for_model(
+        &state,
+        "cache-retry-reservation",
+        &account,
+        Some("gpt-cache-retry-reservation"),
+    );
+    reserve_pool_routing_account_for_model(&state, "cache-retry-reservation", &account, None);
+    assert!(pool_routing_reservation_matches_model(
+        &state,
+        "cache-retry-reservation",
+        account_id,
+        Some("gpt-cache-retry-reservation"),
+    ));
+
+    release_pool_routing_reservation(&state, "cache-retry-reservation");
+}
+
+#[test]
+fn websocket_terminal_reservation_key_reuses_the_active_pool_route_key() {
+    assert_eq!(
+        pool_routing_reservation_key_for_invoke_id("pool-ws-42-turn-3").as_deref(),
+        Some("pool-route-42")
+    );
+}
+
+#[tokio::test]
+async fn observing_a_stale_model_route_clears_cache_hit_protection_state() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Stale Route",
+        "cache-stale-route-key",
+        None,
+        Some("https://cache-stale-route.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-stale-route";
+    let stale_at = format_utc_iso(Utc::now() - chrono::Duration::days(8));
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent) VALUES (?1, ?2, 'degraded', 'demoted', 2, ?3, ?3, 1, 8, 2, 3, 0)",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(&stale_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed stale cache-hit route state");
+
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("observe stale model route");
+    let route = cache_hit_route_state(&state, account_id, model).await;
+    assert_eq!(route.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.1, None);
+    assert_eq!(route.2, None);
+    assert_eq!(route.3, 0);
+    assert_eq!(route.4, 0);
+    assert_eq!(route.5, None);
+}
+
+#[tokio::test]
 async fn cache_hit_protection_reroutes_to_another_legal_combination() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let limited_account_id = insert_test_pool_api_key_account_with_options(

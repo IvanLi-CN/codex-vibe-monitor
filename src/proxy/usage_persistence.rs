@@ -1630,7 +1630,11 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
 }
 
 pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String> {
-    let request_id = invoke_id.strip_prefix("proxy-")?.split('-').next()?;
+    let request_id = invoke_id
+        .strip_prefix("proxy-")
+        .or_else(|| invoke_id.strip_prefix("pool-ws-"))?
+        .split('-')
+        .next()?;
     request_id
         .parse::<u64>()
         .ok()
@@ -3620,6 +3624,24 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
+    let enqueue_started = Instant::now();
+    let persisted_record = api_invocation_from_runtime_record(&record);
+    let invoke_id = persisted_record.invoke_id.clone();
+    let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
+    if duplicate_terminal {
+        debug!(
+            invoke_id = %invoke_id,
+            occurred_at = %persisted_record.occurred_at,
+            business_unblocked_record_write = true,
+            "duplicate terminal proxy capture record skipped before sqlite enqueue"
+        );
+        schedule_proxy_capture_follow_up_after_terminal_enqueue(
+            state,
+            &invoke_id,
+            "duplicate_runtime_terminal",
+        );
+        return Ok(());
+    }
     if record.status == "success" {
         let metadata = terminal_payload_metadata(record.payload.as_deref());
         if let Some(account_id) = metadata.upstream_account_id {
@@ -3627,8 +3649,17 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 .request_model
                 .as_deref()
                 .or(record.model.as_deref());
-            let active_concurrency =
-                pool_routing_model_reservation_count(state, account_id, model).saturating_add(1);
+            let reservation_held = pool_routing_reservation_key_for_invoke_id(&record.invoke_id)
+                .is_some_and(|reservation_key| {
+                    pool_routing_reservation_matches_model(
+                        state,
+                        &reservation_key,
+                        account_id,
+                        model,
+                    )
+                });
+            let active_concurrency = pool_routing_model_reservation_count(state, account_id, model)
+                + if reservation_held { 0 } else { 1 };
             if let Err(err) = observe_model_route_cache_hit(
                 &state.pool,
                 account_id,
@@ -3647,24 +3678,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 );
             }
         }
-    }
-    let enqueue_started = Instant::now();
-    let persisted_record = api_invocation_from_runtime_record(&record);
-    let invoke_id = persisted_record.invoke_id.clone();
-    let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
-    if duplicate_terminal {
-        debug!(
-            invoke_id = %invoke_id,
-            occurred_at = %persisted_record.occurred_at,
-            business_unblocked_record_write = true,
-            "duplicate terminal proxy capture record skipped before sqlite enqueue"
-        );
-        schedule_proxy_capture_follow_up_after_terminal_enqueue(
-            state,
-            &invoke_id,
-            "duplicate_runtime_terminal",
-        );
-        return Ok(());
     }
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
     let delta = &projection.dashboard;

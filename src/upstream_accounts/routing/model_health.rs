@@ -389,10 +389,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     cache_input_tokens: Option<i64>,
     active_concurrency: i64,
 ) -> Result<()> {
-    let settings = resolve_cache_hit_protection_settings(&load_pool_routing_settings(pool).await?);
-    if !settings.enabled
-        || !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref())
-    {
+    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(());
     }
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -408,10 +405,25 @@ pub(crate) async fn observe_model_route_cache_hit(
     };
     let cached = cache_input_tokens.clamp(0, input_tokens);
     let hit_rate_percent = cached.saturating_mul(100) / input_tokens;
-    let low_hit = cached.saturating_mul(100)
-        < input_tokens.saturating_mul(i64::from(settings.low_hit_rate_threshold_percent));
     let now = now_string();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let settings = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT cache_hit_protection_enabled, cache_hit_low_rate_threshold_percent FROM pool_routing_settings WHERE id = 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or((Some(0), Some(10)));
+    if settings.0.unwrap_or_default() == 0 {
+        tx.commit().await?;
+        return Ok(());
+    }
+    let threshold_percent = settings
+        .1
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| (1..=100).contains(value))
+        .unwrap_or(10);
+    let low_hit =
+        cached.saturating_mul(100) < input_tokens.saturating_mul(i64::from(threshold_percent));
     let row = sqlx::query_as::<_, ModelRouteRow>(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
@@ -916,7 +928,7 @@ pub(crate) async fn observe_model_route_seen(
     let now = now_string();
     let cutoff = cutoff_string();
     sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5) ON CONFLICT(account_id, model) DO UPDATE SET state = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.state ELSE pool_upstream_account_model_routes.state END, priority = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.priority ELSE pool_upstream_account_model_routes.priority END, consecutive_failures = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.consecutive_failures END, streak_started_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.streak_started_at END, changed_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_success_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_success_at END, last_failure_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_at END, last_failure_kind = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_kind END, last_failure_message = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_message END, cooldown_until = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cooldown_until END, reset_fence_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.reset_fence_at END",
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5) ON CONFLICT(account_id, model) DO UPDATE SET state = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.state ELSE pool_upstream_account_model_routes.state END, priority = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.priority ELSE pool_upstream_account_model_routes.priority END, consecutive_failures = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.consecutive_failures END, streak_started_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.streak_started_at END, changed_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_success_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_success_at END, last_failure_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_at END, last_failure_kind = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_kind END, last_failure_message = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_message END, cooldown_until = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cooldown_until END, reset_fence_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.reset_fence_at END, cache_concurrency_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_concurrency_limit END, cache_recovery_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_recovery_limit END, cache_low_hit_streak = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_low_hit_streak END, cache_cooldown_level = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_cooldown_level END, cache_last_hit_rate_percent = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_last_hit_rate_percent END",
     )
     .bind(account_id)
     .bind(model)
