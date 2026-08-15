@@ -2874,16 +2874,42 @@ pub(crate) fn test_sqlite_url_for_path(path: &Path) -> String {
 pub(crate) async fn retention_test_pool_and_config(
     prefix: &str,
 ) -> (SqlitePool, AppConfig, PathBuf) {
+    let schema_template = std::env::var_os(ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV).map(PathBuf::from);
+    retention_test_pool_and_config_from_template(prefix, schema_template.as_deref()).await
+}
+
+pub(crate) async fn retention_fresh_schema_test_pool_and_config(
+    prefix: &str,
+) -> (SqlitePool, AppConfig, PathBuf) {
+    retention_test_pool_and_config_from_template(prefix, None).await
+}
+
+async fn retention_test_pool_and_config_from_template(
+    prefix: &str,
+    schema_template: Option<&Path>,
+) -> (SqlitePool, AppConfig, PathBuf) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("codex-vibe-monitor.db");
-    fs::File::create(&db_path).expect("create retention sqlite file");
+    let used_schema_template = schema_template.is_some();
+    if let Some(schema_template) = schema_template {
+        assert!(
+            schema_template.is_file(),
+            "archive schema template must exist: {}",
+            schema_template.display()
+        );
+        fs::copy(schema_template, &db_path).expect("copy archive current-schema template");
+    } else {
+        fs::File::create(&db_path).expect("create retention sqlite file");
+    }
     let db_url = test_sqlite_url_for_path(&db_path);
     let pool = SqlitePoolOptions::new()
         .max_connections(2)
         .connect(&db_url)
         .await
         .expect("connect retention sqlite");
-    ensure_schema(&pool).await.expect("ensure retention schema");
+    if !used_schema_template {
+        ensure_schema(&pool).await.expect("ensure retention schema");
+    }
 
     let mut config = test_config();
     config.database_path = db_path;
@@ -2894,6 +2920,44 @@ pub(crate) async fn retention_test_pool_and_config(
     fs::create_dir_all(&config.proxy_raw_dir).expect("create retention raw dir");
     fs::create_dir_all(&config.archive_dir).expect("create retention archive dir");
     (pool, config, temp_dir)
+}
+
+#[tokio::test]
+async fn retention_file_fixture_copies_current_schema_template_without_leaking_mutations() {
+    let template_dir = make_temp_test_dir("retention-current-schema-template");
+    let template_path = template_dir.join("current-schema.db");
+    write_stateful_schema_template(&template_path)
+        .await
+        .expect("build current-schema template");
+
+    let (first_pool, _first_config, first_dir) = retention_test_pool_and_config_from_template(
+        "retention-template-first",
+        Some(&template_path),
+    )
+    .await;
+    sqlx::query("CREATE TABLE retention_template_isolation (id INTEGER PRIMARY KEY)")
+        .execute(&first_pool)
+        .await
+        .expect("mutate first template copy");
+    first_pool.close().await;
+
+    let (second_pool, _second_config, second_dir) = retention_test_pool_and_config_from_template(
+        "retention-template-second",
+        Some(&template_path),
+    )
+    .await;
+    let leaked_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'retention_template_isolation'",
+    )
+    .fetch_one(&second_pool)
+    .await
+    .expect("inspect second template copy");
+    assert_eq!(leaked_table_count, 0, "template copies must stay isolated");
+    second_pool.close().await;
+
+    cleanup_temp_test_dir(&first_dir);
+    cleanup_temp_test_dir(&second_dir);
+    cleanup_temp_test_dir(&template_dir);
 }
 
 pub(crate) async fn retention_memory_test_pool_and_config(

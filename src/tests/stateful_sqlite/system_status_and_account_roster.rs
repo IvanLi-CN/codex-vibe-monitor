@@ -7,6 +7,8 @@ use std::str::FromStr;
 
 pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
+pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
+    "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
 
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,

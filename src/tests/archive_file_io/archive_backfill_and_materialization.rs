@@ -6274,8 +6274,10 @@ async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
 
 #[tokio::test]
 async fn ensure_schema_backfills_legacy_invocation_rollup_aggregate_columns() {
-    let (pool, config, temp_dir) =
-        retention_test_pool_and_config("legacy-rollup-first-response-byte-total-backfill").await;
+    let (pool, config, temp_dir) = retention_fresh_schema_test_pool_and_config(
+        "legacy-rollup-first-response-byte-total-backfill",
+    )
+    .await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
     insert_retention_invocation(
         &pool,
@@ -6439,7 +6441,8 @@ async fn ensure_schema_backfills_legacy_invocation_rollup_aggregate_columns() {
 #[tokio::test]
 async fn ensure_schema_reconciles_legacy_rollups_when_sources_are_complete() {
     let (pool, _config, temp_dir) =
-        retention_test_pool_and_config("legacy-rollup-terminal-proof-partial-source").await;
+        retention_fresh_schema_test_pool_and_config("legacy-rollup-terminal-proof-partial-source")
+            .await;
     let occurred_at = shanghai_local_days_ago(3, 9, 0, 0);
     insert_retention_invocation(
         &pool,
@@ -7545,7 +7548,7 @@ async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missin
 #[tokio::test]
 async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;
+        retention_fresh_schema_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;
     let prune_invocation =
         shanghai_local_days_ago((config.invocation_success_full_days + 2) as i64, 9, 0, 0);
     insert_retention_invocation(
