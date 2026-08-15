@@ -2934,6 +2934,7 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
             entry.reasoning_tokens += row.reasoning_tokens;
             if row.total_tokens > 0 {
                 entry.token_components_observed = true;
+                entry.token_component_incomplete_count += row.token_component_incomplete_count;
             }
             entry.total_cost += row.total_cost;
             entry.non_success_cost += row.non_success_cost;
@@ -3841,6 +3842,7 @@ async fn build_timeseries_hourly_rollup_baseline(
         entry.reasoning_tokens += row.reasoning_tokens;
         if row.total_tokens > 0 {
             entry.token_components_observed = true;
+            entry.token_component_incomplete_count += row.token_component_incomplete_count;
         }
         entry.total_cost += row.total_cost;
         entry.non_success_cost += row.non_success_cost;
@@ -4253,6 +4255,7 @@ mod tests {
                 output_tokens: 55,
                 cache_input_tokens: 7,
                 reasoning_tokens: 11,
+                token_component_incomplete_count: 0,
                 total_cost: 1.25,
                 non_success_cost: 0.3,
                 total_latency_sample_count: 2,

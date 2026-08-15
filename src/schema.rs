@@ -2006,6 +2006,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            token_component_incomplete_count INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2047,6 +2048,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("input_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
         ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "token_component_incomplete_count",
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
@@ -2591,6 +2596,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            token_component_incomplete_count INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2647,6 +2653,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "token_component_incomplete_count",
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -2776,6 +2786,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            token_component_incomplete_count INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
             non_success_cost REAL NOT NULL DEFAULT 0,
             total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
@@ -2805,6 +2816,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ty) in [
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "token_component_incomplete_count",
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
         ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),

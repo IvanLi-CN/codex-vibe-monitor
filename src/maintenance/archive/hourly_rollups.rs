@@ -1645,9 +1645,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens,
                     output_tokens,
                     reasoning_tokens,
+                    token_component_incomplete_count,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
@@ -1661,6 +1662,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     input_tokens = invocation_rollup_hourly.input_tokens + excluded.input_tokens,
                     output_tokens = invocation_rollup_hourly.output_tokens + excluded.output_tokens,
                     reasoning_tokens = invocation_rollup_hourly.reasoning_tokens + excluded.reasoning_tokens,
+                    token_component_incomplete_count = invocation_rollup_hourly.token_component_incomplete_count + excluded.token_component_incomplete_count,
                     total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
                     non_success_cost = invocation_rollup_hourly.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = invocation_rollup_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -1711,6 +1713,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.input_tokens)
             .bind(delta.output_tokens)
             .bind(delta.reasoning_tokens)
+            .bind(delta.token_component_incomplete_count)
             .execute(&mut *tx)
             .await?;
         }
@@ -2154,9 +2157,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_max_ms,
                     first_token_histogram,
                     reasoning_tokens,
+                    token_component_incomplete_count,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_hourly.total_count + excluded.total_count,
                     success_count = upstream_account_stats_hourly.success_count + excluded.success_count,
@@ -2167,6 +2171,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     output_tokens = upstream_account_stats_hourly.output_tokens + excluded.output_tokens,
                     cache_input_tokens = upstream_account_stats_hourly.cache_input_tokens + excluded.cache_input_tokens,
                     reasoning_tokens = upstream_account_stats_hourly.reasoning_tokens + excluded.reasoning_tokens,
+                    token_component_incomplete_count = upstream_account_stats_hourly.token_component_incomplete_count + excluded.token_component_incomplete_count,
                     total_cost = upstream_account_stats_hourly.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_hourly.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = upstream_account_stats_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -2216,6 +2221,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_token_max_ms)
             .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .bind(delta.reasoning_tokens)
+            .bind(delta.token_component_incomplete_count)
             .execute(&mut *tx)
             .await?;
         }
@@ -2464,9 +2470,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_token_max_ms,
                     first_token_histogram,
                     reasoning_tokens,
+                    token_component_incomplete_count,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_minute.total_count + excluded.total_count,
                     success_count = upstream_account_stats_minute.success_count + excluded.success_count,
@@ -2477,6 +2484,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     output_tokens = upstream_account_stats_minute.output_tokens + excluded.output_tokens,
                     cache_input_tokens = upstream_account_stats_minute.cache_input_tokens + excluded.cache_input_tokens,
                     reasoning_tokens = upstream_account_stats_minute.reasoning_tokens + excluded.reasoning_tokens,
+                    token_component_incomplete_count = upstream_account_stats_minute.token_component_incomplete_count + excluded.token_component_incomplete_count,
                     total_cost = upstream_account_stats_minute.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_minute.non_success_cost + excluded.non_success_cost,
                     total_latency_sample_count = upstream_account_stats_minute.total_latency_sample_count + excluded.total_latency_sample_count,
@@ -2526,6 +2534,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_token_max_ms)
             .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .bind(delta.reasoning_tokens)
+            .bind(delta.token_component_incomplete_count)
             .execute(&mut *tx)
             .await?;
         }
@@ -4586,10 +4595,11 @@ where
                 first_token_histogram,
                 input_tokens,
                 output_tokens,
-                reasoning_tokens,
-                updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, datetime('now'))
+                    reasoning_tokens,
+                    token_component_incomplete_count,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, datetime('now'))
             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                 total_count = excluded.total_count,
                 success_count = excluded.success_count,
@@ -4603,6 +4613,7 @@ where
                 input_tokens = excluded.input_tokens,
                 output_tokens = excluded.output_tokens,
                 reasoning_tokens = excluded.reasoning_tokens,
+                token_component_incomplete_count = excluded.token_component_incomplete_count,
                 total_cost = excluded.total_cost,
                 non_success_cost = excluded.non_success_cost,
                 total_latency_sample_count = excluded.total_latency_sample_count,
@@ -4653,6 +4664,7 @@ where
         .bind(delta.input_tokens)
         .bind(delta.output_tokens)
         .bind(delta.reasoning_tokens)
+        .bind(delta.token_component_incomplete_count)
         .execute(tx.as_mut())
         .await?;
         applied_rollups += 1;

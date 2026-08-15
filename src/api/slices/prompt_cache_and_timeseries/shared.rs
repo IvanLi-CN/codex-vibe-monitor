@@ -843,6 +843,17 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         } else {
             "0 AS reasoning_tokens"
         };
+    let token_component_incomplete_count_expr = if sqlite_table_has_column_tx(
+        tx,
+        "invocation_rollup_hourly",
+        "token_component_incomplete_count",
+    )
+    .await?
+    {
+        "COALESCE(token_component_incomplete_count, 1) AS token_component_incomplete_count"
+    } else {
+        "1 AS token_component_incomplete_count"
+    };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -900,6 +911,7 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             {output_tokens_expr},
             {cache_input_tokens_expr},
             {reasoning_tokens_expr},
+            {token_component_incomplete_count_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},
@@ -1089,6 +1101,12 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
         } else {
             "0 AS reasoning_tokens"
         };
+    let token_component_incomplete_count_expr =
+        if sqlite_table_has_column_tx(tx, table_name, "token_component_incomplete_count").await? {
+            "COALESCE(token_component_incomplete_count, 1) AS token_component_incomplete_count"
+        } else {
+            "1 AS token_component_incomplete_count"
+        };
     let non_success_cost_expr =
         if sqlite_table_has_column_tx(tx, table_name, "non_success_cost").await? {
             "COALESCE(non_success_cost, 0.0) AS non_success_cost"
@@ -1142,6 +1160,7 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
             {output_tokens_expr},
             {cache_input_tokens_expr},
             {reasoning_tokens_expr},
+            {token_component_incomplete_count_expr},
             total_cost,
             {non_success_cost_expr},
             {total_latency_sample_count_expr},
