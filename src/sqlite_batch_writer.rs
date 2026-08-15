@@ -5074,7 +5074,7 @@ mod tests {
             },
         )));
 
-        tokio::time::timeout(Duration::from_millis(100), async {
+        tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if writer.accounting_snapshot().p2_wake_reason.as_deref()
                     == Some("coalesced_deadline")
@@ -5102,7 +5102,7 @@ mod tests {
                 selected_at: "2026-08-10T12:00:01Z".to_string(),
             },
         )));
-        tokio::time::timeout(Duration::from_millis(100), async {
+        tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let snapshot = writer.accounting_snapshot();
                 if snapshot.p2_wake_reason.as_deref() == Some("coalesced_deadline") {

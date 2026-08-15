@@ -11853,7 +11853,9 @@ mod tests {
             "stats.parallel-work.current",
             "stats.timeseries.open-window",
         ];
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        // This harness collects seven independently scheduled topic frames. Give the
+        // scheduler headroom when archive/stateful tests are running concurrently.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let mut stream = response.into_body().into_data_stream();
         let mut buffered = Vec::new();
         let mut events: BTreeMap<String, Value> = BTreeMap::new();
