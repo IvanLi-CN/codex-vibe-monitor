@@ -115,11 +115,6 @@ impl AccountWindowStoragePlane {
             ));
         }
 
-        let durable_cursor =
-            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-                .fetch_one(&state.pool)
-                .await
-                .unwrap_or_default();
         let selection = format!(
             "accounts={}",
             normalized_account_ids
@@ -160,9 +155,15 @@ impl AccountWindowStoragePlane {
             });
         }
 
-        let response = self
-            .build(state, &normalized_account_ids, durable_cursor)
-            .await;
+        let response = async {
+            let durable_cursor =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(&state.pool)
+                    .await?;
+            self.build(state, &normalized_account_ids, durable_cursor)
+                .await
+        }
+        .await;
         let response = match response {
             Ok(response) => response,
             Err(err) => {
