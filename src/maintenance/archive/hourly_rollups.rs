@@ -770,26 +770,18 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     ]
     .iter()
     .all(|column| archive_columns.contains(*column));
-    let input_tokens = if has_complete_token_components {
-        select("input_tokens")
-    } else {
-        "NULL AS input_tokens".to_string()
+    let token_component = |column_name: &str| {
+        if !has_complete_token_components {
+            return format!("NULL AS {column_name}");
+        }
+        format!(
+            "CASE WHEN input_tokens IS NULL OR output_tokens IS NULL OR cache_input_tokens IS NULL OR reasoning_tokens IS NULL THEN NULL ELSE {column_name} END AS {column_name}"
+        )
     };
-    let output_tokens = if has_complete_token_components {
-        select("output_tokens")
-    } else {
-        "NULL AS output_tokens".to_string()
-    };
-    let cache_input_tokens = if has_complete_token_components {
-        select("cache_input_tokens")
-    } else {
-        "NULL AS cache_input_tokens".to_string()
-    };
-    let reasoning_tokens = if has_complete_token_components {
-        select("reasoning_tokens")
-    } else {
-        "NULL AS reasoning_tokens".to_string()
-    };
+    let input_tokens = token_component("input_tokens");
+    let output_tokens = token_component("output_tokens");
+    let cache_input_tokens = token_component("cache_input_tokens");
+    let reasoning_tokens = token_component("reasoning_tokens");
     let total_tokens = select("total_tokens");
     let cost = select("cost");
     let upstream_account_id = select("upstream_account_id");
@@ -5037,6 +5029,57 @@ mod upstream_host_network_minute_tests {
         assert!(row.t_upstream_stream_ms.is_none());
         assert!(row.t_resp_parse_ms.is_none());
         assert!(row.t_persist_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_compatible_archive_query_keeps_partial_token_components_unknown() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory archive pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                total_tokens INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create partial token archive schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, source, output_tokens, total_tokens) VALUES (1, ?1, ?2, 30, 30)",
+        )
+        .bind("2026-07-23 10:00:00")
+        .bind(SOURCE_PROXY)
+        .execute(&pool)
+        .await
+        .expect("insert partial token archive row");
+
+        let columns = load_archive_table_columns(&pool, "codex_invocations")
+            .await
+            .expect("inspect partial token archive schema");
+        let query = build_legacy_compatible_invocation_archive_query(&columns);
+        let row = sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+            .bind(0_i64)
+            .bind(10_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("read partial token archive row");
+
+        assert_eq!(row.total_tokens, Some(30));
+        assert!(row.input_tokens.is_none());
+        assert!(row.output_tokens.is_none());
+        assert!(row.cache_input_tokens.is_none());
+        assert!(row.reasoning_tokens.is_none());
     }
 
     async fn save_progress(pool: &Pool<Sqlite>, dataset: &str, cursor_id: i64) {
