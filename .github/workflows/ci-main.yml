@@ -58,15 +58,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Restore Cargo clippy artifacts
-        id: cargo-clippy-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-
-
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
@@ -81,13 +72,6 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Save Cargo clippy artifacts
-        if: ${{ always() && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-clippy-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -108,6 +92,10 @@ jobs:
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
+
+      - name: Type-check Web Demo sources
+        working-directory: web
+        run: bunx tsc -b
 
       - name: Install docs-site dependencies
         run: bun install --cwd docs-site --frozen-lockfile
@@ -356,18 +344,9 @@ jobs:
         run: |
           set -euo pipefail
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
-            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/records-overlay records-filter-overlay.spec.ts &
-          records_pid=$!
+            bun run test:e2e -- --output=test-results/records-overlay records-filter-overlay.spec.ts
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
-            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts &
-          demo_pid=$!
-          records_status=0
-          demo_status=0
-          wait "$records_pid" || records_status=$?
-          wait "$demo_pid" || demo_status=$?
-          if [[ "$records_status" -ne 0 || "$demo_status" -ne 0 ]]; then
-            exit 1
-          fi
+            bun run test:e2e -- --fully-parallel --workers=2 --output=test-results/demo-runtime demo-runtime.spec.ts
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -390,8 +369,8 @@ jobs:
             kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
           fi
 
-  backend-tests-lightweight:
-    name: Backend Tests (Lightweight)
+  backend-test-archive:
+    name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -438,8 +417,16 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+      - name: Build backend test archive
+        run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+      - name: Upload backend test archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -457,7 +444,39 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
+  backend-tests-lightweight:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Lightweight)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+
+      - name: Run lightweight backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
   backend-tests-stateful-sqlite:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Stateful SQLite)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -473,40 +492,21 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Restore legacy Cargo workspace cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-
-      - name: Restore Cargo registry
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Restore Cargo test artifacts
-        uses: actions/cache/restore@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   backend-tests-archive-file-io:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -522,38 +522,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Restore legacy Cargo workspace cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-
-      - name: Restore Cargo registry
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Restore Cargo test artifacts
-        uses: actions/cache/restore@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   release-snapshot:
     name: Release Snapshot

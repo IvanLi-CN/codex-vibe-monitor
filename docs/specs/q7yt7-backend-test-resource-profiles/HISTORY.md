@@ -24,8 +24,10 @@
 - 在最终独立-job 候选中，进一步把只依赖 current schema 的服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 测试迁入 schema template pool；legacy migration、文件路径、gzip 与 write-lock 测试继续走真实 `ensure_schema` 和 file fixture。
 - 上游账户 Stateful tests 曾经通过共享 `test_pool()` 为每个 `AppState` 调用 `ensure_schema`，使远端执行被重复 DDL 主导。该 helper 现在只在 runner 已提供 template 时调用 current-schema template pool；无 template 的直跑和 Archive/File I/O profile 继续走原始 schema 初始化。该收口把本地完整 Stateful execution 降至 `42.507s`，并保留 `1213` 个用例。
 - PR run `31825458818` 证明后端关键路径恢复不足以保证全量反馈：Lint、三个 backend jobs 与 Build Artifacts 仍分别达到 `348s`、`277s` / `324s` / `382s` 与 `537s`。因此预算改为全部 required job 的 cold/hot 两轮 `<= 180s`，并要求 required runner 总秒数至少下降 `20%`。
-- Rust cache 从 lockfile-only 的 registry/target 混合 key 改为 registry/git 与 source-fingerprinted target keys 分离，clippy 与 nextest 不再争用同一个 target cache。迁移实验表明 target-only restore 不能解包旧三路径 cache，故固定先以原三路径只读恢复 ancestor，再写入新 source-key；PR smoke 并行生成当前 debug binary 与 web bundle，只封装私有 runtime target，生产默认 Docker target 与 release profile 保持不变。
+- Rust cache 从 lockfile-only 的 registry/target 混合 key 改为 registry/git 与 source-fingerprinted nextest target keys 分离。迁移实验表明 target-only restore 不能解包旧三路径 cache，故固定先以原三路径只读恢复 ancestor，再写入新 source-key；clippy 不再写入自己的 target cache。PR smoke 并行生成当前 debug binary 与 web bundle，只封装私有 runtime target，生产默认 Docker target 与 release profile 保持不变。
 - Archive ordinary current-schema tests 采用唯一 file template copy；migration/backfill、gzip、路径、文件锁和文件损坏保持真实 fresh schema/file fixture。前端 test coverage 不变，Rust lint 与 repository tooling 也分离；Vitest、Storybook accessibility 和 docs/demo static build 拆为独立 required jobs，release snapshot 与 branch-protection contract 同步等待完整拓扑。
+- 冷 SHA 即使恢复 ancestor target，仍必须重新链接当前测试二进制；因此引入不进入 branch protection 的 archive producer，让三个固定 backend required checks 并行回放同一 current-head archive。该拓扑只有在同一 PR head 两次同时满足 180 秒 required job、390 秒 Stateful critical path 和 runner 成本门槛时保留。
+- host-built PR smoke binary 不能在 Bookworm glibc runtime 运行，私有 smoke target 改为 Ubuntu 24.04；生产 Bookworm runtime 保持默认。两个并发的 Playwright 2-worker process 会使 Chromium 协议超时并触发 retry，因此 E2E 保留完整测试，records 保持单 worker，Web Demo 独占两个 workers。
 
 ## Key Reasons / Replacements
 

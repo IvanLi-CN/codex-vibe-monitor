@@ -287,7 +287,13 @@ jobs:
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
 
+  backend-test-archive:
+    name: Backend Test Archive Producer
+    runs-on: ubuntu-24.04
+
   backend-tests-lightweight:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -321,6 +327,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight
 
   backend-tests-stateful-sqlite:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Stateful SQLite)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -354,6 +362,8 @@ jobs:
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
 
   backend-tests-archive-file-io:
+    needs: backend-test-archive
+    if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
     timeout-minutes: 20

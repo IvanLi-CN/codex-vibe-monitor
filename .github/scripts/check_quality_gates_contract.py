@@ -29,7 +29,9 @@ class ContractModel:
     review_exempt_permissions: set[str]
     review_allowed_permissions: set[str]
     expected_pr_workflows: dict[str, tuple[str, ...]]
+    expected_pr_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_main_workflows: dict[str, tuple[str, ...]]
+    expected_main_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_release_workflows: dict[str, tuple[str, ...]]
     label_check_name: str
 
@@ -292,10 +294,11 @@ def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
 
 
-def parse_expected_workflows(payload: dict[str, Any], key: str) -> dict[str, tuple[str, ...]]:
+def parse_expected_workflows(payload: dict[str, Any], key: str) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     raw_expected = payload.get(key)
     require(isinstance(raw_expected, list) and raw_expected, f"quality-gates.json: {key} must be a non-empty array")
     expected: dict[str, tuple[str, ...]] = {}
+    auxiliary: dict[str, tuple[str, ...]] = {}
     for index, raw_entry in enumerate(raw_expected):
         entry = require_mapping(raw_entry, f"quality-gates.json.{key}[{index}]")
         workflow_name = entry.get("workflow")
@@ -304,9 +307,17 @@ def parse_expected_workflows(payload: dict[str, Any], key: str) -> dict[str, tup
             f"quality-gates.json.{key}[{index}].workflow must be a non-empty string",
         )
         jobs = require_string_set(entry.get("jobs"), f"quality-gates.json.{key}[{index}].jobs")
+        auxiliary_jobs = require_string_set(
+            entry.get("auxiliary_jobs", []), f"quality-gates.json.{key}[{index}].auxiliary_jobs"
+        )
+        require(
+            jobs.isdisjoint(auxiliary_jobs),
+            f"quality-gates.json.{key}[{index}]: jobs and auxiliary_jobs must be disjoint",
+        )
         require(workflow_name not in expected, f"quality-gates.json: duplicate {key} entry {workflow_name!r}")
         expected[workflow_name] = tuple(sorted(jobs))
-    return expected
+        auxiliary[workflow_name] = tuple(sorted(auxiliary_jobs))
+    return expected, auxiliary
 
 
 def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
@@ -368,9 +379,13 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     require(isinstance(review_check_name, str) and review_check_name, "quality-gates.json: enforcement.check_name must be a non-empty string")
     require(review_check_name in required_checks, "quality-gates.json: enforcement.check_name must be required")
 
-    expected_pr_workflows = parse_expected_workflows(payload, "expected_pr_workflows")
-    expected_main_workflows = parse_expected_workflows(payload, "expected_main_workflows")
-    expected_release_workflows = parse_expected_workflows(payload, "expected_release_workflows")
+    expected_pr_workflows, expected_pr_auxiliary_workflows = parse_expected_workflows(payload, "expected_pr_workflows")
+    expected_main_workflows, expected_main_auxiliary_workflows = parse_expected_workflows(payload, "expected_main_workflows")
+    expected_release_workflows, expected_release_auxiliary_workflows = parse_expected_workflows(payload, "expected_release_workflows")
+    require(
+        not any(expected_release_auxiliary_workflows.values()),
+        "quality-gates.json: release workflows must not declare auxiliary jobs",
+    )
 
     declared_pr_jobs = {job for jobs in expected_pr_workflows.values() for job in jobs}
     require(
@@ -401,7 +416,9 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         review_exempt_permissions=review_exempt_permissions,
         review_allowed_permissions=review_allowed_permissions,
         expected_pr_workflows=expected_pr_workflows,
+        expected_pr_auxiliary_workflows=expected_pr_auxiliary_workflows,
         expected_main_workflows=expected_main_workflows,
+        expected_main_auxiliary_workflows=expected_main_auxiliary_workflows,
         expected_release_workflows=expected_release_workflows,
         label_check_name=label_required[0],
     )
@@ -427,7 +444,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require(isinstance(workflow_name, str) and workflow_name, "ci-pr.yml: workflow name must stay non-empty")
     expected_jobs = set(contract.expected_pr_workflows.get(workflow_name, ()))
     require(expected_jobs, f"ci-pr.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
-    require_exact_named_jobs(workflow, expected_jobs, "ci-pr.yml")
+    auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
+    require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -514,6 +532,25 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     require_exact_if(build_job, "github.event_name == 'pull_request'", "ci-pr.yml.jobs.build")
 
+    if auxiliary_jobs:
+        archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
+        require(
+            archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,
+            "ci-pr.yml.jobs.backend-test-archive must be the declared archive producer",
+        )
+        require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+            require(
+                job_config(workflow, backend_job_id, "ci-pr.yml").get("needs") == "backend-test-archive",
+                f"ci-pr.yml.jobs.{backend_job_id}.needs must use the archive producer",
+            )
+            require_exact_if(
+                job_config(workflow, backend_job_id, "ci-pr.yml"),
+                "always()",
+                f"ci-pr.yml.jobs.{backend_job_id}",
+            )
+
 
 def validate_ci_main(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
@@ -521,7 +558,8 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require(isinstance(workflow_name, str) and workflow_name, "ci-main.yml: workflow name must stay non-empty")
     expected_jobs = set(contract.expected_main_workflows.get(workflow_name, ()))
     require(expected_jobs, f"ci-main.yml: workflow {workflow_name!r} must be declared in expected_main_workflows")
-    require_exact_named_jobs(workflow, expected_jobs, "ci-main.yml")
+    auxiliary_jobs = set(contract.expected_main_auxiliary_workflows.get(workflow_name, ()))
+    require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -580,6 +618,24 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         ],
         "ci-main.yml.jobs.release-snapshot.needs drifted",
     )
+    if auxiliary_jobs:
+        archive_job = job_config(workflow, "backend-test-archive", "ci-main.yml")
+        require(
+            archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,
+            "ci-main.yml.jobs.backend-test-archive must be the declared archive producer",
+        )
+        require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+            require(
+                job_config(workflow, backend_job_id, "ci-main.yml").get("needs") == "backend-test-archive",
+                f"ci-main.yml.jobs.{backend_job_id}.needs must use the archive producer",
+            )
+            require_exact_if(
+                job_config(workflow, backend_job_id, "ci-main.yml"),
+                "always()",
+                f"ci-main.yml.jobs.{backend_job_id}",
+            )
     release_snapshot_permissions = require_mapping(
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )

@@ -88,6 +88,9 @@
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
         "Build Artifacts"
+      ],
+      "auxiliary_jobs": [
+        "Backend Test Archive Producer"
       ]
     },
     {
@@ -111,6 +114,9 @@
         "Backend Tests (Stateful SQLite)",
         "Backend Tests (Archive / File I/O)",
         "Release Snapshot"
+      ],
+      "auxiliary_jobs": [
+        "Backend Test Archive Producer"
       ]
     }
   ],
