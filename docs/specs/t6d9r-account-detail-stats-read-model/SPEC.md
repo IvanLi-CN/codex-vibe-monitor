@@ -90,6 +90,7 @@
 - handler 只能委托 account-window StoragePlane。该边界负责同参 singleflight、128 项 / 10 分钟空闲 LRU、coverage/last-good 状态与结构化 telemetry；不能把 pool 访问重新放回 HTTP handler。
 - 新 terminal 记录必须写结构化 nullable `codex_invocations.upstream_account_id`。旧行仅由 pressure-gated、按 cursor 的小批回填修复；健康读路径不得再从 JSON 表达式过滤账号。
 - 无准确 baseline 或 archive coverage hole 时返回 `202 { items: [], readiness: "preparing", retryAfterMs }` 与 `Retry-After: 1`，不得以全窗 archive/raw fallback 伪造成功响应。已有 last-good 最多服务 60 秒。
+- 生产规模 shared-testbox fixture 使用 42 个账号时，健康 `window-usage` batch 的 p95 必须不超过 1 秒；该门槛约束端到端的 rollup、边界与 cursor tail 读路径，而不是旧 roster-only 的 100 毫秒预算。
 
 ## 前端编排契约
 
