@@ -4031,13 +4031,70 @@ async fn window_usage_account_backfill_persists_structured_account_assignment_pr
         .expect("load structured account assignment"),
         Some(account_id)
     );
-    let progress =
-        load_startup_backfill_progress(&state.pool, "account_window_usage_upstream_account_id")
-            .await
-            .expect("load account window backfill progress");
+    let progress = load_startup_backfill_progress(
+        &state.pool,
+        &format!("account_window_usage_upstream_account_id:{account_id}"),
+    )
+    .await
+    .expect("load account window backfill progress");
     assert_eq!(progress.cursor_id, invocation_id);
     assert_eq!(progress.last_scanned, 1);
     assert_eq!(progress.last_updated, 1);
+}
+
+#[tokio::test]
+async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Window Usage Legacy Readiness").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear structured account assignment");
+
+    let (status, payload) = load_window_usage_response(state.clone(), vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
+    assert_eq!(payload["items"], json!([]));
+
+    AccountWindowStoragePlane::run_legacy_backfill_pass_for_test(
+        state.pool.clone(),
+        vec![account_id],
+        Utc::now() - ChronoDuration::days(7),
+    )
+    .await
+    .expect("backfill legacy account row");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
 }
 
 #[tokio::test]
@@ -4460,6 +4517,18 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
     .await
     .expect("mark live rollup cursor");
 
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(25)),
+        Some(1100),
+        Some(400),
+        Some(200),
+        Some(1700),
+        Some(0.017),
+    )
+    .await;
+
     let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
     assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
@@ -4468,11 +4537,11 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
         .cloned()
         .expect("batch usage item");
 
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 2);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 4000);
-    assert_eq!(item["primaryActualUsage"]["inputTokens"], 2500);
-    assert_eq!(item["primaryActualUsage"]["outputTokens"], 1200);
-    assert_eq!(item["primaryActualUsage"]["cacheInputTokens"], 300);
+    assert_eq!(item["primaryActualUsage"]["requestCount"], 3);
+    assert_eq!(item["primaryActualUsage"]["totalTokens"], 5700);
+    assert_eq!(item["primaryActualUsage"]["inputTokens"], 3600);
+    assert_eq!(item["primaryActualUsage"]["outputTokens"], 1600);
+    assert_eq!(item["primaryActualUsage"]["cacheInputTokens"], 500);
 }
 
 #[tokio::test]

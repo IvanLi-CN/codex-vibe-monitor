@@ -209,7 +209,7 @@ export function useUpstreamAccounts(
   >({});
   const windowUsageRetryTimerRef = useRef<number | null>(null);
   const windowUsageRetryDelayRef = useRef(1_000);
-  const windowUsageSelectionKeyRef = useRef(currentListQueryKey);
+  const windowUsageSelectionKeyRef = useRef<string | null>(null);
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
   const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(
     null,
@@ -646,8 +646,8 @@ export function useUpstreamAccounts(
         return;
       }
       if (response.readiness === "preparing") {
-        const delay = Math.max(1_000, response.retryAfterMs ?? windowUsageRetryDelayRef.current);
-        windowUsageRetryDelayRef.current = Math.min(delay * 2, WINDOW_USAGE_RETRY_MAX_MS);
+        const delay = Math.max(1_000, windowUsageRetryDelayRef.current, response.retryAfterMs ?? 0);
+        windowUsageRetryDelayRef.current = delay < 2_000 ? 2_000 : WINDOW_USAGE_RETRY_MAX_MS;
         if (windowUsageRetryTimerRef.current != null) {
           window.clearTimeout(windowUsageRetryTimerRef.current);
         }
@@ -717,16 +717,20 @@ export function useUpstreamAccounts(
   );
 
   useEffect(() => {
-    if (windowUsageSelectionKeyRef.current === currentListQueryKey) {
+    const selectionKey = `${currentListQueryKey ?? ""}:${selectedId ?? ""}`;
+    if (windowUsageSelectionKeyRef.current === selectionKey) {
       return;
     }
-    windowUsageSelectionKeyRef.current = currentListQueryKey;
+    windowUsageSelectionKeyRef.current = selectionKey;
     if (windowUsageRetryTimerRef.current != null) {
       window.clearTimeout(windowUsageRetryTimerRef.current);
       windowUsageRetryTimerRef.current = null;
     }
     windowUsageRetryDelayRef.current = 1_000;
-  }, [currentListQueryKey]);
+    usageHydrationGenerationRef.current += 1;
+    pendingWindowUsageGenerationByIdRef.current = new Map();
+    setIsWindowUsagePending(false);
+  }, [currentListQueryKey, selectedId]);
 
   useEffect(() => {
     if (query == null || listDataQueryKey !== currentListQueryKey) {

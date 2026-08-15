@@ -506,6 +506,11 @@ describe("useUpstreamAccounts", () => {
           readiness: "preparing",
           retryAfterMs: 1_000,
         })
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 1_000,
+        })
         .mockResolvedValueOnce(createWindowUsageResponse([1]));
 
       render(<Probe query={{ page: 1, pageSize: 20 }} />);
@@ -520,7 +525,56 @@ describe("useUpstreamAccounts", () => {
       await flushAsync();
 
       expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_999);
+      });
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(3);
       expect(text("first-item-primary-requests")).toBe("10");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a preparing retry when the selected account changes", async () => {
+    vi.useFakeTimers();
+    try {
+      apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+        }),
+      );
+      apiMocks.fetchUpstreamAccountWindowUsage
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 1_000,
+        })
+        .mockResolvedValueOnce(createWindowUsageResponse([2]));
+
+      render(<Probe query={{ page: 1, pageSize: 20 }} />);
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1]);
+
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>("[data-testid='select-beta']")?.click();
+      });
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [2]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
