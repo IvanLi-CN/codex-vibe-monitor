@@ -164,40 +164,31 @@ impl AccountWindowStoragePlane {
                 .await
         }
         .await;
-        let response = match response {
-            Ok(AccountWindowStorageResponse::Preparing { retry_after_ms }) => self
-                .last_good_response(&selection)
-                .await
-                .unwrap_or(AccountWindowStorageResponse::Preparing { retry_after_ms }),
-            Ok(response) => response,
+        let (response, refresh_last_good) = match response {
+            Ok(AccountWindowStorageResponse::Ready(response)) => {
+                (AccountWindowStorageResponse::Ready(response), true)
+            }
+            Ok(AccountWindowStorageResponse::Preparing { retry_after_ms }) => (
+                self.last_good_response(&selection)
+                    .await
+                    .unwrap_or(AccountWindowStorageResponse::Preparing { retry_after_ms }),
+                false,
+            ),
             Err(err) => {
                 let message = err.to_string();
                 self.record_error(message.clone());
-                self.last_good_response(&selection).await.unwrap_or(
-                    AccountWindowStorageResponse::Preparing {
-                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                    },
+                (
+                    self.last_good_response(&selection).await.unwrap_or(
+                        AccountWindowStorageResponse::Preparing {
+                            retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                        },
+                    ),
+                    false,
                 )
             }
         };
-
-        let mut entries = self.entries.lock().await;
-        if let Some(entry) = entries.get_mut(&selection) {
-            if let AccountWindowStorageResponse::Ready(payload) = &response {
-                entry.last_good = Some((payload.clone(), Instant::now()));
-                self.health
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .last_good_at = Some(Instant::now());
-            }
-            entry.completed = Some(AccountWindowStoredResult {
-                response: response.clone(),
-                completed_at: Instant::now(),
-            });
-            entry.in_flight = false;
-            entry.notify.notify_waiters();
-        }
-        drop(entries);
+        self.complete_load(&selection, response.clone(), refresh_last_good)
+            .await;
 
         self.schedule_legacy_backfill(
             state.pool.clone(),
@@ -215,6 +206,30 @@ impl AccountWindowStoragePlane {
             .and_then(|entry| entry.last_good.as_ref())
             .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
             .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
+    }
+
+    async fn complete_load(
+        &self,
+        selection: &str,
+        response: AccountWindowStorageResponse,
+        refresh_last_good: bool,
+    ) {
+        let mut entries = self.entries.lock().await;
+        if let Some(entry) = entries.get_mut(selection) {
+            if refresh_last_good && let AccountWindowStorageResponse::Ready(payload) = &response {
+                entry.last_good = Some((payload.clone(), Instant::now()));
+                self.health
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .last_good_at = Some(Instant::now());
+            }
+            entry.completed = Some(AccountWindowStoredResult {
+                response,
+                completed_at: Instant::now(),
+            });
+            entry.in_flight = false;
+            entry.notify.notify_waiters();
+        }
     }
 
     async fn build(
@@ -489,5 +504,35 @@ impl AccountWindowStoragePlane {
         ) {
             entries.remove(&key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_completion_does_not_extend_last_good_lifetime() {
+        let storage = AccountWindowStoragePlane::default();
+        let selection = "accounts=42";
+        let response = UpstreamAccountWindowUsageResponse { items: Vec::new() };
+        {
+            let mut entries = storage.entries.lock().await;
+            let entry = entries.entry(selection.to_string()).or_default();
+            entry.last_good = Some((
+                response.clone(),
+                Instant::now() - ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE - Duration::from_millis(1),
+            ));
+        }
+
+        storage
+            .complete_load(
+                selection,
+                AccountWindowStorageResponse::Ready(response),
+                false,
+            )
+            .await;
+
+        assert!(storage.last_good_response(selection).await.is_none());
     }
 }
