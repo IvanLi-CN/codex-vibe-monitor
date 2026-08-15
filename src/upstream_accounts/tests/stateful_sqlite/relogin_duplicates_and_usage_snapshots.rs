@@ -3546,6 +3546,71 @@ fn build_window_usage_range_reuses_rolling_selection_generation_within_a_minute(
     assert_eq!(first.window_duration_secs, 300 * 60);
 }
 
+#[test]
+fn build_window_usage_range_advances_pending_reset_generation_by_minute() {
+    let first_now = parse_rfc3339_utc("2026-03-30T12:30:01Z").expect("first now");
+    let later_now = parse_rfc3339_utc("2026-03-30T12:30:59Z").expect("later now");
+    let next_minute = parse_rfc3339_utc("2026-03-30T12:31:00Z").expect("next minute");
+    let reset_at = "2026-03-30T14:00:00Z";
+
+    let first = build_window_usage_range(first_now, 300, Some(reset_at)).expect("first range");
+    let later = build_window_usage_range(later_now, 300, Some(reset_at)).expect("later range");
+    let next =
+        build_window_usage_range(next_minute, 300, Some(reset_at)).expect("next minute range");
+
+    assert_eq!(first.selection_generation, later.selection_generation);
+    assert_ne!(first.selection_generation, next.selection_generation);
+    assert!(first.selection_generation.starts_with("reset-pending:"));
+}
+
+#[tokio::test]
+async fn exact_window_usage_reads_payload_account_from_legacy_schema() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect legacy sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY,
+            occurred_at TEXT NOT NULL,
+            payload TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_input_tokens INTEGER,
+            total_tokens INTEGER,
+            cost REAL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation table");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, occurred_at, payload, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost
+        ) VALUES (1, '2026-08-16 12:00:00', '{"upstreamAccountId":42}', 120, 80, 20, 220, 0.0022)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy invocation");
+
+    let rows = load_window_actual_usage_rows_for_detail_exact_from_pool(
+        &pool,
+        &[42],
+        "2026-08-16 11:00:00",
+        "2026-08-16 13:00:00",
+    )
+    .await
+    .expect("read legacy payload account");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, 1);
+    assert_eq!(rows[0].upstream_account_id, 42);
+    pool.close().await;
+}
+
 #[tokio::test]
 async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;

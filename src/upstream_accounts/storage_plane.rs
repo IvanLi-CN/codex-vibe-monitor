@@ -9,7 +9,7 @@ use std::{
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 const ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES: usize = 128;
 const ACCOUNT_WINDOW_STORAGE_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -44,10 +44,28 @@ pub(crate) enum AccountWindowStorageResponse {
     Preparing { retry_after_ms: u64 },
 }
 
-#[derive(Debug, Clone)]
-struct AccountWindowStoredResult {
-    response: AccountWindowStorageResponse,
-    completed_at: Instant,
+#[derive(Debug)]
+struct AccountWindowLoadFlight {
+    result_tx: watch::Sender<Option<AccountWindowStorageResponse>>,
+    result_rx: watch::Receiver<Option<AccountWindowStorageResponse>>,
+}
+
+impl AccountWindowLoadFlight {
+    fn new() -> Self {
+        let (result_tx, result_rx) = watch::channel(None);
+        Self {
+            result_tx,
+            result_rx,
+        }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<Option<AccountWindowStorageResponse>> {
+        self.result_rx.clone()
+    }
+
+    fn complete(&self, response: AccountWindowStorageResponse) {
+        self.result_tx.send_replace(Some(response));
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -66,27 +84,23 @@ enum AccountWindowLegacyBackfillOutcome {
 
 #[derive(Debug)]
 struct AccountWindowSelectionEntry {
-    in_flight: bool,
+    in_flight: Option<Arc<AccountWindowLoadFlight>>,
     last_used_at: Instant,
     last_good: Option<(UpstreamAccountWindowUsageResponse, Instant)>,
-    completed: Option<AccountWindowStoredResult>,
     coverage_hole_bucket_count: u64,
     last_error: Option<String>,
     legacy_readiness: AccountWindowLegacyReadiness,
-    notify: Arc<Notify>,
 }
 
 impl Default for AccountWindowSelectionEntry {
     fn default() -> Self {
         Self {
-            in_flight: false,
+            in_flight: None,
             last_used_at: Instant::now(),
             last_good: None,
-            completed: None,
             coverage_hole_bucket_count: 0,
             last_error: None,
             legacy_readiness: AccountWindowLegacyReadiness::Unknown,
-            notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -117,6 +131,7 @@ struct AccountWindowBuildResult {
 struct AccountWindowLoadLease {
     entries: Arc<Mutex<HashMap<String, AccountWindowSelectionEntry>>>,
     selection: String,
+    flight: Arc<AccountWindowLoadFlight>,
     completed: bool,
 }
 
@@ -134,20 +149,20 @@ impl Drop for AccountWindowLoadLease {
 
         let entries = self.entries.clone();
         let selection = self.selection.clone();
+        let flight = self.flight.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut entries = entries.lock().await;
                 if let Some(entry) = entries.get_mut(&selection)
-                    && entry.in_flight
+                    && entry
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &flight))
                 {
-                    entry.in_flight = false;
-                    entry.completed = Some(AccountWindowStoredResult {
-                        response: AccountWindowStorageResponse::Preparing {
-                            retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                        },
-                        completed_at: Instant::now(),
+                    entry.in_flight = None;
+                    flight.complete(AccountWindowStorageResponse::Preparing {
+                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
                     });
-                    entry.notify.notify_waiters();
                 }
             });
         }
@@ -283,25 +298,18 @@ impl AccountWindowStoragePlane {
                             }),
                     ),
                 )
-            } else if let Some(result) = entry.completed.as_ref().filter(|result| {
-                result.completed_at.elapsed() <= Duration::from_secs(5)
-                    && matches!(&result.response, AccountWindowStorageResponse::Ready(_))
-                    && entry.coverage_hole_bucket_count == 0
-                    && entry.last_error.is_none()
-            }) {
-                (None, None, false, Some(result.response.clone()))
-            } else if entry.in_flight {
+            } else if let Some(flight) = entry.in_flight.as_ref() {
                 self.coalesced_waiter_count.fetch_add(1, Ordering::Relaxed);
-                let mut waiter = Box::pin(entry.notify.clone().notified_owned());
-                waiter.as_mut().enable();
-                (Some(waiter), None, false, None)
+                (Some(flight.subscribe()), None, false, None)
             } else {
-                entry.in_flight = true;
+                let flight = Arc::new(AccountWindowLoadFlight::new());
+                entry.in_flight = Some(flight.clone());
                 (
                     None,
                     Some(AccountWindowLoadLease {
                         entries: self.entries.clone(),
                         selection: selection.clone(),
+                        flight,
                         completed: false,
                     }),
                     false,
@@ -317,15 +325,11 @@ impl AccountWindowStoragePlane {
             return Ok(response);
         }
 
-        if let Some(waiter) = waiter {
-            waiter.await;
-            let entries = self.entries.lock().await;
-            if let Some(result) = entries
-                .get(&selection)
-                .and_then(|entry| entry.completed.as_ref())
-                .filter(|result| result.completed_at.elapsed() <= Duration::from_secs(5))
+        if let Some(mut waiter) = waiter {
+            if waiter.changed().await.is_ok()
+                && let Some(response) = waiter.borrow_and_update().clone()
             {
-                return Ok(result.response.clone());
+                return Ok(response);
             }
             return Ok(AccountWindowStorageResponse::Preparing {
                 retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
@@ -411,6 +415,11 @@ impl AccountWindowStoragePlane {
         pool: &Pool<Sqlite>,
         ranges: &[AccountWindowLegacyBackfillRange],
     ) -> Result<bool> {
+        // A moving window gains new rows after the saved cursor. Keep its cursor, but do not
+        // reuse a completed pass as proof that the next minute is fully attributed.
+        if !legacy_backfill_completion_is_reusable(ranges) {
+            return Ok(false);
+        }
         Ok(
             load_startup_backfill_progress(pool, &legacy_backfill_progress_key(ranges))
                 .await?
@@ -449,12 +458,10 @@ impl AccountWindowStoragePlane {
             }
             entry.coverage_hole_bucket_count = coverage_hole_bucket_count;
             entry.last_error = error;
-            entry.completed = Some(AccountWindowStoredResult {
-                response,
-                completed_at: Instant::now(),
-            });
-            entry.in_flight = false;
-            entry.notify.notify_waiters();
+            let flight = entry.in_flight.take();
+            if let Some(flight) = flight {
+                flight.complete(response);
+            }
         }
     }
 
@@ -593,7 +600,6 @@ impl AccountWindowStoragePlane {
             match outcome {
                 Ok(AccountWindowLegacyBackfillOutcome::Ready) => {
                     entry.legacy_readiness = AccountWindowLegacyReadiness::Ready;
-                    entry.completed = None;
                     entry.last_error = None;
                 }
                 Ok(AccountWindowLegacyBackfillOutcome::Pending) => {
@@ -607,7 +613,6 @@ impl AccountWindowStoragePlane {
                     warn!(error = %err, "account window legacy backfill pass failed");
                 }
             }
-            entry.notify.notify_waiters();
         });
     }
 
@@ -770,22 +775,17 @@ impl AccountWindowStoragePlane {
         let active_entries = entries
             .values()
             .filter(|entry| {
-                entry.in_flight || entry.last_used_at.elapsed() <= ACCOUNT_WINDOW_STORAGE_IDLE_TTL
+                entry.in_flight.is_some()
+                    || entry.last_used_at.elapsed() <= ACCOUNT_WINDOW_STORAGE_IDLE_TTL
             })
             .collect::<Vec<_>>();
         let in_flight_build_count = active_entries
             .iter()
-            .filter(|entry| entry.in_flight)
+            .filter(|entry| entry.in_flight.is_some())
             .count();
         let has_deferred_selection = active_entries.iter().any(|entry| {
-            entry.in_flight
+            entry.in_flight.is_some()
                 || entry.legacy_readiness != AccountWindowLegacyReadiness::Ready
-                || entry.completed.as_ref().is_some_and(|result| {
-                    matches!(
-                        &result.response,
-                        AccountWindowStorageResponse::Preparing { .. }
-                    ) && result.completed_at.elapsed() <= ACCOUNT_WINDOW_STORAGE_IDLE_TTL
-                })
                 || entry.last_good.as_ref().is_some_and(|(_, stored_at)| {
                     stored_at.elapsed() > ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
                 })
@@ -841,7 +841,7 @@ impl AccountWindowStoragePlane {
     fn prune_entries(entries: &mut HashMap<String, AccountWindowSelectionEntry>) {
         let now = Instant::now();
         entries.retain(|_, entry| {
-            entry.in_flight
+            entry.in_flight.is_some()
                 || now.duration_since(entry.last_used_at) <= ACCOUNT_WINDOW_STORAGE_IDLE_TTL
         });
         if entries.len() <= ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES {
@@ -849,7 +849,7 @@ impl AccountWindowStoragePlane {
         }
         let mut keys = entries
             .iter()
-            .filter(|(_, entry)| !entry.in_flight)
+            .filter(|(_, entry)| entry.in_flight.is_none())
             .map(|(key, entry)| (key.clone(), entry.last_used_at))
             .collect::<Vec<_>>();
         keys.sort_by_key(|(_, last_used_at)| *last_used_at);
@@ -871,13 +871,19 @@ impl AccountWindowStoragePlane {
         }
         if let Some(key) = entries
             .iter()
-            .filter(|(_, entry)| !entry.in_flight)
+            .filter(|(_, entry)| entry.in_flight.is_none())
             .min_by_key(|(_, entry)| entry.last_used_at)
             .map(|(key, _)| key.clone())
         {
             entries.remove(&key);
         }
     }
+}
+
+fn legacy_backfill_completion_is_reusable(ranges: &[AccountWindowLegacyBackfillRange]) -> bool {
+    ranges
+        .iter()
+        .all(|range| range.selection_generation.starts_with("reset:"))
 }
 
 fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> String {
@@ -1014,7 +1020,7 @@ fn can_admit_account_window_selection(
 ) -> bool {
     entries.contains_key(selection)
         || entries.len() < ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES
-        || entries.values().any(|entry| !entry.in_flight)
+        || entries.values().any(|entry| entry.in_flight.is_none())
 }
 
 #[cfg(test)]
@@ -1022,13 +1028,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn stale_completion_does_not_extend_last_good_lifetime() {
+    async fn completed_singleflight_does_not_extend_last_good_lifetime() {
         let storage = AccountWindowStoragePlane::default();
         let selection = "accounts=42";
         let response = UpstreamAccountWindowUsageResponse { items: Vec::new() };
         {
             let mut entries = storage.entries.lock().await;
             let entry = entries.entry(selection.to_string()).or_default();
+            entry.in_flight = Some(Arc::new(AccountWindowLoadFlight::new()));
             entry.last_good = Some((
                 response.clone(),
                 Instant::now() - ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE - Duration::from_millis(1),
@@ -1052,16 +1059,17 @@ mod tests {
     async fn abandoned_leader_releases_the_selection_for_waiters() {
         let storage = AccountWindowStoragePlane::default();
         let selection = "accounts=42".to_string();
-        let (lease, waiter) = {
+        let (lease, mut waiter) = {
             let mut entries = storage.entries.lock().await;
             let entry = entries.entry(selection.clone()).or_default();
-            entry.in_flight = true;
-            let mut waiter = Box::pin(entry.notify.clone().notified_owned());
-            waiter.as_mut().enable();
+            let flight = Arc::new(AccountWindowLoadFlight::new());
+            entry.in_flight = Some(flight.clone());
+            let waiter = flight.subscribe();
             (
                 AccountWindowLoadLease {
                     entries: storage.entries.clone(),
                     selection: selection.clone(),
+                    flight,
                     completed: false,
                 },
                 waiter,
@@ -1069,19 +1077,19 @@ mod tests {
         };
 
         drop(lease);
-        tokio::time::timeout(Duration::from_millis(100), waiter)
+        let _ = tokio::time::timeout(Duration::from_millis(100), waiter.changed())
             .await
             .expect("abandoned leader should notify waiting requests");
+        assert!(matches!(
+            waiter.borrow_and_update().clone(),
+            Some(AccountWindowStorageResponse::Preparing { .. })
+        ));
 
         let entries = storage.entries.lock().await;
         let entry = entries
             .get(&selection)
             .expect("selection entry remains available");
-        assert!(!entry.in_flight);
-        assert!(matches!(
-            entry.completed.as_ref().map(|result| &result.response),
-            Some(AccountWindowStorageResponse::Preparing { .. })
-        ));
+        assert!(entry.in_flight.is_none());
     }
 
     #[tokio::test]
@@ -1103,7 +1111,7 @@ mod tests {
             entries.insert(
                 format!("accounts={index}"),
                 AccountWindowSelectionEntry {
-                    in_flight: true,
+                    in_flight: Some(Arc::new(AccountWindowLoadFlight::new())),
                     ..Default::default()
                 },
             );
@@ -1136,6 +1144,40 @@ mod tests {
         assert_ne!(
             legacy_backfill_progress_key(&short_window),
             legacy_backfill_progress_key(&expanded_window)
+        );
+    }
+
+    #[test]
+    fn legacy_backfill_completion_only_applies_to_closed_reset_windows() {
+        let closed_reset = AccountWindowLegacyBackfillRange {
+            account_id: 42,
+            start_at: "2026-08-16 10:00:00".to_string(),
+            end_at: "2026-08-16 15:00:00".to_string(),
+            selection_generation: "reset:123".to_string(),
+            window_duration_secs: 5 * 60 * 60,
+        };
+        let rolling = AccountWindowLegacyBackfillRange {
+            selection_generation: "minute:456".to_string(),
+            ..closed_reset.clone()
+        };
+        let pending_reset = AccountWindowLegacyBackfillRange {
+            selection_generation: "reset-pending:123:minute:456".to_string(),
+            ..closed_reset.clone()
+        };
+
+        assert!(legacy_backfill_completion_is_reusable(
+            std::slice::from_ref(&closed_reset)
+        ));
+        assert!(!legacy_backfill_completion_is_reusable(
+            std::slice::from_ref(&rolling)
+        ));
+        assert!(!legacy_backfill_completion_is_reusable(
+            std::slice::from_ref(&pending_reset)
+        ));
+        assert_eq!(
+            legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
+            legacy_backfill_progress_key(std::slice::from_ref(&pending_reset)),
+            "moving windows retain one incremental progress cursor"
         );
     }
 

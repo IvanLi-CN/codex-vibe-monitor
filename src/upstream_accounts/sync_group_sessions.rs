@@ -69,72 +69,66 @@ pub(crate) fn build_window_usage_range(
     Some(AccountWindowUsageRangeBounds {
         start_at: window_anchor - ChronoDuration::minutes(window_duration_mins),
         end_at: window_anchor.min(now),
-        // A rolling window can only change membership on a minute boundary. Preserve exact
-        // request bounds in the builder while using this stable generation for coalescing.
-        selection_generation: reset_anchor.map_or_else(
-            || format!("minute:{}", now.timestamp().div_euclid(60)),
-            |anchor| format!("reset:{}", anchor.timestamp()),
-        ),
+        // A moving window can only change membership on a minute boundary. A future reset
+        // still grows until that boundary, so include both its anchor and the minute generation.
+        selection_generation: match reset_anchor {
+            Some(anchor) if anchor <= now => format!("reset:{}", anchor.timestamp()),
+            Some(anchor) => format!(
+                "reset-pending:{}:minute:{}",
+                anchor.timestamp(),
+                now.timestamp().div_euclid(60)
+            ),
+            None => format!("minute:{}", now.timestamp().div_euclid(60)),
+        },
         window_duration_secs: window_duration_mins.saturating_mul(60),
     })
 }
 
-pub(crate) async fn load_window_actual_usage_rows_from_pool(
+async fn detail_exact_upstream_account_id_sql(pool: &Pool<Sqlite>) -> Result<&'static str> {
+    let has_structured_column = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('codex_invocations') WHERE name = 'upstream_account_id' LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    Ok(if has_structured_column {
+        "COALESCE(upstream_account_id, CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END)"
+    } else {
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END"
+    })
+}
+
+pub(crate) async fn load_window_actual_usage_rows_for_detail_exact_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_at: &str,
     end_at: &str,
-    end_before: Option<&str>,
-    min_id_exclusive: Option<i64>,
-    max_id_inclusive: Option<i64>,
-    limit: Option<usize>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if account_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            id,
-            occurred_at,
-            upstream_account_id,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            total_tokens,
-            cost
-        FROM codex_invocations
-        WHERE occurred_at >=
-        "#,
-    );
+    let upstream_account_id_sql = detail_exact_upstream_account_id_sql(pool).await?;
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, occurred_at, ");
     query
+        .push(upstream_account_id_sql)
+        .push(
+            " AS upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost \
+             FROM codex_invocations WHERE occurred_at >= ",
+        )
         .push_bind(start_at)
         .push(" AND occurred_at < ")
         .push_bind(end_at)
-        .push(" AND upstream_account_id IS NOT NULL");
-
-    if let Some(end_before) = end_before {
-        query.push(" AND occurred_at < ").push_bind(end_before);
-    }
-    if let Some(min_id_exclusive) = min_id_exclusive {
-        query.push(" AND id > ").push_bind(min_id_exclusive.max(0));
-    }
-    if let Some(max_id_inclusive) = max_id_inclusive {
-        query.push(" AND id <= ").push_bind(max_id_inclusive.max(0));
-    }
-
-    query.push(" AND upstream_account_id IN (");
+        .push(" AND ")
+        .push(upstream_account_id_sql)
+        .push(" IN (");
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
             separated.push_bind(account_id);
         }
     }
-    query.push(") ORDER BY occurred_at ASC");
-    if let Some(limit) = limit {
-        query.push(" LIMIT ").push_bind(limit as i64);
-    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
 
     query
         .build_query_as::<AccountWindowUsageRow>()
@@ -506,19 +500,14 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        rows.extend(
-            load_window_actual_usage_rows_from_pool(
-                &archive_pool,
-                account_ids,
-                start_at,
-                end_at,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await?,
-        );
+        let archive_rows = load_window_actual_usage_rows_for_detail_exact_from_pool(
+            &archive_pool,
+            account_ids,
+            start_at,
+            end_at,
+        )
+        .await?;
+        rows.extend(archive_rows);
         archive_pool.close().await;
         drop(temp_cleanup);
     }

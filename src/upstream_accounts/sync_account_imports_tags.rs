@@ -3361,10 +3361,15 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
                 }
             }
         }
-        // A cold read model must not turn an account-detail request into the old full-window
-        // archive/raw query. The dedicated window endpoint retries preparation; this detail
-        // response preserves its existing nullable usage fields until a baseline is ready.
-        AccountWindowStorageResponse::Preparing { .. } => {}
+        // The batch endpoint owns the preparing contract. Account detail retains its historic
+        // exact response semantics while the shared read model is recovering.
+        AccountWindowStorageResponse::Preparing { .. } => {
+            enrich_window_actual_usage_for_account_detail_exact(
+                state,
+                std::slice::from_mut(&mut detail.summary),
+            )
+            .await?;
+        }
     }
     apply_effective_routing_rules_to_summaries(
         &state.pool,
@@ -4394,6 +4399,50 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
 
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok((AccountWindowUsageBuildOutcome::Ready, telemetry))
+}
+
+async fn enrich_window_actual_usage_for_account_detail_exact(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() || !sqlite_table_exists(&state.pool, "codex_invocations").await? {
+        return Ok(());
+    }
+    let now = Utc::now();
+    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
+    else {
+        return Ok(());
+    };
+    let account_ids = plans.keys().copied().collect::<Vec<_>>();
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+
+    let start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
+    let end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
+    let mut rows = load_window_actual_usage_rows_from_archives(
+        &state.pool,
+        &account_ids,
+        &start_at,
+        &end_at,
+        &state.config.archive_dir,
+    )
+    .await?;
+    let archived_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    rows.extend(
+        load_window_actual_usage_rows_for_detail_exact_from_pool(
+            &state.pool,
+            &account_ids,
+            &start_at,
+            &end_at,
+        )
+        .await?
+        .into_iter()
+        .filter(|row| !archived_ids.contains(&row.id)),
+    );
+    let usage = fold_account_window_usage_rows(rows, &plans);
+    apply_window_actual_usage_to_summaries(items, &usage);
+    Ok(())
 }
 
 #[cfg(test)]
