@@ -1123,6 +1123,35 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_TARGETS: [&str; 2] = [
 ];
 
 pub(crate) async fn load_invocation_hourly_source_rows_after_id(
+    pool: &Pool<Sqlite>,
+    start_after_id: i64,
+    source_scope: InvocationSourceScope,
+    limit: i64,
+) -> Result<Vec<InvocationHourlySourceRecord>> {
+    let archive_columns = load_archive_table_columns(pool, "codex_invocations").await?;
+    let query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
+    match source_scope {
+        InvocationSourceScope::All => sqlx::query_as::<_, InvocationHourlySourceRecord>(&query_sql)
+            .bind(start_after_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into),
+        InvocationSourceScope::ProxyOnly => {
+            let proxy_query_sql =
+                query_sql.replacen("WHERE id > ?1", "WHERE id > ?1 AND source = ?3", 1);
+            sqlx::query_as::<_, InvocationHourlySourceRecord>(&proxy_query_sql)
+                .bind(start_after_id)
+                .bind(limit)
+                .bind(SOURCE_PROXY)
+                .fetch_all(pool)
+                .await
+                .map_err(Into::into)
+        }
+    }
+}
+
+async fn load_live_invocation_hourly_source_rows_after_id(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     start_after_id: i64,
     source_scope: InvocationSourceScope,
@@ -4391,7 +4420,7 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_live_rows(
 ) -> Result<i64> {
     let mut cursor_id = start_after_id;
     loop {
-        let mut rows = load_invocation_hourly_source_rows_after_id(
+        let mut rows = load_live_invocation_hourly_source_rows_after_id(
             &mut *tx,
             cursor_id,
             source_scope,

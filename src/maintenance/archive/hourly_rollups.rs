@@ -762,9 +762,14 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     };
     let status = select("status");
     let model = select("model");
-    let has_complete_token_components = ["input_tokens", "output_tokens", "reasoning_tokens"]
-        .iter()
-        .all(|column| archive_columns.contains(*column));
+    let has_complete_token_components = [
+        "input_tokens",
+        "output_tokens",
+        "cache_input_tokens",
+        "reasoning_tokens",
+    ]
+    .iter()
+    .all(|column| archive_columns.contains(*column));
     let input_tokens = if has_complete_token_components {
         select("input_tokens")
     } else {
@@ -775,7 +780,11 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     } else {
         "NULL AS output_tokens".to_string()
     };
-    let cache_input_tokens = select("cache_input_tokens");
+    let cache_input_tokens = if has_complete_token_components {
+        select("cache_input_tokens")
+    } else {
+        "NULL AS cache_input_tokens".to_string()
+    };
     let reasoning_tokens = if has_complete_token_components {
         select("reasoning_tokens")
     } else {

@@ -974,11 +974,14 @@ fn overlay_runtime_timeseries_snapshot(
             record.t_upstream_ttfb_ms,
         );
         entry.record_first_token_sample(record.first_token_ms);
-        entry.total_tokens += record.total_tokens.unwrap_or_default();
-        entry.input_tokens += record.input_tokens.unwrap_or_default();
-        entry.output_tokens += record.output_tokens.unwrap_or_default();
-        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-        entry.reasoning_tokens += record.reasoning_tokens.unwrap_or_default();
+        add_optional_token_components(
+            entry,
+            record.total_tokens,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_input_tokens,
+            record.reasoning_tokens,
+        );
         entry.total_cost += record.cost.unwrap_or_default();
     }
     Ok(())
@@ -3251,7 +3254,9 @@ pub(crate) fn timeseries_point_from_aggregate(
         .max(agg.success_count + agg.failure_count + agg.in_flight_count.max(0))
         > 0;
     let token_components_complete = agg.total_tokens <= 0
-        || (agg.token_components_observed && agg.token_component_incomplete_count == 0);
+        || (agg.token_components_observed
+            && agg.token_component_incomplete_count == 0
+            && agg.input_tokens.checked_add(agg.output_tokens) == Some(agg.total_tokens));
     TimeseriesPoint {
         bucket_start: format_utc_iso(start),
         bucket_end: format_utc_iso(end),
@@ -4184,6 +4189,31 @@ mod tests {
             cache_input_tokens: 5,
             token_components_observed: true,
             token_component_incomplete_count: 1,
+            ..Default::default()
+        };
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.total_tokens, 30);
+        assert_eq!(point.input_tokens, None);
+        assert_eq!(point.output_tokens, None);
+        assert_eq!(point.cache_input_tokens, None);
+        assert_eq!(point.reasoning_tokens, None);
+    }
+
+    #[test]
+    fn timeseries_point_hides_zero_filled_legacy_token_components() {
+        let aggregate = BucketAggregate {
+            total_tokens: 30,
+            token_components_observed: true,
             ..Default::default()
         };
 
