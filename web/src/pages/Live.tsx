@@ -343,7 +343,7 @@ export default function LivePage() {
       </section>
 
       <nav aria-label={t("live.tabs.label")} data-testid="live-view-tabs">
-        <SegmentedControl className="grid w-full grid-cols-4" role="tablist">
+        <SegmentedControl className="w-fit max-w-full flex-wrap" role="tablist">
           {LIVE_TABS.map((tab) => (
             <SegmentedControlItem
               key={tab}
@@ -352,7 +352,7 @@ export default function LivePage() {
               role="tab"
               aria-selected={activeTab === tab}
               aria-controls={LIVE_TAB_IDS[tab].panel}
-              className="min-w-0 w-full px-2 sm:px-3.5"
+              className="min-w-0 px-2.5 sm:px-3.5"
               onClick={() => {
                 setActiveTab(tab);
                 persistLiveTab(tab);

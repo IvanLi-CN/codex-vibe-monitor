@@ -344,7 +344,7 @@ describe("LivePage", () => {
     );
   });
 
-  it("uses the shared segmented control for full-width workspace tabs", () => {
+  it("uses the shared segmented control for content-width workspace tabs", () => {
     setupLivePageHooks(null);
 
     render(<LivePage />);
@@ -355,9 +355,11 @@ describe("LivePage", () => {
     const routingPanel = host?.querySelector("#live-workspace-panel-routing");
 
     expect(tabList?.className).toContain("segmented-control");
-    expect(tabList?.className).toContain("grid-cols-4");
+    expect(tabList?.className).toContain("w-fit");
+    expect(tabList?.classList.contains("w-full")).toBe(false);
     expect(tabs).toHaveLength(4);
     expect(routingTab?.getAttribute("data-active")).toBe("true");
+    expect(routingTab?.classList.contains("w-full")).toBe(false);
     expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
     expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
   });

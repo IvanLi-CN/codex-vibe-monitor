@@ -74,6 +74,8 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain("Ciii");
     expect(html).toContain('data-testid="model-routing-account-11-gpt-5.5-codex"');
     expect(html).toContain('data-testid="model-routing-record-attempt:31"');
+    expect(html).toContain('data-testid="model-routing-live-controls"');
+    expect(html).toContain("desktop:justify-end");
     expect(html).toContain("1/100");
   });
 
