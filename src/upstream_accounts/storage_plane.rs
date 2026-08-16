@@ -18,6 +18,7 @@ const ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(60);
 const ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS: u64 = 1_000;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_WRITE_BATCH_SIZE: i64 = 32;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET: Duration = Duration::from_millis(200);
+const ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS: usize = 200;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
     "account_window_usage_upstream_account_id";
@@ -1258,47 +1259,71 @@ impl AccountWindowStoragePlane {
             drop(write_permit);
             return Ok(AccountWindowLegacyBackfillOutcome::Pending);
         };
-        let write_result = tokio::time::timeout(ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET, async {
-            let mut tx = pool.begin().await?;
-            let mut last_scanned_id = progress.cursor_id;
-            let mut updated = 0_u64;
-            let mut scanned = 0_u64;
-            for (id, payload) in &rows {
-                last_scanned_id = *id;
-                scanned = scanned.saturating_add(1);
-                let Some(account_id) =
-                    crate::proxy::upstream_account_id_from_payload(payload.as_deref())
-                else {
-                    continue;
-                };
-                let result = sqlx::query(
-                    "UPDATE codex_invocations SET upstream_account_id = ?2 WHERE id = ?1 AND upstream_account_id IS NULL",
-                )
-                .bind(id)
-                .bind(account_id)
-                .execute(&mut *tx)
-                .await?;
-                updated += result.rows_affected();
+        let started_at = Instant::now();
+        let mut tx = pool.begin().await?;
+        let mut last_scanned_id = progress.cursor_id;
+        let mut updated = 0_u64;
+        let mut scanned = 0_u64;
+        let mut updated_ids = Vec::new();
+        for (id, payload) in &rows {
+            if started_at.elapsed() >= ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET {
+                break;
             }
-            // Hourly materialization already resolves COALESCE(structured, attempt/payload)
-            // attribution. Rebuilding every derived bucket here only lengthens the indexed
-            // attribution migration's write lock and does not change rollup semantics.
-            tx.commit().await?;
-            Ok::<_, anyhow::Error>((last_scanned_id, scanned, updated))
-        })
-        .await;
-        let (cursor_id, scanned, updated) = match write_result {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => return Err(error),
-            Err(_) => {
-                tracing::warn!(
-                    write_budget_ms = ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET.as_millis() as u64,
-                    candidate_count = rows.len(),
-                    "account window attribution backfill exceeded its write budget; retaining the batch"
-                );
-                return Ok(AccountWindowLegacyBackfillOutcome::Pending);
+            last_scanned_id = *id;
+            scanned = scanned.saturating_add(1);
+            let Some(account_id) =
+                crate::proxy::upstream_account_id_from_payload(payload.as_deref())
+            else {
+                continue;
+            };
+            let result = sqlx::query(
+                "UPDATE codex_invocations SET upstream_account_id = ?2 WHERE id = ?1 AND upstream_account_id IS NULL",
+            )
+            .bind(id)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+            updated += result.rows_affected();
+            if result.rows_affected() > 0 {
+                updated_ids.push(*id);
             }
-        };
+        }
+
+        // Keep the structured assignment and every rollup that can be rebuilt within the same
+        // small transaction atomic. Dense hours are left as an explicit coverage hole: their
+        // assignment still commits, while the owner path stays preparing and queues the bounded
+        // live repair instead of widening this maintenance transaction.
+        let rollup_outcome =
+            crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+                tx.as_mut(),
+                &updated_ids,
+                Some(ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS),
+            )
+            .await?;
+        if rollup_outcome
+            == crate::maintenance::InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded
+        {
+            tracing::warn!(
+                updated_invocation_count = updated_ids.len(),
+                rollup_row_limit = ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS,
+                write_budget_ms = ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET.as_millis() as u64,
+                "account window attribution backfill committed a bounded coverage hole for live repair"
+            );
+        }
+        tx.commit().await?;
+
+        if started_at.elapsed() > ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET {
+            tracing::warn!(
+                write_budget_ms = ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET.as_millis() as u64,
+                candidate_count = rows.len(),
+                scanned_count = scanned,
+                updated_count = updated,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "account window attribution backfill exceeded its write-budget target"
+            );
+        }
+
+        let cursor_id = last_scanned_id;
 
         let outcome = if scanned == rows.len() as u64
             && rows.len() < ACCOUNT_WINDOW_LEGACY_BACKFILL_WRITE_BATCH_SIZE as usize
