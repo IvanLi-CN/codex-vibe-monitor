@@ -106,6 +106,10 @@ export const RecoveryAttempt: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("model-routing-account-11-gpt-5.5")).toBeVisible();
+    const controls = canvas.getByTestId("model-routing-live-controls");
+    await expect(controls).toBeVisible();
+    await expect(within(controls).getByText("15m")).toBeVisible();
+    await expect(within(controls).getByText("刷新")).toBeVisible();
     const detailsButton = canvas.getByLabelText("展开决策详情");
     await userEvent.click(detailsButton);
     await expect(canvas.getByText("候选比较")).toBeVisible();
