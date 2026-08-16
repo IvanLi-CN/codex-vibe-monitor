@@ -674,6 +674,22 @@ function clickTab(matcher: RegExp) {
   return tab;
 }
 
+function expandLoginHealthDetails() {
+  const summary = document.body.querySelector(
+    '[data-testid="upstream-account-login-health-summary"] details > summary',
+  );
+  if (!(summary instanceof HTMLElement)) {
+    throw new Error("missing login health diagnostic details");
+  }
+  act(() => {
+    const details = summary.closest("details");
+    if (!(details instanceof HTMLDetailsElement)) {
+      throw new Error("missing login health details container");
+    }
+    details.open = true;
+  });
+}
+
 function clickDrawerBackdrop() {
   const overlay =
     document.body.querySelector(".drawer-shell")?.parentElement?.previousElementSibling;
@@ -1450,6 +1466,7 @@ Object.assign(scope, {
   setComboboxValue,
   clickButton,
   clickTab,
+  expandLoginHealthDetails,
   clickDrawerBackdrop,
   clickDrawerGutter,
   clickFirstRosterRow,

@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
 import { ForwardProxyLiveTable } from "../features/forward-proxy/ForwardProxyLiveTable";
 import { InvocationChart } from "../features/invocations/InvocationChart";
 import { InvocationCardList } from "../features/invocations/InvocationTable";
+import { ModelRoutingLivePanel } from "../features/live/ModelRoutingLivePanel";
 import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
 import { AppIcon } from "../features/shared/AppIcon";
 import { StatsCards } from "../features/stats/StatsCards";
 import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
 import { useInvocationStream } from "../hooks/useInvocations";
+import { useModelRoutingLive } from "../hooks/useModelRoutingLive";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
 import { useSummary } from "../hooks/useStats";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
@@ -22,6 +25,9 @@ import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccoun
 
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
+const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
+const LIVE_TABS = ["conversations", "records", "routing", "proxy"] as const;
+type LiveTab = (typeof LIVE_TABS)[number];
 const DEFAULT_PROMPT_CACHE_SELECTION: PromptCacheConversationSelection = {
   mode: "count",
   limit: 50,
@@ -124,12 +130,40 @@ function persistPromptCacheSelectionValue(value: string) {
   }
 }
 
+function readLiveTab(): LiveTab {
+  if (typeof window === "undefined") return "routing";
+  try {
+    const value = window.localStorage.getItem(LIVE_TAB_STORAGE_KEY);
+    return LIVE_TABS.includes(value as LiveTab) ? (value as LiveTab) : "routing";
+  } catch {
+    return "routing";
+  }
+}
+
+function persistLiveTab(value: LiveTab) {
+  try {
+    window.localStorage.setItem(LIVE_TAB_STORAGE_KEY, value);
+  } catch {
+    // Local storage is optional; routing remains the stable default.
+  }
+}
+
 export default function LivePage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const isCompactViewport = useCompactViewport();
-  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
-    useUpstreamAccountDetailRoute();
+  const {
+    upstreamAccountId,
+    upstreamAccountTab,
+    upstreamAccountModel,
+    openUpstreamAccount,
+    closeUpstreamAccount,
+  } = useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
+  const [activeTab, setActiveTab] = useState<LiveTab>(readLiveTab);
+  const [routingWindow, setRoutingWindow] = useState<"15m" | "1h" | "6h" | "24h">("1h");
+  const [routingModel, setRoutingModel] = useState("");
+  const [routingState, setRoutingState] = useState("");
   const [conversationSelectionValue, setConversationSelectionValue] = useState(() =>
     readPromptCacheSelectionValue(),
   );
@@ -139,7 +173,7 @@ export default function LivePage() {
     stats: forwardProxyStats,
     isLoading: forwardProxyLoading,
     error: forwardProxyError,
-  } = useForwardProxyLiveStats();
+  } = useForwardProxyLiveStats(activeTab === "proxy");
 
   const summaryWindows = useMemo(
     () =>
@@ -157,7 +191,7 @@ export default function LivePage() {
   } = useSummary(summaryWindow, summaryWindow === "current" ? { limit } : undefined);
 
   const { records, isLoading, error } = useInvocationStream(limit, undefined, undefined, {
-    enableStream: true,
+    enableStream: activeTab === "records",
   });
   const chartRecords = useMemo(
     () =>
@@ -173,7 +207,21 @@ export default function LivePage() {
     stats: conversationStats,
     isLoading: conversationsLoading,
     error: conversationsError,
-  } = usePromptCacheConversations(conversationSelection);
+  } = usePromptCacheConversations(conversationSelection, activeTab === "conversations");
+  const {
+    data: modelRouting,
+    isLoading: modelRoutingLoading,
+    error: modelRoutingError,
+    refresh: refreshModelRouting,
+  } = useModelRoutingLive(
+    {
+      window: routingWindow,
+      model: routingModel || undefined,
+      state: routingState || undefined,
+      limit: 100,
+    },
+    activeTab === "routing",
+  );
   const promptCacheSelectionOptions = useMemo(
     () =>
       PROMPT_CACHE_SELECTION_OPTIONS.map((option) => ({
@@ -241,6 +289,8 @@ export default function LivePage() {
           open
           presentation="page"
           accountId={upstreamAccountId}
+          initialTab={upstreamAccountTab}
+          initialExpandedModel={upstreamAccountModel}
           onClose={closeUpstreamAccount}
         />
       </div>
@@ -274,115 +324,165 @@ export default function LivePage() {
         </div>
       </section>
 
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="section-heading">
-            <h2 className="section-title">{t("live.proxy.title")}</h2>
-            <p className="section-description">{t("live.proxy.description")}</p>
-          </div>
-          <ForwardProxyLiveTable
-            stats={forwardProxyStats}
-            isLoading={forwardProxyLoading}
-            error={forwardProxyError}
-          />
+      <nav aria-label={t("live.tabs.label")} className="border-b border-base-300">
+        <div className="grid grid-cols-4">
+          {LIVE_TABS.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              className={`min-h-11 border-b-2 px-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                activeTab === tab
+                  ? "border-primary text-primary"
+                  : "border-transparent text-base-content/70 hover:text-base-content"
+              }`}
+              onClick={() => {
+                setActiveTab(tab);
+                persistLiveTab(tab);
+              }}
+            >
+              {t(`live.tabs.${tab}`)}
+            </button>
+          ))}
         </div>
-      </section>
+      </nav>
 
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="section-heading">
-              <h2 className="section-title">{t("live.conversations.title")}</h2>
-              <p className="section-description">{t("live.conversations.description")}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="gap-2"
-                data-testid="live-prompt-cache-expand-all"
-                disabled={conversationsLoading || !hasVisiblePromptCacheConversations}
-                onClick={toggleAllVisiblePromptCacheKeys}
-              >
-                <AppIcon
-                  name={allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"}
-                  className="h-4 w-4"
-                  data-testid="live-prompt-cache-expand-all-icon"
-                  data-icon-name={allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"}
-                  aria-hidden
+      {activeTab === "conversations" ? (
+        <section className="surface-panel" role="tabpanel">
+          <div className="surface-panel-body gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="section-heading">
+                <h2 className="section-title">{t("live.conversations.title")}</h2>
+                <p className="section-description">{t("live.conversations.description")}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="gap-2"
+                  data-testid="live-prompt-cache-expand-all"
+                  disabled={conversationsLoading || !hasVisiblePromptCacheConversations}
+                  onClick={toggleAllVisiblePromptCacheKeys}
+                >
+                  <AppIcon
+                    name={allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"}
+                    className="h-4 w-4"
+                    data-testid="live-prompt-cache-expand-all-icon"
+                    data-icon-name={
+                      allVisiblePromptCacheKeysExpanded ? "chevron-up" : "chevron-down"
+                    }
+                    aria-hidden
+                  />
+                  {allVisiblePromptCacheKeysExpanded
+                    ? t("live.conversations.actions.collapseAllRecords")
+                    : t("live.conversations.actions.expandAllRecords")}
+                </Button>
+                <SelectField
+                  label={t("live.conversations.selectionLabel")}
+                  className="w-40"
+                  name="livePromptCacheSelection"
+                  data-testid="live-prompt-cache-selection"
+                  size="sm"
+                  value={conversationSelectionValue}
+                  options={promptCacheSelectionOptions}
+                  onValueChange={(value) => {
+                    if (!PROMPT_CACHE_SELECTION_LOOKUP.has(value)) return;
+                    setConversationSelectionValue(value);
+                    persistPromptCacheSelectionValue(value);
+                  }}
                 />
-                {allVisiblePromptCacheKeysExpanded
-                  ? t("live.conversations.actions.collapseAllRecords")
-                  : t("live.conversations.actions.expandAllRecords")}
-              </Button>
-              <SelectField
-                label={t("live.conversations.selectionLabel")}
-                className="w-40"
-                name="livePromptCacheSelection"
-                data-testid="live-prompt-cache-selection"
-                size="sm"
-                value={conversationSelectionValue}
-                options={promptCacheSelectionOptions}
-                onValueChange={(value) => {
-                  if (!PROMPT_CACHE_SELECTION_LOOKUP.has(value)) return;
-                  setConversationSelectionValue(value);
-                  persistPromptCacheSelectionValue(value);
-                }}
-              />
+              </div>
             </div>
-          </div>
-          <PromptCacheConversationTable
-            stats={conversationStats}
-            isLoading={conversationsLoading}
-            error={conversationsError}
-            expandedPromptCacheKeys={expandedPromptCacheKeys}
-            onToggleExpandedPromptCacheKey={toggleExpandedPromptCacheKey}
-            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
-          />
-        </div>
-      </section>
-
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="section-heading">
-              <h2 className="section-title">{t("live.chart.title")}</h2>
-            </div>
-            <SelectField
-              label={t("live.window.label")}
-              className="w-36"
-              name="liveWindowSize"
-              size="sm"
-              value={String(limit)}
-              options={LIMIT_OPTIONS.map((value) => ({
-                value: String(value),
-                label: t("live.option.records", { count: value }),
-              }))}
-              onValueChange={(value) => setLimit(Number(value))}
+            <PromptCacheConversationTable
+              stats={conversationStats}
+              isLoading={conversationsLoading}
+              error={conversationsError}
+              expandedPromptCacheKeys={expandedPromptCacheKeys}
+              onToggleExpandedPromptCacheKey={toggleExpandedPromptCacheKey}
+              onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
             />
           </div>
-          <InvocationChart records={chartRecords} isLoading={isLoading} />
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="section-heading">
-            <h2 className="section-title">{t("live.latest.title")}</h2>
+      {activeTab === "records" ? (
+        <section className="surface-panel" role="tabpanel">
+          <div className="surface-panel-body gap-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="section-heading">
+                <h2 className="section-title">{t("live.chart.title")}</h2>
+              </div>
+              <SelectField
+                label={t("live.window.label")}
+                className="w-36"
+                name="liveWindowSize"
+                size="sm"
+                value={String(limit)}
+                options={LIMIT_OPTIONS.map((value) => ({
+                  value: String(value),
+                  label: t("live.option.records", { count: value }),
+                }))}
+                onValueChange={(value) => setLimit(Number(value))}
+              />
+            </div>
+            <InvocationChart records={chartRecords} isLoading={isLoading} />
+            <div className="section-heading">
+              <h2 className="section-title">{t("live.latest.title")}</h2>
+            </div>
+            <InvocationCardList
+              records={records}
+              isLoading={isLoading}
+              error={error}
+              onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
+            />
           </div>
-          <InvocationCardList
-            records={records}
-            isLoading={isLoading}
-            error={error}
-            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
-          />
-        </div>
-      </section>
+        </section>
+      ) : null}
+
+      {activeTab === "routing" ? (
+        <ModelRoutingLivePanel
+          data={modelRouting}
+          isLoading={modelRoutingLoading}
+          error={modelRoutingError}
+          window={routingWindow}
+          model={routingModel}
+          state={routingState}
+          onWindowChange={setRoutingWindow}
+          onModelChange={setRoutingModel}
+          onStateChange={setRoutingState}
+          onOpenAccount={(accountId, selectedModel) =>
+            openUpstreamAccount(accountId, { tab: "healthEvents", model: selectedModel })
+          }
+          onOpenInvocation={(invokeId) =>
+            navigate(`/records?invokeId=${encodeURIComponent(invokeId)}`)
+          }
+          onRefresh={refreshModelRouting}
+        />
+      ) : null}
+
+      {activeTab === "proxy" ? (
+        <section className="surface-panel" role="tabpanel">
+          <div className="surface-panel-body gap-4">
+            <div className="section-heading">
+              <h2 className="section-title">{t("live.proxy.title")}</h2>
+              <p className="section-description">{t("live.proxy.description")}</p>
+            </div>
+            <ForwardProxyLiveTable
+              stats={forwardProxyStats}
+              isLoading={forwardProxyLoading}
+              error={forwardProxyError}
+            />
+          </div>
+        </section>
+      ) : null}
       {upstreamAccountId != null ? (
         <SharedUpstreamAccountDetailDrawer
           open
           accountId={upstreamAccountId}
+          initialTab={upstreamAccountTab}
+          initialExpandedModel={upstreamAccountModel}
           onClose={closeUpstreamAccount}
         />
       ) : null}

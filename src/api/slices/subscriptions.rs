@@ -796,6 +796,7 @@ struct RuntimeTopicWork {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum RuntimeTopicDependency {
     Invocation,
+    ModelRouting,
     PromptCacheProjection,
     PromptCacheWindow,
     PromptCacheStickyWindow,
@@ -2741,6 +2742,12 @@ enum SubscriptionTopic {
     ForwardProxyLive,
     InvocationPoolAttempts {
         invoke_id: String,
+    },
+    ModelRoutingLive {
+        window: String,
+        model: Option<String>,
+        state: Option<String>,
+        limit: i64,
     },
 }
 
@@ -4739,7 +4746,9 @@ impl SubscriptionHub {
                         );
                     }
                 }
-                RuntimeMutation::Invocation(_) | RuntimeMutation::AttemptChanged { .. } => {}
+                RuntimeMutation::Invocation(_)
+                | RuntimeMutation::AttemptChanged { .. }
+                | RuntimeMutation::ModelRoutingChanged => {}
             }
         }
 
@@ -9105,7 +9114,8 @@ impl SubscriptionTopic {
             | Self::PromptCacheWindow { .. }
             | Self::PromptCacheStickyWindow { .. }
             | Self::ForwardProxyLive
-            | Self::InvocationPoolAttempts { .. } => SubscriptionTopicClass::BoundedColdHydrate,
+            | Self::InvocationPoolAttempts { .. }
+            | Self::ModelRoutingLive { .. } => SubscriptionTopicClass::BoundedColdHydrate,
         }
     }
 
@@ -9201,6 +9211,7 @@ impl SubscriptionTopic {
             Self::InvocationPoolAttempts { invoke_id } => {
                 vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
             }
+            Self::ModelRoutingLive { .. } => vec![RuntimeTopicDependency::ModelRouting],
             Self::InvocationHistoryWindow { scope } | Self::InvocationHistoryOverview { scope } => {
                 match scope {
                     ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key) => vec![
@@ -9342,6 +9353,34 @@ impl SubscriptionTopic {
             "invocation.pool-attempts" => Ok(Self::InvocationPoolAttempts {
                 invoke_id: parse_required_text_param(params, "invokeId")?,
             }),
+            "pool.model-routing-live" => {
+                let window = param_or_default(params, "window", "1h");
+                if !matches!(window.as_str(), "15m" | "1h" | "6h" | "24h") {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "model-routing window must be one of: 15m, 1h, 6h, 24h"
+                    )));
+                }
+                let limit = parse_i64_param(params, "limit", Some(100))?;
+                if !(1..=100).contains(&limit) {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "model-routing limit must be between 1 and 100"
+                    )));
+                }
+                let state = parse_optional_text_param(params, "state");
+                if let Some(state) = state.as_deref()
+                    && !matches!(state, "available" | "degraded" | "cooling_down")
+                {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "model-routing state must be available, degraded, or cooling_down"
+                    )));
+                }
+                Ok(Self::ModelRoutingLive {
+                    window,
+                    model: parse_optional_text_param(params, "model"),
+                    state,
+                    limit,
+                })
+            }
             _ => Err(ApiError::bad_request(anyhow!(
                 "unsupported subscription topic: {topic}"
             ))),
@@ -9575,6 +9614,23 @@ impl SubscriptionTopic {
                 topic: self.name().to_string(),
                 params: BTreeMap::from([("invokeId".to_string(), invoke_id.clone())]),
             },
+            Self::ModelRoutingLive {
+                window,
+                model,
+                state,
+                limit,
+            } => {
+                let mut params = btree_map_from_pairs([
+                    ("window", window.clone()),
+                    ("limit", limit.to_string()),
+                ]);
+                insert_optional_param(&mut params, "model", model.clone());
+                insert_optional_param(&mut params, "state", state.clone());
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params,
+                }
+            }
         }
     }
 
@@ -9604,6 +9660,7 @@ impl SubscriptionTopic {
             Self::ParallelWorkCurrent { .. } => "stats.parallel-work.current",
             Self::ForwardProxyLive => "forward-proxy.live",
             Self::InvocationPoolAttempts { .. } => "invocation.pool-attempts",
+            Self::ModelRoutingLive { .. } => "pool.model-routing-live",
         }
     }
 
@@ -9637,6 +9694,7 @@ impl SubscriptionTopic {
             Self::ParallelWorkCurrent { .. } => "stats.parallel-work.current/v1".to_string(),
             Self::ForwardProxyLive => "forward-proxy.live/v1".to_string(),
             Self::InvocationPoolAttempts { .. } => "invocation.pool-attempts/v1".to_string(),
+            Self::ModelRoutingLive { .. } => "pool.model-routing-live/v1".to_string(),
         }
     }
 
@@ -9678,13 +9736,15 @@ impl SubscriptionTopic {
                     | Self::PromptCacheConversationOperationsWindow { .. }
                     | Self::PromptCacheWindow { .. }
                     | Self::PromptCacheStickyWindow { .. }
-                    | Self::InvocationPoolAttempts { .. } => false,
+                    | Self::InvocationPoolAttempts { .. }
+                    | Self::ModelRoutingLive { .. } => false,
                 }
             }
             RuntimeMutation::AttemptChanged { invoke_id } => matches!(
                 self,
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
             ),
+            RuntimeMutation::ModelRoutingChanged => matches!(self, Self::ModelRoutingLive { .. }),
             RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => matches!(
                 self,
                 Self::PromptCacheConversationBindingCurrent { scope }
@@ -10231,6 +10291,25 @@ impl SubscriptionTopic {
                         .await?;
                 Ok(serde_json::to_value(response)?)
             }
+            Self::ModelRoutingLive {
+                window,
+                model,
+                state: route_state,
+                limit,
+            } => {
+                let Json(response) = get_model_routing_live(
+                    State(state),
+                    Query(ModelRoutingLiveQuery {
+                        window: Some(window.clone()),
+                        model: model.clone(),
+                        state: route_state.clone(),
+                        limit: Some(*limit as usize),
+                    }),
+                )
+                .await
+                .map_err(|(_status, message)| ApiError::bad_request(anyhow!(message)))?;
+                Ok(serde_json::to_value(response)?)
+            }
         }
     }
 }
@@ -10256,6 +10335,7 @@ impl RuntimeMutation {
             Self::AttemptChanged { invoke_id } => {
                 vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
             }
+            Self::ModelRoutingChanged => vec![RuntimeTopicDependency::ModelRouting],
             Self::PromptCacheBindingChanged { prompt_cache_key } => {
                 vec![RuntimeTopicDependency::Binding(prompt_cache_key.clone())]
             }
@@ -16623,6 +16703,42 @@ mod tests {
                     accounts: Vec::new(),
                 }),
             })
+        );
+    }
+
+    #[test]
+    fn model_routing_live_sse_topic_is_bounded_and_refreshes_only_on_route_updates() {
+        let descriptor = SubscriptionTopicDescriptor {
+            topic: "pool.model-routing-live".to_string(),
+            params: BTreeMap::from([
+                ("window".to_string(), "1h".to_string()),
+                ("model".to_string(), "gpt-5.5".to_string()),
+                ("state".to_string(), "cooling_down".to_string()),
+                ("limit".to_string(), "100".to_string()),
+            ]),
+        };
+        let topic = SubscriptionTopic::from_descriptor(&descriptor)
+            .expect("model routing topic descriptor should parse");
+
+        assert_eq!(topic.descriptor(), descriptor);
+        assert_eq!(topic.class(), SubscriptionTopicClass::BoundedColdHydrate);
+        assert_eq!(topic.schema_epoch(), "pool.model-routing-live/v1");
+        assert_eq!(
+            topic.runtime_topic_dependencies(),
+            vec![RuntimeTopicDependency::ModelRouting]
+        );
+        assert!(topic.is_affected_by_runtime_mutation(&RuntimeMutation::ModelRoutingChanged));
+        assert!(
+            !topic.is_affected_by_runtime_mutation(&RuntimeMutation::AttemptChanged {
+                invoke_id: "unrelated".to_string(),
+            })
+        );
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "pool.model-routing-live".to_string(),
+                params: BTreeMap::from([("window".to_string(), "48h".to_string())]),
+            })
+            .is_err()
         );
     }
 

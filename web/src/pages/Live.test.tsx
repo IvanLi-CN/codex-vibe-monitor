@@ -6,10 +6,12 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import LivePage from "./Live";
 
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
+const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
 const hookMocks = vi.hoisted(() => ({
   useForwardProxyLiveStats: vi.fn(),
   useInvocationStream: vi.fn(),
   usePromptCacheConversations: vi.fn(),
+  useModelRoutingLive: vi.fn(),
   useSummary: vi.fn(),
 }));
 const componentMocks = vi.hoisted(() => ({
@@ -29,6 +31,10 @@ vi.mock("../hooks/usePromptCacheConversations", () => ({
   usePromptCacheConversations: hookMocks.usePromptCacheConversations,
 }));
 
+vi.mock("../hooks/useModelRoutingLive", () => ({
+  useModelRoutingLive: hookMocks.useModelRoutingLive,
+}));
+
 vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
@@ -39,6 +45,10 @@ vi.mock("../features/stats/StatsCards", () => ({
 
 vi.mock("../features/forward-proxy/ForwardProxyLiveTable", () => ({
   ForwardProxyLiveTable: () => <div data-testid="forward-proxy-live-table" />,
+}));
+
+vi.mock("../features/live/ModelRoutingLivePanel", () => ({
+  ModelRoutingLivePanel: () => <div data-testid="model-routing-live-panel" />,
 }));
 
 vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
@@ -227,7 +237,8 @@ function pressElement(element: HTMLElement) {
   });
 }
 
-function setupLivePageHooks() {
+function setupLivePageHooks(activeTab: string | null = "conversations") {
+  if (activeTab) storage.set(LIVE_TAB_STORAGE_KEY, activeTab);
   hookMocks.useForwardProxyLiveStats.mockReturnValue({
     stats: null,
     isLoading: false,
@@ -247,6 +258,12 @@ function setupLivePageHooks() {
     stats: null,
     isLoading: false,
     error: null,
+  });
+  hookMocks.useModelRoutingLive.mockReturnValue({
+    data: null,
+    isLoading: false,
+    error: null,
+    refresh: vi.fn(),
   });
 }
 
@@ -315,6 +332,18 @@ function getPromptCacheConversationTable() {
 }
 
 describe("LivePage", () => {
+  it("defaults to the routing tab when no saved tab is present", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+      expect.objectContaining({ window: "1h", limit: 100 }),
+      true,
+    );
+  });
+
   it("defaults to 50 conversations when storage is empty", () => {
     setupLivePageHooks();
 
@@ -324,10 +353,13 @@ describe("LivePage", () => {
 
     expect(window.localStorage.getItem).toHaveBeenCalledWith(PROMPT_CACHE_SELECTION_STORAGE_KEY);
     expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 50,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      true,
+    );
   });
 
   it("falls back to 50 conversations when storage contains an invalid value", () => {
@@ -339,10 +371,13 @@ describe("LivePage", () => {
     const select = getPromptCacheSelectionTrigger();
 
     expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 50,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      true,
+    );
   });
 
   it("persists the selected count option and restores it after remount", () => {
@@ -368,19 +403,25 @@ describe("LivePage", () => {
       PROMPT_CACHE_SELECTION_STORAGE_KEY,
       "count:20",
     );
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 20,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 20,
+      },
+      true,
+    );
 
     remount(<LivePage />);
 
     const restoredSelect = getPromptCacheSelectionTrigger();
     expect(restoredSelect.textContent).toContain("20 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 20,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 20,
+      },
+      true,
+    );
   });
 
   it("restores a stored activity-window selection on initial render", () => {
@@ -391,10 +432,13 @@ describe("LivePage", () => {
 
     const select = getPromptCacheSelectionTrigger();
     expect(select.textContent).toContain("近 6 小时活动");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "activityWindow",
-      activityHours: 6,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "activityWindow",
+        activityHours: 6,
+      },
+      true,
+    );
   });
 
   it("offers mutually exclusive count and activity-window prompt-cache filters", () => {
@@ -414,10 +458,13 @@ describe("LivePage", () => {
     }
     pressElement(option);
 
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "activityWindow",
-      activityHours: 6,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "activityWindow",
+        activityHours: 6,
+      },
+      true,
+    );
     expect(window.localStorage.setItem).toHaveBeenCalledWith(
       PROMPT_CACHE_SELECTION_STORAGE_KEY,
       "activityWindow:6",

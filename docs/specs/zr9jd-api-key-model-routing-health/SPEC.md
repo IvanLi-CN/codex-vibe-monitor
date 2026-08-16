@@ -13,6 +13,8 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 仅对 API Key 上游按请求中的精确模型名维护动态路由健康状态。
 - 让模型失败只影响该账号与该模型组合，并保留其他模型的账号资格。
 - 在账号详情健康与事件页展示模型路由状态、优先级、变更时间、预计恢复时间和具体变更事件。
+- 在实况页的“路由”页签按模型展示全系统 API Key 模型路由当前状态、选择原因与真实恢复尝试。
+- 让账号详情中的模型行按需展开最近 48 小时的逐次尝试和模型路由事件，并将登录健康摘要压缩为按需展开的诊断。
 - 支持单模型手动恢复，且不覆盖静态模型规则或账号级禁用状态。
 - 为 API Key 的精确 `(upstream_account_id, model)` 组合提供可选的缓存命中保护，在异常低命中时限制未来并行并通过单探针恢复。
 
@@ -30,6 +32,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - API Key 模型错误分类、真实调用成功/失败观察和并发时序保护。
 - 全局缓存命中保护设置、组合级动态并行限制、缓存冷却与队列/改路溢出处理。
 - 模型状态读取、单模型 reset API，以及账号详情健康与事件 UI。
+- API Key 模型路由全局快照、账号模型 48 小时历史、受限实时订阅和实况页路由页签。
 - Storybook 状态/交互覆盖和 mock-only `ui_demo` 视觉证据。
 
 ### Out of scope
@@ -73,6 +76,12 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 临时失败模型事件保留原始 HTTP 状态、reason code、failure kind、attempt 关联和精确模型；现有 JSON 字段与数据库 schema 保持兼容。
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
+- `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。
+- 全局路由记录以模型分组、账号次级展示。每次路由选择和每次重试各自独立；若手动 reset 或状态变更没有关联尝试，则作为独立系统事件保留。记录仅包含已规范化的原因、候选比较、状态跃迁、终态和延迟，不返回请求内容、响应内容、凭据或原始错误文本。
+- `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容。
+- `pool.model-routing-live` 实时主题只在实况“路由”页签处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
+- 实况页在共享摘要带下固定使用“对话 / 最新记录 / 路由 / 代理”四页签，默认并持久化“路由”。非激活页签不保持实时订阅，重新激活时重新拉取快照。
+- 账号详情登录健康默认显示紧凑状态摘要；异常保持显式可见，低频诊断按需展开。模型健康默认显示一行摘要和操作，展开后显示模型 48 小时历史。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
 - 健康事件不展示独立的请求模型标签。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：API Key 模型路由事件只展示“影响范围=模型、受影响模型=<模型名>”；OAuth 临时失败与认证/付费等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
 
@@ -86,6 +95,9 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 | `POST /api/pool/upstream-accounts/:account_id/model-routing/reset` | HTTP         | external      | New            | None                     | backend         | health tab          | Body contains exact `model`                                                             |
 | `GET/PUT /api/pool/routing-settings`                               | HTTP         | external      | Modify         | None                     | backend/web     | settings/routing    | Adds `cacheHitProtection`; PUT remains partial and backward-compatible                  |
 | `UpstreamAccountActionEvent` model-routing fields                  | JSON         | external      | Modify         | None                     | backend/web     | event list          | Model falls back through event, attempt, invocation; routing fields define impact scope |
+| `GET /api/pool/model-routing-live`                                 | HTTP         | external      | New            | None                     | backend/web     | live route tab      | API Key only; model-first state groups plus bounded real attempts and unlinked events   |
+| `GET /api/pool/upstream-accounts/:account_id/model-routing-events` | HTTP         | external      | New            | None                     | backend/web     | account health      | API Key only; exact model, fixed 48-hour window and cursor pagination                   |
+| `pool.model-routing-live`                                          | SSE          | external      | New            | None                     | backend/web     | live route tab      | Versioned snapshot/delta topic; active only while the route tab is visible              |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -106,8 +118,13 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
 - Given the health tab is rendered on desktop or mobile, Then model status, change time, ETA, failure summary, and reset action remain readable without overflow.
 - Given a successful API Key request has 3839 input tokens, exactly the configured hit rate, or incomplete usage, When it completes, Then it does not trigger a low-hit transition; a 3840-token request strictly below the threshold does.
-- Given repeated low-hit samples for one account/model combination, When its future concurrency reaches one, Then the third consecutive low-hit sample enters 15/30/60-second cache cooldown and an expired cooldown permits exactly one probe.
+- Given repeated low-hit samples for one account/model combination, When its future concurrency reaches one, Then the third consecutive low-hit sample enters 15/30/60-second cache cooldown and an expired cooldown admits exactly one controlled real business request.
 - Given a limited combination has a legal alternative and `overflowMode=reroute`, When its limit is full, Then routing can select the alternative; with `queue`, forced binding, no-switch, or no alternative, it waits only within existing bounded request deadlines.
+- Given the real-time route tab is opened, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model group and individual attempt record update through the bounded `pool.model-routing-live` view without creating new upstream traffic.
+- Given a route attempt has retries, When the global or account model history renders, Then every retry remains a separate time-ordered record with its routing selection audit and normalized terminal evidence.
+- Given an operator opens an API Key account's model details, When the model row expands, Then the first page contains only that model's last 48 hours of history and older records load by cursor without duplication.
+- Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes full-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription.
+- Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 
 ## 验收清单（Acceptance checklist）
 
@@ -116,18 +133,20 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - [x] API 与事件字段已稳定。
 - [x] 健康与事件 UI、Storybook 和视觉证据已覆盖。
 - [x] 缓存低命中限流、缓存冷却与单探针恢复已覆盖。
+- [x] API Key 模型路由全局视图、48 小时历史和实时主题已覆盖。
+- [x] 实况页四页签、紧凑登录健康与可展开模型历史已覆盖。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
-- Rust unit/stateful tests for classification, state transitions, candidate selection, reset and retention.
-- Frontend Vitest/RTL tests for mixed model states and reset/error flows.
+- Rust unit/stateful tests for classification, state transitions, candidate selection, reset, retention, global bounded route views and 48-hour cursor history.
+- Frontend Vitest/RTL tests for mixed model states, reset/error flows, tab persistence, inactive subscriptions and route drill-down.
 
 ### UI / Storybook (if applicable)
 
-- Add a docs-first model-routing state gallery with available, degraded, cooling, empty, and reset-error states.
-- Add `play` coverage for successful and failed reset interactions.
+- Add a docs-first model-routing state gallery with available, degraded, cooling, controlled-recovery, empty, reset-error and expanded-history states.
+- Add `play` coverage for successful and failed reset interactions, history expansion, route filters and route-record drill-down.
 
 ### Quality checks
 
@@ -135,34 +154,36 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（组件级）；页面级使用 ui_demo
-缓存命中保护组件故事=通过（`PoolRoutingSettingsCard/CacheHitProtection`，覆盖启用开关、10% 阈值和改路模式）
-缓存命中保护截图=已在本地 Storybook 目标组件中检查并展示；不作为 PR 资产
-视觉证据目标源=ui_demo
+Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt`、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 及移动端变体）
+视觉证据目标源=storybook_canvas
 视觉证据=存在
-空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）
-聊天回图=已展示
+空白裁剪=已裁剪（组件画布经 `require_margin` 规范化，保留安全外缘）
+聊天回图=待本地确认
 证据落盘=已落盘
-证据绑定sha=本次变更提交（提交后回填）
-requested_viewport=desktop 1440x1100; mobile 393x852
-viewport_strategy=ui-demo-source（Chrome viewport override）
-capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
+证据绑定sha=待本地提交
+submission_gate=pending-owner-approval
+target_program=mock-only
+sensitive_exclusion=N/A
 
-![桌面模型路由健康](./assets/model-routing-desktop.png)
-
-![移动模型路由健康](./assets/model-routing-mobile.png)
-
-页面级视觉证据目标源=mock-only ui_demo
-页面级视觉证据=存在
-页面级聊天回图=已展示
-页面级 requested_viewport=desktop 1440x1100; mobile 393x852
-页面级 capture_scope=API Key 账号详情“健康与事件”，HTTP 502 事件显示影响范围为模型、受影响模型为 gpt-5.6-terra，不声明账号或全部模型受影响
+source_type=storybook_canvas; story_id_or_title=`Live/ModelRoutingLivePanel/RecoveryAttempt`; state=恢复请求已展开；capture_scope=element; requested_viewport=1440x900; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=展示模型优先账号状态、真实恢复尝试、候选比较、HTTP 终态、延迟与状态迁移。
 
 PR: include
-![桌面账号事件模型影响](./assets/account-event-impact-desktop.png)
+![桌面模型路由恢复尝试](./assets/model-routing-live-desktop.png)
+
+source_type=storybook_canvas; story_id_or_title=`Live/ModelRoutingLivePanel/RecoveryAttemptMobile`; state=恢复请求已展开；capture_scope=element; requested_viewport=393x852; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=验证移动端过滤器、状态行和展开后的路由决策信息无重叠。
 
 PR: include
-![移动账号事件模型影响](./assets/account-event-impact-mobile.png)
+![移动模型路由恢复尝试](./assets/model-routing-live-mobile.png)
+
+source_type=storybook_canvas; story_id_or_title=`Account Pool/ModelRoutingHealthPanel/ExpandedHistory`; state=展开 48 小时历史；capture_scope=element; requested_viewport=1440x900; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=展示紧凑模型行、状态、冷却信息、真实重试与状态事件及游标加载入口。
+
+PR: include
+![桌面账号模型路由健康](./assets/model-routing-health-desktop.png)
+
+source_type=storybook_canvas; story_id_or_title=`Account Pool/ModelRoutingHealthPanel/MixedStatesMobile`; state=紧凑移动端摘要；capture_scope=element; requested_viewport=393x852; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=验证移动端紧凑状态行、恢复操作和展开控件无溢出。
+
+PR: include
+![移动账号模型路由健康](./assets/model-routing-health-mobile.png)
 
 ## Related PRs
 

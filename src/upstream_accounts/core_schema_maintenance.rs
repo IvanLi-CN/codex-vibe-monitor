@@ -723,7 +723,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_account_events_account_time")?;
-
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_time
@@ -785,6 +784,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_events.model_route_failure_count")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_account_model_time
+        ON pool_upstream_account_events (account_id, model, occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_account_model_time")?;
 
     sqlx::query(
         r#"
@@ -865,6 +874,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure model route account index")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_model_seen
+        ON pool_upstream_account_model_routes (model COLLATE NOCASE, last_seen_at DESC, account_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure model route model index")?;
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_cooldown

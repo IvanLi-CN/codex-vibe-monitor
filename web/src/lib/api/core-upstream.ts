@@ -1,6 +1,7 @@
 import type {
   BlockedBindingDiagnostic,
   ForwardProxyBindingNode,
+  PoolRoutingSelectionAudit,
   StickyKeyConversationSelection,
   UpstreamStickyConversationsResponse,
 } from "./core-foundation";
@@ -344,6 +345,74 @@ export interface ModelRoutingState {
   cacheCooldownLevel?: number;
   cacheLastHitRatePercent?: number | null;
   probeRequired?: boolean;
+}
+
+export type ModelRoutingLiveWindow = "15m" | "1h" | "6h" | "24h";
+
+export interface ModelRoutingLiveAccount extends ModelRoutingState {
+  accountId: number;
+  accountDisplayName: string;
+  accountGroupName?: string | null;
+}
+
+export interface ModelRoutingLiveModelGroup {
+  model: string;
+  accounts: ModelRoutingLiveAccount[];
+}
+
+export interface ModelRoutingTimelineRecord {
+  id: string;
+  kind: "attempt" | "event" | string;
+  occurredAt: string;
+  accountId: number;
+  accountDisplayName: string;
+  accountGroupName?: string | null;
+  model: string;
+  attemptId?: string | null;
+  invokeId?: string | null;
+  attemptIndex?: number | null;
+  sameAccountRetryIndex?: number | null;
+  routingSource?: string | null;
+  routingSelectionAudit?: PoolRoutingSelectionAudit | null;
+  status?: string | null;
+  httpStatus?: number | null;
+  failureKind?: string | null;
+  totalLatencyMs?: number | null;
+  action?: string | null;
+  source?: string | null;
+  reasonCode?: string | null;
+  modelRouteStateBefore?: string | null;
+  modelRouteStateAfter?: string | null;
+  modelRoutePriorityBefore?: string | null;
+  modelRoutePriorityAfter?: string | null;
+  modelRouteFailureCount?: number | null;
+  modelRouteCooldownUntil?: string | null;
+}
+
+export interface ModelRoutingLiveResponse {
+  generatedAt: string;
+  groups: ModelRoutingLiveModelGroup[];
+  records: ModelRoutingTimelineRecord[];
+}
+
+export interface ModelRoutingHistoryResponse {
+  items: ModelRoutingTimelineRecord[];
+  nextCursor?: string | null;
+}
+
+export interface FetchModelRoutingLiveQuery {
+  window?: ModelRoutingLiveWindow;
+  model?: string;
+  state?: "available" | "degraded" | "cooling_down" | string;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export interface FetchModelRoutingHistoryQuery {
+  model: string;
+  cursor?: string;
+  pageSize?: number;
+  signal?: AbortSignal;
 }
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
@@ -1506,6 +1575,119 @@ function normalizeModelRoutingState(raw: unknown): ModelRoutingState | null {
   };
 }
 
+function normalizeModelRoutingTimelineRecord(raw: unknown): ModelRoutingTimelineRecord | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = typeof payload.id === "string" ? payload.id.trim() : "";
+  const kind = typeof payload.kind === "string" ? payload.kind.trim() : "";
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const accountId = normalizeFiniteNumber(payload.accountId);
+  const accountDisplayName =
+    typeof payload.accountDisplayName === "string" ? payload.accountDisplayName.trim() : "";
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  if (
+    !id ||
+    !kind ||
+    !occurredAt ||
+    accountId == null ||
+    accountId <= 0 ||
+    !accountDisplayName ||
+    !model
+  ) {
+    return null;
+  }
+  return {
+    id,
+    kind,
+    occurredAt,
+    accountId: Math.trunc(accountId),
+    accountDisplayName,
+    accountGroupName:
+      typeof payload.accountGroupName === "string" ? payload.accountGroupName : null,
+    model,
+    attemptId: typeof payload.attemptId === "string" ? payload.attemptId : null,
+    invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
+    attemptIndex: normalizeFiniteNumber(payload.attemptIndex),
+    sameAccountRetryIndex: normalizeFiniteNumber(payload.sameAccountRetryIndex),
+    routingSource: typeof payload.routingSource === "string" ? payload.routingSource : null,
+    routingSelectionAudit:
+      payload.routingSelectionAudit && typeof payload.routingSelectionAudit === "object"
+        ? (payload.routingSelectionAudit as PoolRoutingSelectionAudit)
+        : null,
+    status: typeof payload.status === "string" ? payload.status : null,
+    httpStatus: normalizeFiniteNumber(payload.httpStatus),
+    failureKind: typeof payload.failureKind === "string" ? payload.failureKind : null,
+    totalLatencyMs: normalizeFiniteNumber(payload.totalLatencyMs),
+    action: typeof payload.action === "string" ? payload.action : null,
+    source: typeof payload.source === "string" ? payload.source : null,
+    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : null,
+    modelRouteStateBefore:
+      typeof payload.modelRouteStateBefore === "string" ? payload.modelRouteStateBefore : null,
+    modelRouteStateAfter:
+      typeof payload.modelRouteStateAfter === "string" ? payload.modelRouteStateAfter : null,
+    modelRoutePriorityBefore:
+      typeof payload.modelRoutePriorityBefore === "string"
+        ? payload.modelRoutePriorityBefore
+        : null,
+    modelRoutePriorityAfter:
+      typeof payload.modelRoutePriorityAfter === "string" ? payload.modelRoutePriorityAfter : null,
+    modelRouteFailureCount: normalizeFiniteNumber(payload.modelRouteFailureCount),
+    modelRouteCooldownUntil:
+      typeof payload.modelRouteCooldownUntil === "string" ? payload.modelRouteCooldownUntil : null,
+  };
+}
+
+function normalizeModelRoutingLiveResponse(raw: unknown): ModelRoutingLiveResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const groupsRaw = Array.isArray(payload.groups) ? payload.groups : [];
+  const groups = groupsRaw.flatMap((group) => {
+    const item = (group ?? {}) as Record<string, unknown>;
+    const model = typeof item.model === "string" ? item.model.trim() : "";
+    if (!model) return [];
+    const accounts = (Array.isArray(item.accounts) ? item.accounts : []).flatMap((account) => {
+      const route = normalizeModelRoutingState(account);
+      const accountPayload = (account ?? {}) as Record<string, unknown>;
+      const accountId = normalizeFiniteNumber(accountPayload.accountId);
+      const accountDisplayName =
+        typeof accountPayload.accountDisplayName === "string"
+          ? accountPayload.accountDisplayName.trim()
+          : "";
+      if (!route || accountId == null || accountId <= 0 || !accountDisplayName) return [];
+      return [
+        {
+          ...route,
+          accountId: Math.trunc(accountId),
+          accountDisplayName,
+          accountGroupName:
+            typeof accountPayload.accountGroupName === "string"
+              ? accountPayload.accountGroupName
+              : null,
+        },
+      ];
+    });
+    return [{ model, accounts }];
+  });
+  return {
+    generatedAt: typeof payload.generatedAt === "string" ? payload.generatedAt : "",
+    groups,
+    records: (Array.isArray(payload.records) ? payload.records : [])
+      .map(normalizeModelRoutingTimelineRecord)
+      .filter((item): item is ModelRoutingTimelineRecord => item != null),
+  };
+}
+
+function normalizeModelRoutingHistoryResponse(raw: unknown): ModelRoutingHistoryResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    items: (Array.isArray(payload.items) ? payload.items : [])
+      .map(normalizeModelRoutingTimelineRecord)
+      .filter((item): item is ModelRoutingTimelineRecord => item != null),
+    nextCursor:
+      typeof payload.nextCursor === "string" && payload.nextCursor.trim()
+        ? payload.nextCursor
+        : null,
+  };
+}
+
 function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const summary = normalizeUpstreamAccountSummary(payload);
@@ -2138,6 +2320,37 @@ export async function fetchUpstreamAccountActionEvents(
       : "/api/pool/upstream-account-events",
   );
   return normalizeUpstreamAccountActionEventListResponse(response);
+}
+
+export async function fetchModelRoutingLive(
+  query?: FetchModelRoutingLiveQuery,
+): Promise<ModelRoutingLiveResponse> {
+  const search = new URLSearchParams();
+  if (query?.window) search.set("window", query.window);
+  if (query?.model?.trim()) search.set("model", query.model.trim());
+  if (query?.state?.trim()) search.set("state", query.state.trim());
+  if (query?.limit != null) search.set("limit", String(query.limit));
+  const response = await fetchJson<unknown>(
+    search.size
+      ? `/api/pool/model-routing-live?${search.toString()}`
+      : "/api/pool/model-routing-live",
+    { signal: query?.signal },
+  );
+  return normalizeModelRoutingLiveResponse(response);
+}
+
+export async function fetchUpstreamAccountModelRoutingEvents(
+  accountId: number,
+  query: FetchModelRoutingHistoryQuery,
+): Promise<ModelRoutingHistoryResponse> {
+  const search = new URLSearchParams({ model: query.model.trim() });
+  if (query.cursor?.trim()) search.set("cursor", query.cursor.trim());
+  if (query.pageSize != null) search.set("pageSize", String(query.pageSize));
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/model-routing-events?${search.toString()}`,
+    { signal: query.signal },
+  );
+  return normalizeModelRoutingHistoryResponse(response);
 }
 
 export async function fetchUpstreamAccountWindowUsage(

@@ -2068,6 +2068,9 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
         .publish_runtime_mutation(RuntimeMutation::AttemptChanged {
             invoke_id: invoke_id.to_string(),
         });
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
     #[cfg(test)]
     if state.broadcaster.receiver_count() > 0 {
         let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)

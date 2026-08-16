@@ -260,6 +260,7 @@ type SharedUpstreamAccountDetailDrawerProps = {
   open: boolean;
   accountId: number | null;
   initialTab?: AccountDetailTab;
+  initialExpandedModel?: string | null;
   initialDeleteConfirmOpen?: boolean;
   presentation?: "overlay" | "page";
   onInitialDeleteConfirmHandled?: () => void;
@@ -394,6 +395,7 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, {
+    timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -992,6 +994,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   open,
   accountId,
   initialTab = "overview",
+  initialExpandedModel = null,
   initialDeleteConfirmOpen = false,
   presentation = "overlay",
   onInitialDeleteConfirmHandled,
@@ -3783,155 +3786,152 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.healthEvents.tab}
                   className="grid gap-5"
                 >
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>{t("accountPool.upstreamAccounts.healthTitle")}</CardTitle>
-                      <CardDescription>
+                  <Card data-testid="upstream-account-login-health-summary">
+                    <CardHeader className="gap-1 px-4 py-3">
+                      <CardTitle className="text-base">
+                        {t("accountPool.upstreamAccounts.healthTitle")}
+                      </CardTitle>
+                      <CardDescription className="text-xs leading-4">
                         {t("accountPool.upstreamAccounts.healthDescription")}
                       </CardDescription>
                     </CardHeader>
-                    <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.lastSyncedAt")}
-                        value={formatDateTime(selectedDetail.lastSyncedAt)}
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.lastRefreshedAt")}
-                        value={formatDateTime(selectedDetail.lastRefreshedAt)}
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.tokenExpiresAt")}
-                        value={formatDateTime(selectedDetail.tokenExpiresAt)}
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.compactSupport")}
-                        value={
-                          selectedDetail.compactSupport?.status === "supported"
-                            ? t("accountPool.upstreamAccounts.compactSupport.status.supported")
-                            : selectedDetail.compactSupport?.status === "unsupported"
-                              ? t("accountPool.upstreamAccounts.compactSupport.status.unsupported")
-                              : t("accountPool.upstreamAccounts.compactSupport.status.unknown")
-                        }
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.credits")}
-                        value={
-                          selectedDetail.credits?.balance
-                            ? `${selectedDetail.credits.balance}`
-                            : selectedDetail.credits?.unlimited
-                              ? t("accountPool.upstreamAccounts.unlimited")
-                              : t("accountPool.upstreamAccounts.unavailable")
-                        }
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.compactObservedAt")}
-                        value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
-                      />
-                      <DetailField
-                        label={t("accountPool.upstreamAccounts.fields.compactReason")}
-                        value={
-                          selectedDetail.compactSupport?.reason ??
-                          t("accountPool.upstreamAccounts.unavailable")
-                        }
-                      />
-                      <div className="surface-subtle md:col-span-2 xl:col-span-4 rounded-[1.2rem] p-4">
-                        {selectedRecoveryHint ? (
-                          <Alert variant="warning" className="mb-4">
+                    <CardContent className="grid gap-2 px-4 pb-4">
+                      {selectedRecoveryHint ? (
+                        <Alert variant="warning" className="py-2 text-sm">
+                          <AppIcon name="alert-outline" className="h-4 w-4 shrink-0" aria-hidden />
+                          <span>{t(selectedRecoveryHint.titleKey)}</span>
+                        </Alert>
+                      ) : null}
+                      <div className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                        <DetailField
+                          label={t("accountPool.upstreamAccounts.latestAction.title")}
+                          value={
+                            accountActionLabel(selectedDetail.lastAction) ??
+                            t("accountPool.upstreamAccounts.latestAction.empty")
+                          }
+                        />
+                        <DetailField
+                          label={t("accountPool.upstreamAccounts.latestAction.fields.occurredAt")}
+                          value={formatDateTime(selectedDetail.lastActionAt)}
+                        />
+                        <DetailField
+                          label={t("accountPool.upstreamAccounts.fields.credits")}
+                          value={
+                            selectedDetail.credits?.balance
+                              ? selectedDetail.credits.balance
+                              : selectedDetail.credits?.unlimited
+                                ? t("accountPool.upstreamAccounts.unlimited")
+                                : t("accountPool.upstreamAccounts.unavailable")
+                          }
+                        />
+                        <DetailField
+                          label={t("accountPool.upstreamAccounts.fields.lastSyncedAt")}
+                          value={formatDateTime(selectedDetail.lastSyncedAt)}
+                        />
+                      </div>
+                      <details className="group border-t border-base-300/70 pt-2">
+                        <summary className="cursor-pointer text-xs font-medium text-base-content/75 marker:content-none">
+                          <span className="inline-flex items-center gap-1.5">
                             <AppIcon
-                              name="alert-outline"
-                              className="mt-0.5 h-4 w-4 shrink-0"
+                              name="chevron-right"
+                              className="h-4 w-4 transition-transform group-open:rotate-90"
                               aria-hidden
                             />
-                            <div>
-                              <p className="font-semibold text-warning">
+                            {t("accountPool.upstreamAccounts.healthDetails")}
+                          </span>
+                        </summary>
+                        <div className="mt-3 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.fields.lastRefreshedAt")}
+                            value={formatDateTime(selectedDetail.lastRefreshedAt)}
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.fields.tokenExpiresAt")}
+                            value={formatDateTime(selectedDetail.tokenExpiresAt)}
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.fields.compactSupport")}
+                            value={
+                              selectedDetail.compactSupport?.status === "supported"
+                                ? t("accountPool.upstreamAccounts.compactSupport.status.supported")
+                                : selectedDetail.compactSupport?.status === "unsupported"
+                                  ? t(
+                                      "accountPool.upstreamAccounts.compactSupport.status.unsupported",
+                                    )
+                                  : t("accountPool.upstreamAccounts.compactSupport.status.unknown")
+                            }
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.fields.compactObservedAt")}
+                            value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.latestAction.fields.reason")}
+                            value={
+                              accountActionReasonLabel(selectedDetail.lastActionReasonCode) ??
+                              t("accountPool.upstreamAccounts.latestAction.unknown")
+                            }
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.latestAction.fields.httpStatus")}
+                            value={
+                              Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
+                                ? `HTTP ${selectedDetail.lastActionHttpStatus}`
+                                : t("accountPool.upstreamAccounts.unavailable")
+                            }
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}
+                            value={
+                              selectedDetail.lastActionInvokeId ? (
+                                <span className="select-text break-all font-mono">
+                                  {selectedDetail.lastActionInvokeId}
+                                </span>
+                              ) : (
+                                t("accountPool.upstreamAccounts.unavailable")
+                              )
+                            }
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.latestAction.fields.message")}
+                            value={
+                              selectedDetail.lastActionReasonMessage ??
+                              selectedDetail.lastError ??
+                              t("accountPool.upstreamAccounts.noError")
+                            }
+                          />
+                          <DetailField
+                            label={t("accountPool.upstreamAccounts.fields.compactReason")}
+                            value={
+                              selectedDetail.compactSupport?.reason ??
+                              selectedDetail.lastActionReasonMessage ??
+                              selectedDetail.lastError ??
+                              t("accountPool.upstreamAccounts.noError")
+                            }
+                          />
+                          {selectedRecoveryHint ? (
+                            <div className="md:col-span-2 xl:col-span-4">
+                              <p className="font-medium text-warning">
                                 {t(selectedRecoveryHint.titleKey)}
                               </p>
-                              <p className="mt-1 text-sm text-warning/90">
+                              <p className="mt-1 text-sm leading-5 text-base-content/75">
                                 {t(selectedRecoveryHint.bodyKey)}
                               </p>
                             </div>
-                          </Alert>
-                        ) : null}
-                        <p className="metric-label">
-                          {t("accountPool.upstreamAccounts.latestAction.title")}
-                        </p>
-                        {selectedDetail.lastAction ? (
-                          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                            <DetailField
-                              label={t("accountPool.upstreamAccounts.latestAction.fields.action")}
-                              value={
-                                accountActionLabel(selectedDetail.lastAction) ??
-                                t("accountPool.upstreamAccounts.latestAction.empty")
-                              }
-                            />
-                            <DetailField
-                              label={t("accountPool.upstreamAccounts.latestAction.fields.source")}
-                              value={
-                                accountActionSourceLabel(selectedDetail.lastActionSource) ??
-                                t("accountPool.upstreamAccounts.latestAction.unknown")
-                              }
-                            />
-                            <DetailField
-                              label={t("accountPool.upstreamAccounts.latestAction.fields.reason")}
-                              value={
-                                accountActionReasonLabel(selectedDetail.lastActionReasonCode) ??
-                                t("accountPool.upstreamAccounts.latestAction.unknown")
-                              }
-                            />
-                            <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.httpStatus",
-                              )}
-                              value={
-                                Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
-                                  ? `HTTP ${selectedDetail.lastActionHttpStatus}`
-                                  : t("accountPool.upstreamAccounts.unavailable")
-                              }
-                            />
-                            <DetailField
-                              label={t(
-                                "accountPool.upstreamAccounts.latestAction.fields.occurredAt",
-                              )}
-                              value={formatDateTime(selectedDetail.lastActionAt)}
-                            />
-                            <DetailField
-                              label={t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}
-                              value={
-                                selectedDetail.lastActionInvokeId ? (
-                                  <span className="select-text break-all font-mono">
-                                    {selectedDetail.lastActionInvokeId}
-                                  </span>
-                                ) : (
-                                  t("accountPool.upstreamAccounts.unavailable")
-                                )
-                              }
-                            />
-                            <div className="metric-cell md:col-span-2 xl:col-span-3">
-                              <p className="metric-label">
-                                {t("accountPool.upstreamAccounts.latestAction.fields.message")}
-                              </p>
-                              <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
-                                {selectedDetail.lastActionReasonMessage ??
-                                  selectedDetail.lastError ??
-                                  t("accountPool.upstreamAccounts.noError")}
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="mt-2 text-sm leading-6 text-base-content/75">
-                            {t("accountPool.upstreamAccounts.latestAction.empty")}
-                          </p>
-                        )}
-                      </div>
+                          ) : null}
+                        </div>
+                      </details>
                     </CardContent>
                   </Card>
 
                   {selectedDetail.kind === "api_key_codex" ? (
                     <ModelRoutingHealthPanel
+                      accountId={selectedDetail.id}
                       states={modelRoutingStates}
                       error={modelRoutingError}
                       resettingModel={modelRoutingResetting}
                       writesEnabled={writesEnabled}
+                      initialExpandedModel={initialExpandedModel}
                       onReset={(model) => void resetModelRouting(model)}
                     />
                   ) : null}

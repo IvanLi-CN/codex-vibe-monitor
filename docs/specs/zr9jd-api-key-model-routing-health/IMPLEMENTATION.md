@@ -12,11 +12,13 @@
 
 - `pool_upstream_account_model_routes` stores exact `account_id + model` state with seven-day retention, failure windows, cooldown ETA, last success/failure and last-seen timestamps.
 - The same model-route record persists cache-hit protection state: dynamic concurrency and recovery limits, minimum-limit streak, cache cooldown ladder, last observed hit rate and expired-cooldown probe status. Cache observations are API Key-only and require success usage with at least 3840 input tokens; a strictly-low sample halves only future combination reservations, while healthy samples recover one slot at a time.
-- `cacheHitProtection` extends global routing settings with disabled-by-default 10% threshold and `queue`/`reroute` overflow behavior. Disabling the feature or changing its threshold clears only cache-owned state; changing overflow mode preserves learned protection state. Cache cooldowns use 15/30/60 seconds, and every expired model cooldown, including non-cache failures, is routed through a single-probe gate.
+- `cacheHitProtection` extends global routing settings with disabled-by-default 10% threshold and `queue`/`reroute` overflow behavior. Disabling the feature or changing its threshold clears only cache-owned state; changing overflow mode preserves learned protection state. Cache cooldowns use 15/30/60 seconds, and every expired model cooldown, including non-cache failures, admits one controlled real business request before wider recovery.
 - API Key model-specific errors and exact-model 5xx, 429, logical overload, transport, handshake, and stream failures are isolated in `failure_recording.rs` and use the same model state machine without account cooldown or sticky deletion. Missing-model, 413, other non-hard, and background-sync failures remain diagnostic-only. OAuth and explicit authentication/payment hard failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
 - `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA. Event projections recover a missing request model from the linked upstream attempt or invocation for both account detail and global event-list reads.
 - The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent event impact scope and a single-model reset action. Recent events omit request-model labels: route-transition events affect only that model, while generic account failures affect the entire account and omit empty route transitions. Direct health-tab routes wait for the selected account before hydrating recent actions.
 - Storybook covers available, degraded, cooling, empty, read-only, error, reset interaction and impact-scope states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides component evidence and mock-only `ui_demo` provides page-level desktop/mobile evidence.
+- This delivery adds a normalized API Key-only route telemetry projection from persisted upstream attempts and model-route events, with one row for each real selection/retry and standalone unlinked state events. The global endpoint and a model-scoped 48-hour cursor endpoint deliberately exclude raw payloads and unnormalized diagnostics.
+- The real-time route tab receives an HTTP snapshot and a versioned `pool.model-routing-live` subscription only while active. The live page moves existing surfaces into `对话 / 最新记录 / 路由 / 代理`; login health becomes compact by default and each model row loads its own 48-hour evidence only when expanded.
 
 ## Implementation map
 
@@ -31,9 +33,9 @@
 - Targeted model routing state/reset and concurrent failure tests: passed.
 - `cargo fmt --check`: passed.
 - `cargo check`: passed.
-- `RUST_MIN_STACK=33554432 cargo test`: 1893 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
-- `cd web && bun run test --run`: 137 files passed, 1317 passed, 6 skipped.
-- `cd web && bun run test-storybook --run`: 13 files passed, 23 passed.
+- `RUST_MIN_STACK=33554432 RUST_TEST_THREADS=1 cargo test`: 2197 passed, 0 failed, 45 ignored. The serialized run avoids the repository's unrelated shared-runtime timing races while still covering the full suite.
+- `cd web && bun run test`: 143 files passed, 1404 passed, 6 skipped.
+- `cd web && bun run test-storybook`: 21 files passed, 62 passed, 54 skipped.
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
 - Mobile hardening checks: reset actions render at 44px touch height below `lg`, desktop remains 32px, and the panel exposes `dl/dt/dd` field semantics without changing grid tracks.
@@ -46,7 +48,7 @@
 - Mock-only `ui_demo` desktop 1440x1100 and mobile 393x852 captures: the HTTP 502 model impact and route transition are visible without request-model labels, account-wide impact, or horizontal overflow.
 - API Key HTTP, transport/stream (including exact-model failures before attempt creation), missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
-- `bun run lint:web`: passed with the repository's existing 85 warnings; no errors remain in the changed files.
+- `bun run lint:web`: passed with the repository's existing 86 warnings; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.
 - Cache-hit protection state-machine, settings-contract and atomic reservation regression tests: passed. The reservation test races two candidate selections for a cap of one and admits exactly one request.
 - `PoolRoutingSettingsCard/CacheHitProtection` Storybook play coverage and the Settings/API Vitest coverage: passed. A local-only component capture confirmed the enabled control, 10% threshold and reroute selector without including it as a PR image asset.

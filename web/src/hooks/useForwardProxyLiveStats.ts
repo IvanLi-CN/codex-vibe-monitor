@@ -19,10 +19,12 @@ export function shouldTriggerForwardProxyOpenResync(
   return now - lastResyncAt >= FORWARD_PROXY_OPEN_RESYNC_COOLDOWN_MS;
 }
 
-export function useForwardProxyLiveStats() {
+export function useForwardProxyLiveStats(enabled = true) {
   const topic = buildTopicDescriptor("forward-proxy.live");
-  const { data, isLoading, error, refresh } =
-    useSubscriptionTopic<ForwardProxyLiveStatsResponse>(topic);
+  const { data, isLoading, error, refresh } = useSubscriptionTopic<ForwardProxyLiveStatsResponse>(
+    enabled ? topic : null,
+    enabled,
+  );
 
   return {
     stats: data,

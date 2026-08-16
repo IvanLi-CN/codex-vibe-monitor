@@ -68,6 +68,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickFirstRosterRow();
     clickTab(/Health & events/i);
+    expandLoginHealthDetails();
     expect(document.body.textContent).toContain(
       "This OAuth account still shows a legacy bridge error",
     );
@@ -299,6 +300,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain("Unavailable");
     clickTab(/Health & events/i);
     await flushAsync();
+    expandLoginHealthDetails();
 
     expect(document.body.textContent).toContain("Upstream rejected");
     expect(document.body.textContent).toContain(

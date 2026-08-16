@@ -57,6 +57,68 @@ struct ModelRouteRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct ModelRoutingLiveRouteRow {
+    account_id: i64,
+    account_display_name: String,
+    account_group_name: Option<String>,
+    model: String,
+    state: String,
+    priority: String,
+    consecutive_failures: i64,
+    streak_started_at: Option<String>,
+    changed_at: Option<String>,
+    last_seen_at: String,
+    last_success_at: Option<String>,
+    last_failure_at: Option<String>,
+    last_failure_kind: Option<String>,
+    last_failure_message: Option<String>,
+    cooldown_until: Option<String>,
+    reset_fence_at: Option<String>,
+    #[sqlx(default)]
+    cache_concurrency_limit: Option<i64>,
+    #[sqlx(default)]
+    cache_recovery_limit: Option<i64>,
+    #[sqlx(default)]
+    cache_low_hit_streak: i64,
+    #[sqlx(default)]
+    cache_cooldown_level: i64,
+    #[sqlx(default)]
+    cache_last_hit_rate_percent: Option<i64>,
+}
+
+impl ModelRoutingLiveRouteRow {
+    fn into_response(self) -> ModelRoutingLiveAccount {
+        let route = model_state_from_row(ModelRouteRow {
+            account_id: self.account_id,
+            model: self.model,
+            state: self.state,
+            priority: self.priority,
+            consecutive_failures: self.consecutive_failures,
+            streak_started_at: self.streak_started_at,
+            changed_at: self.changed_at,
+            last_seen_at: self.last_seen_at,
+            last_success_at: self.last_success_at,
+            last_failure_at: self.last_failure_at,
+            last_failure_kind: self.last_failure_kind,
+            last_failure_message: self.last_failure_message,
+            cooldown_until: self.cooldown_until,
+            reset_fence_at: self.reset_fence_at,
+            cache_concurrency_limit: self.cache_concurrency_limit,
+            cache_recovery_limit: self.cache_recovery_limit,
+            cache_low_hit_streak: self.cache_low_hit_streak,
+            cache_cooldown_level: self.cache_cooldown_level,
+            cache_last_hit_rate_percent: self.cache_last_hit_rate_percent,
+        });
+        ModelRoutingLiveAccount {
+            account_id: self.account_id,
+            account_display_name: self.account_display_name,
+            account_group_name: self.account_group_name,
+            route,
+        }
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct AttemptRouteContext {
     request_model: Option<String>,
     started_at: Option<String>,
@@ -221,6 +283,61 @@ pub(crate) async fn load_model_routing_states(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(model_state_from_row).collect())
+}
+
+pub(crate) async fn load_api_key_model_routing_live_accounts(
+    pool: &Pool<Sqlite>,
+    model_filter: Option<&str>,
+    state_filter: Option<&str>,
+) -> Result<Vec<ModelRoutingLiveAccount>> {
+    let rows = sqlx::query_as::<_, ModelRoutingLiveRouteRow>(
+        r#"
+        SELECT routes.account_id,
+               accounts.display_name AS account_display_name,
+               accounts.group_name AS account_group_name,
+               routes.model,
+               routes.state,
+               routes.priority,
+               routes.consecutive_failures,
+               routes.streak_started_at,
+               routes.changed_at,
+               routes.last_seen_at,
+               routes.last_success_at,
+               routes.last_failure_at,
+               routes.last_failure_kind,
+               routes.last_failure_message,
+               routes.cooldown_until,
+               routes.reset_fence_at,
+               routes.cache_concurrency_limit,
+               routes.cache_recovery_limit,
+               routes.cache_low_hit_streak,
+               routes.cache_cooldown_level,
+               routes.cache_last_hit_rate_percent
+          FROM pool_upstream_account_model_routes AS routes
+          JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
+         WHERE accounts.kind = ?1
+           AND routes.last_seen_at >= ?2
+           AND (?3 IS NULL OR routes.model = ?3)
+         ORDER BY routes.model COLLATE NOCASE ASC, accounts.display_name COLLATE NOCASE ASC, routes.account_id ASC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .bind(cutoff_string())
+    .bind(model_filter)
+    .fetch_all(pool)
+    .await?;
+
+    let mut accounts = rows
+        .into_iter()
+        .map(ModelRoutingLiveRouteRow::into_response)
+        .collect::<Vec<_>>();
+    if let Some(state_filter) = state_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        accounts.retain(|account| account.route.state == state_filter);
+    }
+    Ok(accounts)
 }
 
 pub(crate) async fn model_route_penalty(

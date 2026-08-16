@@ -119,6 +119,85 @@ async fn insert_model_failure_attempt(
     .last_insert_rowid()
 }
 
+#[tokio::test]
+async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API account",
+        "routing-live-api-key",
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-routing-live-api";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed API Key model route");
+    let first_attempt =
+        insert_model_failure_attempt(&state, account_id, "routing-live-api-first", Some(model))
+            .await;
+    let second_attempt =
+        insert_model_failure_attempt(&state, account_id, "routing-live-api-second", Some(model))
+            .await;
+
+    let Json(live) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: Some(MODEL_ROUTE_STATE_AVAILABLE.to_string()),
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("load live model routing snapshot");
+    assert_eq!(live.groups.len(), 1);
+    assert_eq!(live.groups[0].model, model);
+    assert_eq!(live.groups[0].accounts.len(), 1);
+    assert_eq!(live.groups[0].accounts[0].account_id, account_id);
+    assert_eq!(live.records.len(), 2);
+    assert!(live.records.iter().all(|record| record.kind == "attempt"));
+    assert!(live.records.iter().all(|record| record.model == model));
+
+    let Json(first_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: None,
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load first model routing history page");
+    assert_eq!(first_page.items.len(), 1);
+    let cursor = first_page
+        .next_cursor
+        .expect("two attempts should yield a next page cursor");
+
+    let Json(second_page) = list_upstream_account_model_routing_events(
+        State(state),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load second model routing history page");
+    assert_eq!(second_page.items.len(), 1);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    assert!(second_page.next_cursor.is_none());
+    let identifiers = [
+        first_page.items[0].id.as_str(),
+        second_page.items[0].id.as_str(),
+    ];
+    assert!(identifiers.contains(&format!("attempt:{first_attempt}").as_str()));
+    assert!(identifiers.contains(&format!("attempt:{second_attempt}").as_str()));
+}
+
 async fn enable_cache_hit_protection(state: &AppState) {
     sqlx::query(
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_low_rate_threshold_percent = 10, cache_hit_overflow_mode = 'queue' WHERE id = 1",
