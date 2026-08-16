@@ -28,4 +28,39 @@ describe("demo topic payloads", () => {
     expect(conversations).toMatchObject({ conversations: expect.any(Array) });
     expect(invocations).toMatchObject({ records: expect.any(Array), total: expect.any(Number) });
   });
+
+  it("keeps model routing subscription filters in the demo snapshot", async () => {
+    const payload = (await resolveDemoTopicPayload(
+      {
+        topic: "pool.model-routing-live",
+        params: {
+          window: "1h",
+          model: "gpt-5.4-mini",
+          state: "available",
+          limit: "1",
+        },
+      },
+      requestUrl,
+    )) as {
+      groups: Array<{
+        model: string;
+        accounts: Array<{ accountDisplayName: string; state: string }>;
+      }>;
+      records: Array<{ model: string }>;
+    };
+
+    expect(payload.groups).toEqual([
+      expect.objectContaining({
+        model: "gpt-5.4-mini",
+        accounts: [
+          expect.objectContaining({
+            accountDisplayName: "示例 API Key（并发受限）",
+            state: "available",
+          }),
+        ],
+      }),
+    ]);
+    expect(payload.records).toHaveLength(1);
+    expect(payload.records[0]).toMatchObject({ model: "gpt-5.4-mini" });
+  });
 });

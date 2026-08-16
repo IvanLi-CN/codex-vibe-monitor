@@ -71,82 +71,252 @@ type DemoProxyNode = {
   stats: Record<string, unknown>;
 };
 
+type DemoModelRouteFixture = {
+  accountId: number;
+  model: string;
+  state: "available" | "degraded" | "cooling_down";
+  cacheConcurrencyLimit?: number;
+  cacheRecoveryLimit?: number;
+  cacheLowHitStreak?: number;
+  cacheCooldownLevel?: number;
+  cacheLastHitRatePercent?: number;
+};
+
+type DemoModelRoutingLiveQuery = {
+  window?: string | null;
+  model?: string | null;
+  state?: string | null;
+  limit?: string | null;
+};
+
+type DemoModelRoutingLiveState = ReturnType<typeof demoModelRoutingStates>[number] & {
+  accountId: number;
+  accountDisplayName: string;
+  accountGroupName: string | null;
+};
+
+const DEMO_MODEL_ROUTE_FIXTURES: DemoModelRouteFixture[] = [
+  { accountId: 102, model: "gpt-5.5", state: "available" },
+  {
+    accountId: 106,
+    model: "gpt-5.5",
+    state: "degraded",
+    cacheConcurrencyLimit: 2,
+    cacheRecoveryLimit: 4,
+    cacheLastHitRatePercent: 8.4,
+  },
+  { accountId: 108, model: "gpt-5.5", state: "cooling_down" },
+  {
+    accountId: 102,
+    model: "gpt-5.4-mini",
+    state: "cooling_down",
+    cacheConcurrencyLimit: 1,
+    cacheRecoveryLimit: 4,
+    cacheLowHitStreak: 2,
+    cacheCooldownLevel: 1,
+    cacheLastHitRatePercent: 4.2,
+  },
+  { accountId: 110, model: "gpt-5.4-mini", state: "available" },
+  { accountId: 112, model: "gpt-5.4-mini", state: "degraded" },
+  { accountId: 106, model: "gpt-5.6-terra", state: "available" },
+  { accountId: 108, model: "gpt-5.6-terra", state: "degraded" },
+  { accountId: 115, model: "gpt-5.6-terra", state: "available" },
+  { accountId: 110, model: "o4-mini", state: "available" },
+  { accountId: 112, model: "o4-mini", state: "cooling_down" },
+  { accountId: 115, model: "o4-mini", state: "degraded" },
+];
+
 function demoAccounts(): DemoAccount[] {
   return demoModel.snapshot.accounts as DemoAccount[];
 }
 
 function demoModelRoutingStates(accountId: number) {
-  const reset = demoResetModelRoutes.has(`${accountId}:gpt-5.4-mini`);
-  return [
-    {
-      model: "gpt-5.5",
-      state: "available",
-      priority: "normal",
-      failureCount: 0,
-      changedAt: demoNow(),
-      lastSeenAt: demoNow(),
-      cooldownUntil: null,
+  return DEMO_MODEL_ROUTE_FIXTURES.filter((fixture) => fixture.accountId === accountId).map(
+    (fixture) => {
+      const reset = demoResetModelRoutes.has(`${accountId}:${fixture.model}`);
+      const state = reset ? "available" : fixture.state;
+      const coolingDown = state === "cooling_down";
+      const degraded = state === "degraded";
+      const now = Date.parse(demoNow());
+
+      return {
+        model: fixture.model,
+        state,
+        priority: coolingDown ? "excluded" : degraded ? "demoted" : "normal",
+        failureCount: coolingDown ? 5 : degraded ? 1 : 0,
+        changedAt: new Date(now - (coolingDown ? 75_000 : degraded ? 180_000 : 0)).toISOString(),
+        lastSeenAt: demoNow(),
+        lastFailureAt: coolingDown || degraded ? new Date(now - 75_000).toISOString() : null,
+        lastFailureKind: coolingDown || degraded ? "upstream_http_5xx" : null,
+        lastFailureMessage: coolingDown || degraded ? "Demo fixture route state." : null,
+        cooldownUntil: coolingDown ? new Date(now + 45_000).toISOString() : null,
+        cacheConcurrencyLimit: fixture.cacheConcurrencyLimit ?? null,
+        cacheRecoveryLimit: fixture.cacheRecoveryLimit ?? null,
+        cacheLowHitStreak: fixture.cacheLowHitStreak ?? 0,
+        cacheCooldownLevel: fixture.cacheCooldownLevel ?? 0,
+        cacheLastHitRatePercent: fixture.cacheLastHitRatePercent ?? null,
+        probeRequired: coolingDown,
+      };
     },
-    {
-      model: "gpt-5.4-mini",
-      state: reset ? "available" : "cooling_down",
-      priority: reset ? "normal" : "excluded",
-      failureCount: reset ? 0 : 5,
-      changedAt: demoNow(),
-      lastSeenAt: demoNow(),
-      lastFailureAt: reset ? null : new Date(Date.parse(demoNow()) - 75_000).toISOString(),
-      lastFailureKind: reset ? null : "model_unavailable",
-      lastFailureMessage: reset ? null : "Model-specific quota exhausted in the demo fixture.",
-      cooldownUntil: reset ? null : new Date(Date.parse(demoNow()) + 45_000).toISOString(),
-    },
-  ];
+  );
 }
 
-function demoModelRoutingTimeline(accountId: number, model: string) {
+function demoModelRoutingTimeline(accountId: number, model: string, startMinutesAgo = 2) {
   const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-  const accountDisplayName = account?.displayName ?? "demo API key";
+  const accountDisplayName = account?.displayName ?? "示例 API Key";
   const accountGroupName = account?.groupName ?? null;
+  const fixture = DEMO_MODEL_ROUTE_FIXTURES.find(
+    (candidate) => candidate.accountId === accountId && candidate.model === model,
+  );
+  const reset = demoResetModelRoutes.has(`${accountId}:${model}`);
+  const state = reset ? "available" : (fixture?.state ?? "available");
+  const occurredAt = (minutesAgo: number) =>
+    new Date(Date.parse(demoNow()) - minutesAgo * 60_000).toISOString();
+  const selectionAudit = {
+    selectedAccountId: accountId,
+    selectedAccountName: accountDisplayName,
+    eligibleCandidateCount: 3,
+    winnerReasonCode: "lowest_effective_load",
+    excludedCandidates: [],
+  };
+
+  if (state === "available") {
+    return [
+      {
+        id: `attempt:${accountId}:${model}:3`,
+        kind: "attempt",
+        occurredAt: occurredAt(startMinutesAgo),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        attemptId: `DEMO${accountId}3`,
+        invokeId: `demo-routing-${accountId}-${model}-003`,
+        attemptIndex: 3,
+        sameAccountRetryIndex: 1,
+        routingSource: "retry",
+        status: "success",
+        httpStatus: 200,
+        totalLatencyMs: 821,
+        reasonCode: "model_route_recovery_succeeded",
+        modelRouteStateBefore: "cooling_down",
+        modelRouteStateAfter: "available",
+        routingSelectionAudit: selectionAudit,
+      },
+      {
+        id: `attempt:${accountId}:${model}:2`,
+        kind: "attempt",
+        occurredAt: occurredAt(startMinutesAgo + 3),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        attemptId: `DEMO${accountId}2`,
+        invokeId: `demo-routing-${accountId}-${model}-003`,
+        attemptIndex: 2,
+        sameAccountRetryIndex: 0,
+        routingSource: "retry",
+        status: "http_502",
+        httpStatus: 502,
+        totalLatencyMs: 1_204,
+        failureKind: "upstream_http_5xx",
+        reasonCode: "upstream_http_5xx",
+        modelRouteStateBefore: "degraded",
+        modelRouteStateAfter: "cooling_down",
+        modelRouteFailureCount: 3,
+        modelRouteCooldownUntil: occurredAt(startMinutesAgo + 18),
+        routingSelectionAudit: selectionAudit,
+      },
+      {
+        id: `event:${accountId}:${model}:probe`,
+        kind: "event",
+        occurredAt: occurredAt(startMinutesAgo + 6),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        status: "single_probe",
+        action: "model_route_probe_released",
+        source: "call",
+        reasonCode: "cooldown_elapsed",
+        modelRouteStateBefore: "cooling_down",
+        modelRouteStateAfter: "cooling_down",
+      },
+    ];
+  }
+
+  if (state === "degraded") {
+    return [
+      {
+        id: `attempt:${accountId}:${model}:3`,
+        kind: "attempt",
+        occurredAt: occurredAt(startMinutesAgo),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        attemptId: `DEMO${accountId}3`,
+        invokeId: `demo-routing-${accountId}-${model}-003`,
+        attemptIndex: 3,
+        sameAccountRetryIndex: 1,
+        routingSource: "retry",
+        status: "http_502",
+        httpStatus: 502,
+        totalLatencyMs: 1_204,
+        failureKind: "upstream_http_5xx",
+        reasonCode: "upstream_http_5xx",
+        modelRouteStateBefore: "available",
+        modelRouteStateAfter: "degraded",
+        modelRouteFailureCount: 1,
+        routingSelectionAudit: selectionAudit,
+      },
+      {
+        id: `event:${accountId}:${model}:demoted`,
+        kind: "event",
+        occurredAt: occurredAt(startMinutesAgo + 3),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        status: "degraded",
+        action: "model_route_degraded",
+        source: "call",
+        reasonCode: "upstream_http_5xx",
+        modelRouteStateBefore: "available",
+        modelRouteStateAfter: "degraded",
+        modelRouteFailureCount: 1,
+      },
+      {
+        id: `event:${accountId}:${model}:retry`,
+        kind: "event",
+        occurredAt: occurredAt(startMinutesAgo + 6),
+        accountId,
+        accountDisplayName,
+        accountGroupName,
+        model,
+        status: "retry_scheduled",
+        action: "model_route_retry_scheduled",
+        source: "call",
+        reasonCode: "retry_after_failure",
+        modelRouteStateBefore: "degraded",
+        modelRouteStateAfter: "degraded",
+      },
+    ];
+  }
 
   return [
     {
       id: `attempt:${accountId}:${model}:3`,
       kind: "attempt",
-      occurredAt: "2026-08-16T03:59:20.000Z",
+      occurredAt: occurredAt(startMinutesAgo),
       accountId,
       accountDisplayName,
       accountGroupName,
       model,
-      attemptId: "DEMO0003",
-      invokeId: "demo-routing-recovery-003",
+      attemptId: `DEMO${accountId}3`,
+      invokeId: `demo-routing-${accountId}-${model}-003`,
       attemptIndex: 3,
       sameAccountRetryIndex: 1,
-      routingSource: "retry",
-      status: "success",
-      httpStatus: 200,
-      totalLatencyMs: 821,
-      reasonCode: "model_route_recovery_succeeded",
-      modelRouteStateBefore: "cooling_down",
-      modelRouteStateAfter: "available",
-      routingSelectionAudit: {
-        selectedAccountId: accountId,
-        selectedAccountName: accountDisplayName,
-        eligibleCandidateCount: 2,
-        winnerReasonCode: "lowest_effective_load",
-        excludedCandidates: [],
-      },
-    },
-    {
-      id: `attempt:${accountId}:${model}:2`,
-      kind: "attempt",
-      occurredAt: "2026-08-16T03:58:04.000Z",
-      accountId,
-      accountDisplayName,
-      accountGroupName,
-      model,
-      attemptId: "DEMO0002",
-      invokeId: "demo-routing-recovery-003",
-      attemptIndex: 2,
-      sameAccountRetryIndex: 0,
       routingSource: "retry",
       status: "http_502",
       httpStatus: 502,
@@ -156,12 +326,13 @@ function demoModelRoutingTimeline(accountId: number, model: string) {
       modelRouteStateBefore: "degraded",
       modelRouteStateAfter: "cooling_down",
       modelRouteFailureCount: 3,
-      modelRouteCooldownUntil: "2026-08-16T04:15:00.000Z",
+      modelRouteCooldownUntil: occurredAt(startMinutesAgo + 18),
+      routingSelectionAudit: selectionAudit,
     },
     {
       id: `event:${accountId}:${model}:cooldown`,
       kind: "event",
-      occurredAt: "2026-08-16T03:57:11.000Z",
+      occurredAt: occurredAt(startMinutesAgo + 3),
       accountId,
       accountDisplayName,
       accountGroupName,
@@ -169,74 +340,87 @@ function demoModelRoutingTimeline(accountId: number, model: string) {
       status: "cooling_down",
       action: "model_route_cooldown",
       source: "call",
-      reasonCode: "cache_hit_rate_low",
+      reasonCode: "upstream_http_5xx",
       modelRouteStateBefore: "degraded",
       modelRouteStateAfter: "cooling_down",
       modelRouteFailureCount: 3,
-      modelRouteCooldownUntil: "2026-08-16T04:15:00.000Z",
+      modelRouteCooldownUntil: occurredAt(startMinutesAgo + 18),
+    },
+    {
+      id: `event:${accountId}:${model}:queued`,
+      kind: "event",
+      occurredAt: occurredAt(startMinutesAgo + 6),
+      accountId,
+      accountDisplayName,
+      accountGroupName,
+      model,
+      status: "cooling_down",
+      action: "model_route_request_queued",
+      source: "call",
+      reasonCode: "cooldown_active",
+      modelRouteStateBefore: "cooling_down",
+      modelRouteStateAfter: "cooling_down",
+      modelRouteFailureCount: 3,
+      modelRouteCooldownUntil: occurredAt(startMinutesAgo + 18),
     },
   ];
 }
 
-function demoModelRoutingLive() {
-  const apiKeyAccounts = demoAccounts().filter((account) => account.kind === "api_key_codex");
-  const primary = apiKeyAccounts[0];
-  const recovery = apiKeyAccounts[1] ?? primary;
-  if (!primary || !recovery) {
-    return { generatedAt: demoNow(), groups: [], records: [] };
+function demoModelRoutingLiveTimeline() {
+  return [
+    demoModelRoutingTimeline(102, "gpt-5.5", 2),
+    demoModelRoutingTimeline(106, "gpt-5.5", 10),
+    demoModelRoutingTimeline(110, "gpt-5.4-mini", 18),
+    demoModelRoutingTimeline(112, "gpt-5.4-mini", 65),
+    demoModelRoutingTimeline(106, "gpt-5.6-terra", 145),
+    demoModelRoutingTimeline(108, "gpt-5.6-terra", 220),
+    demoModelRoutingTimeline(110, "o4-mini", 415),
+    demoModelRoutingTimeline(112, "o4-mini", 720),
+    demoModelRoutingTimeline(115, "o4-mini", 1_100),
+  ]
+    .flat()
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt));
+}
+
+function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
+  const model = query.model?.trim() || null;
+  const state = query.state?.trim() || null;
+  const windowMinutes =
+    query.window === "15m" ? 15 : query.window === "6h" ? 360 : query.window === "24h" ? 1_440 : 60;
+  const parsedLimit = Number.parseInt(query.limit ?? "100", 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(100, Math.max(1, parsedLimit)) : 100;
+  const cutoff = Date.parse(demoNow()) - windowMinutes * 60_000;
+  const accounts = new Map(demoAccounts().map((account) => [account.id, account]));
+  const groupsByModel = new Map<string, DemoModelRoutingLiveState[]>();
+
+  for (const fixture of DEMO_MODEL_ROUTE_FIXTURES) {
+    if (model && fixture.model !== model) continue;
+    const account = accounts.get(fixture.accountId);
+    const routeState = demoModelRoutingStates(fixture.accountId).find(
+      (candidate) => candidate.model === fixture.model,
+    );
+    if (!account || !routeState || (state && routeState.state !== state)) continue;
+    const group = groupsByModel.get(fixture.model) ?? [];
+    group.push({
+      accountId: account.id,
+      accountDisplayName: account.displayName,
+      accountGroupName: account.groupName,
+      ...routeState,
+    });
+    groupsByModel.set(fixture.model, group);
   }
 
-  const recoveredRecord = demoModelRoutingTimeline(primary.id, "gpt-5.5")[0];
-  const coolingRecord = demoModelRoutingTimeline(primary.id, "gpt-5.4-mini")[2];
   return {
     generatedAt: demoNow(),
-    groups: [
-      {
-        model: "gpt-5.5",
-        accounts: [
-          {
-            accountId: primary.id,
-            accountDisplayName: primary.displayName,
-            accountGroupName: primary.groupName,
-            ...demoModelRoutingStates(primary.id)[0],
-          },
-          {
-            accountId: recovery.id,
-            accountDisplayName: recovery.displayName,
-            accountGroupName: recovery.groupName,
-            model: "gpt-5.5",
-            state: "degraded",
-            priority: "demoted",
-            failureCount: 1,
-            changedAt: "2026-08-16T03:58:04.000Z",
-            lastSeenAt: "2026-08-16T03:58:04.000Z",
-            lastFailureAt: "2026-08-16T03:58:04.000Z",
-            lastFailureKind: "upstream_http_5xx",
-            cacheConcurrencyLimit: 2,
-            cacheRecoveryLimit: 4,
-            cacheLastHitRatePercent: 8.4,
-          },
-        ],
-      },
-      {
-        model: "gpt-5.4-mini",
-        accounts: [
-          {
-            accountId: primary.id,
-            accountDisplayName: primary.displayName,
-            accountGroupName: primary.groupName,
-            ...demoModelRoutingStates(primary.id)[1],
-            cacheConcurrencyLimit: 1,
-            cacheRecoveryLimit: 4,
-            cacheLowHitStreak: 2,
-            cacheCooldownLevel: 1,
-            cacheLastHitRatePercent: 4.2,
-            probeRequired: true,
-          },
-        ],
-      },
-    ],
-    records: [recoveredRecord, coolingRecord],
+    groups: Array.from(groupsByModel, ([groupModel, groupAccounts]) => ({
+      model: groupModel,
+      accounts: groupAccounts,
+    })),
+    records: demoModelRoutingLiveTimeline()
+      .filter(
+        (record) => (!model || record.model === model) && Date.parse(record.occurredAt) >= cutoff,
+      )
+      .slice(0, limit),
   };
 }
 
@@ -1929,6 +2113,7 @@ function accountEvents() {
       action: modelRouteEvent ? "model_route_cooldown" : action,
       source: index % 2 === 0 ? "sync_maintenance" : "call",
       result: modelRouteEvent ? "failed" : result,
+      upstreamAccountId: account.id,
       accountDisplayName: account.displayName,
       accountGroupName: account.groupName,
       forwardProxyKey: proxyKey,
@@ -1974,7 +2159,7 @@ function accountEvents() {
   });
   events.pop();
   const apiKeyModelEvent = events.find(
-    (event) => event.accountDisplayName === "backup-key" && event.model === "gpt-5.4-mini",
+    (event) => event.upstreamAccountId === 102 && event.model === "gpt-5.4-mini",
   );
   if (apiKeyModelEvent) {
     events.unshift({
@@ -3286,7 +3471,14 @@ export async function handleDemoRequest(request: Request) {
       },
     });
   if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
-    return json(demoModelRoutingLive());
+    return json(
+      demoModelRoutingLive({
+        window: url.searchParams.get("window"),
+        model: url.searchParams.get("model"),
+        state: url.searchParams.get("state"),
+        limit: url.searchParams.get("limit"),
+      }),
+    );
   }
   if (pathname.includes("/sticky-keys"))
     return json({

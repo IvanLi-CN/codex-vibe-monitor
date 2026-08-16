@@ -426,6 +426,38 @@ describe("demo MSW handlers", () => {
     expect(nextHistory.nextCursor).toBeNull();
   });
 
+  it("filters the live routing fixture by model, current state, time window, and limit", async () => {
+    const [filteredResponse, shortWindowResponse, longWindowResponse] = await Promise.all([
+      fetch(
+        "http://demo.invalid/api/pool/model-routing-live?window=1h&model=gpt-5.4-mini&state=available&limit=1",
+      ),
+      fetch("http://demo.invalid/api/pool/model-routing-live?window=15m&limit=100"),
+      fetch("http://demo.invalid/api/pool/model-routing-live?window=24h&limit=100"),
+    ]);
+    const filtered = (await filteredResponse.json()) as {
+      groups: Array<{
+        model: string;
+        accounts: Array<{ state: string; accountDisplayName: string }>;
+      }>;
+      records: Array<{ model: string }>;
+    };
+    const shortWindow = (await shortWindowResponse.json()) as { records: Array<{ id: string }> };
+    const longWindow = (await longWindowResponse.json()) as { records: Array<{ id: string }> };
+
+    expect(filteredResponse.ok).toBe(true);
+    expect(filtered.groups).toHaveLength(1);
+    expect(filtered.groups[0]).toMatchObject({ model: "gpt-5.4-mini" });
+    expect(filtered.groups[0]?.accounts).toEqual([
+      expect.objectContaining({
+        state: "available",
+        accountDisplayName: "示例 API Key（并发受限）",
+      }),
+    ]);
+    expect(filtered.records).toHaveLength(1);
+    expect(filtered.records.every((record) => record.model === "gpt-5.4-mini")).toBe(true);
+    expect(shortWindow.records.length).toBeLessThan(longWindow.records.length);
+  });
+
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
     const [detailResponse, requestBodyResponse, responseBodyResponse, attemptResponseBodyResponse] =
       await Promise.all([
