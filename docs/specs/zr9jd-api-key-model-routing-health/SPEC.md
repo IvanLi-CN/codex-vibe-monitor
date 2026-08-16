@@ -167,12 +167,12 @@ sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、标题右侧筛选控制组；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示内容宽度工作区页签，以及标题行右侧按刷新、路由状态、模型和时间窗排序的控制组。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、标题右侧筛选控制组；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示四个模型、十二个明确标注的示例 API Key 组合，以及标题行右侧按刷新、路由状态、模型和时间窗排序的控制组；时间窗在 15 分钟至 24 小时之间展示 5 至 27 条决策。
 
 PR: include
 ![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、筛选控制组换行；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端内容宽度页签，以及标题下按刷新、路由状态、模型和时间窗顺序换行的控制组无重叠或文字溢出。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、筛选控制组换行；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端内容宽度页签，以及标题下按刷新、路由状态、模型和时间窗顺序换行的控制组无重叠或文字溢出；账号与路由分组均使用明确的示例标签。
 
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
