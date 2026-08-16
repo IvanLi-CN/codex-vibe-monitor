@@ -382,6 +382,50 @@ describe("demo MSW handlers", () => {
     );
   });
 
+  it("serves API Key model routing snapshots and exact-model history", async () => {
+    const [liveResponse, historyResponse, nextHistoryResponse] = await Promise.all([
+      fetch("http://demo.invalid/api/pool/model-routing-live?window=1h&limit=100"),
+      fetch(
+        "http://demo.invalid/api/pool/upstream-accounts/102/model-routing-events?model=gpt-5.4-mini&pageSize=2",
+      ),
+      fetch(
+        "http://demo.invalid/api/pool/upstream-accounts/102/model-routing-events?model=gpt-5.4-mini&cursor=demo-model-routing-page-2&pageSize=2",
+      ),
+    ]);
+    const live = (await liveResponse.json()) as {
+      groups: Array<{ accounts: Array<{ accountId: number }> }>;
+      records: Array<{ kind: string; attemptIndex?: number }>;
+    };
+    const history = (await historyResponse.json()) as {
+      items: Array<{ model: string; kind: string; attemptIndex?: number }>;
+      nextCursor?: string | null;
+    };
+    const nextHistory = (await nextHistoryResponse.json()) as {
+      items: Array<{ model: string; kind: string }>;
+      nextCursor?: string | null;
+    };
+
+    expect(liveResponse.ok).toBe(true);
+    expect(historyResponse.ok).toBe(true);
+    expect(nextHistoryResponse.ok).toBe(true);
+    expect(
+      live.groups.flatMap((group) => group.accounts.map((account) => account.accountId)),
+    ).toEqual(expect.arrayContaining([102, 106]));
+    expect(live.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "attempt", attemptIndex: 3 })]),
+    );
+    expect(history.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.4-mini", kind: "attempt", attemptIndex: 3 }),
+      ]),
+    );
+    expect(history.nextCursor).toBe("demo-model-routing-page-2");
+    expect(nextHistory.items).toEqual(
+      expect.arrayContaining([expect.objectContaining({ model: "gpt-5.4-mini", kind: "event" })]),
+    );
+    expect(nextHistory.nextCursor).toBeNull();
+  });
+
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
     const [detailResponse, requestBodyResponse, responseBodyResponse, attemptResponseBodyResponse] =
       await Promise.all([

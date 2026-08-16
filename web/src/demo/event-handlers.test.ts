@@ -5,12 +5,16 @@ const requestUrl = "http://demo.invalid/events";
 
 describe("demo topic payloads", () => {
   it("resolves every Live page subscription through the deterministic demo API", async () => {
-    const [summary, forwardProxy, conversations, invocations] = await Promise.all([
+    const [summary, forwardProxy, modelRouting, conversations, invocations] = await Promise.all([
       resolveDemoTopicPayload(
         { topic: "stats.summary.current", params: { window: "current", limit: "50" } },
         requestUrl,
       ),
       resolveDemoTopicPayload({ topic: "forward-proxy.live" }, requestUrl),
+      resolveDemoTopicPayload(
+        { topic: "pool.model-routing-live", params: { window: "1h", limit: "100" } },
+        requestUrl,
+      ),
       resolveDemoTopicPayload(
         { topic: "prompt-cache.window", params: { limit: "50", detail: "full" } },
         requestUrl,
@@ -20,6 +24,7 @@ describe("demo topic payloads", () => {
 
     expect(summary).toMatchObject({ totalCount: expect.any(Number) });
     expect(forwardProxy).toMatchObject({ nodes: expect.any(Array) });
+    expect(modelRouting).toMatchObject({ groups: expect.any(Array), records: expect.any(Array) });
     expect(conversations).toMatchObject({ conversations: expect.any(Array) });
     expect(invocations).toMatchObject({ records: expect.any(Array), total: expect.any(Number) });
   });

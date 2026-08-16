@@ -102,6 +102,144 @@ function demoModelRoutingStates(accountId: number) {
   ];
 }
 
+function demoModelRoutingTimeline(accountId: number, model: string) {
+  const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
+  const accountDisplayName = account?.displayName ?? "demo API key";
+  const accountGroupName = account?.groupName ?? null;
+
+  return [
+    {
+      id: `attempt:${accountId}:${model}:3`,
+      kind: "attempt",
+      occurredAt: "2026-08-16T03:59:20.000Z",
+      accountId,
+      accountDisplayName,
+      accountGroupName,
+      model,
+      attemptId: "DEMO0003",
+      invokeId: "demo-routing-recovery-003",
+      attemptIndex: 3,
+      sameAccountRetryIndex: 1,
+      routingSource: "retry",
+      status: "success",
+      httpStatus: 200,
+      totalLatencyMs: 821,
+      reasonCode: "model_route_recovery_succeeded",
+      modelRouteStateBefore: "cooling_down",
+      modelRouteStateAfter: "available",
+      routingSelectionAudit: {
+        selectedAccountId: accountId,
+        selectedAccountName: accountDisplayName,
+        eligibleCandidateCount: 2,
+        winnerReasonCode: "lowest_effective_load",
+        excludedCandidates: [],
+      },
+    },
+    {
+      id: `attempt:${accountId}:${model}:2`,
+      kind: "attempt",
+      occurredAt: "2026-08-16T03:58:04.000Z",
+      accountId,
+      accountDisplayName,
+      accountGroupName,
+      model,
+      attemptId: "DEMO0002",
+      invokeId: "demo-routing-recovery-003",
+      attemptIndex: 2,
+      sameAccountRetryIndex: 0,
+      routingSource: "retry",
+      status: "http_502",
+      httpStatus: 502,
+      totalLatencyMs: 1_204,
+      failureKind: "upstream_http_5xx",
+      reasonCode: "upstream_http_5xx",
+      modelRouteStateBefore: "degraded",
+      modelRouteStateAfter: "cooling_down",
+      modelRouteFailureCount: 3,
+      modelRouteCooldownUntil: "2026-08-16T04:15:00.000Z",
+    },
+    {
+      id: `event:${accountId}:${model}:cooldown`,
+      kind: "event",
+      occurredAt: "2026-08-16T03:57:11.000Z",
+      accountId,
+      accountDisplayName,
+      accountGroupName,
+      model,
+      status: "cooling_down",
+      action: "model_route_cooldown",
+      source: "call",
+      reasonCode: "cache_hit_rate_low",
+      modelRouteStateBefore: "degraded",
+      modelRouteStateAfter: "cooling_down",
+      modelRouteFailureCount: 3,
+      modelRouteCooldownUntil: "2026-08-16T04:15:00.000Z",
+    },
+  ];
+}
+
+function demoModelRoutingLive() {
+  const apiKeyAccounts = demoAccounts().filter((account) => account.kind === "api_key_codex");
+  const primary = apiKeyAccounts[0];
+  const recovery = apiKeyAccounts[1] ?? primary;
+  if (!primary || !recovery) {
+    return { generatedAt: demoNow(), groups: [], records: [] };
+  }
+
+  const recoveredRecord = demoModelRoutingTimeline(primary.id, "gpt-5.5")[0];
+  const coolingRecord = demoModelRoutingTimeline(primary.id, "gpt-5.4-mini")[2];
+  return {
+    generatedAt: demoNow(),
+    groups: [
+      {
+        model: "gpt-5.5",
+        accounts: [
+          {
+            accountId: primary.id,
+            accountDisplayName: primary.displayName,
+            accountGroupName: primary.groupName,
+            ...demoModelRoutingStates(primary.id)[0],
+          },
+          {
+            accountId: recovery.id,
+            accountDisplayName: recovery.displayName,
+            accountGroupName: recovery.groupName,
+            model: "gpt-5.5",
+            state: "degraded",
+            priority: "demoted",
+            failureCount: 1,
+            changedAt: "2026-08-16T03:58:04.000Z",
+            lastSeenAt: "2026-08-16T03:58:04.000Z",
+            lastFailureAt: "2026-08-16T03:58:04.000Z",
+            lastFailureKind: "upstream_http_5xx",
+            cacheConcurrencyLimit: 2,
+            cacheRecoveryLimit: 4,
+            cacheLastHitRatePercent: 8.4,
+          },
+        ],
+      },
+      {
+        model: "gpt-5.4-mini",
+        accounts: [
+          {
+            accountId: primary.id,
+            accountDisplayName: primary.displayName,
+            accountGroupName: primary.groupName,
+            ...demoModelRoutingStates(primary.id)[1],
+            cacheConcurrencyLimit: 1,
+            cacheRecoveryLimit: 4,
+            cacheLowHitStreak: 2,
+            cacheCooldownLevel: 1,
+            cacheLastHitRatePercent: 4.2,
+            probeRequired: true,
+          },
+        ],
+      },
+    ],
+    records: [recoveredRecord, coolingRecord],
+  };
+}
+
 function demoForwardProxyNodes(): DemoProxyNode[] {
   return (demoModel.snapshot.settings.forwardProxy as { nodes: DemoProxyNode[] }).nodes;
 }
@@ -3147,6 +3285,9 @@ export async function handleDemoRequest(request: Request) {
         compactStreamTimeoutSecs: 420,
       },
     });
+  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
+    return json(demoModelRoutingLive());
+  }
   if (pathname.includes("/sticky-keys"))
     return json({
       rangeStart: "2026-07-10T00:00:00Z",
@@ -3167,6 +3308,30 @@ export async function handleDemoRequest(request: Request) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
     return json(account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : []);
+  }
+  if (
+    /^\/api\/pool\/upstream-accounts\/\d+\/model-routing-events$/.test(pathname) &&
+    request.method === "GET"
+  ) {
+    const accountId = Number(pathname.split("/").at(-2));
+    const account = demoAccounts().find((item) => item.id === accountId);
+    const model = url.searchParams.get("model")?.trim();
+    if (account?.kind !== "api_key_codex" || !model) {
+      return json(
+        { error: "Model routing history is unavailable for this account." },
+        { status: 404 },
+      );
+    }
+
+    const items = demoModelRoutingTimeline(accountId, model);
+    const cursor = url.searchParams.get("cursor");
+    if (cursor === "demo-model-routing-page-2") {
+      return json({ items: items.slice(2), nextCursor: null });
+    }
+    return json({
+      items: items.slice(0, 2),
+      nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
+    });
   }
   if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
     const accountId = Number(pathname.split("/").at(-1));
