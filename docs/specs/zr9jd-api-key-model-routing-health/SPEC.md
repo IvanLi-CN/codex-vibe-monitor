@@ -157,9 +157,10 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt` 及其 393px 变体、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 覆盖标题控制组与展开历史）
 视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=无需裁剪（四张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
-聊天回图=待本地确认
+空白裁剪=无需裁剪（五张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
+聊天回图=已展示，待主人确认
 证据落盘=已落盘
+代码来源sha=`31a9a08cc16de75d700c991c448403c5c6f97bef`
 证据绑定sha=见当前会话确认卡
 submission_gate=pending-owner-approval
 target_program=mock-only
@@ -167,17 +168,22 @@ sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、标题右侧筛选控制组；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示四个模型、十二个明确标注的示例 API Key 组合，以及标题行右侧按刷新、路由状态、模型和时间窗排序的控制组；时间窗在 15 分钟至 24 小时之间展示 5 至 27 条决策。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、标题右侧筛选控制组；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示三个模型、九个精确账号模型组合和五个明确标注的示例 API Key；标题行右侧按刷新、路由状态、模型和时间窗排序的控制组处于 24 小时状态，全部数据为真实请求流派生的确定性演示记录。
 
 PR: include
 ![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、筛选控制组换行；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端内容宽度页签，以及标题下按刷新、路由状态、模型和时间窗顺序换行的控制组无重叠或文字溢出；账号与路由分组均使用明确的示例标签。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、筛选控制组换行；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端非全宽页签，标题下按刷新、路由状态、模型和时间窗顺序换行的控制组，以及三个模型分组无重叠或文字溢出；账号与路由分组均使用明确的示例标签。
 
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
 
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、真实重试、HTTP 终态和游标加载入口；展开区直接呈现事件，不重复时间窗说明。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、首条恢复重试展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示最近路由决策的 21/100 总量；恢复重试独立成行，展开后显示原始选择原因、HTTP 终态与延迟、候选比较和 `cooling_down → available` 状态迁移。
+
+PR: include
+![桌面实况路由决策详情](./assets/model-routing-live-decisions-desktop.png)
+
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、独立重试、HTTP 终态和加载更早事件入口；展开区直接呈现事件，不重复时间窗说明。
 
 PR: include
 ![桌面账号路由健康](./assets/model-routing-account-health-page-desktop.png)
