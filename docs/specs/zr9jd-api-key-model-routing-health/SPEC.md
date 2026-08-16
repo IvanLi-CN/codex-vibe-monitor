@@ -80,7 +80,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 全局路由记录以模型分组、账号次级展示。每次路由选择和每次重试各自独立；若手动 reset 或状态变更没有关联尝试，则作为独立系统事件保留。记录仅包含已规范化的原因、候选比较、状态跃迁、终态和延迟，不返回请求内容、响应内容、凭据或原始错误文本。
 - `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容。
 - `pool.model-routing-live` 实时主题只在实况“路由”页签处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
-- 实况页在共享摘要带下固定使用“对话 / 最新记录 / 路由 / 代理”四页签，默认并持久化“路由”。非激活页签不保持实时订阅，重新激活时重新拉取快照。
+- 实况页在共享摘要带下固定使用“对话 / 最新记录 / 路由 / 代理”四页签，默认并持久化“路由”。页签宽度贴合内容而非全宽拉伸；非激活页签不保持实时订阅，重新激活时重新拉取快照。
 - 账号详情登录健康默认显示紧凑状态摘要；异常保持显式可见，低频诊断按需展开。模型健康默认显示一行摘要和操作，展开后显示模型 48 小时历史。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
 - 健康事件不展示独立的请求模型标签。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：API Key 模型路由事件只展示“影响范围=模型、受影响模型=<模型名>”；OAuth 临时失败与认证/付费等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
@@ -123,7 +123,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given the real-time route tab is opened, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model group and individual attempt record update through the bounded `pool.model-routing-live` view without creating new upstream traffic.
 - Given a route attempt has retries, When the global or account model history renders, Then every retry remains a separate time-ordered record with its routing selection audit and normalized terminal evidence.
 - Given an operator opens an API Key account's model details, When the model row expands, Then the first page contains only that model's last 48 hours of history and older records load by cursor without duplication.
-- Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes full-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription.
+- Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 
 ## 验收清单（Acceptance checklist）
@@ -160,30 +160,30 @@ Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt` 及其 393
 空白裁剪=无需裁剪（五张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
 聊天回图=已展示，待主人确认
 证据落盘=已落盘
-代码来源sha=`31a9a08cc16de75d700c991c448403c5c6f97bef`
+代码来源sha=`2f160015cf5030038cc4d03fba34f9a56c2e7913`
 证据绑定sha=见当前会话确认卡
 submission_gate=pending-owner-approval
 target_program=mock-only
 sensitive_exclusion=N/A
 
-页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。
+页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、标题右侧筛选控制组；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示三个模型、九个精确账号模型组合和五个明确标注的示例 API Key；标题行右侧按刷新、路由状态、模型和时间窗排序的控制组处于 24 小时状态，全部数据为真实请求流派生的确定性演示记录。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示三个模型、九个精确账号模型组合及其当前状态。路由台账来自固定的 126 条调用；24 小时全局视图按接口上限展示 100/100 条记录，所有账号名、模型、状态和时间均可回溯到同一调用台账。
 
 PR: include
 ![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、筛选控制组换行；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端非全宽页签，标题下按刷新、路由状态、模型和时间窗顺序换行的控制组，以及三个模型分组无重叠或文字溢出；账号与路由分组均使用明确的示例标签。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、15 分钟、`gpt-5.4-mini`、`冷却中`；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端内容宽度页签、按状态和模型组合筛选，以及 4/100 条因果有序记录。四行依次对应状态事件、同账号重试和两次原始路由尝试，不是显示用的重复行。
 
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、首条恢复重试展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示最近路由决策的 21/100 总量；恢复重试独立成行，展开后显示原始选择原因、HTTP 终态与延迟、候选比较和 `cooling_down → available` 状态迁移。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、`gpt-5.4-mini`、`冷却中`；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的 16/100 条精确组合记录。筛选不影响其它组合的状态；可见行按北京时间倒序，包含由 HTTP 502 导致的状态事件和同账号重试。
 
 PR: include
 ![桌面实况路由决策详情](./assets/model-routing-live-decisions-desktop.png)
 
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、独立重试、HTTP 终态和加载更早事件入口；展开区直接呈现事件，不重复时间窗说明。
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的压缩登录健康摘要、精确模型当前冷却状态、恢复时间、状态事件、同账号重试和 HTTP 502。展开区直接呈现事件，不重复时间窗说明。
 
 PR: include
 ![桌面账号路由健康](./assets/model-routing-account-health-page-desktop.png)
