@@ -28,6 +28,24 @@ const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache
 const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
 const LIVE_TABS = ["conversations", "records", "routing", "proxy"] as const;
 type LiveTab = (typeof LIVE_TABS)[number];
+const LIVE_TAB_IDS: Record<LiveTab, { tab: string; panel: string }> = {
+  conversations: {
+    tab: "live-workspace-tab-conversations",
+    panel: "live-workspace-panel-conversations",
+  },
+  records: {
+    tab: "live-workspace-tab-records",
+    panel: "live-workspace-panel-records",
+  },
+  routing: {
+    tab: "live-workspace-tab-routing",
+    panel: "live-workspace-panel-routing",
+  },
+  proxy: {
+    tab: "live-workspace-tab-proxy",
+    panel: "live-workspace-panel-proxy",
+  },
+};
 const DEFAULT_PROMPT_CACHE_SELECTION: PromptCacheConversationSelection = {
   mode: "count",
   limit: 50,
@@ -324,32 +342,35 @@ export default function LivePage() {
         </div>
       </section>
 
-      <nav aria-label={t("live.tabs.label")} className="border-b border-base-300">
-        <div className="grid grid-cols-4">
+      <nav aria-label={t("live.tabs.label")} data-testid="live-view-tabs">
+        <SegmentedControl className="grid w-full grid-cols-4" role="tablist">
           {LIVE_TABS.map((tab) => (
-            <button
+            <SegmentedControlItem
               key={tab}
-              type="button"
+              id={LIVE_TAB_IDS[tab].tab}
+              active={activeTab === tab}
               role="tab"
               aria-selected={activeTab === tab}
-              className={`min-h-11 border-b-2 px-2 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                activeTab === tab
-                  ? "border-primary text-primary"
-                  : "border-transparent text-base-content/70 hover:text-base-content"
-              }`}
+              aria-controls={LIVE_TAB_IDS[tab].panel}
+              className="min-w-0 w-full px-2 sm:px-3.5"
               onClick={() => {
                 setActiveTab(tab);
                 persistLiveTab(tab);
               }}
             >
               {t(`live.tabs.${tab}`)}
-            </button>
+            </SegmentedControlItem>
           ))}
-        </div>
+        </SegmentedControl>
       </nav>
 
       {activeTab === "conversations" ? (
-        <section className="surface-panel" role="tabpanel">
+        <section
+          id={LIVE_TAB_IDS.conversations.panel}
+          className="surface-panel"
+          role="tabpanel"
+          aria-labelledby={LIVE_TAB_IDS.conversations.tab}
+        >
           <div className="surface-panel-body gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="section-heading">
@@ -408,7 +429,12 @@ export default function LivePage() {
       ) : null}
 
       {activeTab === "records" ? (
-        <section className="surface-panel" role="tabpanel">
+        <section
+          id={LIVE_TAB_IDS.records.panel}
+          className="surface-panel"
+          role="tabpanel"
+          aria-labelledby={LIVE_TAB_IDS.records.tab}
+        >
           <div className="surface-panel-body gap-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="section-heading">
@@ -442,28 +468,39 @@ export default function LivePage() {
       ) : null}
 
       {activeTab === "routing" ? (
-        <ModelRoutingLivePanel
-          data={modelRouting}
-          isLoading={modelRoutingLoading}
-          error={modelRoutingError}
-          window={routingWindow}
-          model={routingModel}
-          state={routingState}
-          onWindowChange={setRoutingWindow}
-          onModelChange={setRoutingModel}
-          onStateChange={setRoutingState}
-          onOpenAccount={(accountId, selectedModel) =>
-            openUpstreamAccount(accountId, { tab: "healthEvents", model: selectedModel })
-          }
-          onOpenInvocation={(invokeId) =>
-            navigate(`/records?invokeId=${encodeURIComponent(invokeId)}`)
-          }
-          onRefresh={refreshModelRouting}
-        />
+        <div
+          id={LIVE_TAB_IDS.routing.panel}
+          role="tabpanel"
+          aria-labelledby={LIVE_TAB_IDS.routing.tab}
+        >
+          <ModelRoutingLivePanel
+            data={modelRouting}
+            isLoading={modelRoutingLoading}
+            error={modelRoutingError}
+            window={routingWindow}
+            model={routingModel}
+            state={routingState}
+            onWindowChange={setRoutingWindow}
+            onModelChange={setRoutingModel}
+            onStateChange={setRoutingState}
+            onOpenAccount={(accountId, selectedModel) =>
+              openUpstreamAccount(accountId, { tab: "healthEvents", model: selectedModel })
+            }
+            onOpenInvocation={(invokeId) =>
+              navigate(`/records?invokeId=${encodeURIComponent(invokeId)}`)
+            }
+            onRefresh={refreshModelRouting}
+          />
+        </div>
       ) : null}
 
       {activeTab === "proxy" ? (
-        <section className="surface-panel" role="tabpanel">
+        <section
+          id={LIVE_TAB_IDS.proxy.panel}
+          className="surface-panel"
+          role="tabpanel"
+          aria-labelledby={LIVE_TAB_IDS.proxy.tab}
+        >
           <div className="surface-panel-body gap-4">
             <div className="section-heading">
               <h2 className="section-title">{t("live.proxy.title")}</h2>

@@ -344,6 +344,24 @@ describe("LivePage", () => {
     );
   });
 
+  it("uses the shared segmented control for full-width workspace tabs", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
+    const tabs = tabList?.querySelectorAll('[role="tab"]');
+    const routingTab = host?.querySelector("#live-workspace-tab-routing");
+    const routingPanel = host?.querySelector("#live-workspace-panel-routing");
+
+    expect(tabList?.className).toContain("segmented-control");
+    expect(tabList?.className).toContain("grid-cols-4");
+    expect(tabs).toHaveLength(4);
+    expect(routingTab?.getAttribute("data-active")).toBe("true");
+    expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
+    expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
+  });
+
   it("defaults to 50 conversations when storage is empty", () => {
     setupLivePageHooks();
 
