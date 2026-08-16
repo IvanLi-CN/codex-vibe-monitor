@@ -136,10 +136,10 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
-needle = "  group: label-gate-${{ github.event.pull_request.number || github.run_id }}\n"
-replacement = "  group: label-gate-static\n"
+needle = "github.event_name == 'pull_request' && github.event.action == 'edited'"
+replacement = "github.event.action == 'edited'"
 if needle not in text:
-    raise SystemExit("failed to rewrite label-gate concurrency group")
+    raise SystemExit("failed to rewrite label-gate metadata selector")
 path.write_text(text.replace(needle, replacement, 1))
 PY
 

@@ -16,7 +16,7 @@ on:
       - edited
 
 concurrency:
-  group: review-policy-${{ github.event.pull_request.number || github.run_id }}
+  group: review-policy-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:

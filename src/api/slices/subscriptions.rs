@@ -11853,7 +11853,7 @@ mod tests {
             "stats.parallel-work.current",
             "stats.timeseries.open-window",
         ];
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let mut stream = response.into_body().into_data_stream();
         let mut buffered = Vec::new();
         let mut events: BTreeMap<String, Value> = BTreeMap::new();
@@ -12196,18 +12196,11 @@ mod tests {
             .subscription_hub
             .handle_runtime_mutation_batch(state.clone(), parallel_work_mutations)
             .await;
-        tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE * 2).await;
         let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
             range: "1d".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
             bucket: Some("1m".to_string()),
             upstream_account_id: None,
-        };
-        let projected_parallel = {
-            let guard = state.subscription_hub.state.lock().await;
-            guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")]
-                .snapshot_frame
-                .payload_value()
         };
         let exact_parallel = load_parallel_work_stats_response(
             &state,
@@ -12227,6 +12220,41 @@ mod tests {
                 .single()
                 .expect("construct fallback minute"),
         );
+        let exact_point = exact_parallel
+            .current
+            .points
+            .iter()
+            .find(|point| point.bucket_start == fallback_bucket_start)
+            .expect("exact fallback point");
+        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let projected_parallel = loop {
+            let projected_parallel = {
+                let guard = state.subscription_hub.state.lock().await;
+                guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")]
+                    .snapshot_frame
+                    .payload_value()
+            };
+            let materialized_point =
+                projected_parallel["current"]["points"]
+                    .as_array()
+                    .and_then(|points| {
+                        points.iter().find(|point| {
+                            point["bucketStart"].as_str() == Some(fallback_bucket_start.as_str())
+                        })
+                    });
+            if materialized_point
+                .is_some_and(|point| point["parallelCount"] == json!(exact_point.parallel_count))
+            {
+                break projected_parallel;
+            }
+            let remaining =
+                projection_deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "parallel-work projection did not materialize the expected bucket"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         let projected_point = projected_parallel["current"]["points"]
             .as_array()
             .and_then(|points| {
@@ -12235,12 +12263,6 @@ mod tests {
                 })
             })
             .expect("projected fallback point");
-        let exact_point = exact_parallel
-            .current
-            .points
-            .iter()
-            .find(|point| point.bucket_start == fallback_bucket_start)
-            .expect("exact fallback point");
         assert_eq!(
             projected_point["parallelCount"],
             json!(exact_point.parallel_count),

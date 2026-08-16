@@ -458,7 +458,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     assert_event_types(merge_group_config, {"checks_requested"}, "ci-pr.yml.on.merge_group")
 
     concurrency = require_mapping(workflow.get("concurrency"), "ci-pr.yml.concurrency")
-    require(concurrency.get("group") == "ci-pr-${{ github.event.pull_request.number || github.ref }}", "ci-pr.yml.concurrency.group drifted")
+    require(concurrency.get("group") == "ci-pr-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.ref }}", "ci-pr.yml.concurrency.group drifted")
     require(concurrency.get("cancel-in-progress") is True, "ci-pr.yml.concurrency.cancel-in-progress must stay true")
 
     permissions = require_mapping(workflow.get("permissions"), "ci-pr.yml.permissions")
@@ -804,7 +804,7 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     require(permissions.get("issues") == "read", "label-gate.yml.permissions.issues must stay read")
 
     concurrency = require_mapping(workflow.get("concurrency"), "label-gate.yml.concurrency")
-    require(concurrency.get("group") == "label-gate-${{ github.event.pull_request.number || github.run_id }}", "label-gate.yml.concurrency.group drifted")
+    require(concurrency.get("group") == "label-gate-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.run_id }}", "label-gate.yml.concurrency.group drifted")
     require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
 
     job = named_job_config(workflow, "validate-pr-labels", expected_jobs, "label-gate.yml")
@@ -895,7 +895,7 @@ def validate_review_policy(path: Path, contract: ContractModel) -> None:
     require(permissions.get("pull-requests") == "read", "review-policy.yml.permissions.pull-requests must stay read")
 
     concurrency = require_mapping(workflow.get("concurrency"), "review-policy.yml.concurrency")
-    require(concurrency.get("group") == "review-policy-${{ github.event.pull_request.number || github.run_id }}", "review-policy.yml.concurrency.group drifted")
+    require(concurrency.get("group") == "review-policy-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.run_id }}", "review-policy.yml.concurrency.group drifted")
     require(concurrency.get("cancel-in-progress") is True, "review-policy.yml.concurrency.cancel-in-progress must stay true")
 
     job = named_job_config(workflow, "review-policy", expected_jobs, "review-policy.yml")
