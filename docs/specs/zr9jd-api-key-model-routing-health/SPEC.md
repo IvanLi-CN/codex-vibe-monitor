@@ -77,7 +77,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。
-- 全局路由记录以模型分组、账号次级展示。每次路由选择和每次重试各自独立；若手动 reset 或状态变更没有关联尝试，则作为独立系统事件保留。记录仅包含已规范化的原因、候选比较、状态跃迁、终态和延迟，不返回请求内容、响应内容、凭据或原始错误文本。
+- 实况路由界面以模型分组、账号次级展示：每个模型块必须同时容纳该模型的账号当前状态与该模型的路由记录，不得在模型块外渲染跨模型的全局路由记录。每次路由选择和每次重试各自独立；若手动 reset 或状态变更没有关联尝试，则作为独立系统事件保留。记录仅包含已规范化的原因、候选比较、状态跃迁、终态和延迟，不返回请求内容、响应内容、凭据或原始错误文本。
 - `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容。
 - `pool.model-routing-live` 实时主题只在实况“路由”页签处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
 - 实况页在共享摘要带下固定使用“对话 / 最新记录 / 路由 / 代理”四页签，默认并持久化“路由”。页签宽度贴合内容而非全宽拉伸；非激活页签不保持实时订阅，重新激活时重新拉取快照。
@@ -154,13 +154,13 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt` 及其 393px 变体、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 覆盖标题控制组与展开历史）
+Storybook覆盖=不适用（本次为页面级信息架构验证；页面视觉证据由 owner-locked `ui_demo` 提供）
 视觉证据目标源=ui_demo
 视觉证据=存在
 空白裁剪=无需裁剪（五张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
 聊天回图=已展示，待主人确认
 证据落盘=已落盘
-代码来源sha=`2f160015cf5030038cc4d03fba34f9a56c2e7913`
+代码来源sha=`9107a89b421622564a723278d912407975266ab3`
 证据绑定sha=见当前会话确认卡
 submission_gate=pending-owner-approval
 target_program=mock-only
@@ -168,17 +168,17 @@ sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示三个模型、九个精确账号模型组合及其当前状态。路由台账来自固定的 126 条调用；24 小时全局视图按接口上限展示 100/100 条记录，所有账号名、模型、状态和时间均可回溯到同一调用台账。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `gpt-5.5` 模型块：3 个精确账号模型组合的当前状态后，紧接该模型的 23 条路由决策。账号状态和路由记录均在同一模型块内；其余模型在后续独立模型块中呈现，不存在跨模型总决策列表。
 
 PR: include
 ![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、15 分钟、`gpt-5.4-mini`、`冷却中`；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端内容宽度页签、按状态和模型组合筛选，以及 4/100 条因果有序记录。四行依次对应状态事件、同账号重试和两次原始路由尝试，不是显示用的重复行。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端模型优先层级：`gpt-5.5` 的 3 个账号状态后立即是 `gpt-5.5 路由决策` 与其逐次记录；模型筛选、状态筛选和时间窗均保留在标题右侧控制组的响应式布局中。
 
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、24 小时、`gpt-5.4-mini`、`冷却中`；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的 16/100 条精确组合记录。筛选不影响其它组合的状态；可见行按北京时间倒序，包含由 HTTP 502 导致的状态事件和同账号重试。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、全部模型、全部状态、展开 `gpt-5.5` 的一条恢复重试；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `gpt-5.5` 模型块中恢复重试的候选比较、`cooling_down -> available` 状态迁移、HTTP 200 与 770 ms 延迟；详情严格位于 `gpt-5.5 路由决策` 标题之下。
 
 PR: include
 ![桌面实况路由决策详情](./assets/model-routing-live-decisions-desktop.png)
