@@ -4130,7 +4130,7 @@ pub(crate) fn collect_forward_proxy_catalog_keys(
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AccountWindowUsageBuildTelemetry {
     pub(crate) rollup_row_count: usize,
     pub(crate) minute_row_count: usize,
@@ -4138,6 +4138,8 @@ pub(crate) struct AccountWindowUsageBuildTelemetry {
     pub(crate) coverage_hole_bucket_count: usize,
     pub(crate) archive_coverage_repair_required: bool,
     pub(crate) live_coverage_repair_required: bool,
+    pub(crate) live_coverage_repair_invocation_ids: Vec<i64>,
+    pub(crate) live_cursor_repair_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4152,6 +4154,7 @@ pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5_000;
 pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5;
 
 const ACCOUNT_WINDOW_ARCHIVE_HOLE_FALLBACK_MAX_BUCKETS: usize = 64;
+const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT: usize = 2;
 
 pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     pool: &Pool<Sqlite>,
@@ -4450,6 +4453,22 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                     .coverage_hole_bucket_count
                     .saturating_add(populated_missing_full_hour_keys.len());
                 telemetry.live_coverage_repair_required = true;
+                let mut scheduled_bucket_keys = HashSet::new();
+                for row in &live_rows {
+                    let Some(bucket_epoch) =
+                        invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 3_600).ok()
+                    else {
+                        continue;
+                    };
+                    let key = (row.upstream_account_id, bucket_epoch);
+                    if live_missing_full_hour_keys.contains(&key)
+                        && scheduled_bucket_keys.insert(key)
+                        && telemetry.live_coverage_repair_invocation_ids.len()
+                            < ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT
+                    {
+                        telemetry.live_coverage_repair_invocation_ids.push(row.id);
+                    }
+                }
             }
             telemetry.bounded_raw_row_count += live_rows.len();
             exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
@@ -4471,6 +4490,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                 telemetry.coverage_hole_bucket_count =
                     telemetry.coverage_hole_bucket_count.saturating_add(1);
                 telemetry.live_coverage_repair_required = true;
+                telemetry.live_cursor_repair_required = true;
                 return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
             }
             let live_tail_rows = live_tail_rows

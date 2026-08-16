@@ -511,10 +511,12 @@ impl AccountWindowStoragePlane {
             elapsed_ms = started_at.elapsed().as_millis() as u64,
             "upstream account window usage storage-plane build completed"
         );
-        if telemetry.live_coverage_repair_required {
+        if telemetry.live_coverage_repair_required || telemetry.live_cursor_repair_required {
             self.schedule_live_rollup_repair(
                 state.pool.clone(),
                 state.hourly_rollup_sync_lock.clone(),
+                telemetry.live_coverage_repair_invocation_ids.clone(),
+                telemetry.live_cursor_repair_required,
             );
         }
         if outcome == AccountWindowUsageBuildOutcome::Preparing {
@@ -583,7 +585,12 @@ impl AccountWindowStoragePlane {
         &self,
         pool: Pool<Sqlite>,
         hourly_rollup_sync_lock: Arc<Mutex<()>>,
+        invocation_ids: Vec<i64>,
+        refresh_live_cursor: bool,
     ) {
+        if invocation_ids.is_empty() && !refresh_live_cursor {
+            return;
+        }
         if self
             .live_coverage_repair_running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -600,12 +607,55 @@ impl AccountWindowStoragePlane {
                 }
             }
             let _running = CoverageRepairGuard(running);
-            crate::maintenance::refresh_hourly_rollups_for_read_surfaces_best_effort(
-                &pool,
-                hourly_rollup_sync_lock.as_ref(),
-                "account_window_usage_live_coverage_hole",
-            )
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            let _permit = match gate.try_begin_background("account_window_usage_live_repair") {
+                Ok(permit) => permit,
+                Err(deny_reason) => {
+                    tracing::debug!(
+                        deny_reason = %deny_reason,
+                        "account window live coverage repair deferred by database pressure gate"
+                    );
+                    return;
+                }
+            };
+            let _guard = hourly_rollup_sync_lock.lock().await;
+            let started_at = Instant::now();
+            let result: Result<()> = async {
+                if refresh_live_cursor {
+                    // One replay batch advances the durable cursor without turning an owner
+                    // retry into the historical catch-up loop.
+                    crate::maintenance::replay_live_invocation_hourly_rollups(&pool).await?;
+                }
+                if !invocation_ids.is_empty() {
+                    let mut tx = pool.begin().await?;
+                    crate::maintenance::recompute_invocation_hourly_rollups_for_ids_tx(
+                        tx.as_mut(),
+                        &invocation_ids,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                }
+                Ok(())
+            }
             .await;
+            match result {
+                Ok(()) => tracing::debug!(
+                    repaired_bucket_limit = invocation_ids.len(),
+                    cursor_replay = refresh_live_cursor,
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "account window live coverage repair completed"
+                ),
+                Err(err) => {
+                    gate.record_error("account_window_usage_live_repair", &err);
+                    warn!(
+                        error = %err,
+                        repaired_bucket_limit = invocation_ids.len(),
+                        cursor_replay = refresh_live_cursor,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "account window live coverage repair failed"
+                    );
+                }
+            }
         });
     }
 
