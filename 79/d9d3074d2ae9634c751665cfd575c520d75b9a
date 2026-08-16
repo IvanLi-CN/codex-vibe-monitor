@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-16T13:11:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8cb5a0192bcbc9dd4c238ffa3c94c833a72568a7",
+  "pr_number": 802,
+  "pr_title": "fix(ci): isolate PR metadata workflow runs reliably",
+  "registry": "ghcr.io",
+  "release_bump": "docs",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "79d9d3074d2ae9634c751665cfd575c520d75b9a",
+  "type_label": "type:docs"
+}
