@@ -154,36 +154,38 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt`、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 及移动端变体）
-视觉证据目标源=storybook_canvas
+Storybook覆盖=通过（组件覆盖：`Live/ModelRoutingLivePanel/RecoveryAttempt`、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 及移动端变体）
+视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=已裁剪（组件画布经 `require_margin` 规范化，保留安全外缘）
+空白裁剪=无需裁剪（四张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
 聊天回图=待本地确认
 证据落盘=已落盘
-证据绑定sha=待本地提交
+证据绑定sha=见当前会话确认卡
 submission_gate=pending-owner-approval
 target_program=mock-only
 sensitive_exclusion=N/A
 
-source_type=storybook_canvas; story_id_or_title=`Live/ModelRoutingLivePanel/RecoveryAttempt`; state=恢复请求已展开；capture_scope=element; requested_viewport=1440x900; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=展示模型优先账号状态、真实恢复尝试、候选比较、HTTP 终态、延迟与状态迁移。
+页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。
+
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、恢复请求详情展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示四页签、模型优先当前状态、动态并发上限、路由筛选、真实恢复尝试、候选比较、HTTP 终态、延迟与状态迁移。
 
 PR: include
-![桌面模型路由恢复尝试](./assets/model-routing-live-desktop.png)
+![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=storybook_canvas; story_id_or_title=`Live/ModelRoutingLivePanel/RecoveryAttemptMobile`; state=恢复请求已展开；capture_scope=element; requested_viewport=393x852; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=验证移动端过滤器、状态行和展开后的路由决策信息无重叠。
-
-PR: include
-![移动模型路由恢复尝试](./assets/model-routing-live-mobile.png)
-
-source_type=storybook_canvas; story_id_or_title=`Account Pool/ModelRoutingHealthPanel/ExpandedHistory`; state=展开 48 小时历史；capture_scope=element; requested_viewport=1440x900; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=展示紧凑模型行、状态、冷却信息、真实重试与状态事件及游标加载入口。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light&demoEmbed=1`; state=路由页签、1 小时、恢复请求详情展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端四页签、筛选、组合状态、并发上限与展开后的真实路由决策无重叠。
 
 PR: include
-![桌面账号模型路由健康](./assets/model-routing-health-desktop.png)
+![移动实况路由页](./assets/model-routing-live-page-mobile.png)
 
-source_type=storybook_canvas; story_id_or_title=`Account Pool/ModelRoutingHealthPanel/MixedStatesMobile`; state=紧凑移动端摘要；capture_scope=element; requested_viewport=393x852; viewport_strategy=storybook-viewport; margin_policy=require_margin; evidence_surface=component；evidence_note=验证移动端紧凑状态行、恢复操作和展开控件无溢出。
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、真实重试、HTTP 终态和游标加载入口。
 
 PR: include
-![移动账号模型路由健康](./assets/model-routing-health-mobile.png)
+![桌面账号路由健康](./assets/model-routing-account-health-page-desktop.png)
+
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端紧凑登录摘要、可见冷却状态、恢复操作和逐次真实历史可读且无横向溢出。
+
+PR: include
+![移动账号路由健康](./assets/model-routing-account-health-page-mobile.png)
 
 ## Related PRs
 

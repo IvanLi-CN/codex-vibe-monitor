@@ -19,6 +19,7 @@
 - Storybook covers available, degraded, cooling, empty, read-only, error, reset interaction and impact-scope states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides component evidence and mock-only `ui_demo` provides page-level desktop/mobile evidence.
 - This delivery adds a normalized API Key-only route telemetry projection from persisted upstream attempts and model-route events, with one row for each real selection/retry and standalone unlinked state events. The global endpoint and a model-scoped 48-hour cursor endpoint deliberately exclude raw payloads and unnormalized diagnostics.
 - The real-time route tab receives an HTTP snapshot and a versioned `pool.model-routing-live` subscription only while active. The live page moves existing surfaces into `对话 / 最新记录 / 路由 / 代理`; login health becomes compact by default and each model row loads its own 48-hour evidence only when expanded.
+- The mock-only `ui_demo` mirrors the route snapshot, route SSE topic and exact-model history endpoints with deterministic API Key fixtures. Page-level evidence therefore exercises the same snapshot, active subscription and lazy-history consumers as the product UI; Storybook remains the component-level coverage source.
 
 ## Implementation map
 
@@ -45,7 +46,7 @@
 - Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent, informational events do not claim a failure impact, and recovery transitions name their model without claiming an active impact.
 - The mock-only demo includes an API Key HTTP 502 model degradation event for `gpt-5.6-terra`; desktop and mobile evidence show model scope without claiming the account or all models are affected.
 - Invocation fallback correlation tolerates different production timestamp formats and reused invocation IDs by selecting the nearest matching invocation instead of requiring exact timestamp equality.
-- Mock-only `ui_demo` desktop 1440x1100 and mobile 393x852 captures: the HTTP 502 model impact and route transition are visible without request-model labels, account-wide impact, or horizontal overflow.
+- Mock-only `ui_demo` page captures: desktop 1440x900 and mobile 393x852 route pages show all four tabs, model-first state, filters and expanded recovery evidence; account pages show the compact login summary and expanded exact-model 48-hour history. The browser's nested demo viewport is not captureable in this environment, so the same pure-local routes use controlled CDP viewport emulation and browser-viewport capture.
 - API Key HTTP, transport/stream (including exact-model failures before attempt creation), missing-model, 413, policy-toggle, background-sync, OAuth compatibility, sticky preservation, success/reset, and concurrency regressions: passed in the full Rust suite.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 86 warnings; no errors remain in the changed files.
