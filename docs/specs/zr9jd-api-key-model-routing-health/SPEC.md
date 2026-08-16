@@ -154,7 +154,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt` 及其 393px 变体覆盖标题控制组与展开交互）
+Storybook覆盖=通过（`Live/ModelRoutingLivePanel/RecoveryAttempt` 及其 393px 变体、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 覆盖标题控制组与展开历史）
 视觉证据目标源=ui_demo
 视觉证据=存在
 空白裁剪=无需裁剪（四张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
@@ -177,12 +177,12 @@ source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; stat
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
 
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、真实重试、HTTP 终态和游标加载入口。
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示压缩登录健康摘要、模型状态与冷却、真实重试、HTTP 终态和游标加载入口；展开区直接呈现事件，不重复时间窗说明。
 
 PR: include
 ![桌面账号路由健康](./assets/model-routing-account-health-page-desktop.png)
 
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端紧凑登录摘要、可见冷却状态、恢复操作和逐次真实历史可读且无横向溢出。
+source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端紧凑登录摘要、可见冷却状态、恢复操作和逐次真实历史可读且无横向溢出；展开区无冗余说明。
 
 PR: include
 ![移动账号路由健康](./assets/model-routing-account-health-page-mobile.png)
