@@ -149,17 +149,34 @@ pub(crate) async fn get_model_routing_live(
     )
     .await
     .map_err(internal_error_tuple)?;
+    let visible_route_keys = route_state.as_ref().map(|_| {
+        accounts
+            .iter()
+            .map(|account| (account.account_id, account.route.model.clone()))
+            .collect::<std::collections::BTreeSet<_>>()
+    });
     let records = load_model_routing_timeline_entries(
         &state.pool,
         None,
         model.as_deref(),
         window_minutes,
-        limit,
+        if visible_route_keys.is_some() {
+            MODEL_ROUTING_LIVE_DEFAULT_LIMIT
+        } else {
+            limit
+        },
         None,
     )
     .await
     .map_err(internal_error_tuple)?
     .into_iter()
+    .filter(|entry| match &visible_route_keys {
+        Some(route_keys) => {
+            route_keys.contains(&(entry.record.account_id, entry.record.model.clone()))
+        }
+        None => true,
+    })
+    .take(limit)
     .map(|entry| entry.record)
     .collect();
     let mut groups = std::collections::BTreeMap::<String, Vec<ModelRoutingLiveAccount>>::new();

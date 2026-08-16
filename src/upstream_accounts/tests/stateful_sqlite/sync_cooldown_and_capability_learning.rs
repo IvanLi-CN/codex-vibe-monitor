@@ -160,6 +160,57 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert!(live.records.iter().all(|record| record.kind == "attempt"));
     assert!(live.records.iter().all(|record| record.model == model));
 
+    let available_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API available account",
+        "routing-live-api-available-key",
+        None,
+        None,
+    )
+    .await;
+    observe_model_route_seen(&state.pool, available_account_id, Some(model))
+        .await
+        .expect("seed available API Key model route");
+    insert_model_failure_attempt(
+        &state,
+        available_account_id,
+        "routing-live-api-available-attempt",
+        Some(model),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(MODEL_ROUTE_STATE_DEGRADED)
+    .bind(MODEL_ROUTE_PRIORITY_DEMOTED)
+    .execute(&state.pool)
+    .await
+    .expect("mark route degraded");
+
+    let Json(degraded) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: Some(MODEL_ROUTE_STATE_DEGRADED.to_string()),
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("filter live route decisions by current state");
+    assert_eq!(degraded.groups.len(), 1);
+    assert_eq!(degraded.groups[0].accounts.len(), 1);
+    assert_eq!(degraded.groups[0].accounts[0].account_id, account_id);
+    assert_eq!(degraded.records.len(), 2);
+    assert!(
+        degraded
+            .records
+            .iter()
+            .all(|record| record.account_id == account_id)
+    );
+
     let Json(first_page) = list_upstream_account_model_routing_events(
         State(state.clone()),
         AxumPath(account_id),

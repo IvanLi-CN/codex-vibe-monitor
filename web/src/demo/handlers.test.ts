@@ -369,12 +369,11 @@ describe("demo MSW handlers", () => {
     expect(account.recentActions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          action: "model_route_degraded",
+          action: "model_route_cooldown",
           source: "call",
           httpStatus: 502,
-          model: "gpt-5.6-terra",
+          model: "gpt-5.4-mini",
         }),
-        expect.objectContaining({ action: "model_route_cooldown", source: "call" }),
       ]),
     );
     expect(account.recentActions.map((event) => event.source)).not.toEqual(
@@ -412,16 +411,16 @@ describe("demo MSW handlers", () => {
       live.groups.flatMap((group) => group.accounts.map((account) => account.accountId)),
     ).toEqual(expect.arrayContaining([102, 106]));
     expect(live.records).toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: "attempt", attemptIndex: 3 })]),
+      expect.arrayContaining([expect.objectContaining({ kind: "attempt", attemptIndex: 2 })]),
     );
     expect(history.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ model: "gpt-5.4-mini", kind: "attempt", attemptIndex: 3 }),
+        expect.objectContaining({ model: "gpt-5.4-mini", kind: "attempt", attemptIndex: 2 }),
       ]),
     );
     expect(history.nextCursor).toBe("demo-model-routing-page-2");
     expect(nextHistory.items).toEqual(
-      expect.arrayContaining([expect.objectContaining({ model: "gpt-5.4-mini", kind: "event" })]),
+      expect.arrayContaining([expect.objectContaining({ model: "gpt-5.4-mini", kind: "attempt" })]),
     );
     expect(nextHistory.nextCursor).toBeNull();
   });
@@ -447,15 +446,67 @@ describe("demo MSW handlers", () => {
     expect(filteredResponse.ok).toBe(true);
     expect(filtered.groups).toHaveLength(1);
     expect(filtered.groups[0]).toMatchObject({ model: "gpt-5.4-mini" });
-    expect(filtered.groups[0]?.accounts).toEqual([
-      expect.objectContaining({
-        state: "available",
-        accountDisplayName: "示例 API Key（并发受限）",
-      }),
-    ]);
-    expect(filtered.records).toHaveLength(1);
-    expect(filtered.records.every((record) => record.model === "gpt-5.4-mini")).toBe(true);
+    expect(filtered.groups[0]?.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "available", accountDisplayName: "示例 API Key 02" }),
+        expect.objectContaining({ state: "available", accountDisplayName: "示例 API Key 06" }),
+      ]),
+    );
+    expect(filtered.records).toHaveLength(0);
     expect(shortWindow.records.length).toBeLessThan(longWindow.records.length);
+  });
+
+  it("derives route attempts from the same invocation records shown in the demo", async () => {
+    const [routingResponse, invocationsResponse] = await Promise.all([
+      fetch("http://demo.invalid/api/pool/model-routing-live?window=24h&limit=100"),
+      fetch("http://demo.invalid/api/invocations?pageSize=50"),
+    ]);
+    const routing = (await routingResponse.json()) as {
+      records: Array<{
+        kind: string;
+        invokeId?: string;
+        upstreamAccountId?: number;
+        accountId?: number;
+        model: string;
+        status?: string;
+        attemptIndex?: number;
+      }>;
+    };
+    const invocationList = (await invocationsResponse.json()) as {
+      records: Array<{
+        invokeId: string;
+        upstreamAccountId: number;
+        model: string;
+        status: string;
+      }>;
+    };
+    const invocationsById = new Map(
+      invocationList.records.map((invocation) => [invocation.invokeId, invocation]),
+    );
+    const attempts = routing.records.filter((record) => record.kind === "attempt");
+
+    expect(routing.records).toHaveLength(21);
+    expect(attempts.length).toBeGreaterThan(0);
+    for (const attempt of attempts) {
+      const invocation = invocationsById.get(attempt.invokeId ?? "");
+      expect(invocation).toBeDefined();
+      expect(invocation).toMatchObject({
+        upstreamAccountId: attempt.accountId,
+        model: attempt.model,
+      });
+    }
+
+    const terminalAttempts = new Map<string, (typeof attempts)[number]>();
+    for (const attempt of attempts) {
+      const key = attempt.invokeId ?? "";
+      const previous = terminalAttempts.get(key);
+      if ((attempt.attemptIndex ?? 0) > (previous?.attemptIndex ?? 0)) {
+        terminalAttempts.set(key, attempt);
+      }
+    }
+    for (const attempt of terminalAttempts.values()) {
+      expect(invocationsById.get(attempt.invokeId ?? "")).toMatchObject({ status: attempt.status });
+    }
   });
 
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
