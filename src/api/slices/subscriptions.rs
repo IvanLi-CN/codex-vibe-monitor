@@ -15798,6 +15798,10 @@ mod tests {
             .expect("build empty working conversations baseline");
 
         let now = Utc::now();
+        // Pin persisted fixtures before the hydration snapshot. SQLite timestamps are precise,
+        // so relying on the table default makes this bounded-recovery contract test sensitive to
+        // scheduler timing on a loaded CI runner.
+        let persisted_created_at = format_utc_iso_precise(now - ChronoDuration::seconds(1));
         let first_occurred_at = format_naive(
             (now - ChronoDuration::minutes(2))
                 .with_timezone(&Shanghai)
@@ -15815,8 +15819,8 @@ mod tests {
             sqlx::query(
                 r#"
                 INSERT INTO codex_invocations (
-                    invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-                ) VALUES (?1, ?2, 'proxy', 'success', ?3, 0.25, ?4, '{}')
+                    invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+                ) VALUES (?1, ?2, 'proxy', 'success', ?3, 0.25, ?4, '{}', ?5)
                 "#,
             )
             .bind(invoke_id)
@@ -15830,6 +15834,7 @@ mod tests {
                 })
                 .to_string(),
             )
+            .bind(&persisted_created_at)
             .execute(&state.pool)
             .await
             .expect("persist reentered working conversation history");

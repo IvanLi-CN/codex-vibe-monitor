@@ -4392,8 +4392,18 @@ async fn account_detail_keeps_actual_usage_nullable_while_window_preparing() {
     );
 
     let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(payload["readiness"], "preparing");
+    match status {
+        StatusCode::ACCEPTED => {
+            assert_eq!(payload["readiness"], "preparing");
+        }
+        StatusCode::OK => {
+            // The detail request above must preserve nullable usage while the storage plane is
+            // preparing. Its bounded background repair may legitimately finish before this
+            // follow-up request, in which case the recovered response must be exact.
+            assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+        }
+        unexpected => panic!("expected preparing or recovered window usage, got {unexpected}"),
+    }
 }
 
 #[tokio::test]
