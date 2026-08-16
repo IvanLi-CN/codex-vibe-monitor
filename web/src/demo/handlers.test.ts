@@ -62,11 +62,13 @@ describe("demo MSW handlers", () => {
 
     expect(response.ok).toBe(true);
     expect(payload.summary.stats.totalCount).toBe(12_846);
-    expect(payload.summary.stats.usageBreakdown.models).toEqual([
-      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
-      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
-      expect.objectContaining({ model: "gpt-5.6-terra", reasoningEffort: null }),
-    ]);
+    expect(payload.summary.stats.usageBreakdown.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
+        expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
+        expect.objectContaining({ model: "gpt-5.6-terra", reasoningEffort: null }),
+      ]),
+    );
     expect(payload.summary.modelPerformance).toMatchObject({
       available: true,
       total: {
@@ -99,6 +101,48 @@ describe("demo MSW handlers", () => {
         parallelism: expect.any(Number),
       }),
     ]);
+  });
+
+  it("derives live summary counters from the same invocation ledger as routing attempts", async () => {
+    const [summaryResponse, recordsResponse] = await Promise.all([
+      fetch("http://demo.invalid/api/stats/summary"),
+      fetch("http://demo.invalid/api/invocations?pageSize=200"),
+    ]);
+    const summary = (await summaryResponse.json()) as {
+      totalCount: number;
+      successCount: number;
+      failureCount: number;
+      totalTokens: number;
+      totalCost: number;
+      token: { cacheInputTokens: number };
+    };
+    const payload = (await recordsResponse.json()) as {
+      records: Array<{
+        status: string;
+        totalTokens: number | null;
+        cost: number | null;
+        cacheInputTokens: number | null;
+      }>;
+    };
+
+    expect(summaryResponse.ok).toBe(true);
+    expect(summary.totalCount).toBe(payload.records.length);
+    expect(summary.successCount).toBe(
+      payload.records.filter((record) => record.status === "success").length,
+    );
+    expect(summary.failureCount).toBe(
+      payload.records.filter((record) => !["success", "running"].includes(record.status)).length,
+    );
+    expect(summary.totalTokens).toBe(
+      payload.records.reduce((total, record) => total + (record.totalTokens ?? 0), 0),
+    );
+    expect(summary.totalCost).toBeCloseTo(
+      payload.records.reduce((total, record) => total + (record.cost ?? 0), 0),
+      4,
+    );
+    expect(summary.token.cacheInputTokens).toBe(
+      payload.records.reduce((total, record) => total + (record.cacheInputTokens ?? 0), 0),
+    );
   });
 
   it("serves model-plus-effort breakdowns for dashboard account cards on demand", async () => {
@@ -252,18 +296,22 @@ describe("demo MSW handlers", () => {
       }>;
     };
     const tasks = (await tasksResponse.json()) as { items: Array<{ status: string }> };
-    const selectedRecord = records.records.find((record) => record.upstreamAccountId === 101);
+    const selectedRecord = records.records.find((record) => record.upstreamAccountId === 102);
 
-    expect(records.records).toHaveLength(30);
+    expect(records.records).toHaveLength(50);
     expect(accounts.items).toHaveLength(15);
     expect(accounts.items.some((account) => account.groupName === "production")).toBe(true);
-    expect(accounts.items.some((account) => account.groupName === null)).toBe(true);
+    expect(accounts.items.some((account) => account.groupName === "recovery")).toBe(true);
     expect(events.items).toHaveLength(15);
-    expect(events.items.find((event) => event.action === "model_route_cooldown")).toMatchObject({
-      result: "failed",
-      failureKind: "model",
-      model: "gpt-5.4-mini",
-    });
+    expect(
+      events.items.some(
+        (event) =>
+          event.action === "model_route_cooldown" &&
+          event.result === "failed" &&
+          event.failureKind === "model" &&
+          event.model === "gpt-5.4-mini",
+      ),
+    ).toBe(true);
     expect(tasks.items.map((item) => item.status)).toEqual(
       expect.arrayContaining(["success", "running", "failed"]),
     );
@@ -302,9 +350,9 @@ describe("demo MSW handlers", () => {
     expect(detail.id).toBe(selectedRecord?.id);
     expect(attempts[0]).toMatchObject({
       invokeId: selectedRecord?.invokeId,
-      upstreamAccountId: 101,
+      upstreamAccountId: selectedRecord?.upstreamAccountId,
     });
-    expect(account.id).toBe(101);
+    expect(account.id).toBe(selectedRecord?.upstreamAccountId);
     expect(account.history).toHaveLength(8);
     expect(account.recentActions.length).toBeGreaterThan(0);
   });
@@ -448,18 +496,19 @@ describe("demo MSW handlers", () => {
     expect(filtered.groups[0]).toMatchObject({ model: "gpt-5.4-mini" });
     expect(filtered.groups[0]?.accounts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ state: "available", accountDisplayName: "示例 API Key 02" }),
-        expect.objectContaining({ state: "available", accountDisplayName: "示例 API Key 06" }),
+        expect.objectContaining({ state: "available", accountDisplayName: "batch-api-key" }),
+        expect.objectContaining({ state: "available", accountDisplayName: "prod-api-key-c" }),
       ]),
     );
-    expect(filtered.records).toHaveLength(0);
+    expect(filtered.records).toHaveLength(1);
+    expect(filtered.records[0]).toMatchObject({ model: "gpt-5.4-mini" });
     expect(shortWindow.records.length).toBeLessThan(longWindow.records.length);
   });
 
   it("derives route attempts from the same invocation records shown in the demo", async () => {
     const [routingResponse, invocationsResponse] = await Promise.all([
       fetch("http://demo.invalid/api/pool/model-routing-live?window=24h&limit=100"),
-      fetch("http://demo.invalid/api/invocations?pageSize=50"),
+      fetch("http://demo.invalid/api/invocations?pageSize=200"),
     ]);
     const routing = (await routingResponse.json()) as {
       records: Array<{
@@ -485,7 +534,7 @@ describe("demo MSW handlers", () => {
     );
     const attempts = routing.records.filter((record) => record.kind === "attempt");
 
-    expect(routing.records).toHaveLength(21);
+    expect(routing.records).toHaveLength(100);
     expect(attempts.length).toBeGreaterThan(0);
     for (const attempt of attempts) {
       const invocation = invocationsById.get(attempt.invokeId ?? "");

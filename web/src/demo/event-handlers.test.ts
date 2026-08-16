@@ -35,7 +35,7 @@ describe("demo topic payloads", () => {
         topic: "pool.model-routing-live",
         params: {
           window: "1h",
-          model: "gpt-5.5",
+          model: "gpt-5.4-mini",
           state: "cooling_down",
           limit: "1",
         },
@@ -51,13 +51,13 @@ describe("demo topic payloads", () => {
 
     expect(payload.groups).toEqual([
       expect.objectContaining({
-        model: "gpt-5.5",
+        model: "gpt-5.4-mini",
         accounts: expect.arrayContaining([
-          expect.objectContaining({ accountDisplayName: "示例 API Key 02", state: "cooling_down" }),
+          expect.objectContaining({ accountDisplayName: "prod-api-key-a", state: "cooling_down" }),
         ]),
       }),
     ]);
     expect(payload.records).toHaveLength(1);
-    expect(payload.records[0]).toMatchObject({ model: "gpt-5.5" });
+    expect(payload.records[0]).toMatchObject({ model: "gpt-5.4-mini" });
   });
 });

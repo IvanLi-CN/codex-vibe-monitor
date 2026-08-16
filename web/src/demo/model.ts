@@ -18,8 +18,8 @@ type DemoState = {
 
 type DemoListener = () => void;
 
-// Keep active demo data visually current while preserving a stable timestamp per runtime session.
-const DEMO_NOW = new Date().toISOString();
+// Fixed reference time keeps every projection, filter, and visual capture reproducible.
+const DEMO_NOW = "2026-08-16T11:30:00.000Z";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -189,9 +189,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       102,
-      "示例 API Key 01",
+      "prod-api-key-a",
       null,
-      "示例分组 01",
+      "production",
       "api",
       "api_key_codex",
       "fallback",
@@ -237,9 +237,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       106,
-      "示例 API Key 02",
+      "prod-api-key-b",
       null,
-      "示例分组 01",
+      "production",
       "api",
       "api_key_codex",
       "research",
@@ -261,9 +261,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       108,
-      "示例 API Key 03",
+      "batch-api-key",
       null,
-      "示例分组 02",
+      "batch",
       "api",
       "api_key_codex",
       "primary",
@@ -285,9 +285,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       110,
-      "示例 API Key 04",
+      "recovery-api-key",
       null,
-      null,
+      "recovery",
       "api",
       "api_key_codex",
       "sandbox",
@@ -309,9 +309,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       112,
-      "示例 API Key 05",
+      "analytics-api-key",
       null,
-      "示例分组 03",
+      "analytics",
       "api",
       "api_key_codex",
       "edge",
@@ -345,9 +345,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       115,
-      "示例 API Key 06",
+      "prod-api-key-c",
       null,
-      "示例分组 02",
+      "production",
       "api",
       "api_key_codex",
       "fallback",
