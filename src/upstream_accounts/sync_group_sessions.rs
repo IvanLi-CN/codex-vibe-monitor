@@ -446,6 +446,322 @@ pub(crate) async fn load_window_actual_usage_minute_rows_from_pool(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_archives(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+    archive_dir: &Path,
+) -> Result<AccountWindowArchiveBucketRows> {
+    if bucket_keys.is_empty()
+        || bucket_seconds <= 0
+        || !sqlite_table_exists(pool, "archive_batches").await?
+    {
+        return Ok(AccountWindowArchiveBucketRows::default());
+    }
+
+    let first_bucket_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| *bucket_epoch)
+        .min()
+        .expect("non-empty bucket keys have a first epoch");
+    let last_bucket_end_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| bucket_epoch.saturating_add(bucket_seconds))
+        .max()
+        .expect("non-empty bucket keys have a last epoch");
+    let start_at = format_naive(
+        Utc.timestamp_opt(first_bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket start: {first_bucket_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let end_at = format_naive(
+        Utc.timestamp_opt(last_bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket end: {last_bucket_end_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND (coverage_end_at IS NULL OR coverage_end_at >= ?2)
+          AND (coverage_start_at IS NULL OR coverage_start_at <= ?3)
+        ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&start_at)
+    .bind(&end_at)
+    .fetch_all(pool)
+    .await?;
+    let archive_files = archive_files
+        .into_iter()
+        .filter(|archive_file| {
+            archive_file_intersects_usage_bucket_keys(archive_file, bucket_keys, bucket_seconds)
+        })
+        .collect::<Vec<_>>();
+
+    let readable_archive_files = archive_files
+        .iter()
+        .filter(|archive_file| {
+            resolve_archive_batch_path(archive_dir, &archive_file.file_path).exists()
+        })
+        .collect::<Vec<_>>();
+    let covered_bucket_count = bucket_keys
+        .iter()
+        .filter(|(_, bucket_epoch)| {
+            let bucket_start = Utc
+                .timestamp_opt(*bucket_epoch, 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            let bucket_end = Utc
+                .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            bucket_start
+                .zip(bucket_end)
+                .is_some_and(|(bucket_start, bucket_end)| {
+                    readable_archive_files.iter().any(|archive_file| {
+                        archive_file
+                            .coverage_start_at
+                            .as_deref()
+                            .is_some_and(|start| start <= bucket_start.as_str())
+                            && archive_file
+                                .coverage_end_at
+                                .as_deref()
+                                .is_some_and(|end| end >= bucket_end.as_str())
+                    })
+                })
+        })
+        .count();
+
+    let mut rows = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for archive_file in archive_files {
+        let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                file_path = %archive_path.display(),
+                "skipping missing invocation archive batch while repairing account window usage"
+            );
+            continue;
+        }
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        for row in load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
+            &archive_pool,
+            bucket_keys,
+            bucket_seconds,
+        )
+        .await?
+        {
+            if seen_ids.insert(row.id) {
+                rows.push(row);
+            }
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    Ok(AccountWindowArchiveBucketRows {
+        rows,
+        covered_bucket_count,
+    })
+}
+
+fn archive_file_intersects_usage_bucket_keys(
+    archive_file: &ArchiveBatchFileRow,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+) -> bool {
+    bucket_keys.iter().any(|(_, bucket_epoch)| {
+        let Some(bucket_start) = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()))
+        else {
+            return false;
+        };
+        let Some(bucket_end) = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+            .single()
+            .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()))
+        else {
+            return false;
+        };
+        archive_file
+            .coverage_end_at
+            .as_deref()
+            .is_none_or(|end| end >= bucket_start.as_str())
+            && archive_file
+                .coverage_start_at
+                .as_deref()
+                .is_none_or(|start| start <= bucket_end.as_str())
+    })
+}
+
+pub(crate) async fn load_completed_invocation_archive_covered_hour_keys(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    archive_dir: &Path,
+) -> Result<HashSet<(i64, i64)>> {
+    if bucket_keys.is_empty() || !sqlite_table_exists(pool, "archive_batches").await? {
+        return Ok(HashSet::new());
+    }
+    let first_bucket_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| *bucket_epoch)
+        .min()
+        .expect("non-empty bucket keys have a first epoch");
+    let last_bucket_end_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| bucket_epoch.saturating_add(3_600))
+        .max()
+        .expect("non-empty bucket keys have a last epoch");
+    let start_at = format_naive(
+        Utc.timestamp_opt(first_bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive coverage bucket start: {first_bucket_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let end_at = format_naive(
+        Utc.timestamp_opt(last_bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive coverage bucket end: {last_bucket_end_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND coverage_start_at IS NOT NULL
+          AND coverage_end_at IS NOT NULL
+          AND coverage_end_at >= ?2
+          AND coverage_start_at <= ?3
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&start_at)
+    .bind(&end_at)
+    .fetch_all(pool)
+    .await?;
+    let readable_archive_files = archive_files
+        .iter()
+        .filter(|archive_file| {
+            resolve_archive_batch_path(archive_dir, &archive_file.file_path).exists()
+        })
+        .collect::<Vec<_>>();
+    Ok(bucket_keys
+        .iter()
+        .filter(|(_, bucket_epoch)| {
+            let bucket_start = Utc
+                .timestamp_opt(*bucket_epoch, 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            let bucket_end = Utc
+                .timestamp_opt(bucket_epoch.saturating_add(3_600), 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            bucket_start
+                .zip(bucket_end)
+                .is_some_and(|(bucket_start, bucket_end)| {
+                    readable_archive_files.iter().any(|archive_file| {
+                        archive_file
+                            .coverage_start_at
+                            .as_deref()
+                            .is_some_and(|start| start <= bucket_start.as_str())
+                            && archive_file
+                                .coverage_end_at
+                                .as_deref()
+                                .is_some_and(|end| end >= bucket_end.as_str())
+                    })
+                })
+        })
+        .copied()
+        .collect())
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AccountWindowArchiveBucketRows {
+    pub(crate) rows: Vec<AccountWindowUsageRow>,
+    pub(crate) covered_bucket_count: usize,
+}
+
+async fn load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if bucket_keys.is_empty() || bucket_seconds <= 0 {
+        return Ok(Vec::new());
+    }
+    let upstream_account_id_sql = detail_exact_upstream_account_id_sql(pool).await?;
+    let mut sorted_bucket_keys = bucket_keys.iter().copied().collect::<Vec<_>>();
+    sorted_bucket_keys.sort_unstable();
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, occurred_at, ");
+    query
+        .push(upstream_account_id_sql)
+        .push(
+            " AS upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost \
+             FROM codex_invocations WHERE ",
+        );
+    query.push("(");
+    for (index, (account_id, bucket_epoch)) in sorted_bucket_keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket epoch: {bucket_epoch}"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket end: {bucket_epoch}"))?;
+        query
+            .push("(")
+            .push(upstream_account_id_sql)
+            .push(" = ")
+            .push_bind(account_id)
+            .push(" AND occurred_at >= ")
+            .push_bind(format_naive(
+                bucket_start.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(" AND occurred_at < ")
+            .push_bind(format_naive(
+                bucket_end.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(")");
+    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn load_window_actual_usage_rows_from_archives(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],

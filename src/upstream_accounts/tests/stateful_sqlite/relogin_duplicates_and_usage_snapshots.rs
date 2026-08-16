@@ -4591,6 +4591,22 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
     .await
     .expect("mark live rollup cursor without backfill");
 
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load missing-hour summary");
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        Utc::now(),
+    )
+    .await
+    .expect("build missing-hour usage");
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Ready);
+    assert!(telemetry.live_coverage_repair_required);
+    assert_eq!(telemetry.coverage_hole_bucket_count, 1);
+
     let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
     assert_eq!(status, StatusCode::OK);
     let item = payload["items"]
@@ -5094,6 +5110,14 @@ async fn get_upstream_account_window_usage_includes_archived_partial_bucket_befo
         ],
     )
     .await;
+    sqlx::query(
+        "UPDATE archive_batches SET coverage_start_at = ?1, coverage_end_at = ?2 WHERE dataset = 'codex_invocations'",
+    )
+    .bind(shanghai_local_iso(now - ChronoDuration::days(8)))
+    .bind(shanghai_local_iso(now))
+    .execute(&state.pool)
+    .await
+    .expect("widen archive coverage proof around the exact boundary tail");
     materialize_historical_rollups(&state.pool, &state.config, false)
         .await
         .expect("materialize historical rollups");
@@ -5110,31 +5134,28 @@ async fn get_upstream_account_window_usage_includes_archived_partial_bucket_befo
     )
     .await;
 
-    let response = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load archive-boundary summary");
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        now,
     )
     .await
-    .expect("load archive-boundary usage response");
-    let status = response.status();
-    assert_eq!(
-        response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok()),
-        Some("1")
-    );
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read archive-boundary usage response");
-    let payload: serde_json::Value =
-        serde_json::from_slice(&body).expect("decode archive-boundary usage response");
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(payload["readiness"], "preparing");
-    assert_eq!(payload["retryAfterMs"], 1000);
-    assert!(payload["items"].as_array().is_some_and(Vec::is_empty));
+    .expect("build archive-boundary usage");
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Ready);
+    assert!(!telemetry.archive_coverage_repair_required);
+    assert!(telemetry.bounded_raw_row_count >= 1);
+    let usage = summaries[0]
+        .secondary_window
+        .as_ref()
+        .and_then(|window| window.actual_usage)
+        .expect("exact archived secondary usage");
+    assert_eq!(usage.request_count, 3);
+    assert_eq!(usage.total_tokens, 7900);
 }
 
 #[tokio::test]

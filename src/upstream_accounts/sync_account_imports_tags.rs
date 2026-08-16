@@ -4136,6 +4136,8 @@ pub(crate) struct AccountWindowUsageBuildTelemetry {
     pub(crate) minute_row_count: usize,
     pub(crate) bounded_raw_row_count: usize,
     pub(crate) coverage_hole_bucket_count: usize,
+    pub(crate) archive_coverage_repair_required: bool,
+    pub(crate) live_coverage_repair_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4148,6 +4150,8 @@ pub(crate) enum AccountWindowUsageBuildOutcome {
 pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5_000;
 #[cfg(test)]
 pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5;
+
+const ACCOUNT_WINDOW_ARCHIVE_HOLE_FALLBACK_MAX_BUCKETS: usize = 64;
 
 pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     pool: &Pool<Sqlite>,
@@ -4277,7 +4281,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         let live_rollup_cursor =
             load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
         let partial_minute_keys = collect_account_window_partial_minute_keys(&plans)?;
-        let missing_full_hour_keys =
+        let mut missing_full_hour_keys =
             collect_account_window_missing_full_hour_keys(&plans, &covered_hourly_keys);
 
         let archived_partial_minute_keys = partial_minute_keys
@@ -4300,15 +4304,82 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
             .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
             .copied()
             .collect::<HashSet<_>>();
-        if query_start < retention_cutoff
-            && (!archived_partial_minute_keys.is_empty()
-                || !archived_partial_hour_keys.is_empty()
-                || !archived_missing_full_hour_keys.is_empty())
-        {
-            telemetry.coverage_hole_bucket_count = archived_partial_minute_keys.len()
-                + archived_partial_hour_keys.len()
-                + archived_missing_full_hour_keys.len();
-            return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+        // A completed archive manifest that spans an entire hour proves an absent account row is
+        // a zero, not a rollup hole. File readability is part of that proof: a missing archive
+        // remains preparing instead of silently changing a historical total.
+        let archive_covered_full_hour_keys = load_completed_invocation_archive_covered_hour_keys(
+            pool,
+            &archived_missing_full_hour_keys,
+            &config.archive_dir,
+        )
+        .await?;
+        missing_full_hour_keys.retain(|key| !archive_covered_full_hour_keys.contains(key));
+        let archived_missing_full_hour_keys = missing_full_hour_keys
+            .iter()
+            .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
+            .copied()
+            .collect::<HashSet<_>>();
+        let archived_exact_bucket_count = archived_partial_minute_keys.len()
+            + archived_partial_hour_keys.len()
+            + archived_missing_full_hour_keys.len();
+        if query_start < retention_cutoff && archived_exact_bucket_count > 0 {
+            let missing_archive_full_hour_count = archived_missing_full_hour_keys.len();
+            if missing_archive_full_hour_count > 0 {
+                telemetry.coverage_hole_bucket_count = telemetry
+                    .coverage_hole_bucket_count
+                    .saturating_add(missing_archive_full_hour_count);
+                telemetry.archive_coverage_repair_required = true;
+            }
+            if missing_archive_full_hour_count > ACCOUNT_WINDOW_ARCHIVE_HOLE_FALLBACK_MAX_BUCKETS {
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
+
+            // Boundary tails are always exact and bounded. A populated full-hour hole is also
+            // read by its named account/hour while replay catches up; neither path reopens the
+            // complete owner selection.
+            let archived_minutes =
+                load_window_actual_usage_rows_for_account_bucket_keys_from_archives(
+                    pool,
+                    &archived_partial_minute_keys,
+                    60,
+                    &config.archive_dir,
+                )
+                .await?;
+            let mut archived_hour_keys = archived_partial_hour_keys;
+            archived_hour_keys.extend(archived_missing_full_hour_keys);
+            let archived_hours =
+                load_window_actual_usage_rows_for_account_bucket_keys_from_archives(
+                    pool,
+                    &archived_hour_keys,
+                    3_600,
+                    &config.archive_dir,
+                )
+                .await?;
+            if archived_minutes.covered_bucket_count != archived_partial_minute_keys.len()
+                || archived_hours.covered_bucket_count != archived_hour_keys.len()
+            {
+                telemetry.archive_coverage_repair_required = true;
+                telemetry.coverage_hole_bucket_count =
+                    telemetry.coverage_hole_bucket_count.saturating_add(1);
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
+            let mut archived_rows = archived_minutes.rows;
+            let partial_minute_row_ids = archived_rows
+                .iter()
+                .map(|row| row.id)
+                .collect::<HashSet<_>>();
+            archived_rows.extend(
+                archived_hours
+                    .rows
+                    .into_iter()
+                    .filter(|row| !partial_minute_row_ids.contains(&row.id)),
+            );
+            telemetry.bounded_raw_row_count = telemetry
+                .bounded_raw_row_count
+                .saturating_add(archived_rows.len());
+            for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
+                usage.entry(account_id).or_default().merge(summary);
+            }
         }
 
         let live_partial_minute_keys = partial_minute_keys
@@ -4344,7 +4415,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         }
 
         let mut live_hour_fallback_keys = live_partial_hour_keys;
-        live_hour_fallback_keys.extend(live_missing_full_hour_keys);
+        live_hour_fallback_keys.extend(live_missing_full_hour_keys.iter().copied());
         if !live_hour_fallback_keys.is_empty() {
             let live_rows = load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
                 pool,
@@ -4365,6 +4436,21 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                             })
                 })
                 .collect::<Vec<_>>();
+            let populated_missing_full_hour_keys = live_rows
+                .iter()
+                .filter_map(|row| {
+                    invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 3_600)
+                        .ok()
+                        .map(|bucket_epoch| (row.upstream_account_id, bucket_epoch))
+                })
+                .filter(|key| live_missing_full_hour_keys.contains(key))
+                .collect::<HashSet<_>>();
+            if !populated_missing_full_hour_keys.is_empty() {
+                telemetry.coverage_hole_bucket_count = telemetry
+                    .coverage_hole_bucket_count
+                    .saturating_add(populated_missing_full_hour_keys.len());
+                telemetry.live_coverage_repair_required = true;
+            }
             telemetry.bounded_raw_row_count += live_rows.len();
             exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
@@ -4384,6 +4470,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
             if live_tail_rows.len() > ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS {
                 telemetry.coverage_hole_bucket_count =
                     telemetry.coverage_hole_bucket_count.saturating_add(1);
+                telemetry.live_coverage_repair_required = true;
                 return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
             }
             let live_tail_rows = live_tail_rows

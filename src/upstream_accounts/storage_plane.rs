@@ -178,6 +178,7 @@ pub(crate) struct AccountWindowStoragePlane {
     legacy_backfill_required: AtomicBool,
     backfill_running: Arc<AtomicBool>,
     coverage_repair_running: Arc<AtomicBool>,
+    live_coverage_repair_running: Arc<AtomicBool>,
     direct_pool_violation_count: AtomicU64,
 }
 
@@ -193,6 +194,7 @@ impl Default for AccountWindowStoragePlane {
             legacy_backfill_required: AtomicBool::new(false),
             backfill_running: Arc::new(AtomicBool::new(false)),
             coverage_repair_running: Arc::new(AtomicBool::new(false)),
+            live_coverage_repair_running: Arc::new(AtomicBool::new(false)),
             direct_pool_violation_count: AtomicU64::new(0),
         }
     }
@@ -339,8 +341,7 @@ impl AccountWindowStoragePlane {
         let mut lease = lease.expect("leader selection must hold an in-flight lease");
         let response = self
             .build(
-                &state.pool,
-                &state.config,
+                state,
                 summaries,
                 &normalized_account_ids,
                 durable_cursor,
@@ -467,8 +468,7 @@ impl AccountWindowStoragePlane {
 
     async fn build(
         &self,
-        pool: &Pool<Sqlite>,
-        config: &AppConfig,
+        state: &AppState,
         summaries: Vec<UpstreamAccountSummary>,
         account_ids: &[i64],
         durable_cursor: i64,
@@ -477,8 +477,8 @@ impl AccountWindowStoragePlane {
         let started_at = Instant::now();
         let mut summaries = summaries;
         let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
-            pool,
-            config,
+            &state.pool,
+            &state.config,
             &mut summaries,
             now,
         )
@@ -511,14 +511,25 @@ impl AccountWindowStoragePlane {
             elapsed_ms = started_at.elapsed().as_millis() as u64,
             "upstream account window usage storage-plane build completed"
         );
+        if telemetry.live_coverage_repair_required {
+            self.schedule_live_rollup_repair(
+                state.pool.clone(),
+                state.hourly_rollup_sync_lock.clone(),
+            );
+        }
         if outcome == AccountWindowUsageBuildOutcome::Preparing {
-            self.schedule_historical_rollup_repair(pool.clone());
+            if telemetry.archive_coverage_repair_required {
+                self.schedule_historical_rollup_repair(state.pool.clone());
+            }
             return Ok(AccountWindowBuildResult {
                 response: AccountWindowStorageResponse::Preparing {
                     retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
                 },
                 telemetry,
             });
+        }
+        if telemetry.archive_coverage_repair_required {
+            self.schedule_historical_rollup_repair(state.pool.clone());
         }
         Ok(AccountWindowBuildResult {
             response: AccountWindowStorageResponse::Ready(UpstreamAccountWindowUsageResponse {
@@ -565,6 +576,36 @@ impl AccountWindowStoragePlane {
             {
                 warn!(error = %err, "failed to wake account window coverage repair");
             }
+        });
+    }
+
+    fn schedule_live_rollup_repair(
+        &self,
+        pool: Pool<Sqlite>,
+        hourly_rollup_sync_lock: Arc<Mutex<()>>,
+    ) {
+        if self
+            .live_coverage_repair_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let running = self.live_coverage_repair_running.clone();
+        tokio::spawn(async move {
+            struct CoverageRepairGuard(Arc<AtomicBool>);
+            impl Drop for CoverageRepairGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _running = CoverageRepairGuard(running);
+            crate::maintenance::refresh_hourly_rollups_for_read_surfaces_best_effort(
+                &pool,
+                hourly_rollup_sync_lock.as_ref(),
+                "account_window_usage_live_coverage_hole",
+            )
+            .await;
         });
     }
 
