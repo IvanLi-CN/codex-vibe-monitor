@@ -271,7 +271,7 @@ impl AccountWindowStoragePlane {
         let (
             summaries,
             durable_cursor,
-            selection_config,
+            _selection_config,
             selection,
             legacy_ranges,
             legacy_backfill_required,
@@ -293,6 +293,8 @@ impl AccountWindowStoragePlane {
                     }));
             }
         };
+        let last_good_compatibility_key = account_window_last_good_compatibility_key(&selection)
+            .unwrap_or_else(|| account_window_selection_config_from_key(&selection).to_string());
 
         let (waiter, lease, schedule_legacy_backfill, immediate_response) = {
             let mut entries = self.entries.lock().await;
@@ -308,7 +310,10 @@ impl AccountWindowStoragePlane {
             let compatible_last_good = entries
                 .iter()
                 .filter(|(candidate, _)| {
-                    account_window_selection_config_from_key(candidate) == selection_config
+                    account_window_last_good_compatibility_key(candidate)
+                        .as_deref()
+                        .unwrap_or_else(|| account_window_selection_config_from_key(candidate))
+                        == last_good_compatibility_key
                 })
                 .filter_map(|(_, entry)| entry.last_good.clone())
                 .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
@@ -487,13 +492,17 @@ impl AccountWindowStoragePlane {
     }
 
     async fn last_good_response(&self, selection: &str) -> Option<AccountWindowStorageResponse> {
-        let selection_config = account_window_selection_config_from_key(selection);
+        let compatibility_key = account_window_last_good_compatibility_key(selection)
+            .unwrap_or_else(|| account_window_selection_config_from_key(selection).to_string());
         self.entries
             .lock()
             .await
             .iter()
             .filter(|(candidate, _)| {
-                account_window_selection_config_from_key(candidate) == selection_config
+                account_window_last_good_compatibility_key(candidate)
+                    .as_deref()
+                    .unwrap_or_else(|| account_window_selection_config_from_key(candidate))
+                    == compatibility_key
             })
             .filter_map(|(_, entry)| entry.last_good.as_ref())
             .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
@@ -1270,6 +1279,37 @@ fn account_window_selection_config_from_key(selection: &str) -> &str {
         .map_or(selection, |(config, _)| config)
 }
 
+// A moving window advances its exact build key every minute. Last-good is explicitly allowed
+// to be up to 60 seconds old, so retain it across that minute generation while still requiring
+// the same account set, window duration, and reset anchor.
+fn account_window_last_good_compatibility_key(selection: &str) -> Option<String> {
+    let selection_config = account_window_selection_config_from_key(selection);
+    let (accounts, windows) = selection_config.split_once(";windows=")?;
+    let normalized_windows = windows
+        .split(',')
+        .map(|window| {
+            let (prefix, duration) = window.rsplit_once(':')?;
+            let (account_id, generation) = prefix.split_once(':')?;
+            let normalized_generation = if generation.starts_with("minute:") {
+                "minute".to_string()
+            } else if let Some((reset_anchor, _)) = generation.rsplit_once(":minute:") {
+                if reset_anchor.starts_with("reset-pending:") {
+                    reset_anchor.to_string()
+                } else {
+                    generation.to_string()
+                }
+            } else {
+                generation.to_string()
+            };
+            Some(format!("{account_id}:{normalized_generation}:{duration}"))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(format!(
+        "{accounts};windows={}",
+        normalized_windows.join(",")
+    ))
+}
+
 fn account_window_selection_fingerprint(account_ids: &[i64]) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut normalized_account_ids = account_ids.to_vec();
@@ -1347,6 +1387,22 @@ mod tests {
                 .last_good_response_for_account_ids(&[42])
                 .await
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn last_good_compatibility_keeps_rolling_generation_but_not_reset_anchor() {
+        let first = "accounts=42;windows=42:minute:100:300;cursor=1";
+        let next = "accounts=42;windows=42:minute:101:300;cursor=2";
+        let reset_changed = "accounts=42;windows=42:reset:101:300;cursor=2";
+
+        assert_eq!(
+            account_window_last_good_compatibility_key(first),
+            account_window_last_good_compatibility_key(next)
+        );
+        assert_ne!(
+            account_window_last_good_compatibility_key(first),
+            account_window_last_good_compatibility_key(reset_changed)
         );
     }
 
