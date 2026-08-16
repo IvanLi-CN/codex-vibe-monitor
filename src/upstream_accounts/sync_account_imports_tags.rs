@@ -4155,6 +4155,8 @@ pub(crate) const ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS: usize = 5_000;
 #[cfg(test)]
 pub(crate) const ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS: usize = 5;
 
+const ACCOUNT_WINDOW_USAGE_FULL_HOUR_HOLE_MAX_ROWS: usize = 200;
+
 pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -4428,19 +4430,27 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
             }
         }
 
-        let mut live_hour_fallback_keys = live_partial_hour_keys;
-        live_hour_fallback_keys.extend(live_missing_full_hour_keys.iter().copied());
-        if !live_hour_fallback_keys.is_empty() {
+        // A missing full hour is an unready rollup, not a boundary tail. It can be answered
+        // exactly only while its source set remains small enough for the synchronous repair
+        // contract; otherwise leave the response preparing and repair the named bucket.
+        if !live_missing_full_hour_keys.is_empty() {
             let live_rows = load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
                 pool,
-                &live_hour_fallback_keys,
+                &live_missing_full_hour_keys,
                 3_600,
                 None,
                 None,
-                Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS + 1),
+                Some(
+                    ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS
+                        .min(ACCOUNT_WINDOW_USAGE_FULL_HOUR_HOLE_MAX_ROWS)
+                        + 1,
+                ),
             )
             .await?;
-            if live_rows.len() > ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+            if live_rows.len()
+                > ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS
+                    .min(ACCOUNT_WINDOW_USAGE_FULL_HOUR_HOLE_MAX_ROWS)
+            {
                 telemetry.coverage_hole_bucket_count =
                     telemetry.coverage_hole_bucket_count.saturating_add(1);
                 telemetry.live_coverage_repair_required = true;
@@ -4493,6 +4503,39 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                     }
                 }
             }
+            telemetry.bounded_raw_row_count += live_rows.len();
+            exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
+            for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
+                usage.entry(account_id).or_default().merge(summary);
+            }
+        }
+
+        if !live_partial_hour_keys.is_empty() {
+            let live_rows = load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
+                pool,
+                &live_partial_hour_keys,
+                3_600,
+                None,
+                None,
+                Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS + 1),
+            )
+            .await?;
+            if live_rows.len() > ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+                telemetry.coverage_hole_bucket_count =
+                    telemetry.coverage_hole_bucket_count.saturating_add(1);
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
+            let live_rows = live_rows
+                .into_iter()
+                .filter(|row| {
+                    !exact_fallback_row_ids.contains(&row.id)
+                        && invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)
+                            .is_ok_and(|minute_epoch| {
+                                !minute_covered_keys
+                                    .contains(&(row.upstream_account_id, minute_epoch))
+                            })
+                })
+                .collect::<Vec<_>>();
             telemetry.bounded_raw_row_count += live_rows.len();
             exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {

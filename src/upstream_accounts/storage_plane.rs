@@ -446,20 +446,12 @@ impl AccountWindowStoragePlane {
                     None,
                     None,
                     should_schedule,
-                    Some(
-                        entry
-                            .last_good
-                            .as_ref()
-                            .filter(|last_good| {
-                                last_good.stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
-                            })
-                            .map(|last_good| {
-                                AccountWindowStorageResponse::Ready(last_good.response.clone())
-                            })
-                            .unwrap_or(AccountWindowStorageResponse::Preparing {
-                                retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                            }),
-                    ),
+                    // A matching legacy row is not represented by the structured account
+                    // selection yet. A compatible last-good response can therefore omit it;
+                    // wait for the bounded attribution pass instead of serving stale totals.
+                    Some(AccountWindowStorageResponse::Preparing {
+                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                    }),
                 )
             } else if let Some(flight) = entry.in_flight.as_ref() {
                 self.coalesced_waiter_count.fetch_add(1, Ordering::Relaxed);
@@ -646,12 +638,12 @@ impl AccountWindowStoragePlane {
         let legacy_ranges = legacy_backfill_ranges_from_plans(&plans);
         let legacy_backfill_required = self.legacy_backfill_required(&state.pool).await?;
         let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty() {
-            let progress_key = legacy_backfill_progress_key(&legacy_ranges);
+            let completion_key = legacy_backfill_completion_key(&legacy_ranges);
             if self
                 .legacy_backfill_completed_cursors
                 .lock()
                 .await
-                .get(&progress_key)
+                .get(&completion_key)
                 .is_some_and(|cursor| *cursor == durable_cursor)
             {
                 true
@@ -663,7 +655,7 @@ impl AccountWindowStoragePlane {
         };
         if legacy_backfill_required && legacy_backfill_complete && !legacy_ranges.is_empty() {
             self.record_legacy_backfill_completion(
-                legacy_backfill_progress_key(&legacy_ranges),
+                legacy_backfill_completion_key(&legacy_ranges),
                 durable_cursor,
             )
             .await;
@@ -1543,6 +1535,36 @@ fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> 
     )
 }
 
+// Cursor progress for rolling windows can be shared across minute boundaries, but a readiness
+// proof must remain pinned to the exact selection. An older legacy row can enter the active
+// window without changing the durable cursor.
+fn legacy_backfill_completion_key(ranges: &[AccountWindowLegacyBackfillRange]) -> String {
+    let mut normalized_ranges = ranges
+        .iter()
+        .map(|range| {
+            (
+                range.account_id,
+                range.start_at.as_str(),
+                range.end_at.as_str(),
+                range.selection_generation.as_str(),
+                range.window_duration_secs,
+            )
+        })
+        .collect::<Vec<_>>();
+    normalized_ranges.sort_unstable();
+    normalized_ranges.dedup();
+    format!(
+        "{ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY}:completion:{}",
+        normalized_ranges
+            .iter()
+            .map(|(account_id, start_at, end_at, generation, duration)| {
+                format!("{account_id}:{start_at}:{end_at}:{generation}:{duration}")
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn legacy_backfill_ranges_from_plans(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Vec<AccountWindowLegacyBackfillRange> {
@@ -2016,6 +2038,34 @@ mod tests {
             legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
             legacy_backfill_progress_key(std::slice::from_ref(&pending_reset)),
             "a future reset must not advance the rolling cursor past older rows"
+        );
+    }
+
+    #[test]
+    fn legacy_completion_identity_is_pinned_to_the_exact_rolling_window() {
+        let rolling = AccountWindowLegacyBackfillRange {
+            account_id: 42,
+            start_at: "2026-08-16 10:00:00".to_string(),
+            end_at: "2026-08-16 15:00:00".to_string(),
+            selection_generation: "minute:456".to_string(),
+            window_duration_secs: 5 * 60 * 60,
+        };
+        let next_minute = AccountWindowLegacyBackfillRange {
+            start_at: "2026-08-16 10:01:00".to_string(),
+            end_at: "2026-08-16 15:01:00".to_string(),
+            selection_generation: "minute:457".to_string(),
+            ..rolling.clone()
+        };
+
+        assert_eq!(
+            legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
+            legacy_backfill_progress_key(std::slice::from_ref(&next_minute)),
+            "the durable cursor remains reusable for the same rolling duration"
+        );
+        assert_ne!(
+            legacy_backfill_completion_key(std::slice::from_ref(&rolling)),
+            legacy_backfill_completion_key(std::slice::from_ref(&next_minute)),
+            "an exact completion proof must not hide legacy rows entering the next window"
         );
     }
 

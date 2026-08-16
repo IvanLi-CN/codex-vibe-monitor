@@ -4194,6 +4194,63 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
 }
 
 #[tokio::test]
+async fn window_usage_does_not_serve_last_good_while_matching_legacy_attribution_is_pending() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Window Usage Last Good Readiness").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE upstream_account_attribution_backfill_state SET state = 'pending' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark unrelated legacy attribution as pending before the baseline");
+    let (status, _) = load_window_usage_response(state.clone(), vec![account_id]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "seed a compatible last-good response"
+    );
+
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear structured account assignment");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
+    assert_eq!(payload["items"], json!([]));
+}
+
+#[tokio::test]
 async fn window_usage_does_not_prepare_for_legitimate_unassigned_terminals() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
@@ -4785,6 +4842,82 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
     assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
     assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
     assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
+}
+
+#[tokio::test]
+async fn window_usage_returns_preparing_when_a_missing_full_hour_exceeds_the_repair_budget() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Dense Missing Hourly Coverage").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    let occurred_at = shanghai_local_iso(
+        (Utc::now() - ChronoDuration::hours(2))
+            .with_minute(0)
+            .and_then(|value| value.with_second(0))
+            .and_then(|value| value.with_nanosecond(0))
+            .expect("align dense coverage hour"),
+    );
+    for _ in 0..=ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &occurred_at,
+            Some(1200),
+            Some(600),
+            Some(200),
+            Some(2000),
+            Some(0.02),
+        )
+        .await;
+    }
+    let cursor_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load invocation cursor");
+    sqlx::query(
+        r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+    )
+    .bind("codex_invocations")
+    .bind(cursor_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark cursor without materializing the dense hour");
+
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load dense missing-hour summary");
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        Utc::now(),
+    )
+    .await
+    .expect("build dense missing-hour usage");
+
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Preparing);
+    assert!(telemetry.live_coverage_repair_required);
+    assert!(!telemetry.live_coverage_repair_invocation_ids.is_empty());
+    assert!(telemetry.coverage_hole_bucket_count > 0);
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
 }
 
 #[tokio::test]
