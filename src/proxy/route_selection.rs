@@ -1784,6 +1784,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     account: PoolResolvedAccount,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
+    first_request_body_poll_at_rx: &watch::Receiver<Option<Instant>>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let capability_endpoint = if method == Method::POST {
         original_uri.path()
@@ -2431,6 +2432,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 connect_latency_ms,
                 attempt_started_at_utc,
                 first_byte_latency_ms,
+                live_request_body_first_byte_at: *first_request_body_poll_at_rx.borrow(),
                 first_chunk: error_body_bytes.filter(|bytes| !bytes.is_empty()),
                 first_chunk_received_at: None,
                 first_stream_chunk_received_at: None,
@@ -2767,6 +2769,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         connect_latency_ms,
         attempt_started_at_utc,
         first_byte_latency_ms,
+        live_request_body_first_byte_at: *first_request_body_poll_at_rx.borrow(),
         first_chunk,
         first_chunk_received_at,
         first_stream_chunk_received_at: None,
@@ -4312,6 +4315,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     initial_account.clone(),
                                     Some(&pool_attempt_trace_context),
                                     &replay_status_rx,
+                                    &replayable_body.first_live_chunk_sent_at_rx,
                                 )
                                 .await
                                 {

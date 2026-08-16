@@ -782,6 +782,9 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_protection_enabled
             ,cache_hit_low_rate_threshold_percent
             ,cache_hit_overflow_mode
+            ,live_request_streaming_enabled
+            ,live_request_streaming_group_names_json
+            ,live_request_streaming_treatment_percent
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1

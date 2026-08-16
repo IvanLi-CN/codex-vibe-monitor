@@ -358,6 +358,126 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_request_eof() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "groupNames": [test_required_group_name()],
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    let body_task = tokio::spawn(async move {
+        tx.send(Ok(Bytes::from(first_chunk)))
+            .await
+            .expect("send request prefix");
+        release_tail_rx.await.expect("release request tail");
+        tx.send(Ok(Bytes::from_static(b"\"}")))
+            .await
+            .expect("send request tail");
+    });
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+                (
+                    HeaderName::from_static("x-openai-internal-codex-responses-lite"),
+                    HeaderValue::from_static("true"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        )
+        .await
+    });
+
+    timeout(
+        Duration::from_secs(1),
+        wait_for_pool_upstream_request_attempts(&state.pool, 1),
+    )
+    .await
+    .expect("live treatment should start an upstream attempt before request eof");
+    let _ = release_tail_tx.send(());
+    body_task.await.expect("request body task should join");
+    let response = request_task
+        .await
+        .expect("capture request task should join");
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read capture response body");
+    let (transport_mode, upstream_first_byte_ms, overlap_ms) =
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let row = sqlx::query_as::<_, (Option<String>, Option<f64>, Option<f64>)>(
+                    r#"
+                SELECT
+                    json_extract(payload, '$.requestBodyTransportMode'),
+                    json_extract(payload, '$.upstreamRequestFirstByteMs'),
+                    json_extract(payload, '$.requestUpstreamOverlapMs')
+                FROM codex_invocations
+                WHERE json_extract(payload, '$.liveFirstExperimentVariant') = 'treatment'
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                )
+                .fetch_optional(&state.pool)
+                .await
+                .expect("query live treatment invocation");
+                if let Some(row) = row {
+                    break row;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("live treatment invocation should persist");
+    assert_eq!(transport_mode.as_deref(), Some("live_first"));
+    assert!(upstream_first_byte_ms.is_some_and(|value| value >= 0.0));
+    assert!(overlap_ms.is_some_and(|value| value > 0.0));
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
 {

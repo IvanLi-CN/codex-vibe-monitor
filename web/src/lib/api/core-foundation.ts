@@ -1274,6 +1274,35 @@ export interface PerfStatsResponse {
   rangeEnd: string;
   items?: PerfStageStats[];
   stages?: PerfStageStats[];
+  liveRequestStreaming: LiveRequestStreamingPerf;
+}
+
+export interface LiveRequestStreamingPercentiles {
+  p50Ms: number;
+  p90Ms: number;
+  p99Ms: number;
+}
+
+export interface LiveRequestStreamingCohortStats {
+  cohort: string;
+  transportMode: "buffered" | "live_first" | "unknown" | string;
+  successSampleCount: number;
+  invocationCount: number;
+  sufficientSamples: boolean;
+  firstResponseByteTotalMs?: LiveRequestStreamingPercentiles | null;
+  firstTokenMs?: LiveRequestStreamingPercentiles | null;
+  requestUpstreamOverlapMs?: LiveRequestStreamingPercentiles | null;
+  firstAttemptFailureRate: number;
+  fallbackOrRetryRate: number;
+  captureFailureRate: number;
+  ambiguousUpstreamDeliveryRate: number;
+}
+
+export interface LiveRequestStreamingPerf {
+  coverage: number;
+  measuredInvocationCount: number;
+  responseInvocationCount: number;
+  cohorts: LiveRequestStreamingCohortStats[];
 }
 
 export interface PerfStatsQuery {
@@ -1284,6 +1313,9 @@ export interface PerfStatsQuery {
   source?: string;
   model?: string;
   endpoint?: string;
+  groupName?: string;
+  liveFirstRevision?: string;
+  cohort?: string;
 }
 
 export interface QuotaSnapshot {
@@ -5212,6 +5244,9 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
   if (params?.source) search.set("source", params.source);
   if (params?.model) search.set("model", params.model);
   if (params?.endpoint) search.set("endpoint", params.endpoint);
+  if (params?.groupName) search.set("groupName", params.groupName);
+  if (params?.liveFirstRevision) search.set("liveFirstRevision", params.liveFirstRevision);
+  if (params?.cohort) search.set("cohort", params.cohort);
 
   const query = search.toString();
   return fetchJson<PerfStatsResponse>(query ? `/api/stats/perf?${query}` : "/api/stats/perf");
