@@ -154,7 +154,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（组件覆盖：`Live/ModelRoutingLivePanel/RecoveryAttempt`、`Account Pool/ModelRoutingHealthPanel/ExpandedHistory` 及移动端变体）
+Storybook覆盖=不适用（本轮只调整实况页工作区编排；复用的分段控件未改）
 视觉证据目标源=ui_demo
 视觉证据=存在
 空白裁剪=无需裁剪（四张页面截图均经过 `trim_only` 规范化，未检测到可安全移除的边缘空白）
@@ -167,12 +167,12 @@ sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 与 Canvas 覆盖仍通过，但不再作为页面证据。浏览器的内嵌移动演示帧无法可靠读取或截图，因此页面证据采用同一 mock-only 演示路由的受控 CDP 视口，不访问真实后端。
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、恢复请求详情展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示四页签、模型优先当前状态、动态并发上限、路由筛选、真实恢复尝试、候选比较、HTTP 终态、延迟与状态迁移。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、恢复决策已展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示工作区四等分分段页签的边框、填充与字重选中态，以及模型优先当前状态、动态并发上限和路由筛选。
 
 PR: include
 ![桌面实况路由页](./assets/model-routing-live-page-desktop.png)
 
-source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light&demoEmbed=1`; state=路由页签、1 小时、恢复请求详情展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端四页签、筛选、组合状态、并发上限与展开后的真实路由决策无重叠。
+source_type=ui_demo; route=`/#/live?demoScene=operational&demoTheme=light`; state=路由页签、1 小时、恢复决策已展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端四等分分段页签、筛选、组合状态和并发上限无重叠或文字溢出。
 
 PR: include
 ![移动实况路由页](./assets/model-routing-live-page-mobile.png)
