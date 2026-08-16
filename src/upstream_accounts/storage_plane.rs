@@ -514,14 +514,17 @@ impl AccountWindowStoragePlane {
             Ok(AccountWindowBuildResult {
                 response: AccountWindowStorageResponse::Preparing { retry_after_ms },
                 telemetry,
-            }) => (
-                self.last_good_response(&selection)
-                    .await
-                    .unwrap_or(AccountWindowStorageResponse::Preparing { retry_after_ms }),
-                false,
-                telemetry.coverage_hole_bucket_count as u64,
-                None,
-            ),
+            }) => {
+                let response = self
+                    .response_for_preparing_build(&selection, retry_after_ms, &telemetry)
+                    .await;
+                (
+                    response,
+                    false,
+                    telemetry.coverage_hole_bucket_count as u64,
+                    None,
+                )
+            }
             Err(err) => {
                 let message = err.to_string();
                 (
@@ -737,6 +740,24 @@ impl AccountWindowStoragePlane {
             .filter(|last_good| last_good.stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
             .max_by_key(|last_good| (last_good.durable_cursor, last_good.stored_at))
             .map(|last_good| AccountWindowStorageResponse::Ready(last_good.response.clone()))
+    }
+
+    async fn response_for_preparing_build(
+        &self,
+        selection: &str,
+        retry_after_ms: u64,
+        telemetry: &AccountWindowUsageBuildTelemetry,
+    ) -> AccountWindowStorageResponse {
+        // A named live coverage hole means the previous snapshot may omit terminal data from
+        // this exact selection. The repair is already queued by `build`, but serving compatible
+        // last-good here would turn the required preparing signal into an inaccurate 200.
+        if telemetry.live_coverage_repair_required {
+            AccountWindowStorageResponse::Preparing { retry_after_ms }
+        } else {
+            self.last_good_response(selection)
+                .await
+                .unwrap_or(AccountWindowStorageResponse::Preparing { retry_after_ms })
+        }
     }
 
     async fn complete_load(
@@ -2106,6 +2127,39 @@ mod tests {
             storage.legacy_backfill_completed_cursors.lock().await.len()
                 <= ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES
         );
+    }
+
+    #[tokio::test]
+    async fn live_coverage_hole_never_serves_compatible_last_good() {
+        let storage = AccountWindowStoragePlane::default();
+        let selection = "accounts=42;windows=primary";
+        storage.entries.lock().await.insert(
+            selection.to_string(),
+            AccountWindowSelectionEntry {
+                last_good: Some(AccountWindowLastGood {
+                    response: UpstreamAccountWindowUsageResponse { items: Vec::new() },
+                    stored_at: Instant::now(),
+                    durable_cursor: 7,
+                }),
+                ..AccountWindowSelectionEntry::default()
+            },
+        );
+
+        let response = storage
+            .response_for_preparing_build(
+                selection,
+                ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                &AccountWindowUsageBuildTelemetry {
+                    live_coverage_repair_required: true,
+                    ..AccountWindowUsageBuildTelemetry::default()
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            response,
+            AccountWindowStorageResponse::Preparing { .. }
+        ));
     }
 
     #[tokio::test]
