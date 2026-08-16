@@ -150,9 +150,6 @@ function ModelRoutingHistory({ accountId, model }: { accountId?: number; model: 
   if (error) return <p className="px-3 py-2 text-xs tone-ink-warning">{error}</p>;
   return (
     <div className="border-t border-base-300/60 bg-base-200/40">
-      <p className="px-3 py-2 text-xs text-base-content/65">
-        {t("accountPool.upstreamAccounts.modelRouting.history.description")}
-      </p>
       {response?.items.length ? (
         response.items.map((record) => <HistoryRecord key={record.id} record={record} />)
       ) : (

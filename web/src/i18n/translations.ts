@@ -1357,8 +1357,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.cacheLimitCompact":
       "Concurrency {{limit}} · cache hit {{hitRate}}%",
     "accountPool.upstreamAccounts.modelRouting.cacheNormal": "No cache restriction",
-    "accountPool.upstreamAccounts.modelRouting.history.description":
-      "Last 48 hours of real route attempts and state events. Times are Beijing time.",
     "accountPool.upstreamAccounts.modelRouting.history.loading": "Loading 48-hour routing history…",
     "accountPool.upstreamAccounts.modelRouting.history.loadingMore": "Loading more…",
     "accountPool.upstreamAccounts.modelRouting.history.loadMore": "Load earlier events",
@@ -4445,8 +4443,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.cacheLimitCompact":
       "并发 {{limit}} · 缓存命中 {{hitRate}}%",
     "accountPool.upstreamAccounts.modelRouting.cacheNormal": "无缓存限制",
-    "accountPool.upstreamAccounts.modelRouting.history.description":
-      "最近 48 小时的真实路由尝试与状态事件，时间为北京时间。",
     "accountPool.upstreamAccounts.modelRouting.history.loading": "正在加载 48 小时路由历史…",
     "accountPool.upstreamAccounts.modelRouting.history.loadingMore": "正在加载更多…",
     "accountPool.upstreamAccounts.modelRouting.history.loadMore": "加载更早事件",

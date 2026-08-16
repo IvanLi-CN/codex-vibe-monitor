@@ -156,7 +156,7 @@ export const ExpandedHistory: Story = {
   decorators: [withModelRoutingHistoryFetchMock],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText(/最近 48 小时/)).toBeVisible());
+    await waitFor(() => expect(canvas.getByTitle("probe_passed")).toBeVisible());
     await expect(canvas.getByText("加载更早事件")).toBeVisible();
   },
 };
