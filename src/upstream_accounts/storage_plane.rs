@@ -17,6 +17,8 @@ const ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(60);
 const ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS: u64 = 1_000;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_LIMIT: i64 = 200;
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET: Duration = Duration::from_millis(200);
+const ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS: usize = 1_000;
+const ACCOUNT_WINDOW_LEGACY_BACKFILL_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
     "account_window_usage_upstream_account_id";
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING: &str = "pending";
@@ -89,10 +91,17 @@ enum AccountWindowLegacyBackfillOutcome {
 struct AccountWindowSelectionEntry {
     in_flight: Option<Arc<AccountWindowLoadFlight>>,
     last_used_at: Instant,
-    last_good: Option<(UpstreamAccountWindowUsageResponse, Instant)>,
+    last_good: Option<AccountWindowLastGood>,
     coverage_hole_bucket_count: u64,
     last_error: Option<String>,
     legacy_readiness: AccountWindowLegacyReadiness,
+}
+
+#[derive(Debug, Clone)]
+struct AccountWindowLastGood {
+    response: UpstreamAccountWindowUsageResponse,
+    stored_at: Instant,
+    durable_cursor: i64,
 }
 
 impl Default for AccountWindowSelectionEntry {
@@ -285,12 +294,11 @@ impl AccountWindowStoragePlane {
                     error = %error,
                     "upstream account window usage preflight deferred"
                 );
-                return Ok(self
-                    .last_good_response_for_account_ids(&normalized_account_ids)
-                    .await
-                    .unwrap_or(AccountWindowStorageResponse::Preparing {
-                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                    }));
+                // The preflight determines the exact window/reset configuration. Without it,
+                // a cached response may belong to a different window and is not safe to serve.
+                return Ok(AccountWindowStorageResponse::Preparing {
+                    retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                });
             }
         };
         let last_good_compatibility_key = account_window_last_good_compatibility_key(&selection)
@@ -316,8 +324,10 @@ impl AccountWindowStoragePlane {
                         == last_good_compatibility_key
                 })
                 .filter_map(|(_, entry)| entry.last_good.clone())
-                .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
-                .max_by_key(|(_, stored_at)| *stored_at);
+                .filter(|last_good| {
+                    last_good.stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
+                })
+                .max_by_key(|last_good| (last_good.durable_cursor, last_good.stored_at));
             let entry = entries.entry(selection.clone()).or_default();
             if entry.last_good.is_none() {
                 entry.last_good = compatible_last_good;
@@ -346,11 +356,11 @@ impl AccountWindowStoragePlane {
                         entry
                             .last_good
                             .as_ref()
-                            .filter(|(_, stored_at)| {
-                                stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
+                            .filter(|last_good| {
+                                last_good.stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
                             })
-                            .map(|(response, _)| {
-                                AccountWindowStorageResponse::Ready(response.clone())
+                            .map(|last_good| {
+                                AccountWindowStorageResponse::Ready(last_good.response.clone())
                             })
                             .unwrap_or(AccountWindowStorageResponse::Preparing {
                                 retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
@@ -444,6 +454,7 @@ impl AccountWindowStoragePlane {
             &selection,
             response.clone(),
             refresh_last_good,
+            durable_cursor,
             coverage_hole_bucket_count,
             error,
         )
@@ -505,29 +516,9 @@ impl AccountWindowStoragePlane {
                     == compatibility_key
             })
             .filter_map(|(_, entry)| entry.last_good.as_ref())
-            .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
-            .max_by_key(|(_, stored_at)| *stored_at)
-            .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
-    }
-
-    async fn last_good_response_for_account_ids(
-        &self,
-        account_ids: &[i64],
-    ) -> Option<AccountWindowStorageResponse> {
-        let request_key = account_window_request_key(account_ids);
-        self.entries
-            .lock()
-            .await
-            .iter()
-            .filter(|(candidate, _)| {
-                account_window_selection_config_from_key(candidate)
-                    .split_once(";windows=")
-                    .is_some_and(|(accounts, _)| accounts == request_key)
-            })
-            .filter_map(|(_, entry)| entry.last_good.as_ref())
-            .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
-            .max_by_key(|(_, stored_at)| *stored_at)
-            .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
+            .filter(|last_good| last_good.stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
+            .max_by_key(|last_good| (last_good.durable_cursor, last_good.stored_at))
+            .map(|last_good| AccountWindowStorageResponse::Ready(last_good.response.clone()))
     }
 
     async fn complete_load(
@@ -535,13 +526,18 @@ impl AccountWindowStoragePlane {
         selection: &str,
         response: AccountWindowStorageResponse,
         refresh_last_good: bool,
+        durable_cursor: i64,
         coverage_hole_bucket_count: u64,
         error: Option<String>,
     ) {
         let mut entries = self.entries.lock().await;
         if let Some(entry) = entries.get_mut(selection) {
             if refresh_last_good && let AccountWindowStorageResponse::Ready(payload) = &response {
-                entry.last_good = Some((payload.clone(), Instant::now()));
+                entry.last_good = Some(AccountWindowLastGood {
+                    response: payload.clone(),
+                    stored_at: Instant::now(),
+                    durable_cursor,
+                });
             }
             entry.coverage_hole_bucket_count = coverage_hole_bucket_count;
             entry.last_error = error;
@@ -893,14 +889,11 @@ impl AccountWindowStoragePlane {
         if ranges.is_empty() {
             return Ok(AccountWindowLegacyBackfillOutcome::Ready);
         }
-        let Ok(_permit) =
-            global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
-        else {
+        if global_db_pressure_gate().background_deny_reason().is_some() {
             return Ok(AccountWindowLegacyBackfillOutcome::Pending);
-        };
+        }
         let progress_key = legacy_backfill_progress_key(&ranges);
         let progress = load_startup_backfill_progress(&pool, &progress_key).await?;
-        let started_at = Instant::now();
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT id, payload FROM codex_invocations WHERE upstream_account_id IS NULL AND json_valid(payload) AND id > ",
         );
@@ -914,6 +907,16 @@ impl AccountWindowStoragePlane {
             .fetch_all(&pool)
             .await?;
         if rows.is_empty() {
+            let write_permit =
+                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                    .acquire_maintenance(ACCOUNT_WINDOW_LEGACY_BACKFILL_FAIRNESS_INTERVAL)
+                    .await;
+            let Ok(_pressure_permit) =
+                global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
+            else {
+                drop(write_permit);
+                return Ok(AccountWindowLegacyBackfillOutcome::Pending);
+            };
             save_startup_backfill_progress(
                 &pool,
                 &progress_key,
@@ -935,6 +938,16 @@ impl AccountWindowStoragePlane {
             return Ok(AccountWindowLegacyBackfillOutcome::Ready);
         }
 
+        let write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire_maintenance(ACCOUNT_WINDOW_LEGACY_BACKFILL_FAIRNESS_INTERVAL)
+            .await;
+        let Ok(_pressure_permit) =
+            global_db_pressure_gate().try_begin_background("account_window_usage_backfill")
+        else {
+            drop(write_permit);
+            return Ok(AccountWindowLegacyBackfillOutcome::Pending);
+        };
+        let started_at = Instant::now();
         let mut tx = pool.begin().await?;
         let mut last_scanned_id = progress.cursor_id;
         let mut updated = 0_u64;
@@ -963,8 +976,23 @@ impl AccountWindowStoragePlane {
                 updated_ids.push(*id);
             }
         }
-        crate::maintenance::recompute_invocation_hourly_rollups_for_ids_tx(&mut tx, &updated_ids)
+        let rollup_outcome =
+            crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+                &mut tx,
+                &updated_ids,
+                Some(ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS),
+            )
             .await?;
+        if rollup_outcome
+            == crate::maintenance::InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded
+        {
+            tracing::warn!(
+                updated_invocation_count = updated_ids.len(),
+                rollup_row_limit = ACCOUNT_WINDOW_LEGACY_BACKFILL_ROLLUP_MAX_ROWS,
+                "account window legacy backfill deferred an oversized hourly rollup"
+            );
+            return Ok(AccountWindowLegacyBackfillOutcome::Pending);
+        }
         tx.commit().await?;
 
         let cursor_id = last_scanned_id;
@@ -1055,8 +1083,8 @@ impl AccountWindowStoragePlane {
         let has_deferred_selection = active_entries.iter().any(|entry| {
             entry.in_flight.is_some()
                 || entry.legacy_readiness != AccountWindowLegacyReadiness::Ready
-                || entry.last_good.as_ref().is_some_and(|(_, stored_at)| {
-                    stored_at.elapsed() > ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
+                || entry.last_good.as_ref().is_some_and(|last_good| {
+                    last_good.stored_at.elapsed() > ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
                 })
         });
         let coverage_hole_bucket_count = active_entries
@@ -1066,7 +1094,7 @@ impl AccountWindowStoragePlane {
         let last_good_age_ms = active_entries
             .iter()
             .filter_map(|entry| entry.last_good.as_ref())
-            .map(|(_, stored_at)| stored_at.elapsed().as_millis() as u64)
+            .map(|last_good| last_good.stored_at.elapsed().as_millis() as u64)
             .max();
         let last_error = active_entries
             .iter()
@@ -1153,11 +1181,18 @@ fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> 
     let mut normalized_ranges = ranges
         .iter()
         .map(|range| {
-            let reset_generation = range
-                .selection_generation
-                .strip_prefix("reset:")
-                .map(|anchor| format!("reset:{anchor}"))
-                .unwrap_or_else(|| "rolling".to_string());
+            let reset_generation =
+                if let Some(anchor) = range.selection_generation.strip_prefix("reset:") {
+                    format!("reset:{anchor}")
+                } else if let Some(anchor) = range
+                    .selection_generation
+                    .strip_prefix("reset-pending:")
+                    .and_then(|value| value.split(":minute:").next())
+                {
+                    format!("reset-pending:{anchor}")
+                } else {
+                    "rolling".to_string()
+                };
             (
                 range.account_id,
                 range.window_duration_secs,
@@ -1258,17 +1293,6 @@ fn account_window_selection_config_key(
     )
 }
 
-fn account_window_request_key(account_ids: &[i64]) -> String {
-    format!(
-        "accounts={}",
-        account_ids
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
 fn account_window_selection_key(selection_config: &str, durable_cursor: i64) -> String {
     format!("{selection_config};cursor={durable_cursor}")
 }
@@ -1341,10 +1365,13 @@ mod tests {
             let mut entries = storage.entries.lock().await;
             let entry = entries.entry(selection.to_string()).or_default();
             entry.in_flight = Some(Arc::new(AccountWindowLoadFlight::new()));
-            entry.last_good = Some((
-                response.clone(),
-                Instant::now() - ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE - Duration::from_millis(1),
-            ));
+            entry.last_good = Some(AccountWindowLastGood {
+                response: response.clone(),
+                stored_at: Instant::now()
+                    - ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE
+                    - Duration::from_millis(1),
+                durable_cursor: 1,
+            });
         }
 
         storage
@@ -1352,6 +1379,7 @@ mod tests {
                 selection,
                 AccountWindowStorageResponse::Ready(response),
                 false,
+                1,
                 0,
                 None,
             )
@@ -1361,33 +1389,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_last_good_is_scoped_to_the_requested_account_set() {
+    async fn last_good_prefers_the_newest_durable_cursor_over_completion_order() {
         let storage = AccountWindowStoragePlane::default();
-        let response = UpstreamAccountWindowUsageResponse { items: Vec::new() };
+        let older_selection = "accounts=42;windows=42:minute:100:300;cursor=10";
+        let newer_selection = "accounts=42;windows=42:minute:101:300;cursor=11";
+        let older = UpstreamAccountWindowUsageResponse { items: Vec::new() };
+        let newer = UpstreamAccountWindowUsageResponse {
+            items: vec![UpstreamAccountWindowUsageItem {
+                account_id: 42,
+                primary_actual_usage: None,
+                secondary_actual_usage: None,
+            }],
+        };
         let mut entries = storage.entries.lock().await;
         entries
-            .entry("accounts=7,42;windows=active;cursor=1".to_string())
+            .entry(older_selection.to_string())
             .or_default()
-            .last_good = Some((response, Instant::now()));
+            .last_good = Some(AccountWindowLastGood {
+            response: older,
+            stored_at: Instant::now(),
+            durable_cursor: 10,
+        });
         entries
-            .entry("accounts=7;windows=active;cursor=1".to_string())
+            .entry(newer_selection.to_string())
             .or_default()
-            .last_good = Some((
-            UpstreamAccountWindowUsageResponse { items: Vec::new() },
-            Instant::now(),
-        ));
+            .last_good = Some(AccountWindowLastGood {
+            response: newer.clone(),
+            stored_at: Instant::now() - Duration::from_secs(1),
+            durable_cursor: 11,
+        });
         drop(entries);
 
-        assert!(matches!(
-            storage.last_good_response_for_account_ids(&[7, 42]).await,
-            Some(AccountWindowStorageResponse::Ready(_))
-        ));
-        assert!(
-            storage
-                .last_good_response_for_account_ids(&[42])
-                .await
-                .is_none()
-        );
+        let Some(AccountWindowStorageResponse::Ready(response)) =
+            storage.last_good_response(older_selection).await
+        else {
+            panic!("expected the durable-cursor newest last-good response");
+        };
+        assert_eq!(response.items.len(), newer.items.len());
+        assert_eq!(response.items[0].account_id, 42);
     }
 
     #[test]
@@ -1516,10 +1555,10 @@ mod tests {
             ..closed_reset.clone()
         };
 
-        assert_eq!(
+        assert_ne!(
             legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
             legacy_backfill_progress_key(std::slice::from_ref(&pending_reset)),
-            "moving windows retain one incremental progress cursor"
+            "a future reset must not advance the rolling cursor past older rows"
         );
     }
 

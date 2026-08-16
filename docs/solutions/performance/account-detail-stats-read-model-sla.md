@@ -33,7 +33,7 @@ related_specs:
 - 为账号详情统计建立 minute/hourly 两层 read-model，并通过 invocation 写入、archive replay 与 startup bootstrap 统一维护。
 - summary / timeseries 只读账号 read-model；raw invocations 只用于 boundary 精确补齐和 cursor 之后的有界 live tail。
 - `window-usage` 优先读 minute read-model，再合并缺失 hourly rows 与 live tail，不再按账号窗口常态化在线重算。
-- window usage handler 通过 bounded StoragePlane 协调同参读取；selection 以 LRU 管理，不把缓存 TTL 当成统计正确性。冷 baseline、archive coverage hole 或当前活动窗口内匹配的 legacy account row 尚未完成结构化回填时显式返回 `202 preparing`，已有 last-good 最多服务 60 秒。回填 cursor 必须与 selection 绑定并单调前进，不能让持续的新行反复遮住较早的 legacy 行，也不能让窗口外历史 backlog 阻断当前选择。单账号详情在 preparing 期间保留可空 usage 或共享的 last-good，绝不启动全窗 archive/raw 兼容读取。
+- window usage handler 通过 bounded StoragePlane 协调同参读取；selection 以 LRU 管理，不把缓存 TTL 当成统计正确性。冷 baseline、archive coverage hole 或当前活动窗口内匹配的 legacy account row 尚未完成结构化回填时显式返回 `202 preparing`，已有 last-good 最多服务 60 秒。只有 preflight 已证明相同账号、窗口与 reset 配置时才可复用 last-good，并以 durable cursor 而非构建完成时间选择最新值。回填 cursor 必须与 selection 绑定并单调前进，future-reset generation 不能与 rolling generation 共享 cursor；不能让持续的新行反复遮住较早的 legacy 行，也不能让窗口外历史 backlog 阻断当前选择。小批回填必须经过 maintenance admission，受影响 rollup 超过行数预算则 deferred。archive fallback 先验证 completed manifest hash，不能把同路径的替换文件当成原历史事实。单账号详情在 preparing 期间保留可空 usage 或共享的 last-good，绝不启动全窗 archive/raw 兼容读取。
 - `codex_invocations.upstream_account_id` 是新 terminal 的结构化账号维度，并由 partial index 支持 bounded exact tail；旧 payload 归属只允许 pressure-gated 小批回填，不能继续作为健康查询过滤条件。
 - 前端只为当前选中账号 hydrate `window-usage`，避免 roster / SSE / 列表刷新批量打后端。
 - invocation `records` SSE 不得直接驱动账号池 roster 或 `window-usage` refresh；这些刷新会把“记录实时性”误升级成重型统计重算。

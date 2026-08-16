@@ -488,9 +488,18 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    #[derive(Debug, FromRow)]
+    struct ArchiveUsageBatchFile {
+        id: i64,
+        file_path: String,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+        sha256: String,
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveUsageBatchFile>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at, sha256
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -507,7 +516,16 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
     let archive_files = archive_files
         .into_iter()
         .filter(|archive_file| {
-            archive_file_intersects_usage_bucket_keys(archive_file, bucket_keys, bucket_seconds)
+            archive_file_intersects_usage_bucket_keys(
+                &ArchiveBatchFileRow {
+                    id: archive_file.id,
+                    file_path: archive_file.file_path.clone(),
+                    coverage_start_at: archive_file.coverage_start_at.clone(),
+                    coverage_end_at: archive_file.coverage_end_at.clone(),
+                },
+                bucket_keys,
+                bucket_seconds,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -524,6 +542,27 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
             );
             continue;
         }
+        let expected_sha256 = archive_file.sha256.clone();
+        let hash_path = archive_path.clone();
+        let current_sha256 =
+            tokio::task::spawn_blocking(move || crate::maintenance::sha256_hex_file(&hash_path))
+                .await;
+        match current_sha256 {
+            Ok(Ok(current_sha256)) if current_sha256 == expected_sha256 => {}
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                warn!(
+                    file_path = %archive_path.display(),
+                    "skipping invocation archive batch with an unverifiable manifest hash"
+                );
+                continue;
+            }
+        }
+        let archive_manifest = ArchiveBatchFileRow {
+            id: archive_file.id,
+            file_path: archive_file.file_path,
+            coverage_start_at: archive_file.coverage_start_at,
+            coverage_end_at: archive_file.coverage_end_at,
+        };
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
             archive_path.display(),
@@ -561,7 +600,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
         // A manifest is only coverage evidence after the file has inflated and its bounded
         // query completed. This also makes an empty account bucket an explicit, verified zero.
         covered_bucket_keys.extend(archive_file_covered_usage_bucket_keys(
-            &archive_file,
+            &archive_manifest,
             bucket_keys,
             bucket_seconds,
         ));

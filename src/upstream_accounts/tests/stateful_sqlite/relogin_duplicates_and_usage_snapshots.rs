@@ -5631,6 +5631,17 @@ async fn window_usage_archive_marker_requires_current_file_hash() {
         covered.is_empty(),
         "a replay marker cannot prove coverage after its archive bytes change"
     );
+    let fallback = load_window_actual_usage_rows_for_account_bucket_keys_from_archives(
+        &state.pool,
+        &bucket_keys,
+        3_600,
+        &state.config.archive_dir,
+        Some(10),
+    )
+    .await
+    .expect("skip a hash-mismatched archive instead of reading it");
+    assert!(fallback.rows.is_empty());
+    assert_eq!(fallback.covered_bucket_count, 0);
 }
 
 #[tokio::test]

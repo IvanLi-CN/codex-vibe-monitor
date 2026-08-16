@@ -352,6 +352,9 @@ function Probe({
       <div data-testid="selected-name">{selectedSummary?.displayName ?? ""}</div>
       <div data-testid="detail-id">{detail?.id ?? ""}</div>
       <div data-testid="detail-name">{detail?.displayName ?? ""}</div>
+      <div data-testid="detail-primary-requests">
+        {detail?.primaryWindow?.actualUsage?.requestCount ?? ""}
+      </div>
       <div data-testid="detail-recent-actions-count">{detail?.recentActions?.length ?? 0}</div>
       <div data-testid="detail-loading">{isDetailLoading ? "true" : "false"}</div>
       <div data-testid="list-error">{listError ?? ""}</div>
@@ -477,6 +480,11 @@ describe("useUpstreamAccounts", () => {
 
   it("auto-hydrates window usage only for the selected account", async () => {
     const hydration = deferred<UpstreamAccountWindowUsageResponse>();
+    const windowedDetail = {
+      ...createDetail(1, "Alpha"),
+      ...createWindowedSummary(1, "Alpha"),
+    };
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(windowedDetail);
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
         items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
@@ -494,12 +502,17 @@ describe("useUpstreamAccounts", () => {
       expect.objectContaining({ signal: expect.anything() }),
     );
 
+    click("load-detail-recent-actions");
+    await flushAsync();
+    expect(text("detail-id")).toBe("1");
+
     hydration.resolve(createWindowUsageResponse([1]));
     await flushAsync();
 
     expect(text("window-usage-pending")).toBe("false");
     expect(text("first-item-primary-requests")).toBe("10");
     expect(text("first-item-secondary-requests")).toBe("30");
+    expect(text("detail-primary-requests")).toBe("10");
   });
 
   it("retries a preparing window-usage response with bounded backoff", async () => {
@@ -546,6 +559,39 @@ describe("useUpstreamAccounts", () => {
       await flushAsync();
 
       expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(3);
+      expect(text("first-item-primary-requests")).toBe("10");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps server-provided preparing retry delays at five seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+        createListResponse({ items: [createWindowedSummary(1, "Alpha")] }),
+      );
+      apiMocks.fetchUpstreamAccountWindowUsage
+        .mockResolvedValueOnce({
+          items: [],
+          readiness: "preparing",
+          retryAfterMs: 60_000,
+        })
+        .mockResolvedValueOnce(createWindowUsageResponse([1]));
+
+      render(<Probe query={{ page: 1, pageSize: 20 }} />);
+      await flushAsync();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_999);
+      });
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledTimes(2);
       expect(text("first-item-primary-requests")).toBe("10");
     } finally {
       vi.useRealTimers();

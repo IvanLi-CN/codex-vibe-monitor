@@ -652,7 +652,10 @@ export function useUpstreamAccounts(
         return;
       }
       if (response.readiness === "preparing") {
-        const delay = Math.max(1_000, windowUsageRetryDelayRef.current, response.retryAfterMs ?? 0);
+        const delay = Math.min(
+          WINDOW_USAGE_RETRY_MAX_MS,
+          Math.max(1_000, windowUsageRetryDelayRef.current, response.retryAfterMs ?? 0),
+        );
         windowUsageRetryDelayRef.current = delay < 2_000 ? 2_000 : WINDOW_USAGE_RETRY_MAX_MS;
         normalizedAccountIds.forEach((accountId) => {
           windowUsageRetryIdsRef.current.add(accountId);
@@ -693,6 +696,19 @@ export function useUpstreamAccounts(
           }
         }
         return next;
+      });
+      setDetail((current) => {
+        const usage = current ? usageEntries[current.id] : undefined;
+        if (!current || !usage) return current;
+        return {
+          ...current,
+          primaryWindow: current.primaryWindow
+            ? { ...current.primaryWindow, actualUsage: usage.primaryActualUsage }
+            : current.primaryWindow,
+          secondaryWindow: current.secondaryWindow
+            ? { ...current.secondaryWindow, actualUsage: usage.secondaryActualUsage }
+            : current.secondaryWindow,
+        };
       });
 
       normalizedAccountIds.forEach((accountId) => {
