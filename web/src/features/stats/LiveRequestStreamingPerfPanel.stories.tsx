@@ -50,7 +50,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+        <div className="bg-base-200 px-6 py-6 text-base-content">
           <div className="mx-auto w-full max-w-5xl">
             <Story />
           </div>
@@ -64,17 +64,19 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Measured: Story = {
+  tags: ["test"],
   args: { data: measured },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("live-request-streaming-perf-panel")).toBeVisible();
-    await expect(canvas.getByText("Buffered control")).toBeVisible();
-    await expect(canvas.getByText("Live-first treatment")).toBeVisible();
+    await expect(canvas.getByText("缓冲对照组")).toBeVisible();
+    await expect(canvas.getByText("实时首发实验组")).toBeVisible();
     await expect(canvas.getByText("+220 ms (+22.4%)")).toBeVisible();
   },
 };
 
 export const InsufficientSamples: Story = {
+  tags: ["test"],
   args: {
     data: {
       ...measured,
@@ -84,5 +86,9 @@ export const InsufficientSamples: Story = {
         sufficientSamples: false,
       })),
     },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText("样本不足：17 / 200")).toHaveLength(2);
   },
 };

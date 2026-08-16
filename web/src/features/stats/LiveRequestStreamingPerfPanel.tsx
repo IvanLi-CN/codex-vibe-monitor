@@ -133,7 +133,7 @@ export function LiveRequestStreamingPerfPanel({
               <CohortColumn label={t("stats.liveRequestStreaming.control")} cohort={control} />
               <CohortColumn label={t("stats.liveRequestStreaming.treatment")} cohort={treatment} />
             </div>
-            <div className="grid grid-cols-1 gap-2 border-t border-base-300/70 pt-3 text-sm sm:grid-cols-3">
+            <dl className="grid grid-cols-1 gap-2 border-t border-base-300/70 pt-3 text-sm sm:grid-cols-3">
               <Metric
                 label={t("stats.liveRequestStreaming.responseBenefit")}
                 value={formatBenefit(
@@ -152,7 +152,7 @@ export function LiveRequestStreamingPerfPanel({
                   treatment?.requestUpstreamOverlapMs?.p50Ms,
                 )}
               />
-            </div>
+            </dl>
           </>
         )}
       </div>
