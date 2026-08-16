@@ -52,7 +52,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div className="bg-neutral px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-5xl bg-base-100">
+          <div className="mx-auto w-full max-w-5xl bg-base-100 p-3">
             <Story />
           </div>
         </div>
