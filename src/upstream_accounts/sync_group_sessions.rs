@@ -285,6 +285,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_p
     bucket_seconds: i64,
     min_id_exclusive: Option<i64>,
     max_id_inclusive: Option<i64>,
+    limit: Option<usize>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if bucket_keys.is_empty() || bucket_seconds <= 0 {
         return Ok(Vec::new());
@@ -342,6 +343,9 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_p
             .push(")");
     }
     query.push(") ORDER BY occurred_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
 
     query
         .build_query_as::<AccountWindowUsageRow>()
@@ -451,6 +455,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
     bucket_keys: &HashSet<(i64, i64)>,
     bucket_seconds: i64,
     archive_dir: &Path,
+    max_rows: Option<usize>,
 ) -> Result<AccountWindowArchiveBucketRows> {
     if bucket_keys.is_empty()
         || bucket_seconds <= 0
@@ -509,6 +514,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
     let mut rows = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut covered_bucket_keys = HashSet::new();
+    let mut scanned_row_count = 0_usize;
     for archive_file in archive_files {
         let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
         if !archive_path.exists() {
@@ -537,8 +543,21 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
             &archive_pool,
             bucket_keys,
             bucket_seconds,
+            max_rows.map(|max_rows| max_rows.saturating_sub(scanned_row_count).saturating_add(1)),
         )
         .await?;
+        if max_rows
+            .is_some_and(|max_rows| scanned_row_count.saturating_add(archive_rows.len()) > max_rows)
+        {
+            archive_pool.close().await;
+            drop(temp_cleanup);
+            return Ok(AccountWindowArchiveBucketRows {
+                rows,
+                covered_bucket_count: covered_bucket_keys.len(),
+                row_limit_exceeded: true,
+            });
+        }
+        scanned_row_count = scanned_row_count.saturating_add(archive_rows.len());
         // A manifest is only coverage evidence after the file has inflated and its bounded
         // query completed. This also makes an empty account bucket an explicit, verified zero.
         covered_bucket_keys.extend(archive_file_covered_usage_bucket_keys(
@@ -557,6 +576,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
     Ok(AccountWindowArchiveBucketRows {
         rows,
         covered_bucket_count: covered_bucket_keys.len(),
+        row_limit_exceeded: false,
     })
 }
 
@@ -627,6 +647,7 @@ fn archive_file_intersects_usage_bucket_keys(
 pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
     pool: &Pool<Sqlite>,
     bucket_keys: &HashSet<(i64, i64)>,
+    archive_dir: &Path,
 ) -> Result<HashSet<(i64, i64)>> {
     if bucket_keys.is_empty()
         || !sqlite_table_exists(pool, "archive_batches").await?
@@ -666,19 +687,17 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
         r#"
         SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at
         FROM archive_batches AS batches
+        INNER JOIN hourly_rollup_archive_replay AS replay
+          ON replay.dataset = batches.dataset
+         AND replay.file_path = batches.file_path
+         AND replay.archive_sha256 = batches.sha256
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
           AND batches.coverage_start_at IS NOT NULL
           AND batches.coverage_end_at IS NOT NULL
           AND batches.coverage_end_at >= ?2
           AND batches.coverage_start_at <= ?3
-          AND EXISTS (
-              SELECT 1
-              FROM hourly_rollup_archive_replay AS replay
-              WHERE replay.target = ?4
-                AND replay.dataset = batches.dataset
-                AND replay.file_path = batches.file_path
-          )
+          AND replay.target = ?4
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
@@ -687,6 +706,19 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
     .bind(crate::maintenance::HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .fetch_all(pool)
     .await?;
+    let mut readable_archive_files = Vec::with_capacity(archive_files.len());
+    for archive_file in archive_files {
+        let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
+        match tokio::fs::metadata(&archive_path).await {
+            Ok(metadata) if metadata.is_file() => readable_archive_files.push(archive_file),
+            Ok(_) | Err(_) => {
+                warn!(
+                    file_path = %archive_path.display(),
+                    "archive replay marker cannot prove account window coverage because the current file is unavailable"
+                );
+            }
+        }
+    }
     Ok(bucket_keys
         .iter()
         .filter(|(_, bucket_epoch)| {
@@ -701,7 +733,7 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
             bucket_start
                 .zip(bucket_end)
                 .is_some_and(|(bucket_start, bucket_end)| {
-                    archive_files.iter().any(|archive_file| {
+                    readable_archive_files.iter().any(|archive_file| {
                         archive_file
                             .coverage_start_at
                             .as_deref()
@@ -721,12 +753,14 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
 pub(crate) struct AccountWindowArchiveBucketRows {
     pub(crate) rows: Vec<AccountWindowUsageRow>,
     pub(crate) covered_bucket_count: usize,
+    pub(crate) row_limit_exceeded: bool,
 }
 
 async fn load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
     pool: &Pool<Sqlite>,
     bucket_keys: &HashSet<(i64, i64)>,
     bucket_seconds: i64,
+    limit: Option<usize>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if bucket_keys.is_empty() || bucket_seconds <= 0 {
         return Ok(Vec::new());
@@ -770,6 +804,9 @@ async fn load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
             .push(")");
     }
     query.push(") ORDER BY occurred_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
     query
         .build_query_as::<AccountWindowUsageRow>()
         .fetch_all(pool)

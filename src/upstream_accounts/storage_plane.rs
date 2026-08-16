@@ -178,9 +178,57 @@ impl Drop for AccountWindowLoadLease {
     }
 }
 
+struct AccountWindowRequestLoadLease {
+    flights: Arc<Mutex<HashMap<String, Arc<AccountWindowLoadFlight>>>>,
+    request_key: String,
+    flight: Arc<AccountWindowLoadFlight>,
+    completed: bool,
+}
+
+impl AccountWindowRequestLoadLease {
+    async fn complete(&mut self, response: AccountWindowStorageResponse) {
+        self.flight.complete(response);
+        let mut flights = self.flights.lock().await;
+        if flights
+            .get(&self.request_key)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.flight))
+        {
+            flights.remove(&self.request_key);
+        }
+        self.completed = true;
+    }
+}
+
+impl Drop for AccountWindowRequestLoadLease {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+
+        let flights = self.flights.clone();
+        let request_key = self.request_key.clone();
+        let flight = self.flight.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                flight.complete(AccountWindowStorageResponse::Preparing {
+                    retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                });
+                let mut flights = flights.lock().await;
+                if flights
+                    .get(&request_key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &flight))
+                {
+                    flights.remove(&request_key);
+                }
+            });
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AccountWindowStoragePlane {
     entries: Arc<Mutex<HashMap<String, AccountWindowSelectionEntry>>>,
+    request_flights: Arc<Mutex<HashMap<String, Arc<AccountWindowLoadFlight>>>>,
     health: Arc<std::sync::Mutex<AccountWindowStorageHealthState>>,
     coalesced_waiter_count: AtomicU64,
     legacy_backfill_state_loaded: AtomicBool,
@@ -195,6 +243,7 @@ impl Default for AccountWindowStoragePlane {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
+            request_flights: Arc::new(Mutex::new(HashMap::new())),
             health: Arc::new(std::sync::Mutex::new(
                 AccountWindowStorageHealthState::default(),
             )),
@@ -226,6 +275,59 @@ impl AccountWindowStoragePlane {
             ));
         }
 
+        let request_key = account_window_request_key(&normalized_account_ids);
+        let (mut waiter, lease) = {
+            let mut flights = self.request_flights.lock().await;
+            if let Some(flight) = flights.get(&request_key) {
+                self.coalesced_waiter_count.fetch_add(1, Ordering::Relaxed);
+                (Some(flight.subscribe()), None)
+            } else {
+                let flight = Arc::new(AccountWindowLoadFlight::new());
+                flights.insert(request_key.clone(), flight.clone());
+                (
+                    None,
+                    Some(AccountWindowRequestLoadLease {
+                        flights: self.request_flights.clone(),
+                        request_key,
+                        flight,
+                        completed: false,
+                    }),
+                )
+            }
+        };
+        if let Some(waiter) = waiter.as_mut() {
+            if waiter.changed().await.is_ok()
+                && let Some(response) = waiter.borrow_and_update().clone()
+            {
+                return Ok(response);
+            }
+            return Ok(AccountWindowStorageResponse::Preparing {
+                retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+            });
+        }
+
+        let mut lease = lease.expect("preflight leader must hold an in-flight lease");
+        match self.load_normalized(state, normalized_account_ids).await {
+            Ok(response) => {
+                lease.complete(response.clone()).await;
+                Ok(response)
+            }
+            Err(error) => {
+                lease
+                    .complete(AccountWindowStorageResponse::Preparing {
+                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                    })
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn load_normalized(
+        &self,
+        state: &AppState,
+        normalized_account_ids: Vec<i64>,
+    ) -> Result<AccountWindowStorageResponse> {
         // Account IDs alone cannot identify a build: reset/window changes and the durable
         // cursor both change the exact result. Resolve this bounded metadata before claiming
         // the singleflight slot so newer callers never reuse a stale configuration.
@@ -427,17 +529,22 @@ impl AccountWindowStoragePlane {
         pool: &Pool<Sqlite>,
         ranges: &[AccountWindowLegacyBackfillRange],
     ) -> Result<bool> {
-        // A moving window gains new rows after the saved cursor. Keep its cursor, but do not
-        // reuse a completed pass as proof that the next minute is fully attributed.
-        if !legacy_backfill_completion_is_reusable(ranges) {
-            return Ok(false);
+        if ranges.is_empty() {
+            return Ok(true);
         }
-        Ok(
-            load_startup_backfill_progress(pool, &legacy_backfill_progress_key(ranges))
-                .await?
-                .last_status
-                == "complete",
-        )
+        // The global marker only says some legacy attribution remains somewhere in the
+        // database. The owner-facing selection is blocked only by a matching active-window
+        // row; rolling generations must not become preparing merely because an older row exists.
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT 1 FROM codex_invocations WHERE upstream_account_id IS NULL AND json_valid(payload)",
+        );
+        push_legacy_backfill_range_predicate(&mut query, ranges);
+        query.push(" LIMIT 1");
+        Ok(query
+            .build_query_scalar::<i64>()
+            .fetch_optional(pool)
+            .await?
+            .is_none())
     }
 
     async fn last_good_response(&self, selection: &str) -> Option<AccountWindowStorageResponse> {
@@ -1061,12 +1168,6 @@ impl AccountWindowStoragePlane {
     }
 }
 
-fn legacy_backfill_completion_is_reusable(ranges: &[AccountWindowLegacyBackfillRange]) -> bool {
-    ranges
-        .iter()
-        .all(|range| range.selection_generation.starts_with("reset:"))
-}
-
 fn legacy_backfill_progress_key(ranges: &[AccountWindowLegacyBackfillRange]) -> String {
     let mut normalized_ranges = ranges
         .iter()
@@ -1176,6 +1277,17 @@ fn account_window_selection_config_key(
     )
 }
 
+fn account_window_request_key(account_ids: &[i64]) -> String {
+    format!(
+        "accounts={}",
+        account_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn account_window_selection_key(selection_config: &str, durable_cursor: i64) -> String {
     format!("{selection_config};cursor={durable_cursor}")
 }
@@ -1274,6 +1386,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abandoned_preflight_leader_releases_same_account_waiters() {
+        let storage = AccountWindowStoragePlane::default();
+        let request_key = account_window_request_key(&[7, 42]);
+        let (lease, mut waiter) = {
+            let mut flights = storage.request_flights.lock().await;
+            let flight = Arc::new(AccountWindowLoadFlight::new());
+            flights.insert(request_key.clone(), flight.clone());
+            let waiter = flight.subscribe();
+            (
+                AccountWindowRequestLoadLease {
+                    flights: storage.request_flights.clone(),
+                    request_key: request_key.clone(),
+                    flight,
+                    completed: false,
+                },
+                waiter,
+            )
+        };
+
+        drop(lease);
+        let _ = tokio::time::timeout(Duration::from_millis(100), waiter.changed())
+            .await
+            .expect("abandoned preflight leader should notify waiting requests");
+        assert!(matches!(
+            waiter.borrow_and_update().clone(),
+            Some(AccountWindowStorageResponse::Preparing { .. })
+        ));
+        assert!(
+            storage
+                .request_flights
+                .lock()
+                .await
+                .get(&request_key)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn direct_pool_violation_degrades_storage_plane_health() {
         let storage = AccountWindowStoragePlane::default();
         assert_eq!(storage.health_snapshot().await.state, "healthy");
@@ -1329,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_backfill_completion_only_applies_to_closed_reset_windows() {
+    fn legacy_backfill_progress_identity_keeps_a_shared_moving_cursor() {
         let closed_reset = AccountWindowLegacyBackfillRange {
             account_id: 42,
             start_at: "2026-08-16 10:00:00".to_string(),
@@ -1346,15 +1496,6 @@ mod tests {
             ..closed_reset.clone()
         };
 
-        assert!(legacy_backfill_completion_is_reusable(
-            std::slice::from_ref(&closed_reset)
-        ));
-        assert!(!legacy_backfill_completion_is_reusable(
-            std::slice::from_ref(&rolling)
-        ));
-        assert!(!legacy_backfill_completion_is_reusable(
-            std::slice::from_ref(&pending_reset)
-        ));
         assert_eq!(
             legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
             legacy_backfill_progress_key(std::slice::from_ref(&pending_reset)),

@@ -2435,13 +2435,28 @@ pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
 ) -> Result<()> {
     sqlx::query(
         r#"
-        INSERT OR IGNORE INTO hourly_rollup_archive_replay (
+        INSERT INTO hourly_rollup_archive_replay (
             target,
             dataset,
             file_path,
-            replayed_at
+            replayed_at,
+            archive_sha256
         )
-        VALUES (?1, ?2, ?3, datetime('now'))
+        VALUES (
+            ?1,
+            ?2,
+            ?3,
+            datetime('now'),
+            (
+                SELECT sha256
+                FROM archive_batches
+                WHERE dataset = ?2 AND file_path = ?3
+                LIMIT 1
+            )
+        )
+        ON CONFLICT(target, dataset, file_path) DO UPDATE SET
+            replayed_at = excluded.replayed_at,
+            archive_sha256 = excluded.archive_sha256
         "#,
     )
     .bind(target)

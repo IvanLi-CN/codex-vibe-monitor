@@ -4194,6 +4194,67 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
 }
 
 #[tokio::test]
+async fn window_usage_ignores_pending_legacy_rows_outside_the_active_window() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Window Usage Scoped Readiness").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::days(8)),
+        Some(700),
+        Some(300),
+        Some(100),
+        Some(1100),
+        Some(0.01),
+    )
+    .await;
+    let legacy_invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 AND occurred_at < ?2 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(shanghai_local_iso(Utc::now() - ChronoDuration::days(7)))
+    .fetch_one(&state.pool)
+    .await
+    .expect("load historical legacy invocation id");
+    sqlx::query("UPDATE codex_invocations SET upstream_account_id = NULL WHERE id = ?1")
+        .bind(legacy_invocation_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear historical structured account assignment");
+    sqlx::query(
+        "UPDATE upstream_account_attribution_backfill_state SET state = 'pending' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark simulated legacy attribution as pending");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::OK, "response: {payload}");
+    assert_eq!(payload["items"][0]["accountId"], account_id);
+    assert_eq!(payload["items"][0]["primaryActualUsage"]["requestCount"], 1);
+}
+
+#[tokio::test]
 async fn window_usage_backfill_rebuilds_full_hour_rollups_from_structured_account_assignment() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
@@ -4726,6 +4787,69 @@ async fn window_usage_live_repair_row_budget_preserves_existing_rollups() {
     assert_eq!(
         rollup_rows, 0,
         "over-budget repair must not delete or replace rollups"
+    );
+}
+
+#[tokio::test]
+async fn window_usage_prepares_when_named_live_hour_exceeds_exact_row_budget() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Exact Budgeted Hour").await;
+    let window_end = (Utc::now() - ChronoDuration::hours(2))
+        .with_minute(0)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("align exact budget hour");
+    let occurred_at = shanghai_local_iso(window_end - ChronoDuration::minutes(30));
+    for _ in 0..=ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &occurred_at,
+            Some(1_200),
+            Some(600),
+            Some(200),
+            Some(2_000),
+            Some(0.02),
+        )
+        .await;
+    }
+
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load exact budget summary");
+    summaries[0].primary_window = Some(RateWindowSnapshot {
+        used_percent: 18.0,
+        used_text: "18%".to_string(),
+        limit_text: "1 hour".to_string(),
+        resets_at: Some(window_end.to_rfc3339()),
+        window_duration_mins: 60,
+        actual_usage: None,
+    });
+    summaries[0].secondary_window = None;
+
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        window_end,
+    )
+    .await
+    .expect("evaluate exact bucket budget");
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Preparing);
+    assert!(telemetry.live_coverage_repair_required);
+    assert!(
+        telemetry.live_coverage_repair_invocation_ids.len()
+            <= ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT
+    );
+    assert!(
+        summaries[0]
+            .primary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .is_none(),
+        "an over-budget exact fallback must not publish partial totals"
     );
 }
 
@@ -5321,6 +5445,20 @@ async fn window_usage_reads_verified_archive_full_hour_when_usage_rollup_is_miss
     .execute(&state.pool)
     .await
     .expect("mark full archive coverage");
+    let archive_path = sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive path");
+    sqlx::query(
+        "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, 'stale-archive-sha')",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(archive_path)
+    .execute(&state.pool)
+    .await
+    .expect("seed stale archive replay marker");
 
     let mut summaries =
         load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])

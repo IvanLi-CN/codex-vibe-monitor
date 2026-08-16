@@ -4149,7 +4149,11 @@ pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5_000;
 pub(crate) const ACCOUNT_WINDOW_USAGE_CURSOR_TAIL_MAX_ROWS: usize = 5;
 
 const ACCOUNT_WINDOW_ARCHIVE_HOLE_FALLBACK_MAX_BUCKETS: usize = 64;
-const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT: usize = 2;
+pub(crate) const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT: usize = 2;
+#[cfg(not(test))]
+pub(crate) const ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS: usize = 5_000;
+#[cfg(test)]
+pub(crate) const ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS: usize = 5;
 
 pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage(
     pool: &Pool<Sqlite>,
@@ -4308,6 +4312,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         let replayed_archive_full_hour_keys = load_replayed_invocation_archive_covered_hour_keys(
             pool,
             &archived_missing_full_hour_keys,
+            &config.archive_dir,
         )
         .await?;
         missing_full_hour_keys.retain(|key| !replayed_archive_full_hour_keys.contains(key));
@@ -4340,6 +4345,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                     &archived_partial_minute_keys,
                     60,
                     &config.archive_dir,
+                    Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS),
                 )
                 .await?;
             let mut archived_hour_keys = archived_partial_hour_keys;
@@ -4350,9 +4356,12 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                     &archived_hour_keys,
                     3_600,
                     &config.archive_dir,
+                    Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS),
                 )
                 .await?;
-            if archived_minutes.covered_bucket_count != archived_partial_minute_keys.len()
+            if archived_minutes.row_limit_exceeded
+                || archived_hours.row_limit_exceeded
+                || archived_minutes.covered_bucket_count != archived_partial_minute_keys.len()
                 || archived_hours.covered_bucket_count != archived_hour_keys.len()
             {
                 telemetry.archive_coverage_repair_required = true;
@@ -4402,8 +4411,14 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                 60,
                 None,
                 None,
+                Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS + 1),
             )
             .await?;
+            if live_rows.len() > ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+                telemetry.coverage_hole_bucket_count =
+                    telemetry.coverage_hole_bucket_count.saturating_add(1);
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
             telemetry.bounded_raw_row_count += live_rows.len();
             exact_fallback_row_ids.extend(live_rows.iter().map(|row| row.id));
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
@@ -4420,8 +4435,20 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                 3_600,
                 None,
                 None,
+                Some(ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS + 1),
             )
             .await?;
+            if live_rows.len() > ACCOUNT_WINDOW_USAGE_EXACT_BUCKET_MAX_ROWS {
+                telemetry.coverage_hole_bucket_count =
+                    telemetry.coverage_hole_bucket_count.saturating_add(1);
+                telemetry.live_coverage_repair_required = true;
+                telemetry.live_coverage_repair_invocation_ids = live_rows
+                    .iter()
+                    .take(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BUCKET_LIMIT)
+                    .map(|row| row.id)
+                    .collect();
+                return Ok((AccountWindowUsageBuildOutcome::Preparing, telemetry));
+            }
             let live_rows = live_rows
                 .into_iter()
                 .filter(|row| {
