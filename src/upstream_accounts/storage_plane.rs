@@ -5,7 +5,7 @@ use crate::maintenance::{
     save_startup_backfill_progress, wake_startup_backfill_tasks,
 };
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -197,7 +197,9 @@ pub(crate) struct AccountWindowStoragePlane {
     coalesced_waiter_count: AtomicU64,
     legacy_backfill_state_loaded: AtomicBool,
     legacy_backfill_required: AtomicBool,
-    legacy_backfill_completed_keys: Arc<Mutex<HashSet<String>>>,
+    // Completion is valid only at the durable cursor which proved this selection has no
+    // legacy-shaped rows. Keep this bounded so one-off selections cannot become retained state.
+    legacy_backfill_completed_cursors: Arc<Mutex<HashMap<String, i64>>>,
     backfill_running: Arc<AtomicBool>,
     coverage_repair_running: Arc<AtomicBool>,
     live_coverage_repairs: Arc<Mutex<AccountWindowLiveCoverageRepairQueue>>,
@@ -214,7 +216,7 @@ impl Default for AccountWindowStoragePlane {
             coalesced_waiter_count: AtomicU64::new(0),
             legacy_backfill_state_loaded: AtomicBool::new(false),
             legacy_backfill_required: AtomicBool::new(false),
-            legacy_backfill_completed_keys: Arc::new(Mutex::new(HashSet::new())),
+            legacy_backfill_completed_cursors: Arc::new(Mutex::new(HashMap::new())),
             backfill_running: Arc::new(AtomicBool::new(false)),
             coverage_repair_running: Arc::new(AtomicBool::new(false)),
             live_coverage_repairs: Arc::new(Mutex::new(
@@ -244,7 +246,7 @@ impl AccountWindowStoragePlane {
         // cursor both change the exact result. Resolve this bounded metadata before claiming
         // the singleflight slot so newer callers never reuse a stale configuration.
         let selection_now = Utc::now();
-        let completed_legacy_backfill_keys = self.legacy_backfill_completed_keys.clone();
+        let completed_legacy_backfill_cursors = self.legacy_backfill_completed_cursors.clone();
         let preflight = async {
             let summaries = load_upstream_account_window_usage_summaries(
                 &state.pool,
@@ -267,10 +269,11 @@ impl AccountWindowStoragePlane {
             let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty()
             {
                 let progress_key = legacy_backfill_progress_key(&legacy_ranges);
-                if completed_legacy_backfill_keys
+                if completed_legacy_backfill_cursors
                     .lock()
                     .await
-                    .contains(&progress_key)
+                    .get(&progress_key)
+                    .is_some_and(|cursor| *cursor == durable_cursor)
                 {
                     true
                 } else {
@@ -317,10 +320,11 @@ impl AccountWindowStoragePlane {
         let last_good_compatibility_key = account_window_last_good_compatibility_key(&selection)
             .unwrap_or_else(|| account_window_selection_config_from_key(&selection).to_string());
         if legacy_backfill_required && legacy_backfill_complete && !legacy_ranges.is_empty() {
-            self.legacy_backfill_completed_keys
-                .lock()
-                .await
-                .insert(legacy_backfill_progress_key(&legacy_ranges));
+            self.record_legacy_backfill_completion(
+                legacy_backfill_progress_key(&legacy_ranges),
+                durable_cursor,
+            )
+            .await;
         }
 
         let (waiter, lease, schedule_legacy_backfill, immediate_response) = {
@@ -521,6 +525,17 @@ impl AccountWindowStoragePlane {
             .is_none())
     }
 
+    async fn record_legacy_backfill_completion(&self, progress_key: String, durable_cursor: i64) {
+        let mut completions = self.legacy_backfill_completed_cursors.lock().await;
+        if !completions.contains_key(&progress_key)
+            && completions.len() >= ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES
+            && let Some(oldest_key) = completions.keys().next().cloned()
+        {
+            completions.remove(&oldest_key);
+        }
+        completions.insert(progress_key, durable_cursor);
+    }
+
     async fn last_good_response(&self, selection: &str) -> Option<AccountWindowStorageResponse> {
         let compatibility_key = account_window_last_good_compatibility_key(selection)
             .unwrap_or_else(|| account_window_selection_config_from_key(selection).to_string());
@@ -714,9 +729,8 @@ impl AccountWindowStoragePlane {
             let gate = crate::db_pressure::global_db_pressure_gate();
             loop {
                 let observed_eligibility = gate.eligibility_generation();
-                let permit = match gate.try_begin_background("account_window_usage_live_repair") {
-                    Ok(permit) => permit,
-                    Err(crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                match gate.background_deny_reason() {
+                    Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown {
                         remaining_ms,
                     }) => {
                         tokio::select! {
@@ -725,11 +739,12 @@ impl AccountWindowStoragePlane {
                         }
                         continue;
                     }
-                    Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy) => {
+                    Some(crate::db_pressure::DbPressureDenyReason::BackgroundBusy) => {
                         gate.wait_for_eligibility_change(observed_eligibility).await;
                         continue;
                     }
-                };
+                    None => {}
+                }
                 let next = {
                     let mut repairs = repairs.lock().await;
                     if repairs.pending_invocation_ids.is_empty()
@@ -761,13 +776,44 @@ impl AccountWindowStoragePlane {
                 };
                 let Some((invocation_ids, refresh_live_cursor, full_bucket_recompute)) = next
                 else {
-                    drop(permit);
                     return;
                 };
-                let write_permit =
+                // Never hold the global background slot while waiting on the single SQLite
+                // writer. P1 may otherwise be denied solely by an idle repair waiter.
+                let mut write_permit =
                     crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
                         .acquire_maintenance(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_FAIRNESS_INTERVAL)
                         .await;
+                let permit = match gate.try_begin_background("account_window_usage_live_repair") {
+                    Ok(permit) => permit,
+                    Err(deny_reason) => {
+                        {
+                            let mut queue = repairs.lock().await;
+                            if full_bucket_recompute {
+                                queue.pending_full_recompute_ids.extend(invocation_ids);
+                            } else {
+                                queue.pending_invocation_ids.extend(invocation_ids);
+                            }
+                            queue.refresh_live_cursor |= refresh_live_cursor;
+                        }
+                        write_permit.revoke_fairness_admission();
+                        drop(write_permit);
+                        match deny_reason {
+                            crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                                remaining_ms,
+                            } => {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_millis(remaining_ms.max(1))) => {}
+                                    _ = gate.wait_for_eligibility_change(observed_eligibility) => {}
+                                }
+                            }
+                            crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                                gate.wait_for_eligibility_change(observed_eligibility).await;
+                            }
+                        }
+                        continue;
+                    }
+                };
                 let _guard = hourly_rollup_sync_lock.lock().await;
                 let started_at = Instant::now();
                 let result: Result<crate::maintenance::InvocationHourlyRollupRecomputeOutcome> = async {
@@ -873,8 +919,6 @@ impl AccountWindowStoragePlane {
         let running = self.backfill_running.clone();
         let health = self.health.clone();
         let entries = self.entries.clone();
-        let completed_keys = self.legacy_backfill_completed_keys.clone();
-        let progress_key = legacy_backfill_progress_key(&ranges);
         tokio::spawn(async move {
             struct BackfillGuard(Arc<AtomicBool>);
             impl Drop for BackfillGuard {
@@ -890,7 +934,9 @@ impl AccountWindowStoragePlane {
             };
             match outcome {
                 Ok(AccountWindowLegacyBackfillOutcome::Ready) => {
-                    completed_keys.lock().await.insert(progress_key);
+                    // The next owner preflight verifies the durable cursor before accepting
+                    // completion. A background pass cannot safely publish a completion cache
+                    // because a new terminal may arrive after its final range scan.
                     entry.legacy_readiness = AccountWindowLegacyReadiness::Ready;
                     entry.last_error = None;
                 }
@@ -1586,6 +1632,45 @@ mod tests {
             legacy_backfill_progress_key(std::slice::from_ref(&rolling)),
             legacy_backfill_progress_key(std::slice::from_ref(&pending_reset)),
             "a future reset must not advance the rolling cursor past older rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_completion_cache_is_bounded_and_cursor_aware() {
+        let storage = AccountWindowStoragePlane::default();
+        storage
+            .record_legacy_backfill_completion("active-selection".to_string(), 41)
+            .await;
+        assert_eq!(
+            storage
+                .legacy_backfill_completed_cursors
+                .lock()
+                .await
+                .get("active-selection"),
+            Some(&41)
+        );
+
+        storage
+            .record_legacy_backfill_completion("active-selection".to_string(), 42)
+            .await;
+        assert_eq!(
+            storage
+                .legacy_backfill_completed_cursors
+                .lock()
+                .await
+                .get("active-selection"),
+            Some(&42),
+            "a later durable cursor must invalidate an older completion proof"
+        );
+
+        for index in 0..=ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES {
+            storage
+                .record_legacy_backfill_completion(format!("selection-{index}"), index as i64)
+                .await;
+        }
+        assert!(
+            storage.legacy_backfill_completed_cursors.lock().await.len()
+                <= ACCOUNT_WINDOW_STORAGE_MAX_ENTRIES
         );
     }
 

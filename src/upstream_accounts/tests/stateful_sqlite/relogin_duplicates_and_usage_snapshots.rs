@@ -4194,6 +4194,60 @@ async fn window_usage_returns_preparing_until_legacy_account_rows_are_backfilled
 }
 
 #[tokio::test]
+async fn window_usage_does_not_prepare_for_legitimate_unassigned_terminals() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Unassigned Terminal Readiness").await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now()),
+        Some(18.0),
+        Some(9.0),
+    )
+    .await;
+    insert_window_actual_usage_invocation(
+        &state.pool,
+        account_id,
+        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(5)),
+        Some(1200),
+        Some(600),
+        Some(200),
+        Some(2000),
+        Some(0.02),
+    )
+    .await;
+    let invocation_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load terminal invocation");
+    sqlx::query(
+        "UPDATE codex_invocations SET upstream_account_id = NULL, payload = '{}' WHERE id = ?1",
+    )
+    .bind(invocation_id)
+    .execute(&state.pool)
+    .await
+    .expect("make the terminal legitimately unassigned");
+    sqlx::query(
+        "UPDATE upstream_account_attribution_backfill_state SET state = 'pending' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("simulate a legacy backfill elsewhere in the database");
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unassigned terminal must not block readiness: {payload}"
+    );
+    assert!(payload.get("readiness").is_none());
+}
+
+#[tokio::test]
 async fn window_usage_ignores_pending_legacy_rows_outside_the_active_window() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
