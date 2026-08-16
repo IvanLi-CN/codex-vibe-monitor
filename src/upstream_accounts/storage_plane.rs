@@ -5,7 +5,7 @@ use crate::maintenance::{
     save_startup_backfill_progress, wake_startup_backfill_tasks,
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -20,6 +20,8 @@ const ACCOUNT_WINDOW_LEGACY_BACKFILL_BUDGET: Duration = Duration::from_millis(20
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
     "account_window_usage_upstream_account_id";
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING: &str = "pending";
+const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE: usize = 2;
+const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS: usize = 1_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +130,13 @@ struct AccountWindowBuildResult {
     telemetry: AccountWindowUsageBuildTelemetry,
 }
 
+#[derive(Debug, Default)]
+struct AccountWindowLiveCoverageRepairQueue {
+    pending_invocation_ids: BTreeSet<i64>,
+    refresh_live_cursor: bool,
+    worker_running: bool,
+}
+
 struct AccountWindowLoadLease {
     entries: Arc<Mutex<HashMap<String, AccountWindowSelectionEntry>>>,
     selection: String,
@@ -178,7 +187,7 @@ pub(crate) struct AccountWindowStoragePlane {
     legacy_backfill_required: AtomicBool,
     backfill_running: Arc<AtomicBool>,
     coverage_repair_running: Arc<AtomicBool>,
-    live_coverage_repair_running: Arc<AtomicBool>,
+    live_coverage_repairs: Arc<Mutex<AccountWindowLiveCoverageRepairQueue>>,
     direct_pool_violation_count: AtomicU64,
 }
 
@@ -194,7 +203,9 @@ impl Default for AccountWindowStoragePlane {
             legacy_backfill_required: AtomicBool::new(false),
             backfill_running: Arc::new(AtomicBool::new(false)),
             coverage_repair_running: Arc::new(AtomicBool::new(false)),
-            live_coverage_repair_running: Arc::new(AtomicBool::new(false)),
+            live_coverage_repairs: Arc::new(Mutex::new(
+                AccountWindowLiveCoverageRepairQueue::default(),
+            )),
             direct_pool_violation_count: AtomicU64::new(0),
         }
     }
@@ -517,7 +528,8 @@ impl AccountWindowStoragePlane {
                 state.hourly_rollup_sync_lock.clone(),
                 telemetry.live_coverage_repair_invocation_ids.clone(),
                 telemetry.live_cursor_repair_required,
-            );
+            )
+            .await;
         }
         if outcome == AccountWindowUsageBuildOutcome::Preparing {
             if telemetry.archive_coverage_repair_required {
@@ -581,7 +593,7 @@ impl AccountWindowStoragePlane {
         });
     }
 
-    fn schedule_live_rollup_repair(
+    async fn schedule_live_rollup_repair(
         &self,
         pool: Pool<Sqlite>,
         hourly_rollup_sync_lock: Arc<Mutex<()>>,
@@ -591,69 +603,147 @@ impl AccountWindowStoragePlane {
         if invocation_ids.is_empty() && !refresh_live_cursor {
             return;
         }
-        if self
-            .live_coverage_repair_running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        let should_spawn = {
+            let mut repairs = self.live_coverage_repairs.lock().await;
+            repairs
+                .pending_invocation_ids
+                .extend(invocation_ids.into_iter().filter(|id| *id > 0));
+            repairs.refresh_live_cursor |= refresh_live_cursor;
+            if repairs.worker_running {
+                false
+            } else {
+                repairs.worker_running = true;
+                true
+            }
+        };
+        if !should_spawn {
             return;
         }
-        let running = self.live_coverage_repair_running.clone();
+        let repairs = self.live_coverage_repairs.clone();
         tokio::spawn(async move {
-            struct CoverageRepairGuard(Arc<AtomicBool>);
-            impl Drop for CoverageRepairGuard {
-                fn drop(&mut self) {
-                    self.0.store(false, Ordering::Release);
-                }
-            }
-            let _running = CoverageRepairGuard(running);
             let gate = crate::db_pressure::global_db_pressure_gate();
-            let _permit = match gate.try_begin_background("account_window_usage_live_repair") {
-                Ok(permit) => permit,
-                Err(deny_reason) => {
-                    tracing::debug!(
-                        deny_reason = %deny_reason,
-                        "account window live coverage repair deferred by database pressure gate"
-                    );
+            loop {
+                let observed_eligibility = gate.eligibility_generation();
+                let permit = match gate.try_begin_background("account_window_usage_live_repair") {
+                    Ok(permit) => permit,
+                    Err(crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                        remaining_ms,
+                    }) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(remaining_ms.max(1))) => {}
+                            _ = gate.wait_for_eligibility_change(observed_eligibility) => {}
+                        }
+                        continue;
+                    }
+                    Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy) => {
+                        gate.wait_for_eligibility_change(observed_eligibility).await;
+                        continue;
+                    }
+                };
+                let next = {
+                    let mut repairs = repairs.lock().await;
+                    if repairs.pending_invocation_ids.is_empty() && !repairs.refresh_live_cursor {
+                        repairs.worker_running = false;
+                        None
+                    } else {
+                        let invocation_ids = repairs
+                            .pending_invocation_ids
+                            .iter()
+                            .take(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE)
+                            .copied()
+                            .collect::<Vec<_>>();
+                        for invocation_id in &invocation_ids {
+                            repairs.pending_invocation_ids.remove(invocation_id);
+                        }
+                        let refresh_live_cursor = std::mem::take(&mut repairs.refresh_live_cursor);
+                        Some((invocation_ids, refresh_live_cursor))
+                    }
+                };
+                let Some((invocation_ids, refresh_live_cursor)) = next else {
+                    drop(permit);
                     return;
-                }
-            };
-            let _guard = hourly_rollup_sync_lock.lock().await;
-            let started_at = Instant::now();
-            let result: Result<()> = async {
-                if refresh_live_cursor {
-                    // One replay batch advances the durable cursor without turning an owner
-                    // retry into the historical catch-up loop.
-                    crate::maintenance::replay_live_invocation_hourly_rollups(&pool).await?;
-                }
-                if !invocation_ids.is_empty() {
+                };
+                let _guard = hourly_rollup_sync_lock.lock().await;
+                let started_at = Instant::now();
+                let result: Result<crate::maintenance::InvocationHourlyRollupRecomputeOutcome> = async {
+                    if refresh_live_cursor {
+                        // One replay batch advances the durable cursor without turning an owner
+                        // retry into the historical catch-up loop.
+                        crate::maintenance::replay_live_invocation_hourly_rollups(&pool).await?;
+                    }
+                    if invocation_ids.is_empty() {
+                        return Ok(crate::maintenance::InvocationHourlyRollupRecomputeOutcome::Recomputed);
+                    }
                     let mut tx = pool.begin().await?;
-                    crate::maintenance::recompute_invocation_hourly_rollups_for_ids_tx(
+                    let outcome = crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
                         tx.as_mut(),
                         &invocation_ids,
+                        Some(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS),
                     )
                     .await?;
                     tx.commit().await?;
+                    Ok(outcome)
                 }
-                Ok(())
-            }
-            .await;
-            match result {
-                Ok(()) => tracing::debug!(
-                    repaired_bucket_limit = invocation_ids.len(),
-                    cursor_replay = refresh_live_cursor,
-                    elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "account window live coverage repair completed"
-                ),
-                Err(err) => {
-                    gate.record_error("account_window_usage_live_repair", &err);
-                    warn!(
-                        error = %err,
-                        repaired_bucket_limit = invocation_ids.len(),
-                        cursor_replay = refresh_live_cursor,
-                        elapsed_ms = started_at.elapsed().as_millis() as u64,
-                        "account window live coverage repair failed"
-                    );
+                .await;
+                drop(_guard);
+                drop(permit);
+                match result {
+                    Ok(crate::maintenance::InvocationHourlyRollupRecomputeOutcome::Recomputed) => {
+                        tracing::debug!(
+                            repaired_bucket_limit = invocation_ids.len(),
+                            cursor_replay = refresh_live_cursor,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            "account window live coverage repair completed"
+                        );
+                    }
+                    Ok(crate::maintenance::InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded) => {
+                        warn!(
+                            repaired_bucket_limit = invocation_ids.len(),
+                            repair_row_limit = ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS,
+                            cursor_replay = refresh_live_cursor,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            "account window live coverage repair exceeded its bounded row budget"
+                        );
+                        if let Err(err) = wake_startup_backfill_tasks(
+                            &pool,
+                            &[StartupBackfillTask::HistoricalRollups],
+                            "account_window_usage_live_repair_row_limit",
+                        )
+                        .await
+                        {
+                            warn!(error = %err, "failed to wake bounded account window coverage repair");
+                        }
+                    }
+                    Err(err) => {
+                        let under_pressure = gate.record_error("account_window_usage_live_repair", &err);
+                        warn!(
+                            error = %err,
+                            repaired_bucket_limit = invocation_ids.len(),
+                            cursor_replay = refresh_live_cursor,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            "account window live coverage repair failed; retaining queued work"
+                        );
+                        {
+                            let mut queue = repairs.lock().await;
+                            queue.pending_invocation_ids.extend(invocation_ids);
+                            queue.refresh_live_cursor |= refresh_live_cursor;
+                        }
+                        if !under_pressure {
+                            if let Err(wake_err) = wake_startup_backfill_tasks(
+                                &pool,
+                                &[StartupBackfillTask::HistoricalRollups],
+                                "account_window_usage_live_repair_error",
+                            )
+                            .await
+                            {
+                                warn!(error = %wake_err, "failed to wake retained account window coverage repair");
+                            }
+                            // Keep ownership of the merged queue so a concurrent request cannot
+                            // observe a running worker and then lose the wake-up. Deterministic
+                            // failures retry slowly while the durable historical repair is woken.
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
                 }
             }
         });

@@ -3361,15 +3361,10 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
                 }
             }
         }
-        // The batch endpoint owns the preparing contract. Account detail retains its historic
-        // exact response semantics while the shared read model is recovering.
-        AccountWindowStorageResponse::Preparing { .. } => {
-            enrich_window_actual_usage_for_account_detail_exact(
-                state,
-                std::slice::from_mut(&mut detail.summary),
-            )
-            .await?;
-        }
+        // The storage plane owns recovery. Reopening an exact full-window query here would
+        // bypass its bounded coverage and pressure controls, so retain nullable usage until a
+        // prepared or last-good selection is available.
+        AccountWindowStorageResponse::Preparing { .. } => {}
     }
     apply_effective_routing_rules_to_summaries(
         &state.pool,
@@ -4307,16 +4302,15 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
             .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
             .copied()
             .collect::<HashSet<_>>();
-        // A completed archive manifest that spans an entire hour proves an absent account row is
-        // a zero, not a rollup hole. File readability is part of that proof: a missing archive
-        // remains preparing instead of silently changing a historical total.
-        let archive_covered_full_hour_keys = load_completed_invocation_archive_covered_hour_keys(
+        // A target-specific replay marker is the durable proof that an archive was successfully
+        // read into the account-usage rollup. It can prove an absent account/hour is a real zero;
+        // a completed manifest by itself cannot.
+        let replayed_archive_full_hour_keys = load_replayed_invocation_archive_covered_hour_keys(
             pool,
             &archived_missing_full_hour_keys,
-            &config.archive_dir,
         )
         .await?;
-        missing_full_hour_keys.retain(|key| !archive_covered_full_hour_keys.contains(key));
+        missing_full_hour_keys.retain(|key| !replayed_archive_full_hour_keys.contains(key));
         let archived_missing_full_hour_keys = missing_full_hour_keys
             .iter()
             .filter(|(_, bucket_epoch)| *bucket_epoch < retention_cutoff_epoch)
@@ -4506,50 +4500,6 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
 
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok((AccountWindowUsageBuildOutcome::Ready, telemetry))
-}
-
-async fn enrich_window_actual_usage_for_account_detail_exact(
-    state: &AppState,
-    items: &mut [UpstreamAccountSummary],
-) -> Result<()> {
-    if items.is_empty() || !sqlite_table_exists(&state.pool, "codex_invocations").await? {
-        return Ok(());
-    }
-    let now = Utc::now();
-    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
-    else {
-        return Ok(());
-    };
-    let account_ids = plans.keys().copied().collect::<Vec<_>>();
-    if account_ids.is_empty() {
-        return Ok(());
-    }
-
-    let start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
-    let end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
-    let mut rows = load_window_actual_usage_rows_from_archives(
-        &state.pool,
-        &account_ids,
-        &start_at,
-        &end_at,
-        &state.config.archive_dir,
-    )
-    .await?;
-    let archived_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
-    rows.extend(
-        load_window_actual_usage_rows_for_detail_exact_from_pool(
-            &state.pool,
-            &account_ids,
-            &start_at,
-            &end_at,
-        )
-        .await?
-        .into_iter()
-        .filter(|row| !archived_ids.contains(&row.id)),
-    );
-    let usage = fold_account_window_usage_rows(rows, &plans);
-    apply_window_actual_usage_to_summaries(items, &usage);
-    Ok(())
 }
 
 #[cfg(test)]

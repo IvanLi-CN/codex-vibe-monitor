@@ -4274,7 +4274,7 @@ async fn window_usage_backfill_rebuilds_full_hour_rollups_from_structured_accoun
 }
 
 #[tokio::test]
-async fn account_detail_uses_storage_readiness_after_window_preparing() {
+async fn account_detail_keeps_actual_usage_nullable_while_window_preparing() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     ensure_window_actual_usage_test_tables(&state.pool).await;
     let account_id = insert_api_key_account(&state.pool, "Detail Legacy Usage").await;
@@ -4317,24 +4317,65 @@ async fn account_detail_uses_storage_readiness_after_window_preparing() {
     .await
     .expect("mark simulated legacy attribution as pending");
 
-    let (status, payload) = load_window_usage_response(state.clone(), vec![account_id]).await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(payload["readiness"], "preparing");
-
     let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
         .await
         .expect("load account detail")
         .expect("account detail exists");
-    assert_eq!(
+    assert!(
         detail
             .summary
             .primary_window
             .and_then(|window| window.actual_usage)
-            .expect("background storage preparation should make usage available")
-            .request_count,
-        1,
-        "detail usage comes from the shared storage result, never a full-window fallback"
+            .is_none(),
+        "detail must not bypass the shared storage-plane preparing contract with a full-window query"
     );
+
+    let (status, payload) = load_window_usage_response(state, vec![account_id]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(payload["readiness"], "preparing");
+}
+
+#[tokio::test]
+async fn window_usage_minute_rollups_normalize_sources_before_coverage_counting() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = 9_001_i64;
+    let bucket_start_epoch = Utc::now().timestamp().div_euclid(60) * 60;
+    for (source, total_tokens, total_cost) in [
+        ("source-a", 1_200_i64, 0.012_f64),
+        ("source-b", 800_i64, 0.008_f64),
+    ] {
+        sqlx::query(
+            r#"
+                INSERT INTO upstream_account_stats_minute (
+                    bucket_start_epoch, source, upstream_account_id, total_count,
+                    success_count, failure_count, in_flight_count, total_tokens,
+                    input_tokens, output_tokens, cache_input_tokens, total_cost, updated_at
+                ) VALUES (?1, ?2, ?3, 1, 1, 0, 0, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+                "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .bind(account_id)
+        .bind(total_tokens)
+        .bind(total_tokens / 2)
+        .bind(total_tokens / 3)
+        .bind(total_tokens - total_tokens / 2 - total_tokens / 3)
+        .bind(total_cost)
+        .execute(&state.pool)
+        .await
+        .expect("insert per-source minute rollup");
+    }
+
+    let rows = load_window_actual_usage_minute_rows_from_pool(
+        &state.pool,
+        &[(account_id, bucket_start_epoch, bucket_start_epoch + 60)],
+    )
+    .await
+    .expect("load normalized minute rollup");
+    assert_eq!(rows.len(), 1, "sources share one coverage minute");
+    assert_eq!(rows[0].request_count, 2);
+    assert_eq!(rows[0].total_tokens, 2_000);
+    assert_cost_close(rows[0].total_cost, 0.02);
 }
 
 #[tokio::test]
@@ -4619,6 +4660,73 @@ async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missi
     assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
     assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
     assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
+}
+
+#[tokio::test]
+async fn window_usage_live_repair_row_budget_preserves_existing_rollups() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let account_id = insert_api_key_account(&state.pool, "Bounded Live Repair").await;
+    let occurred_at = shanghai_local_iso(
+        (Utc::now() - ChronoDuration::hours(2))
+            .with_minute(0)
+            .and_then(|value| value.with_second(0))
+            .and_then(|value| value.with_nanosecond(0))
+            .expect("align repair hour"),
+    );
+    for _ in 0..3 {
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &occurred_at,
+            Some(1_200),
+            Some(600),
+            Some(200),
+            Some(2_000),
+            Some(0.02),
+        )
+        .await;
+    }
+    let invocation_ids = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE upstream_account_id = ?1 ORDER BY id ASC",
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load repair identities");
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin bounded repair transaction");
+    let outcome =
+        crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+            tx.as_mut(),
+            &invocation_ids,
+            Some(2),
+        )
+        .await
+        .expect("evaluate repair row budget");
+    assert_eq!(
+        outcome,
+        crate::maintenance::InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded
+    );
+    tx.commit()
+        .await
+        .expect("commit read-only bounded repair transaction");
+
+    let rollup_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_account_usage_hourly WHERE upstream_account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count rollups after bounded repair");
+    assert_eq!(
+        rollup_rows, 0,
+        "over-budget repair must not delete or replace rollups"
+    );
 }
 
 #[tokio::test]
@@ -5156,6 +5264,101 @@ async fn get_upstream_account_window_usage_includes_archived_partial_bucket_befo
         .expect("exact archived secondary usage");
     assert_eq!(usage.request_count, 3);
     assert_eq!(usage.total_tokens, 7900);
+}
+
+#[tokio::test]
+async fn window_usage_reads_verified_archive_full_hour_when_usage_rollup_is_missing() {
+    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+    config.invocation_max_days = 1;
+    config.archive_dir = PathBuf::from(format!(
+        "target/archive-tests/upstream-account-usage-missing-rollup-{}",
+        random_base36(8).expect("archive suffix")
+    ));
+    let state = test_app_state_with_config_and_parallelism(
+        config,
+        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+    )
+    .await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Verified Archive Coverage").await;
+    let window_end = (Utc::now() - ChronoDuration::days(2))
+        .with_minute(0)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("align closed archive window");
+    let occurred_at = shanghai_local_iso(window_end - ChronoDuration::minutes(30));
+    seed_window_actual_usage_archive_batch(
+        &state.pool,
+        &state.config.archive_dir,
+        "window-usage-verified-archive-hour",
+        &[(
+            account_id,
+            occurred_at.clone(),
+            Some(1_200),
+            Some(600),
+            Some(200),
+            Some(2_000),
+            Some(0.02),
+        )],
+    )
+    .await;
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("archive full-hour bucket");
+    sqlx::query(
+        "UPDATE archive_batches SET coverage_start_at = ?1, coverage_end_at = ?2 WHERE dataset = 'codex_invocations'",
+    )
+    .bind(shanghai_local_iso(
+        Utc.timestamp_opt(bucket_start_epoch, 0)
+            .single()
+            .expect("bucket start"),
+    ))
+    .bind(shanghai_local_iso(
+        Utc.timestamp_opt(bucket_start_epoch + 3_600, 0)
+            .single()
+            .expect("bucket end"),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("mark full archive coverage");
+
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load verified archive summary");
+    summaries[0].primary_window = Some(RateWindowSnapshot {
+        used_percent: 18.0,
+        used_text: "18%".to_string(),
+        limit_text: "1 hour".to_string(),
+        resets_at: Some(window_end.to_rfc3339()),
+        window_duration_mins: 60,
+        actual_usage: None,
+    });
+    summaries[0].secondary_window = None;
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        window_end,
+    )
+    .await
+    .expect("build verified archive usage");
+    assert_eq!(
+        outcome,
+        AccountWindowUsageBuildOutcome::Ready,
+        "verified archive coverage should avoid preparing: {telemetry:?}"
+    );
+    assert_eq!(
+        telemetry.bounded_raw_row_count, 1,
+        "the missing account/hour is recovered through its single verified archive bucket"
+    );
+    let usage = summaries[0]
+        .primary_window
+        .as_ref()
+        .and_then(|window| window.actual_usage)
+        .expect("verified archived usage");
+    assert_eq!(usage.request_count, 1);
+    assert_eq!(usage.total_tokens, 2_000);
 }
 
 #[tokio::test]

@@ -2737,6 +2737,14 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
     tx: &mut SqliteConnection,
     bucket_epochs: &[i64],
 ) -> Result<Vec<InvocationHourlySourceRecord>> {
+    load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(tx, bucket_epochs, None).await
+}
+
+async fn load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(
+    tx: &mut SqliteConnection,
+    bucket_epochs: &[i64],
+    limit: Option<usize>,
+) -> Result<Vec<InvocationHourlySourceRecord>> {
     if bucket_epochs.is_empty() {
         return Ok(Vec::new());
     }
@@ -2806,18 +2814,38 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             .push(")");
     }
     query.push(" ORDER BY id ASC");
+    if let Some(limit) = limit {
+        query
+            .push(" LIMIT ")
+            .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+    }
     Ok(query
         .build_query_as::<InvocationHourlySourceRecord>()
         .fetch_all(&mut *tx)
         .await?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationHourlyRollupRecomputeOutcome {
+    Recomputed,
+    RowLimitExceeded,
+}
+
 pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     tx: &mut SqliteConnection,
     ids: &[i64],
 ) -> Result<()> {
+    let _ = recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(tx, ids, None).await?;
+    Ok(())
+}
+
+pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+    tx: &mut SqliteConnection,
+    ids: &[i64],
+    max_rows: Option<usize>,
+) -> Result<InvocationHourlyRollupRecomputeOutcome> {
     if ids.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -2835,7 +2863,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
         .fetch_all(&mut *tx)
         .await?;
     if occurred_rows.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
     }
 
     let mut bucket_epochs = occurred_rows
@@ -2845,7 +2873,17 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     bucket_epochs.sort_unstable();
     bucket_epochs.dedup();
     if bucket_epochs.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
+    }
+
+    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(
+        tx,
+        &bucket_epochs,
+        max_rows.map(|limit| limit.saturating_add(1)),
+    )
+    .await?;
+    if max_rows.is_some_and(|limit| rows.len() > limit) {
+        return Ok(InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded);
     }
 
     for table in [
@@ -2869,7 +2907,6 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     )
     .await?;
 
-    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
     rebuild_parallel_work_rollups_for_hours_tx(tx, &bucket_epochs).await?;
     let mut bucket_watermarks = BTreeMap::<i64, i64>::new();
@@ -2886,7 +2923,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     for (bucket_epoch, cursor_id) in bucket_watermarks {
         save_account_activity_v2_bucket_repair_watermark_tx(tx, bucket_epoch, cursor_id).await?;
     }
-    Ok(())
+    Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed)
 }
 
 pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
