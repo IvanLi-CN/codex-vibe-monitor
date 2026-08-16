@@ -16,7 +16,7 @@ export default function ModelRoutingPage() {
     openUpstreamAccount,
     closeUpstreamAccount,
   } = useUpstreamAccountDetailRoute();
-  const [routingWindow, setRoutingWindow] = useState<"15m" | "1h" | "6h" | "24h">("1h");
+  const [routingWindow, setRoutingWindow] = useState<"15m" | "1h" | "6h" | "24h">("24h");
   const [routingModel, setRoutingModel] = useState("");
   const [routingState, setRoutingState] = useState("");
   const {

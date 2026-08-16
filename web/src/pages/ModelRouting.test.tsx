@@ -85,7 +85,7 @@ describe("ModelRoutingPage", () => {
     expect(host?.textContent).not.toContain("对话");
     expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
       {
-        window: "1h",
+        window: "24h",
         model: undefined,
         state: undefined,
         limit: 100,

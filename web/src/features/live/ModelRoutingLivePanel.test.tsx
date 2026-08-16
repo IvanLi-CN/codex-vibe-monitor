@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingLiveResponse } from "../../lib/api";
+import { ThemeProvider } from "../../theme";
+import { buildModelRoutingGanttData } from "./ModelRoutingGantt";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
 
 const snapshot: ModelRoutingLiveResponse = {
@@ -18,6 +20,7 @@ const snapshot: ModelRoutingLiveResponse = {
           state: "available",
           priority: "normal",
           failureCount: 0,
+          changedAt: "2026-08-16T00:30:00Z",
           lastSeenAt: "2026-08-16T01:00:00Z",
           cacheConcurrencyLimit: 1,
           probeRequired: true,
@@ -35,6 +38,7 @@ const snapshot: ModelRoutingLiveResponse = {
           state: "cooling_down",
           priority: "excluded",
           failureCount: 2,
+          changedAt: "2026-08-16T00:59:00Z",
           lastSeenAt: "2026-08-16T00:59:00Z",
         },
       ],
@@ -44,7 +48,7 @@ const snapshot: ModelRoutingLiveResponse = {
     {
       id: "attempt:31",
       kind: "attempt",
-      occurredAt: "2026-08-16T01:00:00Z",
+      occurredAt: "2026-08-16T00:30:00Z",
       accountId: 11,
       accountDisplayName: "Ciii",
       model: "gpt-5.5-codex",
@@ -78,34 +82,37 @@ const snapshot: ModelRoutingLiveResponse = {
 function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
   return renderToStaticMarkup(
     <I18nProvider>
-      <ModelRoutingLivePanel
-        data={data}
-        isLoading={false}
-        error={null}
-        window="1h"
-        onWindowChange={vi.fn()}
-        onModelChange={vi.fn()}
-        onStateChange={vi.fn()}
-        onOpenAccount={vi.fn()}
-        onOpenInvocation={vi.fn()}
-        onRefresh={vi.fn()}
-      />
+      <ThemeProvider>
+        <ModelRoutingLivePanel
+          data={data}
+          isLoading={false}
+          error={null}
+          window="1h"
+          onWindowChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onStateChange={vi.fn()}
+          onOpenAccount={vi.fn()}
+          onOpenInvocation={vi.fn()}
+          onRefresh={vi.fn()}
+        />
+      </ThemeProvider>
     </I18nProvider>,
   );
 }
 
 describe("ModelRoutingLivePanel", () => {
-  it("keeps account states and routing attempts within their model group", () => {
+  it("renders one model-first Recharts gantt instead of account and decision lists", () => {
     const html = renderPanel();
 
     expect(html).toContain("gpt-5.5-codex");
     expect(html).toContain("gpt-5.4-mini");
-    expect(html).toContain("Ciii");
-    expect(html).toContain("Ciii2");
-    expect(html).toContain('data-testid="model-routing-account-11-gpt-5.5-codex"');
-    expect(html).toContain('data-testid="model-routing-record-attempt:31"');
-    expect(html).toContain('data-testid="model-routing-model-records-gpt-5.5-codex"');
-    expect(html).toContain('data-testid="model-routing-model-records-gpt-5.4-mini"');
+    expect(html).toContain('data-testid="model-routing-gantt-gpt-5.5-codex"');
+    expect(html).toContain('data-testid="model-routing-gantt-gpt-5.4-mini"');
+    expect(html).toContain("请求尝试");
+    expect(html).toContain("未知");
+    expect(html).toContain("recharts-responsive-container");
+    expect(html).not.toContain('data-testid="model-routing-account-');
+    expect(html).not.toContain('data-testid="model-routing-record-');
     expect(html).toContain('data-testid="model-routing-live-controls"');
     expect(html).toContain("desktop:justify-end");
     expect(html.indexOf(">刷新</button>")).toBeLessThan(html.indexOf('name="modelRoutingState"'));
@@ -116,19 +123,35 @@ describe("ModelRoutingLivePanel", () => {
       html.indexOf('aria-label="路由时间窗"'),
     );
     const primaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.5-codex"');
-    const primaryRecord = html.indexOf('data-testid="model-routing-record-attempt:31"');
+    const primaryChart = html.indexOf('data-testid="model-routing-gantt-gpt-5.5-codex"');
     const secondaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.4-mini"');
-    const secondaryRecord = html.indexOf('data-testid="model-routing-record-event:32"');
-    expect(primaryGroup).toBeLessThan(primaryRecord);
-    expect(primaryRecord).toBeLessThan(secondaryGroup);
-    expect(secondaryGroup).toBeLessThan(secondaryRecord);
+    const secondaryChart = html.indexOf('data-testid="model-routing-gantt-gpt-5.4-mini"');
+    expect(primaryGroup).toBeLessThan(primaryChart);
+    expect(primaryChart).toBeLessThan(secondaryGroup);
+    expect(secondaryGroup).toBeLessThan(secondaryChart);
     expect(html).toContain("1 条决策");
+  });
+
+  it("preserves unknown gaps and renders attempts independently from route-state bands", () => {
+    const timeline = buildModelRoutingGanttData({
+      model: "gpt-5.5-codex",
+      accounts: snapshot.groups[0].accounts,
+      records: snapshot.records,
+      generatedAt: snapshot.generatedAt,
+      window: "1h",
+    });
+
+    expect(timeline.lanes).toHaveLength(1);
+    expect(timeline.lanes[0].bands.map((band) => band.state)).toEqual(["unknown", "available"]);
+    expect(timeline.attempts).toEqual([
+      expect.objectContaining({ id: "attempt:31", invokeId: "invoke-31", retryIndex: 1 }),
+    ]);
   });
 
   it("renders one model-routing empty state without inventing a routing attempt", () => {
     const html = renderPanel({ generatedAt: "2026-08-16T01:00:00Z", groups: [], records: [] });
 
     expect(html).toContain("没有符合筛选条件的 API Key 模型路由状态。");
-    expect(html).not.toContain('data-testid="model-routing-model-records-');
+    expect(html).not.toContain('data-testid="model-routing-gantt-');
   });
 });

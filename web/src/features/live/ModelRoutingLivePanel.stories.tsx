@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingLiveResponse } from "../../lib/api";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
@@ -18,6 +18,7 @@ const data: ModelRoutingLiveResponse = {
           state: "available",
           priority: "normal",
           failureCount: 0,
+          changedAt: "2026-08-16T03:59:20.000Z",
           lastSeenAt: "2026-08-16T03:59:20.000Z",
         },
         {
@@ -28,6 +29,7 @@ const data: ModelRoutingLiveResponse = {
           state: "cooling_down",
           priority: "excluded",
           failureCount: 3,
+          changedAt: "2026-08-16T03:57:11.000Z",
           lastSeenAt: "2026-08-16T03:57:11.000Z",
           cooldownUntil: "2026-08-16T04:15:00.000Z",
           cacheConcurrencyLimit: 1,
@@ -86,7 +88,7 @@ const meta = {
   args: {
     data,
     isLoading: false,
-    window: "1h",
+    window: "24h",
     onWindowChange: () => undefined,
     onModelChange: () => undefined,
     onStateChange: () => undefined,
@@ -105,7 +107,7 @@ export const RecoveryAttempt: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("model-routing-account-11-gpt-5.5")).toBeVisible();
+    await expect(canvas.getByTestId("model-routing-gantt-gpt-5.5")).toBeVisible();
     const controls = canvas.getByTestId("model-routing-live-controls");
     await expect(controls).toBeVisible();
     const refresh = within(controls).getByRole("button", { name: "刷新" });
@@ -125,9 +127,8 @@ export const RecoveryAttempt: Story = {
     await expect(
       model.compareDocumentPosition(timeWindow) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
-    const detailsButton = canvas.getByLabelText("展开决策详情");
-    await userEvent.click(detailsButton);
-    await expect(canvas.getByText("候选比较")).toBeVisible();
+    await expect(canvas.getByText("未知")).toBeVisible();
+    await expect(canvas.getByText("请求尝试")).toBeVisible();
   },
 };
 
