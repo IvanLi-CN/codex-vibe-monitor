@@ -64,6 +64,9 @@ type RoutingDraft = {
   cacheHitProtectionEnabled: boolean;
   cacheHitRateThresholdPercent: string;
   cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
+  liveRequestStreamingEnabled: boolean;
+  liveRequestStreamingGroupNames: string;
+  liveRequestStreamingTreatmentPercent: string;
 };
 
 type ForwardProxyValidationState =
@@ -272,6 +275,11 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
       routing.cacheHitProtection?.lowHitRateThresholdPercent ?? 10,
     ),
     cacheHitOverflowMode: routing.cacheHitProtection?.overflowMode ?? "queue",
+    liveRequestStreamingEnabled: routing.liveRequestStreaming?.enabled ?? false,
+    liveRequestStreamingGroupNames: (routing.liveRequestStreaming?.groupNames ?? []).join(", "),
+    liveRequestStreamingTreatmentPercent: String(
+      routing.liveRequestStreaming?.treatmentPercent ?? 50,
+    ),
   };
 }
 
@@ -283,6 +291,13 @@ function stableRoutingKey(value: RoutingDraft | null): string {
 function parsePositiveInteger(raw: string): number | null {
   const trimmed = raw.trim();
   if (!/^[1-9]\d*$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseNonNegativeInteger(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
@@ -758,6 +773,20 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       setRoutingValidationMessage(t("settings.routing.errors.cacheHitThreshold"));
       return;
     }
+    const liveRequestStreamingTreatmentPercent = parseNonNegativeInteger(
+      routingDraft.liveRequestStreamingTreatmentPercent,
+    );
+    if (
+      liveRequestStreamingTreatmentPercent == null ||
+      liveRequestStreamingTreatmentPercent > 100
+    ) {
+      setRoutingValidationMessage(t("settings.routing.errors.liveRequestStreamingPercent"));
+      return;
+    }
+    const liveRequestStreamingGroupNames = routingDraft.liveRequestStreamingGroupNames
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
 
     const payload: UpdatePoolRoutingSettingsPayload = {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
@@ -770,6 +799,11 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         enabled: routingDraft.cacheHitProtectionEnabled,
         lowHitRateThresholdPercent: cacheHitRateThresholdPercent,
         overflowMode: routingDraft.cacheHitOverflowMode,
+      },
+      liveRequestStreaming: {
+        enabled: routingDraft.liveRequestStreamingEnabled,
+        groupNames: liveRequestStreamingGroupNames,
+        treatmentPercent: liveRequestStreamingTreatmentPercent,
       },
     };
 
@@ -2076,6 +2110,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 }
                 onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
                 onCacheHitProtectionChange={(patch) => updateRoutingDraft(patch)}
+                onLiveRequestStreamingChange={(patch) => updateRoutingDraft(patch)}
                 onSave={() => void saveRoutingDefaults()}
               />
             ) : (

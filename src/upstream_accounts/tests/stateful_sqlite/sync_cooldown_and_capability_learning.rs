@@ -289,6 +289,7 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
                 low_hit_rate_threshold_percent: Some(15),
                 overflow_mode: None,
             }),
+            live_request_streaming: None,
         }),
     )
     .await

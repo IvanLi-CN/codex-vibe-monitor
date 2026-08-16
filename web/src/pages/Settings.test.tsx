@@ -308,6 +308,11 @@ describe("Settings forward proxy table", () => {
         lowHitRateThresholdPercent: 10,
         overflowMode: "queue",
       },
+      liveRequestStreaming: {
+        enabled: false,
+        groupNames: [],
+        treatmentPercent: 50,
+      },
       timeouts: {
         responsesFirstByteTimeoutSecs: 180,
         compactFirstByteTimeoutSecs: 300,

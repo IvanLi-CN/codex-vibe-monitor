@@ -1768,6 +1768,15 @@ const baseTranslations = {
     "settings.routing.cacheHit.overflow": "When the route is limited",
     "settings.routing.cacheHit.queue": "Queue requests",
     "settings.routing.cacheHit.reroute": "Route to another account",
+    "settings.routing.liveRequestStreaming.title": "Live request streaming",
+    "settings.routing.liveRequestStreaming.description":
+      "Run a controlled /v1/responses request-body streaming experiment for selected account groups.",
+    "settings.routing.liveRequestStreaming.groupNames": "Account groups",
+    "settings.routing.liveRequestStreaming.treatmentPercent": "Treatment (%)",
+    "settings.routing.liveRequestStreaming.hint":
+      "Disabled by default. Requests in selected groups stay deterministically split between buffered control and live-first treatment.",
+    "settings.routing.errors.liveRequestStreamingPercent":
+      "Live request streaming treatment must be an integer from 0 to 100.",
     "settings.routing.errors.cacheHitThreshold":
       "Cache hit threshold must be an integer from 1 to 100.",
     "accountPool.upstreamAccounts.modelRouting.cacheProbe": "Recovery probe: one request at a time",
@@ -4732,6 +4741,15 @@ const baseTranslations = {
     "settings.routing.cacheHit.overflow": "路由受限时",
     "settings.routing.cacheHit.queue": "请求排队",
     "settings.routing.cacheHit.reroute": "改路到其他账号",
+    "settings.routing.liveRequestStreaming.title": "实时请求体流式转发",
+    "settings.routing.liveRequestStreaming.description":
+      "仅对选定账号组的 /v1/responses 请求进行受控的请求体流式实验。",
+    "settings.routing.liveRequestStreaming.groupNames": "账号组",
+    "settings.routing.liveRequestStreaming.treatmentPercent": "实验组占比（%）",
+    "settings.routing.liveRequestStreaming.hint":
+      "默认关闭。选定账号组内的请求会稳定分配到完整缓冲对照组和 live-first 实验组。",
+    "settings.routing.errors.liveRequestStreamingPercent":
+      "实时请求体流式转发的实验组占比必须是 0 到 100 的整数。",
     "settings.routing.errors.cacheHitThreshold": "缓存命中阈值必须是 1 到 100 的整数。",
     "accountPool.upstreamAccounts.modelRouting.cacheProbe": "恢复探针：一次只放行一个请求",
     "accountPool.upstreamAccounts.modelRouting.cacheLimit":

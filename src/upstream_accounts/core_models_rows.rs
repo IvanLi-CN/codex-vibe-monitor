@@ -208,6 +208,12 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) cache_hit_low_rate_threshold_percent: Option<i64>,
     #[sqlx(default)]
     pub(crate) cache_hit_overflow_mode: Option<String>,
+    #[sqlx(default)]
+    pub(crate) live_request_streaming_enabled: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) live_request_streaming_group_names_json: Option<String>,
+    #[sqlx(default)]
+    pub(crate) live_request_streaming_treatment_percent: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

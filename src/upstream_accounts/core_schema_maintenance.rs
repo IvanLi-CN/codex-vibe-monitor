@@ -1645,6 +1645,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             cache_hit_protection_enabled INTEGER NOT NULL DEFAULT 0,
             cache_hit_low_rate_threshold_percent INTEGER NOT NULL DEFAULT 10,
             cache_hit_overflow_mode TEXT NOT NULL DEFAULT 'queue',
+            live_request_streaming_enabled INTEGER NOT NULL DEFAULT 0,
+            live_request_streaming_group_names_json TEXT NOT NULL DEFAULT '[]',
+            live_request_streaming_treatment_percent INTEGER NOT NULL DEFAULT 50,
             capability_axis_split_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -1793,6 +1796,30 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_routing_settings.cache_hit_overflow_mode")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "live_request_streaming_enabled",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.live_request_streaming_enabled")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "live_request_streaming_group_names_json",
+        "'[]'",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.live_request_streaming_group_names_json")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "live_request_streaming_treatment_percent",
+        "50",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.live_request_streaming_treatment_percent")?;
     ensure_integer_column_with_default(
         pool,
         "pool_routing_settings",
