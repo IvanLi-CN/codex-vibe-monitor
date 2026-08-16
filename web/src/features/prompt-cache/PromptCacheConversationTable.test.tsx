@@ -1687,8 +1687,10 @@ describe("PromptCacheConversationTable", () => {
       sortOrder: "desc",
       signal: expect.any(AbortSignal),
     });
-    expect(document.body.textContent).toContain("Fallback Proxy");
-    expect(document.body.textContent).not.toContain("Stale Proxy");
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("Fallback Proxy");
+      expect(document.body.textContent).not.toContain("Stale Proxy");
+    });
   });
 
   it("falls back to overview HTTP data when SSE is unavailable despite a cached topic", async () => {
@@ -2707,6 +2709,13 @@ describe("PromptCacheConversationTable", () => {
     await clickDrawerTab("路由");
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await vi.waitFor(() => {
+      const bindingType = document.querySelector(
+        '[role="combobox"][aria-label="绑定类型"]',
+      ) as HTMLButtonElement | null;
+      expect(bindingType).toBeTruthy();
+      expect(bindingType?.disabled).toBe(false);
+    });
     await user.click(
       document.querySelector('[role="combobox"][aria-label="绑定类型"]') as HTMLElement,
     );

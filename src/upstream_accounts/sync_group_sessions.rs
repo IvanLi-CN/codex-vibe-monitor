@@ -31,7 +31,7 @@ pub(crate) fn collect_account_window_usage_plans(
             continue;
         }
 
-        for range in [primary, secondary].into_iter().flatten() {
+        for range in [primary.as_ref(), secondary.as_ref()].into_iter().flatten() {
             earliest_start_at = Some(
                 earliest_start_at
                     .map(|value| value.min(range.start_at))
@@ -64,66 +64,61 @@ pub(crate) fn build_window_usage_range(
     if window_duration_mins <= 0 {
         return None;
     }
-    let window_anchor = resets_at.and_then(parse_rfc3339_utc).unwrap_or(now);
+    let reset_anchor = resets_at.and_then(parse_rfc3339_utc);
+    let window_anchor = reset_anchor.unwrap_or(now);
     Some(AccountWindowUsageRangeBounds {
         start_at: window_anchor - ChronoDuration::minutes(window_duration_mins),
         end_at: window_anchor.min(now),
+        // A moving window can only change membership on a minute boundary. A future reset
+        // still grows until that boundary, so include both its anchor and the minute generation.
+        selection_generation: match reset_anchor {
+            Some(anchor) if anchor <= now => format!("reset:{}", anchor.timestamp()),
+            Some(anchor) => format!(
+                "reset-pending:{}:minute:{}",
+                anchor.timestamp(),
+                now.timestamp().div_euclid(60)
+            ),
+            None => format!("minute:{}", now.timestamp().div_euclid(60)),
+        },
+        window_duration_secs: window_duration_mins.saturating_mul(60),
     })
 }
 
-pub(crate) async fn load_window_actual_usage_rows_from_pool(
+async fn detail_exact_upstream_account_id_sql(pool: &Pool<Sqlite>) -> Result<&'static str> {
+    let has_structured_column = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('codex_invocations') WHERE name = 'upstream_account_id' LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    Ok(if has_structured_column {
+        "COALESCE(upstream_account_id, CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END)"
+    } else {
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END"
+    })
+}
+
+pub(crate) async fn load_window_actual_usage_rows_for_detail_exact_from_pool(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
     start_at: &str,
     end_at: &str,
-    end_before: Option<&str>,
-    min_id_exclusive: Option<i64>,
-    max_id_inclusive: Option<i64>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if account_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            id,
-            occurred_at,
-        "#,
-    );
+    let upstream_account_id_sql = detail_exact_upstream_account_id_sql(pool).await?;
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, occurred_at, ");
     query
         .push(upstream_account_id_sql)
         .push(
-            r#"
-            AS upstream_account_id,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            total_tokens,
-            cost
-        FROM codex_invocations
-        WHERE occurred_at >=
-        "#,
+            " AS upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost \
+             FROM codex_invocations WHERE occurred_at >= ",
         )
         .push_bind(start_at)
-        .push(" AND occurred_at <= ")
+        .push(" AND occurred_at < ")
         .push_bind(end_at)
-        .push(" AND ")
-        .push(upstream_account_id_sql)
-        .push(" IS NOT NULL");
-
-    if let Some(end_before) = end_before {
-        query.push(" AND occurred_at < ").push_bind(end_before);
-    }
-    if let Some(min_id_exclusive) = min_id_exclusive {
-        query.push(" AND id > ").push_bind(min_id_exclusive.max(0));
-    }
-    if let Some(max_id_inclusive) = max_id_inclusive {
-        query.push(" AND id <= ").push_bind(max_id_inclusive.max(0));
-    }
-
-    query
         .push(" AND ")
         .push(upstream_account_id_sql)
         .push(" IN (");
@@ -133,7 +128,66 @@ pub(crate) async fn load_window_actual_usage_rows_from_pool(
             separated.push_bind(account_id);
         }
     }
-    query.push(") ORDER BY occurred_at ASC");
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn load_window_actual_usage_rows_for_plans_from_pool(
+    pool: &Pool<Sqlite>,
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    min_id_exclusive: Option<i64>,
+    max_id_inclusive: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    let ranges = collect_account_window_exact_ranges(plans);
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            upstream_account_id,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost
+        FROM codex_invocations
+        WHERE upstream_account_id IS NOT NULL
+        "#,
+    );
+    if let Some(min_id_exclusive) = min_id_exclusive {
+        query.push(" AND id > ").push_bind(min_id_exclusive.max(0));
+    }
+    if let Some(max_id_inclusive) = max_id_inclusive {
+        query.push(" AND id <= ").push_bind(max_id_inclusive.max(0));
+    }
+    query.push(" AND (");
+    for (index, (account_id, start_at, end_at)) in ranges.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("(upstream_account_id = ")
+            .push_bind(account_id)
+            .push(" AND occurred_at >= ")
+            .push_bind(start_at)
+            .push(" AND occurred_at < ")
+            .push_bind(end_at)
+            .push(")");
+    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
 
     query
         .build_query_as::<AccountWindowUsageRow>()
@@ -156,17 +210,12 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
 
     let mut sorted_bucket_epochs = bucket_epochs.iter().copied().collect::<Vec<_>>();
     sorted_bucket_epochs.sort_unstable();
-    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             id,
             occurred_at,
-        "#,
-    );
-    query.push(upstream_account_id_sql).push(
-        r#"
-            AS upstream_account_id,
+            upstream_account_id,
             input_tokens,
             output_tokens,
             cache_input_tokens,
@@ -214,12 +263,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
             ))
             .push(")");
     }
-    query
-        .push(") AND ")
-        .push(upstream_account_id_sql)
-        .push(" IS NOT NULL AND ")
-        .push(upstream_account_id_sql)
-        .push(" IN (");
+    query.push(") AND upstream_account_id IS NOT NULL AND upstream_account_id IN (");
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
@@ -235,13 +279,86 @@ pub(crate) async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
         .map_err(Into::into)
 }
 
+pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_pool(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+    min_id_exclusive: Option<i64>,
+    max_id_inclusive: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if bucket_keys.is_empty() || bucket_seconds <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut sorted_bucket_keys = bucket_keys.iter().copied().collect::<Vec<_>>();
+    sorted_bucket_keys.sort_unstable();
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            upstream_account_id,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost
+        FROM codex_invocations
+        WHERE upstream_account_id IS NOT NULL
+        "#,
+    );
+
+    if let Some(min_id_exclusive) = min_id_exclusive {
+        query.push(" AND id > ").push_bind(min_id_exclusive.max(0));
+    }
+    if let Some(max_id_inclusive) = max_id_inclusive {
+        query.push(" AND id <= ").push_bind(max_id_inclusive.max(0));
+    }
+
+    query.push(" AND (");
+    for (index, (account_id, bucket_epoch)) in sorted_bucket_keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid usage bucket epoch: {bucket_epoch}"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid usage bucket end epoch: {bucket_epoch}"))?;
+        query
+            .push("(upstream_account_id = ")
+            .push_bind(account_id)
+            .push(" AND occurred_at >= ")
+            .push_bind(format_naive(
+                bucket_start.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(" AND occurred_at < ")
+            .push_bind(format_naive(
+                bucket_end.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(")");
+    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
+
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn load_window_actual_usage_hourly_rows_from_pool(
     pool: &Pool<Sqlite>,
-    account_ids: &[i64],
-    start_bucket_epoch: i64,
-    end_bucket_epoch_exclusive: i64,
+    account_ranges: &[(i64, i64, i64)],
 ) -> Result<Vec<AccountWindowUsageHourlyRow>> {
-    if account_ids.is_empty() || start_bucket_epoch >= end_bucket_epoch_exclusive {
+    if account_ranges.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -257,21 +374,26 @@ pub(crate) async fn load_window_actual_usage_hourly_rows_from_pool(
             output_tokens,
             cache_input_tokens
         FROM upstream_account_usage_hourly
-        WHERE bucket_start_epoch >=
+        WHERE
         "#,
     );
-    query
-        .push_bind(start_bucket_epoch)
-        .push(" AND bucket_start_epoch < ")
-        .push_bind(end_bucket_epoch_exclusive)
-        .push(" AND upstream_account_id IN (");
+    query.push(" (");
+    for (index, (account_id, start_bucket_epoch, end_bucket_epoch_exclusive)) in
+        account_ranges.iter().enumerate()
     {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
+        if index > 0 {
+            query.push(" OR ");
         }
+        query
+            .push("(upstream_account_id = ")
+            .push_bind(account_id)
+            .push(" AND bucket_start_epoch >= ")
+            .push_bind(start_bucket_epoch)
+            .push(" AND bucket_start_epoch < ")
+            .push_bind(end_bucket_epoch_exclusive)
+            .push(")");
     }
-    query.push(") ORDER BY bucket_start_epoch ASC");
+    query.push(") ORDER BY upstream_account_id ASC, bucket_start_epoch ASC");
 
     query
         .build_query_as::<AccountWindowUsageHourlyRow>()
@@ -282,11 +404,9 @@ pub(crate) async fn load_window_actual_usage_hourly_rows_from_pool(
 
 pub(crate) async fn load_window_actual_usage_minute_rows_from_pool(
     pool: &Pool<Sqlite>,
-    account_ids: &[i64],
-    start_bucket_epoch: i64,
-    end_bucket_epoch_exclusive: i64,
+    account_ranges: &[(i64, i64, i64)],
 ) -> Result<Vec<AccountWindowUsageMinuteRow>> {
-    if account_ids.is_empty() || start_bucket_epoch >= end_bucket_epoch_exclusive {
+    if account_ranges.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -295,28 +415,33 @@ pub(crate) async fn load_window_actual_usage_minute_rows_from_pool(
         SELECT
             bucket_start_epoch,
             upstream_account_id,
-            total_count AS request_count,
-            total_tokens,
-            total_cost,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens
+            SUM(total_count) AS request_count,
+            SUM(total_tokens) AS total_tokens,
+            SUM(total_cost) AS total_cost,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cache_input_tokens) AS cache_input_tokens
         FROM upstream_account_stats_minute
-        WHERE bucket_start_epoch >=
+        WHERE
         "#,
     );
-    query
-        .push_bind(start_bucket_epoch)
-        .push(" AND bucket_start_epoch < ")
-        .push_bind(end_bucket_epoch_exclusive)
-        .push(" AND upstream_account_id IN (");
+    query.push(" (");
+    for (index, (account_id, start_bucket_epoch, end_bucket_epoch_exclusive)) in
+        account_ranges.iter().enumerate()
     {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
+        if index > 0 {
+            query.push(" OR ");
         }
+        query
+            .push("(upstream_account_id = ")
+            .push_bind(account_id)
+            .push(" AND bucket_start_epoch >= ")
+            .push_bind(start_bucket_epoch)
+            .push(" AND bucket_start_epoch < ")
+            .push_bind(end_bucket_epoch_exclusive)
+            .push(")");
     }
-    query.push(") ORDER BY bucket_start_epoch ASC");
+    query.push(") GROUP BY bucket_start_epoch, upstream_account_id ORDER BY upstream_account_id ASC, bucket_start_epoch ASC");
 
     query
         .build_query_as::<AccountWindowUsageMinuteRow>()
@@ -325,20 +450,56 @@ pub(crate) async fn load_window_actual_usage_minute_rows_from_pool(
         .map_err(Into::into)
 }
 
-pub(crate) async fn load_window_actual_usage_rows_from_archives(
+pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_archives(
     pool: &Pool<Sqlite>,
-    account_ids: &[i64],
-    start_at: &str,
-    end_at: &str,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
     archive_dir: &Path,
-) -> Result<Vec<AccountWindowUsageRow>> {
-    if account_ids.is_empty() || !sqlite_table_exists(pool, "archive_batches").await? {
-        return Ok(Vec::new());
+    max_rows: Option<usize>,
+) -> Result<AccountWindowArchiveBucketRows> {
+    if bucket_keys.is_empty()
+        || bucket_seconds <= 0
+        || !sqlite_table_exists(pool, "archive_batches").await?
+    {
+        return Ok(AccountWindowArchiveBucketRows::default());
     }
 
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let first_bucket_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| *bucket_epoch)
+        .min()
+        .expect("non-empty bucket keys have a first epoch");
+    let last_bucket_end_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| bucket_epoch.saturating_add(bucket_seconds))
+        .max()
+        .expect("non-empty bucket keys have a last epoch");
+    let start_at = format_naive(
+        Utc.timestamp_opt(first_bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket start: {first_bucket_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let end_at = format_naive(
+        Utc.timestamp_opt(last_bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket end: {last_bucket_end_epoch}"))?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    #[derive(Debug, FromRow)]
+    struct ArchiveUsageBatchFile {
+        id: i64,
+        file_path: String,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+        sha256: String,
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveUsageBatchFile>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at, sha256
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -348,22 +509,62 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(start_at)
-    .bind(end_at)
+    .bind(&start_at)
+    .bind(&end_at)
     .fetch_all(pool)
     .await?;
+    let archive_files = archive_files
+        .into_iter()
+        .filter(|archive_file| {
+            archive_file_intersects_usage_bucket_keys(
+                &ArchiveBatchFileRow {
+                    id: archive_file.id,
+                    file_path: archive_file.file_path.clone(),
+                    coverage_start_at: archive_file.coverage_start_at.clone(),
+                    coverage_end_at: archive_file.coverage_end_at.clone(),
+                    sha256: archive_file.sha256.clone(),
+                },
+                bucket_keys,
+                bucket_seconds,
+            )
+        })
+        .collect::<Vec<_>>();
 
     let mut rows = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut covered_bucket_keys = HashSet::new();
+    let mut scanned_row_count = 0_usize;
     for archive_file in archive_files {
         let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
         if !archive_path.exists() {
             warn!(
                 file_path = %archive_path.display(),
-                "skipping missing invocation archive batch while calculating account window usage"
+                "skipping missing invocation archive batch while repairing account window usage"
             );
             continue;
         }
-
+        let expected_sha256 = archive_file.sha256.clone();
+        let hash_path = archive_path.clone();
+        let current_sha256 =
+            tokio::task::spawn_blocking(move || crate::maintenance::sha256_hex_file(&hash_path))
+                .await;
+        match current_sha256 {
+            Ok(Ok(current_sha256)) if current_sha256 == expected_sha256 => {}
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                warn!(
+                    file_path = %archive_path.display(),
+                    "skipping invocation archive batch with an unverifiable manifest hash"
+                );
+                continue;
+            }
+        }
+        let archive_manifest = ArchiveBatchFileRow {
+            id: archive_file.id,
+            file_path: archive_file.file_path,
+            coverage_start_at: archive_file.coverage_start_at,
+            coverage_end_at: archive_file.coverage_end_at,
+            sha256: archive_file.sha256,
+        };
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
             archive_path.display(),
@@ -379,23 +580,301 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        rows.extend(
-            load_window_actual_usage_rows_from_pool(
-                &archive_pool,
-                account_ids,
-                start_at,
-                end_at,
-                None,
-                None,
-                None,
-            )
-            .await?,
-        );
+        let archive_rows = load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
+            &archive_pool,
+            bucket_keys,
+            bucket_seconds,
+            max_rows.map(|max_rows| max_rows.saturating_sub(scanned_row_count).saturating_add(1)),
+        )
+        .await?;
+        if max_rows
+            .is_some_and(|max_rows| scanned_row_count.saturating_add(archive_rows.len()) > max_rows)
+        {
+            archive_pool.close().await;
+            drop(temp_cleanup);
+            return Ok(AccountWindowArchiveBucketRows {
+                rows,
+                covered_bucket_count: covered_bucket_keys.len(),
+                row_limit_exceeded: true,
+            });
+        }
+        scanned_row_count = scanned_row_count.saturating_add(archive_rows.len());
+        // A manifest is only coverage evidence after the file has inflated and its bounded
+        // query completed. This also makes an empty account bucket an explicit, verified zero.
+        covered_bucket_keys.extend(archive_file_covered_usage_bucket_keys(
+            &archive_manifest,
+            bucket_keys,
+            bucket_seconds,
+        ));
+        for row in archive_rows {
+            if seen_ids.insert(row.id) {
+                rows.push(row);
+            }
+        }
         archive_pool.close().await;
         drop(temp_cleanup);
     }
+    Ok(AccountWindowArchiveBucketRows {
+        rows,
+        covered_bucket_count: covered_bucket_keys.len(),
+        row_limit_exceeded: false,
+    })
+}
 
-    Ok(rows)
+fn archive_file_covered_usage_bucket_keys(
+    archive_file: &ArchiveBatchFileRow,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+) -> HashSet<(i64, i64)> {
+    bucket_keys
+        .iter()
+        .filter(|(_, bucket_epoch)| {
+            let bucket_start = Utc
+                .timestamp_opt(*bucket_epoch, 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            let bucket_end = Utc
+                .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            bucket_start
+                .zip(bucket_end)
+                .is_some_and(|(bucket_start, bucket_end)| {
+                    archive_file
+                        .coverage_start_at
+                        .as_deref()
+                        .is_some_and(|start| start <= bucket_start.as_str())
+                        && archive_file
+                            .coverage_end_at
+                            .as_deref()
+                            .is_some_and(|end| end >= bucket_end.as_str())
+                })
+        })
+        .copied()
+        .collect()
+}
+
+fn archive_file_intersects_usage_bucket_keys(
+    archive_file: &ArchiveBatchFileRow,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+) -> bool {
+    bucket_keys.iter().any(|(_, bucket_epoch)| {
+        let Some(bucket_start) = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()))
+        else {
+            return false;
+        };
+        let Some(bucket_end) = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+            .single()
+            .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()))
+        else {
+            return false;
+        };
+        archive_file
+            .coverage_end_at
+            .as_deref()
+            .is_none_or(|end| end >= bucket_start.as_str())
+            && archive_file
+                .coverage_start_at
+                .as_deref()
+                .is_none_or(|start| start <= bucket_end.as_str())
+    })
+}
+
+pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    archive_dir: &Path,
+) -> Result<HashSet<(i64, i64)>> {
+    if bucket_keys.is_empty()
+        || !sqlite_table_exists(pool, "archive_batches").await?
+        || !sqlite_table_exists(pool, "hourly_rollup_archive_replay").await?
+    {
+        return Ok(HashSet::new());
+    }
+    let first_bucket_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| *bucket_epoch)
+        .min()
+        .expect("non-empty bucket keys have a first epoch");
+    let last_bucket_end_epoch = bucket_keys
+        .iter()
+        .map(|(_, bucket_epoch)| bucket_epoch.saturating_add(3_600))
+        .max()
+        .expect("non-empty bucket keys have a last epoch");
+    let start_at = format_naive(
+        Utc.timestamp_opt(first_bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                anyhow!("invalid replayed archive coverage start: {first_bucket_epoch}")
+            })?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let end_at = format_naive(
+        Utc.timestamp_opt(last_bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| {
+                anyhow!("invalid replayed archive coverage end: {last_bucket_end_epoch}")
+            })?
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    #[derive(Debug, FromRow)]
+    struct ReplayedArchiveFile {
+        id: i64,
+        file_path: String,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+        archive_sha256: String,
+    }
+
+    let archive_files = sqlx::query_as::<_, ReplayedArchiveFile>(
+        r#"
+        SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at,
+               batches.sha256 AS archive_sha256
+        FROM archive_batches AS batches
+        INNER JOIN hourly_rollup_archive_replay AS replay
+          ON replay.dataset = batches.dataset
+         AND replay.file_path = batches.file_path
+         AND replay.archive_sha256 = batches.sha256
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND batches.coverage_start_at IS NOT NULL
+          AND batches.coverage_end_at IS NOT NULL
+          AND batches.coverage_end_at >= ?2
+          AND batches.coverage_start_at <= ?3
+          AND replay.target = ?4
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&start_at)
+    .bind(&end_at)
+    .bind(crate::maintenance::HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .fetch_all(pool)
+    .await?;
+    let mut verified_archive_files = Vec::with_capacity(archive_files.len());
+    for archive_file in archive_files {
+        let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
+        let expected_sha256 = archive_file.archive_sha256.clone();
+        let actual_sha256 =
+            tokio::task::spawn_blocking(move || crate::maintenance::sha256_hex_file(&archive_path))
+                .await;
+        match actual_sha256 {
+            Ok(Ok(actual_sha256)) if actual_sha256 == expected_sha256 => {
+                verified_archive_files.push(ArchiveBatchFileRow {
+                    id: archive_file.id,
+                    file_path: archive_file.file_path,
+                    coverage_start_at: archive_file.coverage_start_at,
+                    coverage_end_at: archive_file.coverage_end_at,
+                    sha256: archive_file.archive_sha256,
+                });
+            }
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                warn!(
+                    file_path = %archive_file.file_path,
+                    "archive replay marker cannot prove account window coverage because the current file hash is unavailable or changed"
+                );
+            }
+        }
+    }
+    Ok(bucket_keys
+        .iter()
+        .filter(|(_, bucket_epoch)| {
+            let bucket_start = Utc
+                .timestamp_opt(*bucket_epoch, 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            let bucket_end = Utc
+                .timestamp_opt(bucket_epoch.saturating_add(3_600), 0)
+                .single()
+                .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+            bucket_start
+                .zip(bucket_end)
+                .is_some_and(|(bucket_start, bucket_end)| {
+                    verified_archive_files.iter().any(|archive_file| {
+                        archive_file
+                            .coverage_start_at
+                            .as_deref()
+                            .is_some_and(|start| start <= bucket_start.as_str())
+                            && archive_file
+                                .coverage_end_at
+                                .as_deref()
+                                .is_some_and(|end| end >= bucket_end.as_str())
+                    })
+                })
+        })
+        .copied()
+        .collect())
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AccountWindowArchiveBucketRows {
+    pub(crate) rows: Vec<AccountWindowUsageRow>,
+    pub(crate) covered_bucket_count: usize,
+    pub(crate) row_limit_exceeded: bool,
+}
+
+async fn load_window_actual_usage_rows_for_detail_exact_bucket_keys_from_pool(
+    pool: &Pool<Sqlite>,
+    bucket_keys: &HashSet<(i64, i64)>,
+    bucket_seconds: i64,
+    limit: Option<usize>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if bucket_keys.is_empty() || bucket_seconds <= 0 {
+        return Ok(Vec::new());
+    }
+    let upstream_account_id_sql = detail_exact_upstream_account_id_sql(pool).await?;
+    let mut sorted_bucket_keys = bucket_keys.iter().copied().collect::<Vec<_>>();
+    sorted_bucket_keys.sort_unstable();
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, occurred_at, ");
+    query
+        .push(upstream_account_id_sql)
+        .push(
+            " AS upstream_account_id, input_tokens, output_tokens, cache_input_tokens, total_tokens, cost \
+             FROM codex_invocations WHERE ",
+        );
+    query.push("(");
+    for (index, (account_id, bucket_epoch)) in sorted_bucket_keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket epoch: {bucket_epoch}"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(bucket_seconds), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid archive usage bucket end: {bucket_epoch}"))?;
+        query
+            .push("(")
+            .push(upstream_account_id_sql)
+            .push(" = ")
+            .push_bind(account_id)
+            .push(" AND occurred_at >= ")
+            .push_bind(format_naive(
+                bucket_start.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(" AND occurred_at < ")
+            .push_bind(format_naive(
+                bucket_end.with_timezone(&Shanghai).naive_local(),
+            ))
+            .push(")");
+    }
+    query.push(") ORDER BY occurred_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query.push(" LIMIT ").push_bind(limit as i64);
+    }
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
@@ -425,6 +904,32 @@ pub(crate) fn collect_account_window_partial_bucket_epochs(
     Ok(bucket_epochs)
 }
 
+/// A bucket can be complete for one account window and partial for another.
+/// Keep the coverage identity account-scoped so a rollup never suppresses the
+/// exact boundary tail required by a sibling range.
+pub(crate) fn collect_account_window_partial_hour_keys(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Result<HashSet<(i64, i64)>> {
+    let mut keys = HashSet::new();
+    for (account_id, plan) in plans {
+        for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let start_bucket_epoch = invocation_bucket_start_epoch(&range.start_at)?;
+            if range.full_hour_start_epoch != Some(start_bucket_epoch) {
+                keys.insert((*account_id, start_bucket_epoch));
+            }
+
+            let end_bucket_epoch = invocation_bucket_start_epoch(&range.end_at)?;
+            if range.end_at_epoch.rem_euclid(3_600) != 0 {
+                keys.insert((*account_id, end_bucket_epoch));
+            }
+        }
+    }
+    Ok(keys)
+}
+
 pub(crate) fn collect_account_window_partial_minute_bucket_epochs(
     plans: &HashMap<i64, AccountWindowUsagePlan>,
 ) -> Result<HashSet<i64>> {
@@ -444,6 +949,89 @@ pub(crate) fn collect_account_window_partial_minute_bucket_epochs(
         }
     }
     Ok(bucket_epochs)
+}
+
+pub(crate) fn collect_account_window_partial_minute_keys(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Result<HashSet<(i64, i64)>> {
+    let mut keys = HashSet::new();
+    for (account_id, plan) in plans {
+        for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let start_bucket_epoch =
+                invocation_bucket_start_epoch_for_seconds(&range.start_at, 60)?;
+            let end_bucket_epoch = invocation_bucket_start_epoch_for_seconds(&range.end_at, 60)?;
+            if start_bucket_epoch < end_bucket_epoch && start_bucket_epoch != range.start_at_epoch {
+                keys.insert((*account_id, start_bucket_epoch));
+            }
+            if range.end_at_epoch.rem_euclid(60) != 0 {
+                keys.insert((*account_id, end_bucket_epoch));
+            }
+        }
+    }
+    Ok(keys)
+}
+
+pub(crate) fn collect_account_window_full_hour_ranges(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Vec<(i64, i64, i64)> {
+    collect_account_window_full_bucket_ranges(plans, |range| {
+        range.full_hour_start_epoch.zip(range.full_hour_end_epoch)
+    })
+}
+
+pub(crate) fn collect_account_window_exact_ranges(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Vec<(i64, String, String)> {
+    let mut ranges = plans
+        .iter()
+        .flat_map(|(account_id, plan)| {
+            [plan.primary.as_ref(), plan.secondary.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(move |range| (*account_id, range.start_at.clone(), range.end_at.clone()))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
+}
+
+pub(crate) fn collect_account_window_full_minute_ranges(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Vec<(i64, i64, i64)> {
+    collect_account_window_full_bucket_ranges(plans, |range| {
+        range
+            .full_minute_start_epoch
+            .zip(range.full_minute_end_epoch)
+    })
+}
+
+fn collect_account_window_full_bucket_ranges<F>(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    bounds: F,
+) -> Vec<(i64, i64, i64)>
+where
+    F: Fn(&AccountWindowUsageRange) -> Option<(i64, i64)>,
+{
+    let mut ranges = plans
+        .iter()
+        .flat_map(|(account_id, plan)| {
+            [plan.primary.as_ref(), plan.secondary.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|range| {
+                    bounds(range).and_then(|(start_epoch, end_epoch)| {
+                        (start_epoch < end_epoch).then_some((*account_id, start_epoch, end_epoch))
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
 }
 
 pub(crate) fn collect_account_window_full_hour_bounds(
@@ -539,6 +1127,34 @@ pub(crate) fn collect_account_window_missing_full_hour_bucket_epochs(
     missing_bucket_epochs
 }
 
+pub(crate) fn collect_account_window_missing_full_hour_keys(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    covered_hourly_keys: &HashSet<(i64, i64)>,
+) -> HashSet<(i64, i64)> {
+    let mut missing_keys = HashSet::new();
+    for (account_id, plan) in plans {
+        for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let (Some(start_epoch), Some(end_epoch)) =
+                (range.full_hour_start_epoch, range.full_hour_end_epoch)
+            else {
+                continue;
+            };
+            let mut bucket_epoch = start_epoch;
+            while bucket_epoch < end_epoch {
+                let key = (*account_id, bucket_epoch);
+                if !covered_hourly_keys.contains(&key) {
+                    missing_keys.insert(key);
+                }
+                bucket_epoch = bucket_epoch.saturating_add(3_600);
+            }
+        }
+    }
+    missing_keys
+}
+
 pub(crate) fn fold_account_window_usage_rows(
     rows: Vec<AccountWindowUsageRow>,
     plans: &HashMap<i64, AccountWindowUsagePlan>,
@@ -556,13 +1172,13 @@ pub(crate) fn fold_account_window_usage_rows(
         let entry = usage.entry(row.upstream_account_id).or_default();
         if plan.primary.as_ref().is_some_and(|range| {
             row.occurred_at.as_str() >= range.start_at.as_str()
-                && row.occurred_at.as_str() <= range.end_at.as_str()
+                && row.occurred_at.as_str() < range.end_at.as_str()
         }) {
             entry.primary.add_row(&row);
         }
         if plan.secondary.as_ref().is_some_and(|range| {
             row.occurred_at.as_str() >= range.start_at.as_str()
-                && row.occurred_at.as_str() <= range.end_at.as_str()
+                && row.occurred_at.as_str() < range.end_at.as_str()
         }) {
             entry.secondary.add_row(&row);
         }
@@ -647,9 +1263,11 @@ pub(crate) fn collect_account_window_hourly_coverage_keys(
 pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     rows: Vec<AccountWindowUsageRow>,
     partial_minute_bucket_epochs: &HashSet<i64>,
+    include_partial_minute_rows: bool,
     partial_bucket_epochs: &HashSet<i64>,
     missing_full_hour_bucket_epochs: &HashSet<i64>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
+    covered_minute_keys: &HashSet<(i64, i64)>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -658,6 +1276,14 @@ pub(crate) fn filter_account_window_usage_rows_for_exact_fallback(
     let mut filtered_rows = Vec::with_capacity(rows.len());
     for row in rows {
         let minute_bucket_epoch = invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)?;
+        if covered_minute_keys.contains(&(row.upstream_account_id, minute_bucket_epoch)) {
+            continue;
+        }
+        if partial_minute_bucket_epochs.contains(&minute_bucket_epoch)
+            && !include_partial_minute_rows
+        {
+            continue;
+        }
         let bucket_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
         let include = if partial_minute_bucket_epochs.contains(&minute_bucket_epoch) {
             true

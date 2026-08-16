@@ -68,6 +68,7 @@ flowchart LR
 - SQLite rollup 保存长期统计、账号活动、usage breakdown、timeseries 与 parallel-work 的可恢复聚合；archive 承担超出 live retention 的历史详情。
 - 历史 HTTP API 从 rollup、archive 与 exact boundary 查询构建；不得把历史重建工作放回 Dashboard 当前态热路径。
 - 价格、归属、archive rewrite/restore 等修正通过目标桶 repair 收敛，而不是周期性重扫宽时间窗。
+- 账号窗口 hydrate 使用私有 StoragePlane。新 terminal 将账号归属持久化到 `codex_invocations.upstream_account_id`；读侧先按账号和窗口范围合并 minute/hourly rollup，再读取范围边界、明确 coverage hole 或 cursor 后 tail。ID cursor 不能代替时间桶 coverage；同账号的 sibling window coverage 也不能吞掉 partial-hour exact tail。缺 hourly coverage 的完整小时只使用其精确 raw bucket，不能同时折叠已有 partial minute rollup。schema-startup 的 legacy readiness marker 只把“payload 指定账号但结构化列缺失”的行视为旧数据；相同账号集合的 owner preflight 共享有界 metadata 读取，并将完成 proof 以账号作用域 durable cursor 绑定在 128 项内存缓存中。rolling、reset-anchored 与 future-reset 回填使用互不别名的 progress identity：结构化列回填以 32 行、200ms 事务目标推进，并仅原子重算本批影响小时中最多 200 条 source rows；密集小时提交归属列、保留 coverage hole 并保持 preparing，由独立 repair 收口，绝不扩大迁移锁窗口。coverage repair 独立为可取消、可重排的两秒维护批，先通过 maintenance admission，再取得 background permit。legacy archive 缺少结构化账号列时从 payload 恢复归属；archive exact fallback 与 bootstrap rebuild 都必须验证 manifest hash，replay marker 也必须绑定相同 SHA-256。无准确 baseline 或无法验证配置时显式返回 `202 preparing`，不能以全窗 raw/archive 读取或不兼容 last-good 换取表面的成功响应。
 
 ## 6. 健康与回退
 
@@ -75,6 +76,7 @@ flowchart LR
 - `PROXY_REQUEST_SEMANTIC_PIPELINE_MODE=auto|legacy` 控制请求语义流水线；默认 `auto`。
 - `PROXY_SQLITE_WRITE_COORDINATOR_MODE=coordinated|legacy` 控制代理热写协调器；默认 `coordinated`，legacy 只保留一个发布周期用于显式回滚。
 - `GET /api/system/status` 的 additive `runtimePressureHealth` 展示 Dashboard producer、request parsing/materialization、RSS/Swap、allocator 与 writer accounting 健康。
+- `runtimePressureHealth.storagePlane` 仅从内存 counters 显示账号窗口的 selection、singleflight、coverage、backfill 与 last-good 健康；状态页不得因该诊断新增 SQL。
 - accounting violation、live-path DB read、whole-body materialization、cadence miss、subscription lag/skipped 或重复 serialization 必须改变健康状态并可被结构化 telemetry 判责。
 - 运行镜像默认 `MALLOC_ARENA_MAX=8`，部署可显式覆盖；该设置只限制 glibc arena 保留，不改变业务并发。
 

@@ -1211,6 +1211,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     for (column, ty) in [
         ("source", "TEXT NOT NULL DEFAULT 'xy'"),
+        ("upstream_account_id", "INTEGER"),
         ("model", "TEXT"),
         ("input_tokens", "INTEGER"),
         ("output_tokens", "INTEGER"),
@@ -1437,6 +1438,31 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_upstream_account_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_structured_upstream_account_occurred_at
+        ON codex_invocations (upstream_account_id, occurred_at, id)
+        WHERE upstream_account_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure structured upstream-account invocation index")?;
+
+    // Legacy account attribution is reconciled off the owner request path. Restrict each
+    // bounded probe to unassigned rows in its active time window instead of scanning the
+    // durable invocation suffix while a page retries preparation.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_unassigned_account_window_backfill
+        ON codex_invocations (occurred_at, id)
+        WHERE upstream_account_id IS NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure unassigned upstream-account backfill index")?;
 
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
@@ -3099,6 +3125,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             target TEXT NOT NULL,
             dataset TEXT NOT NULL,
             file_path TEXT NOT NULL,
+            archive_sha256 TEXT,
             replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (target, dataset, file_path)
         )
@@ -3107,6 +3134,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_replay table existence")?;
+
+    // A replay marker proves coverage only for the exact archive bytes it materialized. Older
+    // databases receive a NULL marker and are conservatively repaired before being trusted.
+    ensure_column_with_definition(
+        pool,
+        "hourly_rollup_archive_replay",
+        "archive_sha256",
+        "TEXT",
+    )
+    .await
+    .context("failed to ensure hourly_rollup_archive_replay.archive_sha256")?;
 
     sqlx::query(
         r#"
@@ -4088,6 +4126,59 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await
             .with_context(|| format!("failed to ensure startup_backfill_progress.{column}"))?;
     }
+
+    // This is a startup-maintained readiness marker, not an owner-request probe. Only a row
+    // whose payload names an account but lacks the structured column is legacy. A legitimate
+    // unassigned invocation remains NULL and must not hold every account window in preparing.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_attribution_backfill_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            state TEXT NOT NULL CHECK (state IN ('ready', 'pending')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream-account attribution backfill state")?;
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO upstream_account_attribution_backfill_state (id, state)
+        SELECT
+            1,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM codex_invocations
+                WHERE upstream_account_id IS NULL
+                  AND json_valid(payload)
+                  AND json_type(payload, '$.upstreamAccountId') IN ('integer', 'text')
+                LIMIT 1
+            ) THEN 'pending' ELSE 'ready' END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to initialize upstream-account attribution backfill state")?;
+
+    sqlx::query(
+        r#"
+        UPDATE upstream_account_attribution_backfill_state
+        SET state = CASE WHEN EXISTS (
+                SELECT 1
+                FROM codex_invocations
+                WHERE upstream_account_id IS NULL
+                  AND json_valid(payload)
+                  AND json_type(payload, '$.upstreamAccountId') IN ('integer', 'text')
+                LIMIT 1
+            ) THEN 'pending' ELSE 'ready' END,
+            updated_at = datetime('now')
+        WHERE id = 1
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to refresh upstream-account attribution backfill state")?;
 
     sqlx::query(
         r#"

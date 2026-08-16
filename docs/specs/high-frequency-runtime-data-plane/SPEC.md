@@ -34,6 +34,17 @@
 - terminal durable 事实继续由 `TerminalProjectionHub` 与 P1 journal 管理；两个 Hub 共享 ingress 事件标识，不共享可变 ownership 或回收 cursor。
 - startup warm restore、`60s` reconcile 与 cold fallback 可访问 persistence；已有 last-good 时，订阅请求链不得同步回源数据库。
 
+### Account Window Storage Boundary
+
+`/api/pool/upstream-accounts/window-usage` is a high-frequency read path and uses the account-window StoragePlane rather than calling the pool directly from the handler. The StoragePlane owns selection coalescing, bounded LRU lifecycle, rollup coverage, exact boundary/live tails, and the last-good/preparing state machine.
+
+- New terminal writes populate nullable `codex_invocations.upstream_account_id`; a schema-startup readiness marker distinguishes current structured data from legacy attribution work without an owner-request raw probe. Legacy rows are filled by a pressure-gated, coordinator-admitted, selection-scoped cursor-ordered backfill. Its durable progress identity is account plus window duration for rolling windows, and additionally includes either a reset anchor or a pending-reset anchor when one exists; a future reset may not share a rolling cursor. A completion proof additionally binds the exact account/window/reset selection and durable cursor, so it cannot hide a legacy row entering a later rolling window. Each pass has a bounded rollup rebuild budget and defers rather than extending the write window. Each assignment and every affected hourly rollup rebuild commit together; a later payload-prune cannot remove the repaired account attribution from rollup reads.
+- Complete minute/hour rollups are read first. Coverage is keyed by account and range: an hour partial for either of an account's windows always stays on the exact boundary path, even when the sibling window fully contains that hour. If a planned full hour lacks hourly coverage, any partial minute rollup for that hour is excluded and the named exact bucket is its sole fact source; the two paths must never be merged. Only partial boundaries, uncovered live buckets, and a cursor-bounded live tail may use exact invocation rows. The cursor is an ID watermark, not bucket coverage; delayed terminals in an older missing bucket remain eligible for its bounded exact tail. The cursor tail has a fixed row budget; an over-budget tail or missing archive coverage bucket returns `202` preparing instead of opening a full archive/raw scan.
+- A legacy invocation archive without the additive structured account column resolves account attribution from its readable payload. Bootstrap and bounded exact readers verify the completed manifest SHA-256 before accepting archive bytes; an absent or mismatched manifest source preserves the prior rollup and leaves the selection recoverable rather than publishing incomplete account totals.
+- A cold selection without a complete baseline returns `{items: [], readiness: "preparing", retryAfterMs}` with `Retry-After: 1`; a last-good response is usable for at most 60 seconds. Cursor is part of the in-flight build identity, and compatible last-good selection prefers the highest durable cursor over completion time. If preflight cannot prove the exact account/window/reset configuration, the response is preparing rather than a broad account-set cache hit. Selection coordination retains at most 128 entries: LRU eviction makes room for a non-flight entry, and only an all-in-flight registry returns preparing rather than expanding in memory.
+- The account-window selection has a bounded 128-entry LRU and a 10-minute idle eviction. This bounds coordination state without imposing a data TTL on a ready response.
+- The preparation response is limited to the batch `window-usage` endpoint. Account-detail responses preserve their nullable usage fields or an already prepared StoragePlane result while preparation is pending; they must not invoke a single-account full-window compatibility query.
+
 ### Delivery
 
 - `TopicMaterializer` 只接受 typed base 与其依赖切片的 revision tuple，并生成一个 `Arc<SerializedTopicFrame>`。frame 包含 envelope bytes、cursor、schema epoch、fingerprint 与 topic metadata。
@@ -62,6 +73,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
+- `runtimePressureHealth.storagePlane` is additive and reports account-window selection/build/coverage health without adding a status-page SQL query.
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health

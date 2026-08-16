@@ -4287,6 +4287,7 @@ pub(crate) async fn insert_window_actual_usage_invocation(
                 invoke_id,
                 occurred_at,
                 source,
+                upstream_account_id,
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
@@ -4305,8 +4306,9 @@ pub(crate) async fn insert_window_actual_usage_invocation(
                 ?5,
                 ?6,
                 ?7,
-                'completed',
                 ?8,
+                'completed',
+                ?9,
                 '{}',
                 ?2
             )
@@ -4314,6 +4316,7 @@ pub(crate) async fn insert_window_actual_usage_invocation(
     )
     .bind(format!("invoke-{}", random_base36(10).expect("invoke id")))
     .bind(occurred_at)
+    .bind(account_id)
     .bind(input_tokens)
     .bind(output_tokens)
     .bind(cache_input_tokens)

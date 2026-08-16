@@ -12,6 +12,40 @@ use serde_json::json;
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
+async fn ensure_schema_adds_archive_replay_hash_to_existing_table() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect legacy sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE hourly_rollup_archive_replay (
+            target TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (target, dataset, file_path)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy archive replay table");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate legacy archive replay table");
+
+    let has_hash_column = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('hourly_rollup_archive_replay') WHERE name = 'archive_sha256'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect migrated archive replay table");
+    assert_eq!(has_hash_column, 1);
+    pool.close().await;
+}
+
+#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]

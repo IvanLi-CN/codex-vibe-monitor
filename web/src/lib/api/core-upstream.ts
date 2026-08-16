@@ -447,6 +447,8 @@ export interface UpstreamAccountWindowUsageItem {
 
 export interface UpstreamAccountWindowUsageResponse {
   items: UpstreamAccountWindowUsageItem[];
+  readiness?: "preparing";
+  retryAfterMs?: number;
 }
 
 export interface FetchUpstreamAccountsQuery {
@@ -2135,6 +2137,7 @@ export async function fetchUpstreamAccountActionEvents(
 
 export async function fetchUpstreamAccountWindowUsage(
   accountIds: number[],
+  options?: { signal?: AbortSignal },
 ): Promise<UpstreamAccountWindowUsageResponse> {
   const normalizedAccountIds = Array.from(
     new Set(accountIds.filter((accountId) => Number.isFinite(accountId) && accountId > 0)),
@@ -2142,13 +2145,27 @@ export async function fetchUpstreamAccountWindowUsage(
   if (normalizedAccountIds.length === 0) {
     return { items: [] };
   }
-  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/window-usage", {
+  const response = await fetch(withBase("/api/pool/upstream-accounts/window-usage"), {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       accountIds: normalizedAccountIds,
     }),
+    signal: options?.signal,
   });
-  return normalizeUpstreamAccountWindowUsageResponse(response);
+  await ensureJsonRequestOk(response);
+  const raw = (await response.json()) as unknown;
+  if (response.status === 202) {
+    const payload = raw as Record<string, unknown>;
+    return {
+      items: [],
+      readiness: "preparing",
+      retryAfterMs: Math.max(1_000, normalizeFiniteNumber(payload.retryAfterMs) ?? 1_000),
+    };
+  }
+  return normalizeUpstreamAccountWindowUsageResponse(raw);
 }
 
 export async function fetchForwardProxyBindingNodes(

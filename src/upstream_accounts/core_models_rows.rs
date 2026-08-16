@@ -760,6 +760,8 @@ pub(crate) struct AccountWindowUsagePlan {
 pub(crate) struct AccountWindowUsageRange {
     pub(crate) start_at: String,
     pub(crate) end_at: String,
+    pub(crate) selection_generation: String,
+    pub(crate) window_duration_secs: i64,
     pub(crate) start_at_epoch: i64,
     pub(crate) end_at_epoch: i64,
     pub(crate) full_minute_start_epoch: Option<i64>,
@@ -768,10 +770,12 @@ pub(crate) struct AccountWindowUsageRange {
     pub(crate) full_hour_end_epoch: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct AccountWindowUsageRangeBounds {
     pub(crate) start_at: DateTime<Utc>,
     pub(crate) end_at: DateTime<Utc>,
+    pub(crate) selection_generation: String,
+    pub(crate) window_duration_secs: i64,
 }
 
 impl AccountWindowUsageRangeBounds {
@@ -793,6 +797,8 @@ impl AccountWindowUsageRangeBounds {
         AccountWindowUsageRange {
             start_at: format_naive(self.start_at.with_timezone(&Shanghai).naive_local()),
             end_at: format_naive(self.end_at.with_timezone(&Shanghai).naive_local()),
+            selection_generation: self.selection_generation,
+            window_duration_secs: self.window_duration_secs,
             start_at_epoch: start_epoch,
             end_at_epoch: end_epoch,
             full_minute_start_epoch: (full_minute_start_epoch < full_minute_end_epoch)

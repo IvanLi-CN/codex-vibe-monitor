@@ -66,6 +66,7 @@ import {
 const LOAD_LIST_FAILED = Symbol("load-list-failed");
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {};
 export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
+const WINDOW_USAGE_RETRY_MAX_MS = 5_000;
 
 export type UpstreamAccountsListFreshness = "fresh" | "stale" | "missing" | "deferred";
 export type UpstreamAccountsListLoadingState =
@@ -206,6 +207,11 @@ export function useUpstreamAccounts(
   const [windowUsageByAccount, setWindowUsageByAccount] = useState<
     Record<number, HydratedWindowUsage>
   >({});
+  const windowUsageRetryTimerRef = useRef<number | null>(null);
+  const windowUsageRetryIdsRef = useRef(new Set<number>());
+  const windowUsageAbortControllersRef = useRef(new Set<AbortController>());
+  const windowUsageRetryDelayRef = useRef(1_000);
+  const windowUsageSelectionKeyRef = useRef<string | null>(null);
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([]);
   const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(
     null,
@@ -343,6 +349,16 @@ export function useUpstreamAccounts(
       windowUsageQueryKeyRef.current = queryKey;
       hydratedWindowUsageIdsRef.current = new Set();
       pendingWindowUsageGenerationByIdRef.current = new Map();
+      windowUsageAbortControllersRef.current.forEach((controller) => {
+        controller.abort();
+      });
+      windowUsageAbortControllersRef.current.clear();
+      windowUsageRetryIdsRef.current.clear();
+      if (windowUsageRetryTimerRef.current != null) {
+        window.clearTimeout(windowUsageRetryTimerRef.current);
+        windowUsageRetryTimerRef.current = null;
+      }
+      windowUsageRetryDelayRef.current = 1_000;
       setIsWindowUsagePending(false);
       if (!options?.preserveData) {
         setWindowUsageByAccount({});
@@ -616,7 +632,8 @@ export function useUpstreamAccounts(
     ).filter(
       (accountId) =>
         !hydratedWindowUsageIdsRef.current.has(accountId) &&
-        !pendingWindowUsageGenerationByIdRef.current.has(accountId),
+        !pendingWindowUsageGenerationByIdRef.current.has(accountId) &&
+        !windowUsageRetryIdsRef.current.has(accountId),
     );
 
     if (normalizedAccountIds.length === 0) {
@@ -628,9 +645,13 @@ export function useUpstreamAccounts(
       pendingWindowUsageGenerationByIdRef.current.set(accountId, generation);
     });
     setIsWindowUsagePending(true);
+    const controller = new AbortController();
+    windowUsageAbortControllersRef.current.add(controller);
 
     try {
-      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds);
+      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds, {
+        signal: controller.signal,
+      });
       if (
         generation !== usageHydrationGenerationRef.current ||
         requestQueryKey !== currentListQueryKeyRef.current ||
@@ -641,6 +662,26 @@ export function useUpstreamAccounts(
       if (!response || !Array.isArray(response.items)) {
         return;
       }
+      if (response.readiness === "preparing") {
+        const delay = Math.min(
+          WINDOW_USAGE_RETRY_MAX_MS,
+          Math.max(1_000, windowUsageRetryDelayRef.current, response.retryAfterMs ?? 0),
+        );
+        windowUsageRetryDelayRef.current = delay < 2_000 ? 2_000 : WINDOW_USAGE_RETRY_MAX_MS;
+        normalizedAccountIds.forEach((accountId) => {
+          windowUsageRetryIdsRef.current.add(accountId);
+        });
+        if (windowUsageRetryTimerRef.current == null) {
+          windowUsageRetryTimerRef.current = window.setTimeout(() => {
+            windowUsageRetryTimerRef.current = null;
+            const retryAccountIds = Array.from(windowUsageRetryIdsRef.current);
+            windowUsageRetryIdsRef.current.clear();
+            void hydrateWindowUsage(retryAccountIds);
+          }, delay);
+        }
+        return;
+      }
+      windowUsageRetryDelayRef.current = 1_000;
 
       const usageEntries = Object.fromEntries(
         response.items.map((item) => [
@@ -667,11 +708,30 @@ export function useUpstreamAccounts(
         }
         return next;
       });
+      setDetail((current) => {
+        const usage = current ? usageEntries[current.id] : undefined;
+        if (!current || !usage) return current;
+        return {
+          ...current,
+          primaryWindow: current.primaryWindow
+            ? { ...current.primaryWindow, actualUsage: usage.primaryActualUsage }
+            : current.primaryWindow,
+          secondaryWindow: current.secondaryWindow
+            ? { ...current.secondaryWindow, actualUsage: usage.secondaryActualUsage }
+            : current.secondaryWindow,
+        };
+      });
 
       normalizedAccountIds.forEach((accountId) => {
         hydratedWindowUsageIdsRef.current.add(accountId);
+        windowUsageRetryIdsRef.current.delete(accountId);
       });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        throw error;
+      }
     } finally {
+      windowUsageAbortControllersRef.current.delete(controller);
       const isStillCurrent =
         generation === usageHydrationGenerationRef.current &&
         requestQueryKey === currentListQueryKeyRef.current &&
@@ -682,12 +742,51 @@ export function useUpstreamAccounts(
             pendingWindowUsageGenerationByIdRef.current.delete(accountId);
           }
         });
-        if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
+        if (
+          pendingWindowUsageGenerationByIdRef.current.size === 0 &&
+          windowUsageRetryIdsRef.current.size === 0
+        ) {
           setIsWindowUsagePending(false);
         }
       }
     }
   }, []);
+
+  useEffect(
+    () => () => {
+      windowUsageAbortControllersRef.current.forEach((controller) => {
+        controller.abort();
+      });
+      windowUsageAbortControllersRef.current.clear();
+      windowUsageRetryIdsRef.current.clear();
+      if (windowUsageRetryTimerRef.current != null) {
+        window.clearTimeout(windowUsageRetryTimerRef.current);
+        windowUsageRetryTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const selectionKey = `${currentListQueryKey ?? ""}:${selectedId ?? ""}`;
+    if (windowUsageSelectionKeyRef.current === selectionKey) {
+      return;
+    }
+    windowUsageSelectionKeyRef.current = selectionKey;
+    windowUsageAbortControllersRef.current.forEach((controller) => {
+      controller.abort();
+    });
+    windowUsageAbortControllersRef.current.clear();
+    windowUsageRetryIdsRef.current.clear();
+    if (windowUsageRetryTimerRef.current != null) {
+      window.clearTimeout(windowUsageRetryTimerRef.current);
+      windowUsageRetryTimerRef.current = null;
+    }
+    windowUsageRetryDelayRef.current = 1_000;
+    usageHydrationGenerationRef.current += 1;
+    pendingWindowUsageGenerationByIdRef.current = new Map();
+    setIsWindowUsagePending(false);
+  }, [currentListQueryKey, selectedId]);
 
   useEffect(() => {
     if (query == null || listDataQueryKey !== currentListQueryKey) {

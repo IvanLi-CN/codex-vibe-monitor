@@ -167,8 +167,9 @@ async fn live_invocation_first_token_ms_sql_tx(tx: &mut SqliteConnection) -> Res
 fn live_invocation_upstream_account_id_sql(
     invocation_ref: &str,
     capability: PoolAttemptFallbackCapability,
+    has_structured_account_id: bool,
 ) -> String {
-    match capability {
+    let fallback = match capability {
         PoolAttemptFallbackCapability::Unavailable => {
             payload_upstream_account_id_sql(invocation_ref)
         }
@@ -178,7 +179,32 @@ fn live_invocation_upstream_account_id_sql(
         PoolAttemptFallbackCapability::Full => {
             crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref)
         }
+    };
+    // New terminal rows persist the account assignment structurally. Legacy archive tables
+    // predate that additive column, so preserve their attempt/payload resolution instead.
+    if has_structured_account_id {
+        format!("COALESCE({invocation_ref}.upstream_account_id, {fallback})")
+    } else {
+        fallback
     }
+}
+
+async fn live_invocation_upstream_account_id_sql_tx(
+    tx: &mut SqliteConnection,
+    invocation_ref: &str,
+) -> Result<String> {
+    let has_structured_account_id = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('codex_invocations') WHERE name = 'upstream_account_id' LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    let capability = load_pool_attempt_fallback_capability_tx(tx).await?;
+    Ok(live_invocation_upstream_account_id_sql(
+        invocation_ref,
+        capability,
+        has_structured_account_id,
+    ))
 }
 
 pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
@@ -784,7 +810,13 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     let reasoning_tokens = token_component("reasoning_tokens");
     let total_tokens = select("total_tokens");
     let cost = select("cost");
-    let upstream_account_id = select("upstream_account_id");
+    let upstream_account_id = if archive_columns.contains("upstream_account_id") {
+        "upstream_account_id".to_string()
+    } else if archive_columns.contains("payload") {
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id".to_string()
+    } else {
+        "NULL AS upstream_account_id".to_string()
+    };
     let cost_input = select("cost_input");
     let cost_cache_write = select("cost_cache_write");
     let cost_cache_read = select("cost_cache_read");
@@ -2711,34 +2743,26 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
     tx: &mut SqliteConnection,
     bucket_epochs: &[i64],
 ) -> Result<Vec<InvocationHourlySourceRecord>> {
+    load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(tx, bucket_epochs, None).await
+}
+
+async fn load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(
+    tx: &mut SqliteConnection,
+    bucket_epochs: &[i64],
+    limit: Option<usize>,
+) -> Result<Vec<InvocationHourlySourceRecord>> {
     if bucket_epochs.is_empty() {
         return Ok(Vec::new());
     }
 
-    let min_bucket_epoch = *bucket_epochs
-        .iter()
-        .min()
-        .ok_or_else(|| anyhow!("missing minimum invocation bucket epoch"))?;
-    let max_bucket_epoch = *bucket_epochs
-        .iter()
-        .max()
-        .ok_or_else(|| anyhow!("missing maximum invocation bucket epoch"))?;
-    let min_bucket_start = Utc
-        .timestamp_opt(min_bucket_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid minimum invocation bucket epoch"))?;
-    let max_bucket_end = Utc
-        .timestamp_opt(max_bucket_epoch + 3_600, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid maximum invocation bucket epoch"))?;
-    let bucket_epoch_set = bucket_epochs.iter().copied().collect::<HashSet<_>>();
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx).await?,
-    );
+    let mut normalized_bucket_epochs = bucket_epochs.to_vec();
+    normalized_bucket_epochs.sort_unstable();
+    normalized_bucket_epochs.dedup();
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
 
-    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT \
             id,
             occurred_at,
@@ -2773,31 +2797,61 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             t_resp_parse_ms,
             t_persist_ms
          FROM codex_invocations
-         WHERE occurred_at >= ?1
-           AND occurred_at < ?2
-         ORDER BY id ASC",
+         WHERE ",
         upstream_account_id_sql, first_token_ms_sql,
-    ))
-    .bind(db_occurred_at_lower_bound(min_bucket_start))
-    .bind(db_occurred_at_lower_bound(max_bucket_end))
-    .fetch_all(&mut *tx)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| {
-            invocation_bucket_start_epoch(&row.occurred_at)
-                .map(|bucket_epoch| bucket_epoch_set.contains(&bucket_epoch))
-                .unwrap_or(false)
-        })
-        .collect())
+    ));
+    for (index, bucket_epoch) in normalized_bucket_epochs.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid invocation bucket epoch"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(3_600), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid invocation bucket end epoch"))?;
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(bucket_start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_lower_bound(bucket_end))
+            .push(")");
+    }
+    query.push(" ORDER BY id ASC");
+    if let Some(limit) = limit {
+        query
+            .push(" LIMIT ")
+            .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+    }
+    Ok(query
+        .build_query_as::<InvocationHourlySourceRecord>()
+        .fetch_all(&mut *tx)
+        .await?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationHourlyRollupRecomputeOutcome {
+    Recomputed,
+    RowLimitExceeded,
 }
 
 pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     tx: &mut SqliteConnection,
     ids: &[i64],
 ) -> Result<()> {
+    let _ = recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(tx, ids, None).await?;
+    Ok(())
+}
+
+pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+    tx: &mut SqliteConnection,
+    ids: &[i64],
+    max_rows: Option<usize>,
+) -> Result<InvocationHourlyRollupRecomputeOutcome> {
     if ids.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -2815,7 +2869,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
         .fetch_all(&mut *tx)
         .await?;
     if occurred_rows.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
     }
 
     let mut bucket_epochs = occurred_rows
@@ -2825,7 +2879,17 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     bucket_epochs.sort_unstable();
     bucket_epochs.dedup();
     if bucket_epochs.is_empty() {
-        return Ok(());
+        return Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed);
+    }
+
+    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_with_limit_tx(
+        tx,
+        &bucket_epochs,
+        max_rows.map(|limit| limit.saturating_add(1)),
+    )
+    .await?;
+    if max_rows.is_some_and(|limit| rows.len() > limit) {
+        return Ok(InvocationHourlyRollupRecomputeOutcome::RowLimitExceeded);
     }
 
     for table in [
@@ -2849,7 +2913,6 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     )
     .await?;
 
-    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
     rebuild_parallel_work_rollups_for_hours_tx(tx, &bucket_epochs).await?;
     let mut bucket_watermarks = BTreeMap::<i64, i64>::new();
@@ -2866,7 +2929,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
     for (bucket_epoch, cursor_id) in bucket_watermarks {
         save_account_activity_v2_bucket_repair_watermark_tx(tx, bucket_epoch, cursor_id).await?;
     }
-    Ok(())
+    Ok(InvocationHourlyRollupRecomputeOutcome::Recomputed)
 }
 
 pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
@@ -2879,10 +2942,8 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
     .await?;
     let rows = {
         let mut conn = pool.acquire().await?;
-        let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-            "codex_invocations",
-            load_pool_attempt_fallback_capability_tx(&mut conn).await?,
-        );
+        let upstream_account_id_sql =
+            live_invocation_upstream_account_id_sql_tx(&mut conn, "codex_invocations").await?;
         let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut conn).await?;
         sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
@@ -2968,10 +3029,8 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
         INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
     )
     .await?;
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -3097,10 +3156,8 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
         return Ok(0);
     }
 
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx.as_mut(), "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -3647,10 +3704,8 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
         return Ok(0);
     }
 
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(tx.as_mut(), "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
@@ -4678,7 +4733,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 ) -> Result<(usize, usize)> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at, sha256
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -4699,6 +4754,30 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during upstream account stats rollup rebuild"
+            );
+            source_incomplete = true;
+            continue;
+        }
+        let actual_sha256 = match sha256_hex_file(&archive_path) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    error = %error,
+                    "could not verify archive batch identity during upstream account stats rollup rebuild"
+                );
+                source_incomplete = true;
+                continue;
+            }
+        };
+        if actual_sha256 != archive_file.sha256 {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = %archive_path.display(),
+                expected_sha256 = archive_file.sha256,
+                actual_sha256,
+                "archive batch identity does not match its manifest during upstream account stats rollup rebuild"
             );
             source_incomplete = true;
             continue;
@@ -4758,10 +4837,8 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 
     let mut cursor_id = 0_i64;
     let mut live_conn = pool.acquire().await?;
-    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
-        "codex_invocations",
-        load_pool_attempt_fallback_capability_tx(&mut live_conn).await?,
-    );
+    let upstream_account_id_sql =
+        live_invocation_upstream_account_id_sql_tx(&mut live_conn, "codex_invocations").await?;
     let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut live_conn).await?;
     loop {
         let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
@@ -5087,6 +5164,51 @@ mod upstream_host_network_minute_tests {
     }
 
     #[tokio::test]
+    async fn legacy_compatible_archive_query_recovers_account_id_from_payload() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory legacy archive pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy payload archive schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, source, payload) VALUES (1, ?1, ?2, ?3)",
+        )
+        .bind("2026-07-23 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(r#"{"upstreamAccountId":42}"#)
+        .execute(&pool)
+        .await
+        .expect("insert legacy payload archive row");
+
+        let columns = load_archive_table_columns(&pool, "codex_invocations")
+            .await
+            .expect("inspect legacy payload archive schema");
+        let query = build_legacy_compatible_invocation_archive_query(&columns);
+        let row = sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+            .bind(0_i64)
+            .bind(10_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("read legacy payload archive row");
+
+        assert_eq!(row.upstream_account_id, Some(42));
+        assert_eq!(row.resolved_upstream_account_id(), Some(42));
+    }
+
+    #[tokio::test]
     async fn legacy_compatible_archive_query_keeps_partial_token_components_unknown() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -5162,6 +5284,7 @@ mod upstream_host_network_minute_tests {
                 file_path TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
+                sha256 TEXT NOT NULL DEFAULT '',
                 dataset TEXT NOT NULL,
                 status TEXT NOT NULL,
                 month_key TEXT NOT NULL,
@@ -5188,6 +5311,33 @@ mod upstream_host_network_minute_tests {
         let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
             .await
             .expect("rebuild should preserve existing rollups");
+
+        assert_eq!(counts, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn account_stats_rebuild_rejects_mismatched_archive_manifest() {
+        let pool = test_pool().await;
+        create_upstream_account_stats_rebuild_tables(&pool).await;
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-account-rollup-manifest-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&archive_path, b"not the manifest archive")
+            .expect("write mismatched archive bytes");
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, sha256, dataset, status, month_key, created_at) VALUES (1, ?1, 'expected-manifest-sha', 'codex_invocations', 'completed', '2026-07', '2026-07-01 00:00:00')",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("seed mismatched invocation archive");
+
+        let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
+            .await
+            .expect("mismatched archive must preserve existing rollups");
+        let _ = std::fs::remove_file(&archive_path);
 
         assert_eq!(counts, (1, 1));
     }
@@ -5761,6 +5911,7 @@ mod retention_breakdown_materialization_tests {
                 dataset TEXT NOT NULL,
                 month_key TEXT,
                 file_path TEXT NOT NULL UNIQUE,
+                sha256 TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
@@ -5779,6 +5930,7 @@ mod retention_breakdown_materialization_tests {
                 dataset TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                archive_sha256 TEXT,
                 PRIMARY KEY (target, dataset, file_path)
             )
             "#,

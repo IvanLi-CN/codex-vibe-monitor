@@ -3490,6 +3490,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         request_contains_encrypted_content,
                         owner_auto_guard_active,
                     ) = if let Some(sticky_key) = header_sticky_key.clone() {
+                        // The no-available interval belongs to this request, rather than to
+                        // whichever routing pass gets scheduled first. A body-derived reroute
+                        // must therefore inherit the initial header resolution's deadline.
+                        let header_sticky_wait_started_at = Instant::now();
                         let initial_header_sticky_resolution =
                             resolve_pool_account_for_request_with_image_intent_and_codex_imagegen_request(
                                 state.as_ref(),
@@ -3502,14 +3506,23 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 codex_imagegen_request,
                             )
                             .await;
+                        let initial_no_available_wait_deadline = matches!(
+                            &initial_header_sticky_resolution,
+                            Ok(PoolAccountResolution::Unavailable
+                                | PoolAccountResolution::NoCandidate)
+                        )
+                        .then(|| {
+                            header_sticky_wait_started_at + state.pool_no_available_wait.timeout
+                        });
                         let state_for_wait = state.clone();
                         let wait_task_sticky_key = sticky_key.clone();
-                        let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
+                        let shared_wait_deadline =
+                            Arc::new(std::sync::Mutex::new(initial_no_available_wait_deadline));
                         let shared_wait_deadline_for_task = shared_wait_deadline.clone();
                         let header_sticky_resolution = async move {
                             let excluded_ids = Vec::new();
                             let excluded_upstream_route_keys = HashSet::new();
-                            let mut no_available_wait_deadline = None;
+                            let mut no_available_wait_deadline = initial_no_available_wait_deadline;
                             let poll_interval = state_for_wait
                                 .pool_no_available_wait
                                 .normalized_poll_interval();

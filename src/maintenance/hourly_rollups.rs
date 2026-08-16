@@ -2752,6 +2752,7 @@ pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'xy',
+            upstream_account_id INTEGER,
             model TEXT,
             input_tokens INTEGER,
             output_tokens INTEGER,
@@ -2972,6 +2973,7 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         load_sqlite_table_columns_from_connection(conn, Some("archive_db"), "codex_invocations")
             .await?;
     for (column, ty) in [
+        ("upstream_account_id", "INTEGER"),
         ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("timeline_json", "TEXT"),
