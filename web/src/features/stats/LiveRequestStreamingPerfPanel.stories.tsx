@@ -46,6 +46,7 @@ const meta = {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1280" },
   },
   decorators: [
     (Story) => (
