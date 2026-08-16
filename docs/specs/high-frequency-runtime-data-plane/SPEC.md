@@ -118,7 +118,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 ## Visual Evidence
 
-以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发组件使用 Storybook 绑定的 `desktop1280` 视口。
+以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发组件使用 Storybook 绑定的 `desktop1280` 视口和应用一致的 `bg-base-200` 浅色页面底色。
 
 PR: include
 
