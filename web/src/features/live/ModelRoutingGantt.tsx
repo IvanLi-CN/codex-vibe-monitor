@@ -373,7 +373,7 @@ export function ModelRoutingGantt({
   }, [timeline.lanes]);
   const bandCount = Math.max(0, ...timeline.lanes.map((lane) => lane.bands.length));
   const bandKeys = Array.from({ length: bandCount }, (_, index) => `band-${index}`);
-  const chartHeight = Math.max(166, timeline.lanes.length * 48 + 66);
+  const chartHeight = Math.max(186, timeline.lanes.length * 48 + 86);
   const tickValues = Array.from(
     { length: 5 },
     (_, index) => ((timeline.rangeEndMs - timeline.rangeStartMs) * index) / 4,
@@ -421,12 +421,12 @@ export function ModelRoutingGantt({
         </span>
       </div>
       <div className="overflow-x-auto" data-testid={`model-routing-gantt-scroll-${model}`}>
-        <div className="min-w-[46rem] px-3 pb-3 pt-2">
+        <div className="min-w-0 px-3 pb-3 pt-2 desktop:min-w-[46rem]">
           <ResponsiveContainer width="100%" height={chartHeight}>
             <ComposedChart
               layout="vertical"
               data={chartRows.map((row) => ({ ...row, ...row.bandValues }))}
-              margin={{ top: 8, right: 14, bottom: 8, left: 8 }}
+              margin={{ top: 8, right: 14, bottom: 28, left: 8 }}
               barCategoryGap="36%"
               aria-label={t("live.routing.timeline.aria", { model })}
             >
