@@ -251,29 +251,17 @@ export function ModelRoutingLivePanel({
             className="flex min-w-0 flex-wrap items-end gap-2 desktop:justify-end"
             data-testid="model-routing-live-controls"
           >
-            <SegmentedControl aria-label={t("live.routing.windowLabel")}>
-              {(["15m", "1h", "6h", "24h"] as ModelRoutingLiveWindow[]).map((value) => (
-                <SegmentedControlItem
-                  key={value}
-                  active={window === value}
-                  onClick={() => onWindowChange(value)}
-                >
-                  {value}
-                </SegmentedControlItem>
-              ))}
-            </SegmentedControl>
-            <SelectField
-              label={t("live.routing.modelLabel")}
-              name="modelRoutingModel"
+            <Button
+              type="button"
+              variant="ghost"
               size="sm"
-              className="w-44"
-              value={model}
-              options={[
-                { value: "", label: t("live.routing.allModels") },
-                ...models.map((value) => ({ value, label: value })),
-              ]}
-              onValueChange={onModelChange}
-            />
+              className="shrink-0"
+              onClick={onRefresh}
+              disabled={isLoading}
+            >
+              <AppIcon name="refresh" className="mr-1.5 h-4 w-4" aria-hidden />
+              {t("live.routing.refresh")}
+            </Button>
             <SelectField
               label={t("live.routing.stateLabel")}
               name="modelRoutingState"
@@ -288,17 +276,29 @@ export function ModelRoutingLivePanel({
               ]}
               onValueChange={onStateChange}
             />
-            <Button
-              type="button"
-              variant="ghost"
+            <SelectField
+              label={t("live.routing.modelLabel")}
+              name="modelRoutingModel"
               size="sm"
-              className="shrink-0"
-              onClick={onRefresh}
-              disabled={isLoading}
-            >
-              <AppIcon name="refresh" className="mr-1.5 h-4 w-4" aria-hidden />
-              {t("live.routing.refresh")}
-            </Button>
+              className="w-44"
+              value={model}
+              options={[
+                { value: "", label: t("live.routing.allModels") },
+                ...models.map((value) => ({ value, label: value })),
+              ]}
+              onValueChange={onModelChange}
+            />
+            <SegmentedControl aria-label={t("live.routing.windowLabel")}>
+              {(["15m", "1h", "6h", "24h"] as ModelRoutingLiveWindow[]).map((value) => (
+                <SegmentedControlItem
+                  key={value}
+                  active={window === value}
+                  onClick={() => onWindowChange(value)}
+                >
+                  {value}
+                </SegmentedControlItem>
+              ))}
+            </SegmentedControl>
           </div>
         </div>
         {error ? (

@@ -76,6 +76,13 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain('data-testid="model-routing-record-attempt:31"');
     expect(html).toContain('data-testid="model-routing-live-controls"');
     expect(html).toContain("desktop:justify-end");
+    expect(html.indexOf(">刷新</button>")).toBeLessThan(html.indexOf('name="modelRoutingState"'));
+    expect(html.indexOf('name="modelRoutingState"')).toBeLessThan(
+      html.indexOf('name="modelRoutingModel"'),
+    );
+    expect(html.indexOf('name="modelRoutingModel"')).toBeLessThan(
+      html.indexOf('aria-label="路由时间窗"'),
+    );
     expect(html).toContain("1/100");
   });
 
