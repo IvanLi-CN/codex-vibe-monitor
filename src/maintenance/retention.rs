@@ -647,6 +647,8 @@ pub(crate) struct ArchiveBatchFileRow {
     pub(crate) file_path: String,
     pub(crate) coverage_start_at: Option<String>,
     pub(crate) coverage_end_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) sha256: String,
 }
 
 #[derive(Debug, FromRow)]

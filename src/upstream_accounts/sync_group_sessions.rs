@@ -522,6 +522,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
                     file_path: archive_file.file_path.clone(),
                     coverage_start_at: archive_file.coverage_start_at.clone(),
                     coverage_end_at: archive_file.coverage_end_at.clone(),
+                    sha256: archive_file.sha256.clone(),
                 },
                 bucket_keys,
                 bucket_seconds,
@@ -562,6 +563,7 @@ pub(crate) async fn load_window_actual_usage_rows_for_account_bucket_keys_from_a
             file_path: archive_file.file_path,
             coverage_start_at: archive_file.coverage_start_at,
             coverage_end_at: archive_file.coverage_end_at,
+            sha256: archive_file.sha256,
         };
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
@@ -769,6 +771,7 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
                     file_path: archive_file.file_path,
                     coverage_start_at: archive_file.coverage_start_at,
                     coverage_end_at: archive_file.coverage_end_at,
+                    sha256: archive_file.archive_sha256,
                 });
             }
             Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {

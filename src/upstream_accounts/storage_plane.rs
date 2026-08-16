@@ -5,7 +5,7 @@ use crate::maintenance::{
     save_startup_backfill_progress, wake_startup_backfill_tasks,
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -25,6 +25,7 @@ const ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING: &str = "pending";
 const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE: usize = 2;
 const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS: usize = 1_000;
 const ACCOUNT_WINDOW_LIVE_COVERAGE_FULL_REPAIR_BATCH_SIZE: usize = 1;
+const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +197,7 @@ pub(crate) struct AccountWindowStoragePlane {
     coalesced_waiter_count: AtomicU64,
     legacy_backfill_state_loaded: AtomicBool,
     legacy_backfill_required: AtomicBool,
+    legacy_backfill_completed_keys: Arc<Mutex<HashSet<String>>>,
     backfill_running: Arc<AtomicBool>,
     coverage_repair_running: Arc<AtomicBool>,
     live_coverage_repairs: Arc<Mutex<AccountWindowLiveCoverageRepairQueue>>,
@@ -212,6 +214,7 @@ impl Default for AccountWindowStoragePlane {
             coalesced_waiter_count: AtomicU64::new(0),
             legacy_backfill_state_loaded: AtomicBool::new(false),
             legacy_backfill_required: AtomicBool::new(false),
+            legacy_backfill_completed_keys: Arc::new(Mutex::new(HashSet::new())),
             backfill_running: Arc::new(AtomicBool::new(false)),
             coverage_repair_running: Arc::new(AtomicBool::new(false)),
             live_coverage_repairs: Arc::new(Mutex::new(
@@ -241,6 +244,7 @@ impl AccountWindowStoragePlane {
         // cursor both change the exact result. Resolve this bounded metadata before claiming
         // the singleflight slot so newer callers never reuse a stale configuration.
         let selection_now = Utc::now();
+        let completed_legacy_backfill_keys = self.legacy_backfill_completed_keys.clone();
         let preflight = async {
             let summaries = load_upstream_account_window_usage_summaries(
                 &state.pool,
@@ -262,7 +266,16 @@ impl AccountWindowStoragePlane {
             let legacy_backfill_required = self.legacy_backfill_required(&state.pool).await?;
             let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty()
             {
-                Self::legacy_backfill_complete(&state.pool, &legacy_ranges).await?
+                let progress_key = legacy_backfill_progress_key(&legacy_ranges);
+                if completed_legacy_backfill_keys
+                    .lock()
+                    .await
+                    .contains(&progress_key)
+                {
+                    true
+                } else {
+                    Self::legacy_backfill_complete(&state.pool, &legacy_ranges).await?
+                }
             } else {
                 true
             };
@@ -303,6 +316,12 @@ impl AccountWindowStoragePlane {
         };
         let last_good_compatibility_key = account_window_last_good_compatibility_key(&selection)
             .unwrap_or_else(|| account_window_selection_config_from_key(&selection).to_string());
+        if legacy_backfill_required && legacy_backfill_complete && !legacy_ranges.is_empty() {
+            self.legacy_backfill_completed_keys
+                .lock()
+                .await
+                .insert(legacy_backfill_progress_key(&legacy_ranges));
+        }
 
         let (waiter, lease, schedule_legacy_backfill, immediate_response) = {
             let mut entries = self.entries.lock().await;
@@ -745,6 +764,10 @@ impl AccountWindowStoragePlane {
                     drop(permit);
                     return;
                 };
+                let write_permit =
+                    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                        .acquire_maintenance(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_FAIRNESS_INTERVAL)
+                        .await;
                 let _guard = hourly_rollup_sync_lock.lock().await;
                 let started_at = Instant::now();
                 let result: Result<crate::maintenance::InvocationHourlyRollupRecomputeOutcome> = async {
@@ -769,6 +792,7 @@ impl AccountWindowStoragePlane {
                 }
                 .await;
                 drop(_guard);
+                drop(write_permit);
                 drop(permit);
                 match result {
                     Ok(crate::maintenance::InvocationHourlyRollupRecomputeOutcome::Recomputed) => {
@@ -849,6 +873,8 @@ impl AccountWindowStoragePlane {
         let running = self.backfill_running.clone();
         let health = self.health.clone();
         let entries = self.entries.clone();
+        let completed_keys = self.legacy_backfill_completed_keys.clone();
+        let progress_key = legacy_backfill_progress_key(&ranges);
         tokio::spawn(async move {
             struct BackfillGuard(Arc<AtomicBool>);
             impl Drop for BackfillGuard {
@@ -864,6 +890,7 @@ impl AccountWindowStoragePlane {
             };
             match outcome {
                 Ok(AccountWindowLegacyBackfillOutcome::Ready) => {
+                    completed_keys.lock().await.insert(progress_key);
                     entry.legacy_readiness = AccountWindowLegacyReadiness::Ready;
                     entry.last_error = None;
                 }

@@ -5543,6 +5543,111 @@ async fn window_usage_reads_verified_archive_full_hour_when_usage_rollup_is_miss
 }
 
 #[tokio::test]
+async fn window_usage_archive_hole_does_not_double_count_partial_minute_rollup() {
+    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+    config.invocation_max_days = 1;
+    config.archive_dir = PathBuf::from(format!(
+        "target/archive-tests/upstream-account-usage-hole-minute-{}",
+        random_base36(8).expect("archive suffix")
+    ));
+    let state = test_app_state_with_config_and_parallelism(
+        config,
+        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+    )
+    .await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Archive Hole Minute Coverage").await;
+    let window_end = (Utc::now() - ChronoDuration::days(2))
+        .with_minute(0)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("align closed archive window");
+    let occurred_at = shanghai_local_iso(window_end - ChronoDuration::minutes(30));
+    seed_window_actual_usage_archive_batch(
+        &state.pool,
+        &state.config.archive_dir,
+        "window-usage-hole-minute",
+        &[(
+            account_id,
+            occurred_at.clone(),
+            Some(1_200),
+            Some(600),
+            Some(200),
+            Some(2_000),
+            Some(0.02),
+        )],
+    )
+    .await;
+    let hour_epoch = invocation_bucket_start_epoch(&occurred_at).expect("archive hour");
+    let minute_epoch =
+        invocation_bucket_start_epoch_for_seconds(&occurred_at, 60).expect("archive minute");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_minute (
+            bucket_start_epoch, source, upstream_account_id, total_count,
+            success_count, failure_count, in_flight_count, total_tokens,
+            input_tokens, output_tokens, cache_input_tokens, total_cost, updated_at
+        ) VALUES (?1, ?2, ?3, 1, 1, 0, 0, 2_000, 1_200, 600, 200, 0.02, datetime('now'))
+        "#,
+    )
+    .bind(minute_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed partial minute rollup inside archive hole");
+    sqlx::query(
+        "UPDATE archive_batches SET coverage_start_at = ?1, coverage_end_at = ?2 WHERE dataset = 'codex_invocations'",
+    )
+    .bind(shanghai_local_iso(
+        Utc.timestamp_opt(hour_epoch, 0)
+            .single()
+            .expect("archive hour start"),
+    ))
+    .bind(shanghai_local_iso(
+        Utc.timestamp_opt(hour_epoch + 3_600, 0)
+            .single()
+            .expect("archive hour end"),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("mark archive coverage");
+
+    let mut summaries =
+        load_upstream_account_window_usage_summaries(&state.pool, &state.config, &[account_id])
+            .await
+            .expect("load archive-hole summary");
+    summaries[0].primary_window = Some(RateWindowSnapshot {
+        used_percent: 18.0,
+        used_text: "18%".to_string(),
+        limit_text: "1 hour".to_string(),
+        resets_at: Some(window_end.to_rfc3339()),
+        window_duration_mins: 60,
+        actual_usage: None,
+    });
+    summaries[0].secondary_window = None;
+
+    let (outcome, telemetry) = enrich_window_actual_usage_for_summaries_from_storage_at(
+        &state.pool,
+        &state.config,
+        &mut summaries,
+        window_end,
+    )
+    .await
+    .expect("build archive-hole usage");
+    assert_eq!(outcome, AccountWindowUsageBuildOutcome::Ready);
+    assert_eq!(telemetry.bounded_raw_row_count, 1);
+    let usage = summaries[0]
+        .primary_window
+        .as_ref()
+        .and_then(|window| window.actual_usage)
+        .expect("archive-hole usage");
+    assert_eq!(usage.request_count, 1);
+    assert_eq!(usage.total_tokens, 2_000);
+}
+
+#[tokio::test]
 async fn window_usage_archive_marker_requires_current_file_hash() {
     let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     config.invocation_max_days = 1;

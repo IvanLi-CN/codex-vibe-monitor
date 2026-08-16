@@ -4239,13 +4239,15 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
         .into_iter()
         .filter_map(|(key, minute_count)| (minute_count == 60).then_some(key))
         .collect::<HashSet<_>>();
-    let mut hourly_row_keys = HashSet::new();
     let mut covered_hourly_keys = minute_complete_hourly_keys.clone();
     let full_hour_ranges = collect_account_window_full_hour_ranges(&plans);
+    // A full-hour hole is recovered by its exact raw bucket. Keep any partial minute rollups
+    // out of that hour so the two sources cannot count the same invocation twice.
+    let planned_full_hour_keys =
+        collect_account_window_missing_full_hour_keys(&plans, &HashSet::new());
     if has_hourly_usage_rollups && !full_hour_ranges.is_empty() {
         let hourly_rows =
             load_window_actual_usage_hourly_rows_from_pool(pool, &full_hour_ranges).await?;
-        hourly_row_keys = collect_account_window_hourly_coverage_keys(&hourly_rows);
         let hourly_rows = hourly_rows
             .into_iter()
             .filter(|row| {
@@ -4267,7 +4269,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_from_storage_at(
                 align_bucket_epoch(row.bucket_start_epoch, 3_600, 0),
             );
             minute_complete_hourly_keys.contains(&hourly_key)
-                || !hourly_row_keys.contains(&hourly_key)
+                || !planned_full_hour_keys.contains(&hourly_key)
         })
         .collect::<Vec<_>>();
     let minute_covered_keys = minute_rows

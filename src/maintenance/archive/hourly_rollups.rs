@@ -810,7 +810,13 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     let reasoning_tokens = token_component("reasoning_tokens");
     let total_tokens = select("total_tokens");
     let cost = select("cost");
-    let upstream_account_id = select("upstream_account_id");
+    let upstream_account_id = if archive_columns.contains("upstream_account_id") {
+        "upstream_account_id".to_string()
+    } else if archive_columns.contains("payload") {
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id".to_string()
+    } else {
+        "NULL AS upstream_account_id".to_string()
+    };
     let cost_input = select("cost_input");
     let cost_cache_write = select("cost_cache_write");
     let cost_cache_read = select("cost_cache_read");
@@ -4727,7 +4733,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 ) -> Result<(usize, usize)> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at, sha256
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -4748,6 +4754,30 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during upstream account stats rollup rebuild"
+            );
+            source_incomplete = true;
+            continue;
+        }
+        let actual_sha256 = match sha256_hex_file(&archive_path) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    error = %error,
+                    "could not verify archive batch identity during upstream account stats rollup rebuild"
+                );
+                source_incomplete = true;
+                continue;
+            }
+        };
+        if actual_sha256 != archive_file.sha256 {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = %archive_path.display(),
+                expected_sha256 = archive_file.sha256,
+                actual_sha256,
+                "archive batch identity does not match its manifest during upstream account stats rollup rebuild"
             );
             source_incomplete = true;
             continue;
@@ -5134,6 +5164,51 @@ mod upstream_host_network_minute_tests {
     }
 
     #[tokio::test]
+    async fn legacy_compatible_archive_query_recovers_account_id_from_payload() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory legacy archive pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy payload archive schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, source, payload) VALUES (1, ?1, ?2, ?3)",
+        )
+        .bind("2026-07-23 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(r#"{"upstreamAccountId":42}"#)
+        .execute(&pool)
+        .await
+        .expect("insert legacy payload archive row");
+
+        let columns = load_archive_table_columns(&pool, "codex_invocations")
+            .await
+            .expect("inspect legacy payload archive schema");
+        let query = build_legacy_compatible_invocation_archive_query(&columns);
+        let row = sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+            .bind(0_i64)
+            .bind(10_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("read legacy payload archive row");
+
+        assert_eq!(row.upstream_account_id, Some(42));
+        assert_eq!(row.resolved_upstream_account_id(), Some(42));
+    }
+
+    #[tokio::test]
     async fn legacy_compatible_archive_query_keeps_partial_token_components_unknown() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -5209,6 +5284,7 @@ mod upstream_host_network_minute_tests {
                 file_path TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
+                sha256 TEXT NOT NULL DEFAULT '',
                 dataset TEXT NOT NULL,
                 status TEXT NOT NULL,
                 month_key TEXT NOT NULL,
@@ -5235,6 +5311,33 @@ mod upstream_host_network_minute_tests {
         let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
             .await
             .expect("rebuild should preserve existing rollups");
+
+        assert_eq!(counts, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn account_stats_rebuild_rejects_mismatched_archive_manifest() {
+        let pool = test_pool().await;
+        create_upstream_account_stats_rebuild_tables(&pool).await;
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-account-rollup-manifest-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&archive_path, b"not the manifest archive")
+            .expect("write mismatched archive bytes");
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, sha256, dataset, status, month_key, created_at) VALUES (1, ?1, 'expected-manifest-sha', 'codex_invocations', 'completed', '2026-07', '2026-07-01 00:00:00')",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("seed mismatched invocation archive");
+
+        let counts = rebuild_upstream_account_stats_rollups_from_sources(&pool)
+            .await
+            .expect("mismatched archive must preserve existing rollups");
+        let _ = std::fs::remove_file(&archive_path);
 
         assert_eq!(counts, (1, 1));
     }
