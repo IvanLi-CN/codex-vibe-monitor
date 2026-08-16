@@ -22,6 +22,7 @@ const ACCOUNT_WINDOW_LEGACY_BACKFILL_PROGRESS_KEY: &str =
 const ACCOUNT_WINDOW_LEGACY_BACKFILL_STATE_PENDING: &str = "pending";
 const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE: usize = 2;
 const ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS: usize = 1_000;
+const ACCOUNT_WINDOW_LIVE_COVERAGE_FULL_REPAIR_BATCH_SIZE: usize = 1;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +134,7 @@ struct AccountWindowBuildResult {
 #[derive(Debug, Default)]
 struct AccountWindowLiveCoverageRepairQueue {
     pending_invocation_ids: BTreeSet<i64>,
+    pending_full_recompute_ids: BTreeSet<i64>,
     refresh_live_cursor: bool,
     worker_running: bool,
 }
@@ -178,57 +180,9 @@ impl Drop for AccountWindowLoadLease {
     }
 }
 
-struct AccountWindowRequestLoadLease {
-    flights: Arc<Mutex<HashMap<String, Arc<AccountWindowLoadFlight>>>>,
-    request_key: String,
-    flight: Arc<AccountWindowLoadFlight>,
-    completed: bool,
-}
-
-impl AccountWindowRequestLoadLease {
-    async fn complete(&mut self, response: AccountWindowStorageResponse) {
-        self.flight.complete(response);
-        let mut flights = self.flights.lock().await;
-        if flights
-            .get(&self.request_key)
-            .is_some_and(|current| Arc::ptr_eq(current, &self.flight))
-        {
-            flights.remove(&self.request_key);
-        }
-        self.completed = true;
-    }
-}
-
-impl Drop for AccountWindowRequestLoadLease {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-
-        let flights = self.flights.clone();
-        let request_key = self.request_key.clone();
-        let flight = self.flight.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                flight.complete(AccountWindowStorageResponse::Preparing {
-                    retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                });
-                let mut flights = flights.lock().await;
-                if flights
-                    .get(&request_key)
-                    .is_some_and(|current| Arc::ptr_eq(current, &flight))
-                {
-                    flights.remove(&request_key);
-                }
-            });
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct AccountWindowStoragePlane {
     entries: Arc<Mutex<HashMap<String, AccountWindowSelectionEntry>>>,
-    request_flights: Arc<Mutex<HashMap<String, Arc<AccountWindowLoadFlight>>>>,
     health: Arc<std::sync::Mutex<AccountWindowStorageHealthState>>,
     coalesced_waiter_count: AtomicU64,
     legacy_backfill_state_loaded: AtomicBool,
@@ -243,7 +197,6 @@ impl Default for AccountWindowStoragePlane {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
-            request_flights: Arc::new(Mutex::new(HashMap::new())),
             health: Arc::new(std::sync::Mutex::new(
                 AccountWindowStorageHealthState::default(),
             )),
@@ -275,84 +228,70 @@ impl AccountWindowStoragePlane {
             ));
         }
 
-        let request_key = account_window_request_key(&normalized_account_ids);
-        let (mut waiter, lease) = {
-            let mut flights = self.request_flights.lock().await;
-            if let Some(flight) = flights.get(&request_key) {
-                self.coalesced_waiter_count.fetch_add(1, Ordering::Relaxed);
-                (Some(flight.subscribe()), None)
-            } else {
-                let flight = Arc::new(AccountWindowLoadFlight::new());
-                flights.insert(request_key.clone(), flight.clone());
-                (
-                    None,
-                    Some(AccountWindowRequestLoadLease {
-                        flights: self.request_flights.clone(),
-                        request_key,
-                        flight,
-                        completed: false,
-                    }),
-                )
-            }
-        };
-        if let Some(waiter) = waiter.as_mut() {
-            if waiter.changed().await.is_ok()
-                && let Some(response) = waiter.borrow_and_update().clone()
-            {
-                return Ok(response);
-            }
-            return Ok(AccountWindowStorageResponse::Preparing {
-                retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-            });
-        }
-
-        let mut lease = lease.expect("preflight leader must hold an in-flight lease");
-        match self.load_normalized(state, normalized_account_ids).await {
-            Ok(response) => {
-                lease.complete(response.clone()).await;
-                Ok(response)
-            }
-            Err(error) => {
-                lease
-                    .complete(AccountWindowStorageResponse::Preparing {
-                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
-                    })
-                    .await;
-                Err(error)
-            }
-        }
-    }
-
-    async fn load_normalized(
-        &self,
-        state: &AppState,
-        normalized_account_ids: Vec<i64>,
-    ) -> Result<AccountWindowStorageResponse> {
         // Account IDs alone cannot identify a build: reset/window changes and the durable
         // cursor both change the exact result. Resolve this bounded metadata before claiming
         // the singleflight slot so newer callers never reuse a stale configuration.
         let selection_now = Utc::now();
-        let summaries = load_upstream_account_window_usage_summaries(
-            &state.pool,
-            &state.config,
-            &normalized_account_ids,
-        )
-        .await?;
-        let plans = collect_account_window_usage_plans(&summaries, selection_now)
-            .map(|(plans, _, _)| plans)
-            .unwrap_or_default();
-        let durable_cursor =
-            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-                .fetch_one(&state.pool)
-                .await?;
-        let selection_config = account_window_selection_config_key(&normalized_account_ids, &plans);
-        let selection = account_window_selection_key(&selection_config, durable_cursor);
-        let legacy_ranges = legacy_backfill_ranges_from_plans(&plans);
-        let legacy_backfill_required = self.legacy_backfill_required(&state.pool).await?;
-        let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty() {
-            Self::legacy_backfill_complete(&state.pool, &legacy_ranges).await?
-        } else {
-            true
+        let preflight = async {
+            let summaries = load_upstream_account_window_usage_summaries(
+                &state.pool,
+                &state.config,
+                &normalized_account_ids,
+            )
+            .await?;
+            let plans = collect_account_window_usage_plans(&summaries, selection_now)
+                .map(|(plans, _, _)| plans)
+                .unwrap_or_default();
+            let durable_cursor =
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+                    .fetch_one(&state.pool)
+                    .await?;
+            let selection_config =
+                account_window_selection_config_key(&normalized_account_ids, &plans);
+            let selection = account_window_selection_key(&selection_config, durable_cursor);
+            let legacy_ranges = legacy_backfill_ranges_from_plans(&plans);
+            let legacy_backfill_required = self.legacy_backfill_required(&state.pool).await?;
+            let legacy_backfill_complete = if legacy_backfill_required && !legacy_ranges.is_empty()
+            {
+                Self::legacy_backfill_complete(&state.pool, &legacy_ranges).await?
+            } else {
+                true
+            };
+            Ok::<_, anyhow::Error>((
+                summaries,
+                durable_cursor,
+                selection_config,
+                selection,
+                legacy_ranges,
+                legacy_backfill_required,
+                legacy_backfill_complete,
+            ))
+        }
+        .await;
+        let (
+            summaries,
+            durable_cursor,
+            selection_config,
+            selection,
+            legacy_ranges,
+            legacy_backfill_required,
+            legacy_backfill_complete,
+        ) = match preflight {
+            Ok(preflight) => preflight,
+            Err(error) => {
+                tracing::warn!(
+                    route = "upstream_account_window_usage",
+                    builder = "account_window_preflight",
+                    error = %error,
+                    "upstream account window usage preflight deferred"
+                );
+                return Ok(self
+                    .last_good_response_for_account_ids(&normalized_account_ids)
+                    .await
+                    .unwrap_or(AccountWindowStorageResponse::Preparing {
+                        retry_after_ms: ACCOUNT_WINDOW_PREPARING_RETRY_AFTER_MS,
+                    }));
+            }
         };
 
         let (waiter, lease, schedule_legacy_backfill, immediate_response) = {
@@ -562,6 +501,26 @@ impl AccountWindowStoragePlane {
             .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
     }
 
+    async fn last_good_response_for_account_ids(
+        &self,
+        account_ids: &[i64],
+    ) -> Option<AccountWindowStorageResponse> {
+        let request_key = account_window_request_key(account_ids);
+        self.entries
+            .lock()
+            .await
+            .iter()
+            .filter(|(candidate, _)| {
+                account_window_selection_config_from_key(candidate)
+                    .split_once(";windows=")
+                    .is_some_and(|(accounts, _)| accounts == request_key)
+            })
+            .filter_map(|(_, entry)| entry.last_good.as_ref())
+            .filter(|(_, stored_at)| stored_at.elapsed() <= ACCOUNT_WINDOW_LAST_GOOD_MAX_AGE)
+            .max_by_key(|(_, stored_at)| *stored_at)
+            .map(|(response, _)| AccountWindowStorageResponse::Ready(response.clone()))
+    }
+
     async fn complete_load(
         &self,
         selection: &str,
@@ -749,24 +708,35 @@ impl AccountWindowStoragePlane {
                 };
                 let next = {
                     let mut repairs = repairs.lock().await;
-                    if repairs.pending_invocation_ids.is_empty() && !repairs.refresh_live_cursor {
+                    if repairs.pending_invocation_ids.is_empty()
+                        && repairs.pending_full_recompute_ids.is_empty()
+                        && !repairs.refresh_live_cursor
+                    {
                         repairs.worker_running = false;
                         None
                     } else {
-                        let invocation_ids = repairs
-                            .pending_invocation_ids
-                            .iter()
-                            .take(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE)
-                            .copied()
-                            .collect::<Vec<_>>();
+                        let full_bucket_recompute = !repairs.pending_full_recompute_ids.is_empty();
+                        let batch_size = if full_bucket_recompute {
+                            ACCOUNT_WINDOW_LIVE_COVERAGE_FULL_REPAIR_BATCH_SIZE
+                        } else {
+                            ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_BATCH_SIZE
+                        };
+                        let queue = if full_bucket_recompute {
+                            &mut repairs.pending_full_recompute_ids
+                        } else {
+                            &mut repairs.pending_invocation_ids
+                        };
+                        let invocation_ids =
+                            queue.iter().take(batch_size).copied().collect::<Vec<_>>();
                         for invocation_id in &invocation_ids {
-                            repairs.pending_invocation_ids.remove(invocation_id);
+                            queue.remove(invocation_id);
                         }
                         let refresh_live_cursor = std::mem::take(&mut repairs.refresh_live_cursor);
-                        Some((invocation_ids, refresh_live_cursor))
+                        Some((invocation_ids, refresh_live_cursor, full_bucket_recompute))
                     }
                 };
-                let Some((invocation_ids, refresh_live_cursor)) = next else {
+                let Some((invocation_ids, refresh_live_cursor, full_bucket_recompute)) = next
+                else {
                     drop(permit);
                     return;
                 };
@@ -785,7 +755,8 @@ impl AccountWindowStoragePlane {
                     let outcome = crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
                         tx.as_mut(),
                         &invocation_ids,
-                        Some(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS),
+                        (!full_bucket_recompute)
+                            .then_some(ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS),
                     )
                     .await?;
                     tx.commit().await?;
@@ -798,6 +769,7 @@ impl AccountWindowStoragePlane {
                     Ok(crate::maintenance::InvocationHourlyRollupRecomputeOutcome::Recomputed) => {
                         tracing::debug!(
                             repaired_bucket_limit = invocation_ids.len(),
+                            repair_mode = if full_bucket_recompute { "full_bucket" } else { "bounded" },
                             cursor_replay = refresh_live_cursor,
                             elapsed_ms = started_at.elapsed().as_millis() as u64,
                             "account window live coverage repair completed"
@@ -807,32 +779,32 @@ impl AccountWindowStoragePlane {
                         warn!(
                             repaired_bucket_limit = invocation_ids.len(),
                             repair_row_limit = ACCOUNT_WINDOW_LIVE_COVERAGE_REPAIR_MAX_ROWS,
+                            repair_mode = "bounded",
                             cursor_replay = refresh_live_cursor,
                             elapsed_ms = started_at.elapsed().as_millis() as u64,
-                            "account window live coverage repair exceeded its bounded row budget"
+                            "account window live coverage repair exceeded its bounded row budget; retaining a full-bucket repair"
                         );
-                        if let Err(err) = wake_startup_backfill_tasks(
-                            &pool,
-                            &[StartupBackfillTask::HistoricalRollups],
-                            "account_window_usage_live_repair_row_limit",
-                        )
-                        .await
-                        {
-                            warn!(error = %err, "failed to wake bounded account window coverage repair");
-                        }
+                        let mut queue = repairs.lock().await;
+                        queue.pending_full_recompute_ids.extend(invocation_ids);
+                        queue.refresh_live_cursor |= refresh_live_cursor;
                     }
                     Err(err) => {
                         let under_pressure = gate.record_error("account_window_usage_live_repair", &err);
                         warn!(
                             error = %err,
                             repaired_bucket_limit = invocation_ids.len(),
+                            repair_mode = if full_bucket_recompute { "full_bucket" } else { "bounded" },
                             cursor_replay = refresh_live_cursor,
                             elapsed_ms = started_at.elapsed().as_millis() as u64,
                             "account window live coverage repair failed; retaining queued work"
                         );
                         {
                             let mut queue = repairs.lock().await;
-                            queue.pending_invocation_ids.extend(invocation_ids);
+                            if full_bucket_recompute {
+                                queue.pending_full_recompute_ids.extend(invocation_ids);
+                            } else {
+                                queue.pending_invocation_ids.extend(invocation_ids);
+                            }
                             queue.refresh_live_cursor |= refresh_live_cursor;
                         }
                         if !under_pressure {
@@ -1349,6 +1321,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preflight_last_good_is_scoped_to_the_requested_account_set() {
+        let storage = AccountWindowStoragePlane::default();
+        let response = UpstreamAccountWindowUsageResponse { items: Vec::new() };
+        let mut entries = storage.entries.lock().await;
+        entries
+            .entry("accounts=7,42;windows=active;cursor=1".to_string())
+            .or_default()
+            .last_good = Some((response, Instant::now()));
+        entries
+            .entry("accounts=7;windows=active;cursor=1".to_string())
+            .or_default()
+            .last_good = Some((
+            UpstreamAccountWindowUsageResponse { items: Vec::new() },
+            Instant::now(),
+        ));
+        drop(entries);
+
+        assert!(matches!(
+            storage.last_good_response_for_account_ids(&[7, 42]).await,
+            Some(AccountWindowStorageResponse::Ready(_))
+        ));
+        assert!(
+            storage
+                .last_good_response_for_account_ids(&[42])
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn abandoned_leader_releases_the_selection_for_waiters() {
         let storage = AccountWindowStoragePlane::default();
         let selection = "accounts=42".to_string();
@@ -1383,44 +1385,6 @@ mod tests {
             .get(&selection)
             .expect("selection entry remains available");
         assert!(entry.in_flight.is_none());
-    }
-
-    #[tokio::test]
-    async fn abandoned_preflight_leader_releases_same_account_waiters() {
-        let storage = AccountWindowStoragePlane::default();
-        let request_key = account_window_request_key(&[7, 42]);
-        let (lease, mut waiter) = {
-            let mut flights = storage.request_flights.lock().await;
-            let flight = Arc::new(AccountWindowLoadFlight::new());
-            flights.insert(request_key.clone(), flight.clone());
-            let waiter = flight.subscribe();
-            (
-                AccountWindowRequestLoadLease {
-                    flights: storage.request_flights.clone(),
-                    request_key: request_key.clone(),
-                    flight,
-                    completed: false,
-                },
-                waiter,
-            )
-        };
-
-        drop(lease);
-        let _ = tokio::time::timeout(Duration::from_millis(100), waiter.changed())
-            .await
-            .expect("abandoned preflight leader should notify waiting requests");
-        assert!(matches!(
-            waiter.borrow_and_update().clone(),
-            Some(AccountWindowStorageResponse::Preparing { .. })
-        ));
-        assert!(
-            storage
-                .request_flights
-                .lock()
-                .await
-                .get(&request_key)
-                .is_none()
-        );
     }
 
     #[tokio::test]

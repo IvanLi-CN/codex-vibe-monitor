@@ -683,9 +683,19 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    #[derive(Debug, FromRow)]
+    struct ReplayedArchiveFile {
+        id: i64,
+        file_path: String,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+        archive_sha256: String,
+    }
+
+    let archive_files = sqlx::query_as::<_, ReplayedArchiveFile>(
         r#"
-        SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at
+        SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at,
+               batches.sha256 AS archive_sha256
         FROM archive_batches AS batches
         INNER JOIN hourly_rollup_archive_replay AS replay
           ON replay.dataset = batches.dataset
@@ -706,15 +716,26 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
     .bind(crate::maintenance::HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .fetch_all(pool)
     .await?;
-    let mut readable_archive_files = Vec::with_capacity(archive_files.len());
+    let mut verified_archive_files = Vec::with_capacity(archive_files.len());
     for archive_file in archive_files {
         let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
-        match tokio::fs::metadata(&archive_path).await {
-            Ok(metadata) if metadata.is_file() => readable_archive_files.push(archive_file),
-            Ok(_) | Err(_) => {
+        let expected_sha256 = archive_file.archive_sha256.clone();
+        let actual_sha256 =
+            tokio::task::spawn_blocking(move || crate::maintenance::sha256_hex_file(&archive_path))
+                .await;
+        match actual_sha256 {
+            Ok(Ok(actual_sha256)) if actual_sha256 == expected_sha256 => {
+                verified_archive_files.push(ArchiveBatchFileRow {
+                    id: archive_file.id,
+                    file_path: archive_file.file_path,
+                    coverage_start_at: archive_file.coverage_start_at,
+                    coverage_end_at: archive_file.coverage_end_at,
+                });
+            }
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                 warn!(
-                    file_path = %archive_path.display(),
-                    "archive replay marker cannot prove account window coverage because the current file is unavailable"
+                    file_path = %archive_file.file_path,
+                    "archive replay marker cannot prove account window coverage because the current file hash is unavailable or changed"
                 );
             }
         }
@@ -733,7 +754,7 @@ pub(crate) async fn load_replayed_invocation_archive_covered_hour_keys(
             bucket_start
                 .zip(bucket_end)
                 .is_some_and(|(bucket_start, bucket_end)| {
-                    readable_archive_files.iter().any(|archive_file| {
+                    verified_archive_files.iter().any(|archive_file| {
                         archive_file
                             .coverage_start_at
                             .as_deref()

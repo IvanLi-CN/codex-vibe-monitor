@@ -4788,6 +4788,39 @@ async fn window_usage_live_repair_row_budget_preserves_existing_rollups() {
         rollup_rows, 0,
         "over-budget repair must not delete or replace rollups"
     );
+
+    // The owner path stays bounded, but the retained background repair must still be able to
+    // establish coverage for this single affected hour without losing the queued identity.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin full bucket repair transaction");
+    let outcome =
+        crate::maintenance::recompute_invocation_hourly_rollups_for_ids_with_row_limit_tx(
+            tx.as_mut(),
+            &invocation_ids[..1],
+            None,
+        )
+        .await
+        .expect("repair retained hour without the owner row budget");
+    assert_eq!(
+        outcome,
+        crate::maintenance::InvocationHourlyRollupRecomputeOutcome::Recomputed
+    );
+    tx.commit().await.expect("commit full bucket repair");
+
+    let repaired_rollup_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_account_usage_hourly WHERE upstream_account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count rollups after retained repair");
+    assert!(
+        repaired_rollup_rows > 0,
+        "the retained full bucket repair must materialize the missing coverage"
+    );
 }
 
 #[tokio::test]
@@ -5497,6 +5530,97 @@ async fn window_usage_reads_verified_archive_full_hour_when_usage_rollup_is_miss
         .expect("verified archived usage");
     assert_eq!(usage.request_count, 1);
     assert_eq!(usage.total_tokens, 2_000);
+}
+
+#[tokio::test]
+async fn window_usage_archive_marker_requires_current_file_hash() {
+    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+    config.invocation_max_days = 1;
+    config.archive_dir = PathBuf::from(format!(
+        "target/archive-tests/upstream-account-usage-marker-integrity-{}",
+        random_base36(8).expect("archive suffix")
+    ));
+    let state = test_app_state_with_config_and_parallelism(
+        config,
+        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+    )
+    .await;
+    ensure_window_actual_usage_test_tables(&state.pool).await;
+
+    let account_id = insert_api_key_account(&state.pool, "Archive Marker Integrity").await;
+    let bucket_start = (Utc::now() - ChronoDuration::days(2))
+        .with_minute(0)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("align archived bucket");
+    let occurred_at = shanghai_local_iso(bucket_start + ChronoDuration::minutes(20));
+    seed_window_actual_usage_archive_batch(
+        &state.pool,
+        &state.config.archive_dir,
+        "window-usage-marker-integrity",
+        &[(
+            account_id,
+            occurred_at.clone(),
+            Some(1_200),
+            Some(600),
+            Some(200),
+            Some(2_000),
+            Some(0.02),
+        )],
+    )
+    .await;
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("archive full-hour bucket");
+    sqlx::query(
+        "UPDATE archive_batches SET coverage_start_at = ?1, coverage_end_at = ?2 WHERE dataset = 'codex_invocations'",
+    )
+    .bind(shanghai_local_iso(bucket_start))
+    .bind(shanghai_local_iso(bucket_start + ChronoDuration::hours(1)))
+    .execute(&state.pool)
+    .await
+    .expect("mark full archive coverage");
+
+    let (file_path, sha256) = sqlx::query_as::<_, (String, String)>(
+        "SELECT file_path, sha256 FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive identity");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(&file_path)
+    .bind(&sha256)
+    .execute(&state.pool)
+    .await
+    .expect("record matching archive replay marker");
+
+    let bucket_keys = std::collections::HashSet::from([(account_id, bucket_start_epoch)]);
+    let covered = load_replayed_invocation_archive_covered_hour_keys(
+        &state.pool,
+        &bucket_keys,
+        &state.config.archive_dir,
+    )
+    .await
+    .expect("verify matching archive marker");
+    assert_eq!(covered, bucket_keys);
+
+    let archive_path = resolve_archive_batch_path(&state.config.archive_dir, &file_path);
+    tokio::fs::write(&archive_path, b"corrupt archive bytes")
+        .await
+        .expect("replace archive after its marker was written");
+    let covered = load_replayed_invocation_archive_covered_hour_keys(
+        &state.pool,
+        &bucket_keys,
+        &state.config.archive_dir,
+    )
+    .await
+    .expect("reject replaced archive marker");
+    assert!(
+        covered.is_empty(),
+        "a replay marker cannot prove coverage after its archive bytes change"
+    );
 }
 
 #[tokio::test]
