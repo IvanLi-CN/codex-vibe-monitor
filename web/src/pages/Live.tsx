@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
 import { ForwardProxyLiveTable } from "../features/forward-proxy/ForwardProxyLiveTable";
 import { InvocationChart } from "../features/invocations/InvocationChart";
 import { InvocationCardList } from "../features/invocations/InvocationTable";
-import { ModelRoutingLivePanel } from "../features/live/ModelRoutingLivePanel";
 import { PromptCacheConversationTable } from "../features/prompt-cache/PromptCacheConversationTable";
 import { AppIcon } from "../features/shared/AppIcon";
 import { StatsCards } from "../features/stats/StatsCards";
 import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
 import { useInvocationStream } from "../hooks/useInvocations";
-import { useModelRoutingLive } from "../hooks/useModelRoutingLive";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
 import { useSummary } from "../hooks/useStats";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
@@ -26,7 +23,7 @@ import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccoun
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
 const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
-const LIVE_TABS = ["conversations", "records", "routing", "proxy"] as const;
+const LIVE_TABS = ["conversations", "records", "proxy"] as const;
 type LiveTab = (typeof LIVE_TABS)[number];
 const LIVE_TAB_IDS: Record<LiveTab, { tab: string; panel: string }> = {
   conversations: {
@@ -36,10 +33,6 @@ const LIVE_TAB_IDS: Record<LiveTab, { tab: string; panel: string }> = {
   records: {
     tab: "live-workspace-tab-records",
     panel: "live-workspace-panel-records",
-  },
-  routing: {
-    tab: "live-workspace-tab-routing",
-    panel: "live-workspace-panel-routing",
   },
   proxy: {
     tab: "live-workspace-tab-proxy",
@@ -149,12 +142,12 @@ function persistPromptCacheSelectionValue(value: string) {
 }
 
 function readLiveTab(): LiveTab {
-  if (typeof window === "undefined") return "routing";
+  if (typeof window === "undefined") return "conversations";
   try {
     const value = window.localStorage.getItem(LIVE_TAB_STORAGE_KEY);
-    return LIVE_TABS.includes(value as LiveTab) ? (value as LiveTab) : "routing";
+    return LIVE_TABS.includes(value as LiveTab) ? (value as LiveTab) : "conversations";
   } catch {
-    return "routing";
+    return "conversations";
   }
 }
 
@@ -162,13 +155,12 @@ function persistLiveTab(value: LiveTab) {
   try {
     window.localStorage.setItem(LIVE_TAB_STORAGE_KEY, value);
   } catch {
-    // Local storage is optional; routing remains the stable default.
+    // Local storage is optional; conversations remain the stable default.
   }
 }
 
 export default function LivePage() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const isCompactViewport = useCompactViewport();
   const {
     upstreamAccountId,
@@ -179,9 +171,6 @@ export default function LivePage() {
   } = useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
   const [activeTab, setActiveTab] = useState<LiveTab>(readLiveTab);
-  const [routingWindow, setRoutingWindow] = useState<"15m" | "1h" | "6h" | "24h">("1h");
-  const [routingModel, setRoutingModel] = useState("");
-  const [routingState, setRoutingState] = useState("");
   const [conversationSelectionValue, setConversationSelectionValue] = useState(() =>
     readPromptCacheSelectionValue(),
   );
@@ -226,20 +215,6 @@ export default function LivePage() {
     isLoading: conversationsLoading,
     error: conversationsError,
   } = usePromptCacheConversations(conversationSelection, activeTab === "conversations");
-  const {
-    data: modelRouting,
-    isLoading: modelRoutingLoading,
-    error: modelRoutingError,
-    refresh: refreshModelRouting,
-  } = useModelRoutingLive(
-    {
-      window: routingWindow,
-      model: routingModel || undefined,
-      state: routingState || undefined,
-      limit: 100,
-    },
-    activeTab === "routing",
-  );
   const promptCacheSelectionOptions = useMemo(
     () =>
       PROMPT_CACHE_SELECTION_OPTIONS.map((option) => ({
@@ -465,33 +440,6 @@ export default function LivePage() {
             />
           </div>
         </section>
-      ) : null}
-
-      {activeTab === "routing" ? (
-        <div
-          id={LIVE_TAB_IDS.routing.panel}
-          role="tabpanel"
-          aria-labelledby={LIVE_TAB_IDS.routing.tab}
-        >
-          <ModelRoutingLivePanel
-            data={modelRouting}
-            isLoading={modelRoutingLoading}
-            error={modelRoutingError}
-            window={routingWindow}
-            model={routingModel}
-            state={routingState}
-            onWindowChange={setRoutingWindow}
-            onModelChange={setRoutingModel}
-            onStateChange={setRoutingState}
-            onOpenAccount={(accountId, selectedModel) =>
-              openUpstreamAccount(accountId, { tab: "healthEvents", model: selectedModel })
-            }
-            onOpenInvocation={(invokeId) =>
-              navigate(`/records?invokeId=${encodeURIComponent(invokeId)}`)
-            }
-            onRefresh={refreshModelRouting}
-          />
-        </div>
       ) : null}
 
       {activeTab === "proxy" ? (

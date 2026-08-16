@@ -332,36 +332,47 @@ function getPromptCacheConversationTable() {
 }
 
 describe("LivePage", () => {
-  it("defaults to the routing tab when no saved tab is present", () => {
+  it("defaults to conversations when no saved tab is present", () => {
     setupLivePageHooks(null);
 
     render(<LivePage />);
 
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
-    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
-      expect.objectContaining({ window: "1h", limit: 100 }),
-      true,
-    );
+    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
   });
 
-  it("uses the shared segmented control for content-width workspace tabs", () => {
+  it("migrates the removed routing tab selection to conversations", () => {
+    setupLivePageHooks(null);
+    storage.set(LIVE_TAB_STORAGE_KEY, "routing");
+
+    render(<LivePage />);
+
+    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+  });
+
+  it("uses the shared segmented control for three content-width live workspace tabs", () => {
     setupLivePageHooks(null);
 
     render(<LivePage />);
 
     const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
     const tabs = tabList?.querySelectorAll('[role="tab"]');
-    const routingTab = host?.querySelector("#live-workspace-tab-routing");
-    const routingPanel = host?.querySelector("#live-workspace-panel-routing");
+    const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
+    const conversationsPanel = host?.querySelector("#live-workspace-panel-conversations");
 
     expect(tabList?.className).toContain("segmented-control");
     expect(tabList?.className).toContain("w-fit");
     expect(tabList?.classList.contains("w-full")).toBe(false);
-    expect(tabs).toHaveLength(4);
-    expect(routingTab?.getAttribute("data-active")).toBe("true");
-    expect(routingTab?.classList.contains("w-full")).toBe(false);
-    expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
-    expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
+    expect(tabs).toHaveLength(3);
+    expect(conversationsTab?.getAttribute("data-active")).toBe("true");
+    expect(conversationsTab?.classList.contains("w-full")).toBe(false);
+    expect(conversationsTab?.getAttribute("aria-controls")).toBe(
+      "live-workspace-panel-conversations",
+    );
+    expect(conversationsPanel?.getAttribute("aria-labelledby")).toBe(
+      "live-workspace-tab-conversations",
+    );
   });
 
   it("defaults to 50 conversations when storage is empty", () => {

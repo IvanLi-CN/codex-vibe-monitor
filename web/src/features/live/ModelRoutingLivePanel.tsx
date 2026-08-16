@@ -261,7 +261,7 @@ export function ModelRoutingLivePanel({
       <div className="surface-panel-body gap-4">
         <div className="flex flex-col gap-3 desktop:flex-row desktop:items-start desktop:justify-between">
           <div className="section-heading">
-            <h2 className="section-title">{t("live.routing.title")}</h2>
+            <h1 className="section-title">{t("live.routing.title")}</h1>
             <p className="section-description">{t("live.routing.description")}</p>
           </div>
           <div
@@ -305,7 +305,7 @@ export function ModelRoutingLivePanel({
               ]}
               onValueChange={onModelChange}
             />
-            <SegmentedControl aria-label={t("live.routing.windowLabel")}>
+            <SegmentedControl role="group" aria-label={t("live.routing.windowLabel")}>
               {(["15m", "1h", "6h", "24h"] as ModelRoutingLiveWindow[]).map((value) => (
                 <SegmentedControlItem
                   key={value}
@@ -364,9 +364,9 @@ export function ModelRoutingLivePanel({
                   data-testid={`model-routing-model-records-${group.model}`}
                 >
                   <div className="flex items-center justify-between gap-3 px-3 py-2">
-                    <h3 className="text-xs font-semibold text-base-content/75">
+                    <h2 className="text-xs font-semibold text-base-content/75">
                       {t("live.routing.modelRecordsTitle", { model: group.model })}
-                    </h3>
+                    </h2>
                     <span className="text-xs tabular-nums text-base-content/65">
                       {modelRecords.length}/100
                     </span>
