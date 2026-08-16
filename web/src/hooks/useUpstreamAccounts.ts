@@ -349,6 +349,16 @@ export function useUpstreamAccounts(
       windowUsageQueryKeyRef.current = queryKey;
       hydratedWindowUsageIdsRef.current = new Set();
       pendingWindowUsageGenerationByIdRef.current = new Map();
+      windowUsageAbortControllersRef.current.forEach((controller) => {
+        controller.abort();
+      });
+      windowUsageAbortControllersRef.current.clear();
+      windowUsageRetryIdsRef.current.clear();
+      if (windowUsageRetryTimerRef.current != null) {
+        window.clearTimeout(windowUsageRetryTimerRef.current);
+        windowUsageRetryTimerRef.current = null;
+      }
+      windowUsageRetryDelayRef.current = 1_000;
       setIsWindowUsagePending(false);
       if (!options?.preserveData) {
         setWindowUsageByAccount({});
@@ -622,7 +632,8 @@ export function useUpstreamAccounts(
     ).filter(
       (accountId) =>
         !hydratedWindowUsageIdsRef.current.has(accountId) &&
-        !pendingWindowUsageGenerationByIdRef.current.has(accountId),
+        !pendingWindowUsageGenerationByIdRef.current.has(accountId) &&
+        !windowUsageRetryIdsRef.current.has(accountId),
     );
 
     if (normalizedAccountIds.length === 0) {
@@ -731,7 +742,10 @@ export function useUpstreamAccounts(
             pendingWindowUsageGenerationByIdRef.current.delete(accountId);
           }
         });
-        if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
+        if (
+          pendingWindowUsageGenerationByIdRef.current.size === 0 &&
+          windowUsageRetryIdsRef.current.size === 0
+        ) {
           setIsWindowUsagePending(false);
         }
       }

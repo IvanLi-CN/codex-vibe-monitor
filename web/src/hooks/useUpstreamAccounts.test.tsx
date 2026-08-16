@@ -598,7 +598,7 @@ describe("useUpstreamAccounts", () => {
     }
   });
 
-  it("coalesces preparing retries from separate visible hydration batches", async () => {
+  it("deduplicates preparing retries from separate visible hydration batches", async () => {
     vi.useFakeTimers();
     try {
       apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
@@ -631,9 +631,10 @@ describe("useUpstreamAccounts", () => {
       await flushAsync();
       expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(
         2,
-        [1, 2],
+        [2],
         expect.objectContaining({ signal: expect.anything() }),
       );
+      expect(text("window-usage-pending")).toBe("true");
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_000);
