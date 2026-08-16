@@ -131,9 +131,6 @@ function RecordRow({
         >
           {record.accountDisplayName}
         </button>
-        <span className="hidden shrink-0 text-xs text-base-content/65 sm:inline">
-          {record.model}
-        </span>
         <Chip tone={record.status === "success" ? "success" : "secondary"}>
           {attemptLabel(record, t)}
         </Chip>
@@ -154,8 +151,8 @@ function RecordRow({
           </Button>
         ) : null}
       </div>
-      <div className="mt-1 pl-9 text-xs text-base-content/65 sm:hidden">
-        {formatBeijing(record.occurredAt)} · {record.model}
+      <div className="mt-1 pl-9 text-xs tabular-nums text-base-content/65 sm:hidden">
+        {formatBeijing(record.occurredAt)}
       </div>
       {expanded ? (
         <div className="mt-2 grid gap-2 rounded-md bg-base-200/60 px-3 py-2 pl-9 text-xs text-base-content/75 sm:grid-cols-2">
@@ -239,6 +236,26 @@ export function ModelRoutingLivePanel({
   }, [data]);
   const models = useMemo(() => knownModels, [knownModels]);
   const records = data?.records ?? [];
+  const recordsByModel = useMemo(() => {
+    const grouped = new Map<string, ModelRoutingTimelineRecord[]>();
+    for (const record of records) {
+      const current = grouped.get(record.model) ?? [];
+      current.push(record);
+      grouped.set(record.model, current);
+    }
+    return grouped;
+  }, [records]);
+
+  const groups = useMemo(() => {
+    const currentGroups = data?.groups ?? [];
+    const knownGroupModels = new Set(currentGroups.map((group) => group.model));
+    const recordOnlyGroups = Array.from(recordsByModel.keys())
+      .filter((modelName) => !knownGroupModels.has(modelName))
+      .sort()
+      .map((modelName) => ({ model: modelName, accounts: [] }));
+    return [...currentGroups, ...recordOnlyGroups];
+  }, [data?.groups, recordsByModel]);
+
   return (
     <section className="surface-panel" data-testid="model-routing-live-panel">
       <div className="surface-panel-body gap-4">
@@ -310,62 +327,77 @@ export function ModelRoutingLivePanel({
         {isLoading && !data ? (
           <p className="text-sm text-base-content/70">{t("live.routing.loading")}</p>
         ) : null}
-        {!isLoading && !error && data?.groups.length === 0 ? (
+        {!isLoading && !error && groups.length === 0 ? (
           <p className="text-sm text-base-content/70">{t("live.routing.empty")}</p>
         ) : null}
         <div className="grid gap-3">
-          {data?.groups.map((group) => (
-            <div key={group.model} className="surface-subtle overflow-hidden rounded-lg">
-              <div className="flex items-center justify-between gap-3 px-3 py-2">
-                <ModelIdentity
-                  model={group.model}
-                  textClassName="truncate font-mono text-sm font-semibold"
-                />
-                <span className="text-xs tabular-nums text-base-content/65">
-                  {t("live.routing.accountsCount", { count: group.accounts.length })}
-                </span>
+          {groups.map((group) => {
+            const modelRecords = recordsByModel.get(group.model) ?? [];
+            return (
+              <div
+                key={group.model}
+                className="surface-subtle overflow-hidden rounded-lg"
+                data-testid={`model-routing-model-group-${group.model}`}
+              >
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <ModelIdentity
+                    model={group.model}
+                    textClassName="truncate font-mono text-sm font-semibold"
+                  />
+                  <div className="flex shrink-0 items-center gap-3 text-xs tabular-nums text-base-content/65">
+                    <span>{t("live.routing.accountsCount", { count: group.accounts.length })}</span>
+                    <span>
+                      {t("live.routing.modelRecordsCount", { count: modelRecords.length })}
+                    </span>
+                  </div>
+                </div>
+                {group.accounts.map((account) => (
+                  <AccountRow
+                    key={account.accountId}
+                    account={account}
+                    model={group.model}
+                    onOpen={onOpenAccount}
+                  />
+                ))}
+                <div
+                  className="border-t border-base-300/60"
+                  data-testid={`model-routing-model-records-${group.model}`}
+                >
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <h3 className="text-xs font-semibold text-base-content/75">
+                      {t("live.routing.modelRecordsTitle", { model: group.model })}
+                    </h3>
+                    <span className="text-xs tabular-nums text-base-content/65">
+                      {modelRecords.length}/100
+                    </span>
+                  </div>
+                  {modelRecords.length === 0 ? (
+                    <p className="border-t border-base-300/60 px-3 py-3 text-sm text-base-content/70">
+                      {t("live.routing.modelRecordsEmpty")}
+                    </p>
+                  ) : (
+                    modelRecords.map((record) => (
+                      <RecordRow
+                        key={record.id}
+                        record={record}
+                        expanded={expandedRecords.has(record.id)}
+                        onToggle={() =>
+                          setExpandedRecords((current) => {
+                            const next = new Set(current);
+                            if (next.has(record.id)) next.delete(record.id);
+                            else next.add(record.id);
+                            return next;
+                          })
+                        }
+                        onOpenAccount={onOpenAccount}
+                        onOpenInvocation={onOpenInvocation}
+                      />
+                    ))
+                  )}
+                </div>
               </div>
-              {group.accounts.map((account) => (
-                <AccountRow
-                  key={account.accountId}
-                  account={account}
-                  model={group.model}
-                  onOpen={onOpenAccount}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-        <div className="surface-subtle overflow-hidden rounded-lg">
-          <div className="flex items-center justify-between gap-3 px-3 py-2">
-            <h3 className="text-sm font-semibold text-base-content">
-              {t("live.routing.recordsTitle")}
-            </h3>
-            <span className="text-xs tabular-nums text-base-content/65">{records.length}/100</span>
-          </div>
-          {records.length === 0 ? (
-            <p className="border-t border-base-300/60 px-3 py-3 text-sm text-base-content/70">
-              {t("live.routing.recordsEmpty")}
-            </p>
-          ) : (
-            records.map((record) => (
-              <RecordRow
-                key={record.id}
-                record={record}
-                expanded={expandedRecords.has(record.id)}
-                onToggle={() =>
-                  setExpandedRecords((current) => {
-                    const next = new Set(current);
-                    if (next.has(record.id)) next.delete(record.id);
-                    else next.add(record.id);
-                    return next;
-                  })
-                }
-                onOpenAccount={onOpenAccount}
-                onOpenInvocation={onOpenInvocation}
-              />
-            ))
-          )}
+            );
+          })}
         </div>
       </div>
     </section>

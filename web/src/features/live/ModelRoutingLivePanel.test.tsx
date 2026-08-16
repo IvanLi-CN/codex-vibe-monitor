@@ -24,6 +24,21 @@ const snapshot: ModelRoutingLiveResponse = {
         },
       ],
     },
+    {
+      model: "gpt-5.4-mini",
+      accounts: [
+        {
+          accountId: 12,
+          accountDisplayName: "Ciii2",
+          accountGroupName: "fallback",
+          model: "gpt-5.4-mini",
+          state: "cooling_down",
+          priority: "excluded",
+          failureCount: 2,
+          lastSeenAt: "2026-08-16T00:59:00Z",
+        },
+      ],
+    },
   ],
   records: [
     {
@@ -43,6 +58,19 @@ const snapshot: ModelRoutingLiveResponse = {
       reasonCode: "recovery_after_cooldown",
       modelRouteStateBefore: "cooling_down",
       modelRouteStateAfter: "available",
+    },
+    {
+      id: "event:32",
+      kind: "event",
+      occurredAt: "2026-08-16T00:59:00Z",
+      accountId: 12,
+      accountDisplayName: "Ciii2",
+      model: "gpt-5.4-mini",
+      status: "cooling_down",
+      action: "model_route_cooldown",
+      reasonCode: "upstream_http_5xx",
+      modelRouteStateBefore: "degraded",
+      modelRouteStateAfter: "cooling_down",
     },
   ],
 };
@@ -67,13 +95,17 @@ function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
 }
 
 describe("ModelRoutingLivePanel", () => {
-  it("renders model-first account state and each routing attempt", () => {
+  it("keeps account states and routing attempts within their model group", () => {
     const html = renderPanel();
 
     expect(html).toContain("gpt-5.5-codex");
+    expect(html).toContain("gpt-5.4-mini");
     expect(html).toContain("Ciii");
+    expect(html).toContain("Ciii2");
     expect(html).toContain('data-testid="model-routing-account-11-gpt-5.5-codex"');
     expect(html).toContain('data-testid="model-routing-record-attempt:31"');
+    expect(html).toContain('data-testid="model-routing-model-records-gpt-5.5-codex"');
+    expect(html).toContain('data-testid="model-routing-model-records-gpt-5.4-mini"');
     expect(html).toContain('data-testid="model-routing-live-controls"');
     expect(html).toContain("desktop:justify-end");
     expect(html.indexOf(">刷新</button>")).toBeLessThan(html.indexOf('name="modelRoutingState"'));
@@ -83,13 +115,20 @@ describe("ModelRoutingLivePanel", () => {
     expect(html.indexOf('name="modelRoutingModel"')).toBeLessThan(
       html.indexOf('aria-label="路由时间窗"'),
     );
-    expect(html).toContain("1/100");
+    const primaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.5-codex"');
+    const primaryRecord = html.indexOf('data-testid="model-routing-record-attempt:31"');
+    const secondaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.4-mini"');
+    const secondaryRecord = html.indexOf('data-testid="model-routing-record-event:32"');
+    expect(primaryGroup).toBeLessThan(primaryRecord);
+    expect(primaryRecord).toBeLessThan(secondaryGroup);
+    expect(secondaryGroup).toBeLessThan(secondaryRecord);
+    expect(html).toContain("1 条决策");
   });
 
-  it("renders the empty state without inventing a routing attempt", () => {
+  it("renders one model-routing empty state without inventing a routing attempt", () => {
     const html = renderPanel({ generatedAt: "2026-08-16T01:00:00Z", groups: [], records: [] });
 
     expect(html).toContain("没有符合筛选条件的 API Key 模型路由状态。");
-    expect(html).toContain("当前时间窗内没有路由尝试或状态事件。");
+    expect(html).not.toContain('data-testid="model-routing-model-records-');
   });
 });
