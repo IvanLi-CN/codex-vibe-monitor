@@ -104,7 +104,7 @@ export const RecoveryAttempt: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("model-routing-gantt-gpt-5.5")).toBeVisible();
+    await expect(canvas.getByTestId("model-routing-gantt")).toBeVisible();
     const controls = canvas.getByTestId("model-routing-live-controls");
     await expect(controls).toBeVisible();
     const refresh = within(controls).getByRole("button", { name: "刷新" });

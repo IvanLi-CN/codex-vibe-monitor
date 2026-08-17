@@ -1,7 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ModelRoutingLiveAccount, ModelRoutingTimelineRecord } from "../../lib/api";
+import type {
+  ModelRoutingLiveAccount,
+  ModelRoutingLiveModelGroup,
+  ModelRoutingTimelineRecord,
+} from "../../lib/api";
 import { ModelRoutingGantt } from "./ModelRoutingGantt";
 
 const generatedAt = "2026-08-16T04:00:00.000Z";
@@ -93,6 +97,8 @@ const records: ModelRoutingTimelineRecord[] = [
   },
 ];
 
+const groups: ModelRoutingLiveModelGroup[] = [{ model: "gpt-5.5", accounts }];
+
 const meta = {
   title: "Live/ModelRoutingGantt",
   component: ModelRoutingGantt,
@@ -110,8 +116,7 @@ const meta = {
     ),
   ],
   args: {
-    model: "gpt-5.5",
-    accounts,
+    groups,
     records,
     generatedAt,
     window: "24h",
@@ -129,8 +134,8 @@ export const Operational24Hours: Story = {
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("model-routing-gantt-gpt-5.5")).toBeVisible();
-    const legend = within(canvas.getByTestId("model-routing-gantt-legend-gpt-5.5"));
+    await expect(canvas.getByTestId("model-routing-gantt")).toBeVisible();
+    const legend = within(canvas.getByTestId("model-routing-gantt-legend"));
     await expect(legend.getByText("可用")).toBeVisible();
     await expect(legend.getByText("降权")).toBeVisible();
     await expect(legend.getByText("冷却中")).toBeVisible();
@@ -153,7 +158,7 @@ export const Operational24HoursMobile: Story = {
 
 export const Empty: Story = {
   args: {
-    accounts: [],
+    groups: [],
     records: [],
   },
 };

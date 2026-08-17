@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import { useTranslation } from "../../i18n";
 import type {
   ModelRoutingLiveAccount,
+  ModelRoutingLiveModelGroup,
   ModelRoutingLiveWindow,
   ModelRoutingTimelineRecord,
 } from "../../lib/api";
@@ -12,6 +13,8 @@ import {
   withOpacity,
 } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
+import { AppIcon } from "../shared/AppIcon";
+import { resolveModelIdentityIcon } from "../shared/ModelIdentity";
 
 type RoutingTimelineState = "available" | "degraded" | "cooling_down" | "unknown";
 
@@ -226,6 +229,14 @@ function formatBeijingTime(value: number, localeTag: string) {
   }).format(new Date(value));
 }
 
+function formatBeijingDate(value: number, localeTag: string) {
+  return new Intl.DateTimeFormat(localeTag, {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(value));
+}
+
 function formatBeijingRange(startMs: number, endMs: number, localeTag: string) {
   const formatter = new Intl.DateTimeFormat(localeTag, {
     timeZone: "Asia/Shanghai",
@@ -257,16 +268,14 @@ function edgeClass(index: number, lastIndex: number) {
 }
 
 export function ModelRoutingGantt({
-  model,
-  accounts,
+  groups,
   records,
   generatedAt,
   window,
   onOpenAccount,
   onOpenInvocation,
 }: {
-  model: string;
-  accounts: ModelRoutingLiveAccount[];
+  groups: ModelRoutingLiveModelGroup[];
   records: ModelRoutingTimelineRecord[];
   generatedAt?: string | null;
   window: ModelRoutingLiveWindow;
@@ -276,10 +285,23 @@ export function ModelRoutingGantt({
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const timeline = useMemo(
-    () => buildModelRoutingGanttData({ model, accounts, records, generatedAt, window }),
-    [accounts, generatedAt, model, records, window],
+  const timelines = useMemo(
+    () =>
+      groups.map((group) => ({
+        model: group.model,
+        accountCount: group.accounts.length,
+        recordCount: records.filter((record) => record.model === group.model).length,
+        timeline: buildModelRoutingGanttData({
+          model: group.model,
+          accounts: group.accounts,
+          records,
+          generatedAt,
+          window,
+        }),
+      })),
+    [generatedAt, groups, records, window],
   );
+  const range = timelines[0]?.timeline;
   const colors = useMemo(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
@@ -287,7 +309,7 @@ export function ModelRoutingGantt({
       available: withOpacity(status.success, 0.76),
       degraded: withOpacity(metricAccent("totalCost", themeMode), 0.76),
       cooling_down: withOpacity(metricAccent("totalCost", themeMode), 0.46),
-      unknown: withOpacity(base.axisText, 0.2),
+      unknown: withOpacity(base.axisText, 0.58),
       attemptSuccess: status.success,
       attemptFailure: status.failure,
       attemptUnknown: base.axisText,
@@ -303,39 +325,35 @@ export function ModelRoutingGantt({
   const desktopTicks = Array.from({ length: 5 }, (_, index) => index);
   const mobileTicks = [0, 2, 4];
   const gridTicks = desktopTicks.slice(1, -1);
-  const attemptsByAccount = useMemo(() => {
-    const byAccount = new Map<number, RoutingGanttAttempt[]>();
-    for (const attempt of timeline.attempts) {
-      const current = byAccount.get(attempt.accountId) ?? [];
-      current.push(attempt);
-      byAccount.set(attempt.accountId, current);
-    }
-    return byAccount;
-  }, [timeline.attempts]);
 
-  if (timeline.lanes.length === 0) {
+  if (!range || timelines.length === 0) {
     return (
-      <p
-        className="px-3 py-4 text-sm text-base-content/70"
-        data-testid={`model-routing-gantt-empty-${model}`}
-      >
+      <p className="px-3 py-4 text-sm text-base-content/70" data-testid="model-routing-gantt-empty">
         {t("live.routing.timeline.empty")}
       </p>
     );
   }
 
   return (
-    <div data-testid={`model-routing-gantt-${model}`}>
+    <div data-testid="model-routing-gantt">
       <div
         className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-base-300/60 px-3 py-2 text-xs text-base-content/70"
-        data-testid={`model-routing-gantt-legend-${model}`}
+        data-testid="model-routing-gantt-legend"
       >
         {(["available", "degraded", "cooling_down", "unknown"] as RoutingTimelineState[]).map(
           (state) => (
             <span key={state} className="inline-flex items-center gap-1.5">
               <span
-                className="h-2.5 w-2.5 rounded-sm"
-                style={{ backgroundColor: colors[state] }}
+                className={
+                  state === "unknown"
+                    ? "h-2.5 w-2.5 rounded-sm border border-dashed"
+                    : "h-2.5 w-2.5 rounded-sm"
+                }
+                style={
+                  state === "unknown"
+                    ? { borderColor: colors.unknown }
+                    : { backgroundColor: colors[state] }
+                }
                 aria-hidden
               />
               {stateLabels[state]}
@@ -352,30 +370,29 @@ export function ModelRoutingGantt({
         </span>
       </div>
       <section
-        className="grid grid-cols-[minmax(7.5rem,9rem)_minmax(0,1fr)] border-b border-base-300/60 desktop:grid-cols-[minmax(10rem,12rem)_minmax(0,1fr)]"
-        data-testid={`model-routing-gantt-grid-${model}`}
-        aria-label={t("live.routing.timeline.aria", { model })}
+        className="grid grid-cols-[minmax(8rem,9rem)_minmax(0,1fr)] border-b border-base-300/60 desktop:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)]"
+        data-testid="model-routing-gantt-grid"
+        aria-label={t("live.routing.title")}
       >
-        <div className="flex h-10 items-center border-r border-base-300/60 px-3 text-xs font-medium text-base-content/60">
-          {t("live.routing.timeline.apiKey")}
+        <div className="flex h-14 items-center border-r border-base-300/60 px-3 text-xs font-medium text-base-content/60">
+          <span>{t("live.routing.timeline.lane")}</span>
         </div>
-        <div className="relative h-10 overflow-hidden text-xs font-medium text-base-content/60">
+        <div className="relative h-14 overflow-hidden text-xs font-medium text-base-content/60">
           <span className="absolute left-3 top-1.5">{t("live.routing.timeline.time")}</span>
-          <div className="absolute inset-x-0 bottom-1.5 h-4">
+          <div className="absolute inset-x-0 bottom-1 h-7">
             <div className="desktop:hidden">
               {mobileTicks.map((tick, index) => {
                 const left = (tick / 4) * 100;
+                const atMs =
+                  range.rangeStartMs + ((range.rangeEndMs - range.rangeStartMs) * tick) / 4;
                 return (
                   <span
                     key={tick}
-                    className={`absolute bottom-0 whitespace-nowrap ${edgeClass(index, mobileTicks.length - 1)}`}
+                    className={`absolute bottom-0 flex flex-col whitespace-nowrap leading-tight ${edgeClass(index, mobileTicks.length - 1)}`}
                     style={{ left: `${left}%` }}
                   >
-                    {formatBeijingTime(
-                      timeline.rangeStartMs +
-                        ((timeline.rangeEndMs - timeline.rangeStartMs) * tick) / 4,
-                      localeTag,
-                    )}
+                    <span>{formatBeijingDate(atMs, localeTag)}</span>
+                    <span>{formatBeijingTime(atMs, localeTag)}</span>
                   </span>
                 );
               })}
@@ -383,143 +400,188 @@ export function ModelRoutingGantt({
             <div className="hidden desktop:block">
               {desktopTicks.map((tick, index) => {
                 const left = (tick / 4) * 100;
+                const atMs =
+                  range.rangeStartMs + ((range.rangeEndMs - range.rangeStartMs) * tick) / 4;
                 return (
                   <span
                     key={tick}
-                    className={`absolute bottom-0 whitespace-nowrap ${edgeClass(index, desktopTicks.length - 1)}`}
+                    className={`absolute bottom-0 flex flex-col whitespace-nowrap leading-tight ${edgeClass(index, desktopTicks.length - 1)}`}
                     style={{ left: `${left}%` }}
                   >
-                    {formatBeijingTime(
-                      timeline.rangeStartMs +
-                        ((timeline.rangeEndMs - timeline.rangeStartMs) * tick) / 4,
-                      localeTag,
-                    )}
+                    <span>{formatBeijingDate(atMs, localeTag)}</span>
+                    <span>{formatBeijingTime(atMs, localeTag)}</span>
                   </span>
                 );
               })}
             </div>
           </div>
         </div>
-        {timeline.lanes.map((lane) => {
-          const laneAttempts = attemptsByAccount.get(lane.accountId) ?? [];
+        {timelines.map(({ model, accountCount, recordCount, timeline }) => {
+          const modelIdentityIcon = resolveModelIdentityIcon(model);
+          const attemptsByAccount = new Map<number, RoutingGanttAttempt[]>();
+          for (const attempt of timeline.attempts) {
+            const current = attemptsByAccount.get(attempt.accountId) ?? [];
+            current.push(attempt);
+            attemptsByAccount.set(attempt.accountId, current);
+          }
+
           return (
-            <div key={lane.accountId} className="contents">
-              <button
-                type="button"
-                className="flex h-16 min-w-0 flex-col justify-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
-                onClick={() => onOpenAccount(lane.accountId, lane.model)}
-              >
-                <span className="truncate font-mono text-xs font-semibold text-base-content">
-                  {lane.label}
-                </span>
-                <span className="mt-0.5 text-xs text-base-content/60">
-                  {stateLabels[lane.state]}
-                </span>
-              </button>
+            <Fragment key={model}>
               <div
-                className="relative h-16 overflow-hidden border-t border-base-300/60"
-                data-testid={`model-routing-lane-${lane.accountId}`}
+                className="flex h-9 min-w-0 items-center border-r border-t border-base-300/60 bg-base-200/35 px-3"
+                data-testid={`model-routing-model-group-${model}`}
               >
-                {gridTicks.map((tick) => (
-                  <span
-                    key={tick}
-                    className="absolute inset-y-0 border-l border-dashed border-base-300/70"
-                    style={{ left: `${(tick / 4) * 100}%` }}
-                    aria-hidden
-                  />
-                ))}
-                <div
-                  className="absolute inset-x-0 top-6 h-3 rounded-sm bg-base-200/70"
-                  aria-hidden
-                />
-                {lane.bands.map((band) => {
-                  const label = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
-                    band.startMs,
-                    band.endMs,
-                    localeTag,
-                  )}`;
-                  return (
-                    <button
-                      key={`${band.state}-${band.startMs}-${band.endMs}`}
-                      type="button"
-                      className="absolute top-6 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary"
-                      style={{
-                        ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
-                        backgroundColor: colors[band.state],
-                      }}
-                      aria-label={label}
-                      title={label}
-                      onClick={() => onOpenAccount(lane.accountId, lane.model)}
-                    >
-                      <span className="sr-only">{label}</span>
-                    </button>
-                  );
-                })}
-                {laneAttempts.map((attempt) => {
-                  const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
-                  const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
-                  const result = attempt.httpStatus
-                    ? `HTTP ${attempt.httpStatus}`
-                    : attempt.status || t("live.routing.record.unknown");
-                  const latency =
-                    attempt.totalLatencyMs != null
-                      ? ` · ${Math.round(attempt.totalLatencyMs)} ms`
-                      : "";
-                  const retry =
-                    (attempt.retryIndex ?? 0) > 0
-                      ? ` · ${t("live.routing.timeline.retry", { index: attempt.retryIndex ?? 0 })}`
-                      : "";
-                  const label = `${lane.label} · ${t("live.routing.timeline.attempt")} · ${formatBeijingRange(
-                    attempt.occurredAtMs,
-                    attempt.occurredAtMs,
-                    localeTag,
-                  )} · ${result}${latency}${retry}`;
-                  const color = successful
-                    ? colors.attemptSuccess
-                    : failed
-                      ? colors.attemptFailure
-                      : colors.attemptUnknown;
-                  const markerLeft = Math.max(
-                    1,
-                    Math.min(
-                      99,
-                      percentAt(attempt.occurredAtMs, timeline.rangeStartMs, timeline.rangeEndMs),
-                    ),
-                  );
-                  const marker = (
-                    <span
-                      key={attempt.id}
-                      className="absolute top-[21px] z-20 h-3 w-3 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
-                      style={{ left: `${markerLeft}%`, backgroundColor: color }}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {modelIdentityIcon ? (
+                    <AppIcon
+                      name={modelIdentityIcon}
+                      className="h-4 w-4 shrink-0 text-success"
                       aria-hidden
                     />
-                  );
-                  return attempt.invokeId ? (
-                    <button
-                      key={attempt.id}
-                      type="button"
-                      className="absolute inset-y-0 z-30 w-5 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                      style={{ left: `${markerLeft}%` }}
-                      aria-label={label}
-                      title={label}
-                      onClick={() => onOpenInvocation(attempt.invokeId ?? "")}
-                    >
-                      {marker}
-                    </button>
-                  ) : (
-                    <span
-                      key={attempt.id}
-                      title={label}
-                      className="absolute inset-y-0 z-20 w-5 -translate-x-1/2"
-                      style={{ left: `${markerLeft}%` }}
-                    >
-                      {marker}
-                    </span>
-                  );
-                })}
+                  ) : null}
+                  <span className="truncate font-mono text-xs font-semibold text-base-content">
+                    {model}
+                  </span>
+                </span>
               </div>
-            </div>
+              <div className="flex h-9 items-center justify-end border-t border-base-300/60 bg-base-200/35 px-3 text-xs tabular-nums text-base-content/60">
+                <span>
+                  {t("live.routing.accountsCount", { count: accountCount })} ·{" "}
+                  {t("live.routing.modelRecordsCount", { count: recordCount })}
+                </span>
+              </div>
+              {timeline.lanes.map((lane) => {
+                const laneAttempts = attemptsByAccount.get(lane.accountId) ?? [];
+                return (
+                  <div key={`${model}-${lane.accountId}`} className="contents">
+                    <button
+                      type="button"
+                      className="flex h-12 min-w-0 flex-col justify-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                      aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
+                      onClick={() => onOpenAccount(lane.accountId, lane.model)}
+                    >
+                      <span className="truncate font-mono text-xs font-semibold text-base-content">
+                        {lane.label}
+                      </span>
+                      <span className="mt-0.5 text-xs text-base-content/60">
+                        {stateLabels[lane.state]}
+                      </span>
+                    </button>
+                    <div
+                      className="relative h-12 overflow-hidden border-t border-base-300/60"
+                      data-testid={`model-routing-lane-${model}-${lane.accountId}`}
+                    >
+                      {gridTicks.map((tick) => (
+                        <span
+                          key={tick}
+                          className="absolute inset-y-0 border-l border-dashed border-base-300/70"
+                          style={{ left: `${(tick / 4) * 100}%` }}
+                          aria-hidden
+                        />
+                      ))}
+                      {lane.bands.map((band) => {
+                        const label = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
+                          band.startMs,
+                          band.endMs,
+                          localeTag,
+                        )}`;
+                        return (
+                          <button
+                            key={`${band.state}-${band.startMs}-${band.endMs}`}
+                            type="button"
+                            className={`absolute top-5 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary ${
+                              band.state === "unknown" ? "border border-dashed" : ""
+                            }`}
+                            style={
+                              band.state === "unknown"
+                                ? {
+                                    ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
+                                    borderColor: colors.unknown,
+                                  }
+                                : {
+                                    ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
+                                    backgroundColor: colors[band.state],
+                                  }
+                            }
+                            aria-label={label}
+                            title={label}
+                            onClick={() => onOpenAccount(lane.accountId, lane.model)}
+                          >
+                            <span className="sr-only">{label}</span>
+                          </button>
+                        );
+                      })}
+                      {laneAttempts.map((attempt) => {
+                        const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
+                        const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
+                        const result = attempt.httpStatus
+                          ? `HTTP ${attempt.httpStatus}`
+                          : attempt.status || t("live.routing.record.unknown");
+                        const latency =
+                          attempt.totalLatencyMs != null
+                            ? ` · ${Math.round(attempt.totalLatencyMs)} ms`
+                            : "";
+                        const retry =
+                          (attempt.retryIndex ?? 0) > 0
+                            ? ` · ${t("live.routing.timeline.retry", { index: attempt.retryIndex ?? 0 })}`
+                            : "";
+                        const label = `${lane.label} · ${t("live.routing.timeline.attempt")} · ${formatBeijingRange(
+                          attempt.occurredAtMs,
+                          attempt.occurredAtMs,
+                          localeTag,
+                        )} · ${result}${latency}${retry}`;
+                        const color = successful
+                          ? colors.attemptSuccess
+                          : failed
+                            ? colors.attemptFailure
+                            : colors.attemptUnknown;
+                        const markerLeft = Math.max(
+                          1,
+                          Math.min(
+                            99,
+                            percentAt(
+                              attempt.occurredAtMs,
+                              timeline.rangeStartMs,
+                              timeline.rangeEndMs,
+                            ),
+                          ),
+                        );
+                        const marker = (
+                          <span
+                            key={attempt.id}
+                            className="absolute top-4 z-20 h-3 w-3 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
+                            style={{ left: `${markerLeft}%`, backgroundColor: color }}
+                            aria-hidden
+                          />
+                        );
+                        return attempt.invokeId ? (
+                          <button
+                            key={attempt.id}
+                            type="button"
+                            className="absolute inset-y-0 z-30 w-5 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                            style={{ left: `${markerLeft}%` }}
+                            aria-label={label}
+                            title={label}
+                            onClick={() => onOpenInvocation(attempt.invokeId ?? "")}
+                          >
+                            {marker}
+                          </button>
+                        ) : (
+                          <span
+                            key={attempt.id}
+                            title={label}
+                            className="absolute inset-y-0 z-20 w-5 -translate-x-1/2"
+                            style={{ left: `${markerLeft}%` }}
+                          >
+                            {marker}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </Fragment>
           );
         })}
       </section>

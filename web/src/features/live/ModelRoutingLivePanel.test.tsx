@@ -99,13 +99,14 @@ function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
 }
 
 describe("ModelRoutingLivePanel", () => {
-  it("renders a model-first lane gantt without account-pool aliases or decision lists", () => {
+  it("renders one model-first gantt with one shared time axis and no account-pool aliases", () => {
     const html = renderPanel();
 
     expect(html).toContain("gpt-5.5-codex");
     expect(html).toContain("gpt-5.4-mini");
-    expect(html).toContain('data-testid="model-routing-gantt-gpt-5.5-codex"');
-    expect(html).toContain('data-testid="model-routing-gantt-gpt-5.4-mini"');
+    expect(html).toContain('data-testid="model-routing-gantt"');
+    expect(html).toContain('data-testid="model-routing-gantt-grid"');
+    expect(html.match(/data-testid="model-routing-gantt-legend"/g)).toHaveLength(1);
     expect(html).toContain("请求尝试");
     expect(html).toContain("未知");
     expect(html).toContain("API Key #11");
@@ -124,12 +125,10 @@ describe("ModelRoutingLivePanel", () => {
       html.indexOf('aria-label="路由时间窗"'),
     );
     const primaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.5-codex"');
-    const primaryChart = html.indexOf('data-testid="model-routing-gantt-gpt-5.5-codex"');
     const secondaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.4-mini"');
-    const secondaryChart = html.indexOf('data-testid="model-routing-gantt-gpt-5.4-mini"');
-    expect(primaryGroup).toBeLessThan(primaryChart);
-    expect(primaryChart).toBeLessThan(secondaryGroup);
-    expect(secondaryGroup).toBeLessThan(secondaryChart);
+    expect(primaryGroup).toBeLessThan(secondaryGroup);
+    expect(html).toContain('data-testid="model-routing-lane-gpt-5.5-codex-11"');
+    expect(html).toContain('data-testid="model-routing-lane-gpt-5.4-mini-12"');
     expect(html).toContain("1 条决策");
   });
 
@@ -153,7 +152,7 @@ describe("ModelRoutingLivePanel", () => {
     const html = renderPanel({ generatedAt: "2026-08-16T01:00:00Z", groups: [], records: [] });
 
     expect(html).toContain("没有符合筛选条件的 API Key 模型路由状态。");
-    expect(html).not.toContain('data-testid="model-routing-gantt-');
+    expect(html).not.toContain('data-testid="model-routing-gantt"');
   });
 
   it("keeps the model text visible when the model has an identity icon", () => {

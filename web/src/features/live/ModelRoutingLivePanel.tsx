@@ -4,13 +4,8 @@ import { Button } from "../../components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
-import type {
-  ModelRoutingLiveResponse,
-  ModelRoutingLiveWindow,
-  ModelRoutingTimelineRecord,
-} from "../../lib/api";
+import type { ModelRoutingLiveResponse, ModelRoutingLiveWindow } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
-import { resolveModelIdentityIcon } from "../shared/ModelIdentity";
 import { ModelRoutingGantt } from "./ModelRoutingGantt";
 
 function statusLabel(state: string, t: (key: string) => string) {
@@ -57,24 +52,15 @@ export function ModelRoutingLivePanel({
   }, [data]);
   const models = useMemo(() => knownModels, [knownModels]);
   const records = data?.records ?? [];
-  const recordsByModel = useMemo(() => {
-    const grouped = new Map<string, ModelRoutingTimelineRecord[]>();
-    for (const record of records) {
-      const current = grouped.get(record.model) ?? [];
-      current.push(record);
-      grouped.set(record.model, current);
-    }
-    return grouped;
-  }, [records]);
   const groups = useMemo(() => {
     const currentGroups = data?.groups ?? [];
     const knownGroupModels = new Set(currentGroups.map((group) => group.model));
-    const recordOnlyGroups = Array.from(recordsByModel.keys())
+    const recordOnlyGroups = Array.from(new Set(records.map((record) => record.model)))
       .filter((modelName) => !knownGroupModels.has(modelName))
       .sort()
       .map((modelName) => ({ model: modelName, accounts: [] }));
     return [...currentGroups, ...recordOnlyGroups];
-  }, [data?.groups, recordsByModel]);
+  }, [data?.groups, records]);
 
   return (
     <section className="surface-panel" data-testid="model-routing-live-panel">
@@ -150,51 +136,16 @@ export function ModelRoutingLivePanel({
         {!isLoading && !error && groups.length === 0 ? (
           <p className="text-sm text-base-content/70">{t("live.routing.empty")}</p>
         ) : null}
-        <div className="grid gap-3">
-          {groups.map((group) => {
-            const modelRecords = recordsByModel.get(group.model) ?? [];
-            const modelIdentityIcon = resolveModelIdentityIcon(group.model);
-            return (
-              <section
-                key={group.model}
-                className="surface-subtle overflow-hidden rounded-lg"
-                data-testid={`model-routing-model-group-${group.model}`}
-              >
-                <div className="flex items-center justify-between gap-3 px-3 py-2">
-                  <h2 className="min-w-0">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {modelIdentityIcon ? (
-                        <AppIcon
-                          name={modelIdentityIcon}
-                          className="h-4 w-4 shrink-0 text-success"
-                          aria-hidden
-                        />
-                      ) : null}
-                      <span className="truncate font-mono text-sm font-semibold">
-                        {group.model}
-                      </span>
-                    </span>
-                  </h2>
-                  <div className="flex shrink-0 items-center gap-3 text-xs tabular-nums text-base-content/65">
-                    <span>{t("live.routing.accountsCount", { count: group.accounts.length })}</span>
-                    <span>
-                      {t("live.routing.modelRecordsCount", { count: modelRecords.length })}
-                    </span>
-                  </div>
-                </div>
-                <ModelRoutingGantt
-                  model={group.model}
-                  accounts={group.accounts}
-                  records={modelRecords}
-                  generatedAt={data?.generatedAt}
-                  window={window}
-                  onOpenAccount={onOpenAccount}
-                  onOpenInvocation={onOpenInvocation}
-                />
-              </section>
-            );
-          })}
-        </div>
+        {groups.length > 0 ? (
+          <ModelRoutingGantt
+            groups={groups}
+            records={records}
+            generatedAt={data?.generatedAt}
+            window={window}
+            onOpenAccount={onOpenAccount}
+            onOpenInvocation={onOpenInvocation}
+          />
+        ) : null}
       </div>
     </section>
   );
