@@ -3492,7 +3492,9 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <StorySurface>
-          <Story />
+          <ForcedWorkspaceViewStory view="conversations">
+            <Story />
+          </ForcedWorkspaceViewStory>
         </StorySurface>
       </I18nProvider>
     ),
@@ -6447,6 +6449,17 @@ export const Mobile390: Story = {
     },
   },
   play: async ({ canvasElement }) => {
+    const activeWorkspaceTab = canvasElement.querySelector('[role="tab"][aria-selected="true"]');
+    if (!(activeWorkspaceTab instanceof HTMLElement)) {
+      throw new Error("missing active workspace view tab");
+    }
+    await expect(activeWorkspaceTab).toHaveTextContent(/对话|Conversations/);
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-card"]'),
+    ).not.toHaveLength(0);
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-upstream-account-card"]'),
+    ).toHaveLength(0);
     const controls = canvasElement.querySelector(
       '[data-testid="dashboard-working-conversations-controls"]',
     );

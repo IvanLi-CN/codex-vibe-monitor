@@ -14,6 +14,7 @@
 - activity SSE descriptor 固定 `recentLimit=16`，组件按当前可见数量在客户端截断，避免 visibility 变化重建 topic key。
 - working-conversations 卡片继续消费每 key 最多 16 条 recent 预览，但客户端固定映射 current/previous/earlier 三个槽位；缺失槽位使用两行中性占位，正常记录收紧为两行，失败记录保留无 label 的错误摘要行。
 - 三槽位卡片保留调用详情、账号跳转、键盘可达性、完整值 title/aria 与 blocked/in-flight 诊断；该 owner-facing 信息密度变化不修改 HTTP/SSE wire shape 或后端 recent 上限。
+- working-conversations Storybook 默认强制 `conversations` workspace view；需要验证上游账号视图的 Story 显式覆盖该默认值，避免持久化 `localStorage` 状态污染后续截图与交互断言。移动组件证据边距复用 Storybook `bg-base-200`，不注入任意颜色。
 - `runtimePressureHealth.dashboardHotTopics` 按七条 topic 报告 class、state、subscriber、build、fallback、live DB read、serialization、cadence miss 与 reconnect churn。
 - System Status 以只读方式展示 healthy、deferred、hot-DB-read 与 cadence-miss；字段缺失时保持 unknown 兼容。
 - 完整 Dashboard topic bundle 的 10,000 mutation、双订阅共享 frame 与零 fallback/DB-read 门禁由 stateful topology test 覆盖。

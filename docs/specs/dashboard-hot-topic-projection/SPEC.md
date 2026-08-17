@@ -126,6 +126,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 ### UI / Storybook (if applicable)
 
 - System Status mock states 覆盖 healthy、deferred、hot-DB-read 与 cadence-miss。
+- working-conversations Storybook states 必须显式初始化 `conversations` workspace view；依赖持久化 workspace view 的 Story 不得因前一条 Story 的 `localStorage` 状态渲染错误的上游账号骨架。
 - 使用真实桌面和移动浏览器视口生成 mock-only 视觉证据。
 
 ### Quality checks
@@ -194,6 +195,8 @@ sensitive_exclusion: N/A
 story_id_or_title: dashboard-workingconversationssection--mobile-390
 state: one invocation with previous and earlier missing placeholders
 evidence_note: The mobile card keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
+
+The mobile component capture keeps the Storybook `bg-base-200` surface as its evidence margin; no synthetic gray frame is added.
 
 PR: none
 ![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
