@@ -51,6 +51,12 @@ interface RoutingGanttData {
   attempts: RoutingGanttAttempt[];
 }
 
+export function availableBandOpacity(callCount: number, maxCallCount: number) {
+  if (maxCallCount <= 0) return 0.56;
+  const ratio = Math.max(0, Math.min(1, callCount / maxCallCount));
+  return 0.3 + ratio * 0.7;
+}
+
 const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
   "15m": 15 * 60_000,
   "1h": 60 * 60_000,
@@ -267,6 +273,22 @@ function edgeClass(index: number, lastIndex: number) {
   return "-translate-x-1/2";
 }
 
+function bandKey(model: string, accountId: number, band: RoutingGanttBand) {
+  return `${model}:${accountId}:${band.startMs}:${band.endMs}`;
+}
+
+function countAttemptsInBand(
+  attempts: RoutingGanttAttempt[],
+  band: RoutingGanttBand,
+  rangeEndMs: number,
+) {
+  return attempts.filter(
+    (attempt) =>
+      attempt.occurredAtMs >= band.startMs &&
+      (attempt.occurredAtMs < band.endMs || attempt.occurredAtMs === rangeEndMs),
+  ).length;
+}
+
 export function ModelRoutingGantt({
   groups,
   records,
@@ -306,7 +328,8 @@ export function ModelRoutingGantt({
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
     return {
-      available: withOpacity(status.success, 0.76),
+      available: status.success,
+      availableLegend: withOpacity(status.success, 0.62),
       degraded: withOpacity(metricAccent("totalCost", themeMode), 0.76),
       cooling_down: withOpacity(metricAccent("totalCost", themeMode), 0.46),
       unknown: withOpacity(base.axisText, 0.58),
@@ -325,6 +348,26 @@ export function ModelRoutingGantt({
   const desktopTicks = Array.from({ length: 5 }, (_, index) => index);
   const mobileTicks = [0, 2, 4];
   const gridTicks = desktopTicks.slice(1, -1);
+  const availableCallStats = useMemo(() => {
+    const counts = new Map<string, number>();
+    let max = 0;
+    let total = 0;
+    for (const { model, timeline } of timelines) {
+      for (const lane of timeline.lanes) {
+        const attempts = timeline.attempts.filter(
+          (attempt) => attempt.accountId === lane.accountId,
+        );
+        for (const band of lane.bands) {
+          if (band.state !== "available") continue;
+          const count = countAttemptsInBand(attempts, band, timeline.rangeEndMs);
+          counts.set(bandKey(model, lane.accountId, band), count);
+          max = Math.max(max, count);
+          total += count;
+        }
+      }
+    }
+    return { counts, max, total };
+  }, [timelines]);
 
   if (!range || timelines.length === 0) {
     return (
@@ -352,7 +395,10 @@ export function ModelRoutingGantt({
                 style={
                   state === "unknown"
                     ? { borderColor: colors.unknown }
-                    : { backgroundColor: colors[state] }
+                    : {
+                        backgroundColor:
+                          state === "available" ? colors.availableLegend : colors[state],
+                      }
                 }
                 aria-hidden
               />
@@ -480,11 +526,32 @@ export function ModelRoutingGantt({
                         />
                       ))}
                       {lane.bands.map((band) => {
-                        const label = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
+                        const callCount =
+                          band.state === "available"
+                            ? (availableCallStats.counts.get(
+                                bandKey(model, lane.accountId, band),
+                              ) ?? 0)
+                            : 0;
+                        const allocationPercent =
+                          availableCallStats.total > 0
+                            ? Math.round((callCount / availableCallStats.total) * 100)
+                            : 0;
+                        const baseLabel = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
                           band.startMs,
                           band.endMs,
                           localeTag,
                         )}`;
+                        const label =
+                          band.state === "available"
+                            ? `${baseLabel} · ${t("live.routing.timeline.availableAllocation", {
+                                count: callCount,
+                                percent: allocationPercent,
+                              })}`
+                            : baseLabel;
+                        const availableOpacity = availableBandOpacity(
+                          callCount,
+                          availableCallStats.max,
+                        );
                         return (
                           <button
                             key={`${band.state}-${band.startMs}-${band.endMs}`}
@@ -500,7 +567,10 @@ export function ModelRoutingGantt({
                                   }
                                 : {
                                     ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
-                                    backgroundColor: colors[band.state],
+                                    backgroundColor:
+                                      band.state === "available"
+                                        ? withOpacity(colors.available, availableOpacity)
+                                        : colors[band.state],
                                   }
                             }
                             aria-label={label}
@@ -549,7 +619,7 @@ export function ModelRoutingGantt({
                         const marker = (
                           <span
                             key={attempt.id}
-                            className="absolute top-4 z-20 h-3 w-3 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
+                            className="absolute top-5 z-20 h-2 w-2 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
                             style={{ left: `${markerLeft}%`, backgroundColor: color }}
                             aria-hidden
                           />
@@ -558,7 +628,7 @@ export function ModelRoutingGantt({
                           <button
                             key={attempt.id}
                             type="button"
-                            className="absolute inset-y-0 z-30 w-5 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                            className="absolute inset-y-0 z-30 w-4 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                             style={{ left: `${markerLeft}%` }}
                             aria-label={label}
                             title={label}

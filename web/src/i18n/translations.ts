@@ -2369,6 +2369,8 @@ const baseTranslations = {
     "live.routing.timeline.time": "Beijing time",
     "live.routing.timeline.attempt": "Request attempt",
     "live.routing.timeline.retry": "Retry {{index}}",
+    "live.routing.timeline.availableAllocation":
+      "{{count}} real requests · {{percent}}% of available calls",
     "live.routing.timeline.hint":
       "Bars show observed route-state intervals. Diamonds mark real requests; select a bar for account details or a diamond for the invocation.",
     "live.routing.record.expand": "Show decision details",
@@ -5393,6 +5395,7 @@ const baseTranslations = {
     "live.routing.timeline.time": "北京时间",
     "live.routing.timeline.attempt": "请求尝试",
     "live.routing.timeline.retry": "重试 {{index}}",
+    "live.routing.timeline.availableAllocation": "{{count}} 次真实调用 · 可用期分配 {{percent}}%",
     "live.routing.timeline.hint":
       "色带表示已观测的路由状态区间；菱形表示真实请求。选择色带可查看账号详情，选择菱形可查看调用详情。",
     "live.routing.record.expand": "展开决策详情",

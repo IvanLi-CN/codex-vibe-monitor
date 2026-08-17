@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingLiveResponse } from "../../lib/api";
 import { ThemeProvider } from "../../theme";
-import { buildModelRoutingGanttData } from "./ModelRoutingGantt";
+import { availableBandOpacity, buildModelRoutingGanttData } from "./ModelRoutingGantt";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
 
 const snapshot: ModelRoutingLiveResponse = {
@@ -99,6 +99,13 @@ function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
 }
 
 describe("ModelRoutingLivePanel", () => {
+  it("maps available-band color intensity to relative real-request allocation", () => {
+    expect(availableBandOpacity(0, 10)).toBeCloseTo(0.3);
+    expect(availableBandOpacity(5, 10)).toBeCloseTo(0.65);
+    expect(availableBandOpacity(10, 10)).toBeCloseTo(1);
+    expect(availableBandOpacity(10, 0)).toBeCloseTo(0.56);
+  });
+
   it("renders one model-first gantt with one shared time axis and no account-pool aliases", () => {
     const html = renderPanel();
 
@@ -108,6 +115,7 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain('data-testid="model-routing-gantt-grid"');
     expect(html.match(/data-testid="model-routing-gantt-legend"/g)).toHaveLength(1);
     expect(html).toContain("请求尝试");
+    expect(html).toContain("1 次真实调用 · 可用期分配 100%");
     expect(html).toContain("未知");
     expect(html).toContain("API Key #11");
     expect(html).toContain("API Key #12");
