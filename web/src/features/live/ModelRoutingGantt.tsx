@@ -619,7 +619,7 @@ export function ModelRoutingGantt({
                         const marker = (
                           <span
                             key={attempt.id}
-                            className="absolute top-5 z-20 h-2 w-2 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
+                            className="absolute top-5 z-20 h-1.5 w-1.5 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
                             style={{ left: `${markerLeft}%`, backgroundColor: color }}
                             aria-hidden
                           />
