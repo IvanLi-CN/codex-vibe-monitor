@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -344,6 +344,8 @@ export function ModelRoutingGantt({
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const chartHostRef = useRef<HTMLDivElement>(null);
+  const [chartHostWidth, setChartHostWidth] = useState(0);
   const timeline = useMemo(
     () => buildModelRoutingGanttData({ model, accounts, records, generatedAt, window }),
     [accounts, generatedAt, model, records, window],
@@ -385,6 +387,28 @@ export function ModelRoutingGantt({
     unknown: t("live.routing.states.unknown"),
   };
 
+  useLayoutEffect(() => {
+    const host = chartHostRef.current;
+    if (!host) return undefined;
+
+    const updateWidth = () => {
+      const nextWidth = Math.round(host.getBoundingClientRect().width);
+      if (nextWidth > 0) {
+        setChartHostWidth((currentWidth) =>
+          currentWidth === nextWidth ? currentWidth : nextWidth,
+        );
+      }
+    };
+
+    updateWidth();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateWidth);
+    observer?.observe(host);
+
+    return () => {
+      observer?.disconnect();
+    };
+  }, []);
+
   if (timeline.lanes.length === 0) {
     return (
       <p
@@ -421,9 +445,10 @@ export function ModelRoutingGantt({
         </span>
       </div>
       <div className="overflow-x-auto" data-testid={`model-routing-gantt-scroll-${model}`}>
-        <div className="min-w-0 px-3 pb-3 pt-2 desktop:min-w-[46rem]">
+        <div ref={chartHostRef} className="min-w-0 px-3 pb-3 pt-2 desktop:min-w-[46rem]">
           <ResponsiveContainer width="100%" height={chartHeight}>
             <ComposedChart
+              key={`routing-chart-${chartHostWidth}`}
               layout="vertical"
               data={chartRows.map((row) => ({ ...row, ...row.bandValues }))}
               margin={{ top: 8, right: 14, bottom: 28, left: 8 }}
