@@ -12,7 +12,7 @@ const data: ModelRoutingLiveResponse = {
       accounts: [
         {
           accountId: 11,
-          accountDisplayName: "Ciii",
+          accountDisplayName: "API Key #11",
           model: "gpt-5.5",
           state: "available",
           priority: "normal",
@@ -22,7 +22,7 @@ const data: ModelRoutingLiveResponse = {
         },
         {
           accountId: 12,
-          accountDisplayName: "Ciii2",
+          accountDisplayName: "API Key #12",
           model: "gpt-5.5",
           state: "cooling_down",
           priority: "excluded",
@@ -43,7 +43,7 @@ const data: ModelRoutingLiveResponse = {
       kind: "attempt",
       occurredAt: "2026-08-16T03:59:20.000Z",
       accountId: 11,
-      accountDisplayName: "Ciii",
+      accountDisplayName: "API Key #11",
       model: "gpt-5.5",
       attemptId: "attempt-001",
       invokeId: "invoke-001",
@@ -57,7 +57,7 @@ const data: ModelRoutingLiveResponse = {
       modelRouteStateAfter: "available",
       routingSelectionAudit: {
         selectedAccountId: 11,
-        selectedAccountName: "Ciii",
+        selectedAccountName: "API Key #11",
         eligibleCandidateCount: 2,
         winnerReasonCode: "lowest_effective_load",
         excludedCandidates: [],

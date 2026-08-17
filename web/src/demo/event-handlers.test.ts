@@ -44,7 +44,7 @@ describe("demo topic payloads", () => {
     )) as {
       groups: Array<{
         model: string;
-        accounts: Array<{ accountDisplayName: string; state: string }>;
+        accounts: Array<{ accountId: number; accountDisplayName: string; state: string }>;
       }>;
       records: Array<{ model: string }>;
     };
@@ -53,7 +53,11 @@ describe("demo topic payloads", () => {
       expect.objectContaining({
         model: "gpt-5.4-mini",
         accounts: expect.arrayContaining([
-          expect.objectContaining({ accountDisplayName: "prod-api-key-a", state: "cooling_down" }),
+          expect.objectContaining({
+            accountId: 102,
+            accountDisplayName: "API Key #102",
+            state: "cooling_down",
+          }),
         ]),
       }),
     ]);

@@ -136,8 +136,7 @@ function demoModelRouteFixtureTimeline(
   fixture: DemoModelRouteFixture,
 ): ModelRoutingTimelineRecord[] {
   const { accountId, model } = fixture;
-  const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-  const accountDisplayName = account?.displayName ?? "示例 API Key";
+  const accountDisplayName = `API Key #${accountId}`;
   const occurredAt = (offsetMinutes = 0) =>
     demoModelRouteTimestamp(fixture.minutesAgo + offsetMinutes);
   const invocation = invocations().find((record) => record.id === fixture.invocationId);
@@ -336,7 +335,7 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
     const group = groupsByModel.get(route.model) ?? [];
     group.push({
       accountId: account.id,
-      accountDisplayName: account.displayName,
+      accountDisplayName: `API Key #${account.id}`,
       ...routeState,
     });
     groupsByModel.set(route.model, group);

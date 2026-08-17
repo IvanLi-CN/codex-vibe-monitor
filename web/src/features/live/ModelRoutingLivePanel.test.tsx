@@ -99,7 +99,7 @@ function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
 }
 
 describe("ModelRoutingLivePanel", () => {
-  it("renders one model-first Recharts gantt instead of account and decision lists", () => {
+  it("renders a model-first lane gantt without account-pool aliases or decision lists", () => {
     const html = renderPanel();
 
     expect(html).toContain("gpt-5.5-codex");
@@ -108,7 +108,10 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain('data-testid="model-routing-gantt-gpt-5.4-mini"');
     expect(html).toContain("请求尝试");
     expect(html).toContain("未知");
-    expect(html).toContain("recharts-responsive-container");
+    expect(html).toContain("API Key #11");
+    expect(html).toContain("API Key #12");
+    expect(html).not.toContain("Ciii");
+    expect(html).not.toContain("recharts-responsive-container");
     expect(html).not.toContain('data-testid="model-routing-account-');
     expect(html).not.toContain('data-testid="model-routing-record-');
     expect(html).toContain('data-testid="model-routing-live-controls"');

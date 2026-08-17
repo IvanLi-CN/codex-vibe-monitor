@@ -490,7 +490,7 @@ describe("demo MSW handlers", () => {
     const filtered = (await filteredResponse.json()) as {
       groups: Array<{
         model: string;
-        accounts: Array<{ state: string; accountDisplayName: string }>;
+        accounts: Array<{ accountId: number; state: string; accountDisplayName: string }>;
       }>;
       records: Array<{ model: string }>;
     };
@@ -502,8 +502,16 @@ describe("demo MSW handlers", () => {
     expect(filtered.groups[0]).toMatchObject({ model: "gpt-5.4-mini" });
     expect(filtered.groups[0]?.accounts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ state: "available", accountDisplayName: "batch-api-key" }),
-        expect.objectContaining({ state: "available", accountDisplayName: "prod-api-key-c" }),
+        expect.objectContaining({
+          accountId: 108,
+          state: "available",
+          accountDisplayName: "API Key #108",
+        }),
+        expect.objectContaining({
+          accountId: 115,
+          state: "available",
+          accountDisplayName: "API Key #115",
+        }),
       ]),
     );
     expect(filtered.records).toHaveLength(1);

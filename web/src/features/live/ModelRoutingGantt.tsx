@@ -1,16 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  Bar,
-  CartesianGrid,
-  Cell,
-  ComposedChart,
-  ResponsiveContainer,
-  Scatter,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import type { BarShapeProps } from "recharts/types/cartesian/Bar";
+import { useMemo } from "react";
 import { useTranslation } from "../../i18n";
 import type {
   ModelRoutingLiveAccount,
@@ -35,10 +23,9 @@ interface RoutingGanttBand {
 
 interface RoutingGanttAttempt {
   id: string;
-  x: number;
-  y: string;
+  accountId: number;
+  occurredAtMs: number;
   invokeId?: string | null;
-  accountDisplayName: string;
   occurredAt: string;
   status?: string | null;
   httpStatus?: number | null;
@@ -50,6 +37,7 @@ interface RoutingGanttLane {
   accountId: number;
   label: string;
   model: string;
+  state: RoutingTimelineState;
   bands: RoutingGanttBand[];
 }
 
@@ -58,12 +46,6 @@ interface RoutingGanttData {
   rangeEndMs: number;
   lanes: RoutingGanttLane[];
   attempts: RoutingGanttAttempt[];
-}
-
-interface RoutingGanttChartDatum {
-  lane: string;
-  accountId: number;
-  bandValues: Record<string, number>;
 }
 
 const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
@@ -158,6 +140,10 @@ function buildLaneBands(
   return bands;
 }
 
+function routingLaneLabel(accountId: number) {
+  return `API Key #${accountId}`;
+}
+
 export function buildModelRoutingGanttData({
   model,
   accounts,
@@ -180,7 +166,7 @@ export function buildModelRoutingGanttData({
     if (!accountMap.has(record.accountId)) {
       accountMap.set(record.accountId, {
         accountId: record.accountId,
-        accountDisplayName: record.accountDisplayName,
+        accountDisplayName: "",
         model,
         state: "unknown",
         priority: "unknown",
@@ -191,36 +177,34 @@ export function buildModelRoutingGanttData({
   }
 
   const lanes = Array.from(accountMap.values())
-    .sort((left, right) => left.accountDisplayName.localeCompare(right.accountDisplayName))
+    .sort((left, right) => left.accountId - right.accountId)
     .map((account) => {
       const laneRecords = modelRecords.filter((record) => record.accountId === account.accountId);
       return {
         accountId: account.accountId,
-        label: account.accountDisplayName,
+        label: routingLaneLabel(account.accountId),
         model,
+        state: routingState(account.state) ?? "unknown",
         bands: buildLaneBands(account, laneRecords, rangeStartMs, rangeEndMs),
       };
     });
-  const laneLabels = new Map(lanes.map((lane) => [lane.accountId, lane.label]));
   const attempts = modelRecords.flatMap((record) => {
     if (record.kind !== "attempt") return [];
     const occurredAtMs = parseTimestamp(record.occurredAt);
-    const label = laneLabels.get(record.accountId);
     if (
       occurredAtMs == null ||
-      !label ||
       occurredAtMs < rangeStartMs ||
-      occurredAtMs > rangeEndMs
+      occurredAtMs > rangeEndMs ||
+      !accountMap.has(record.accountId)
     ) {
       return [];
     }
     return [
       {
         id: record.id,
-        x: occurredAtMs - rangeStartMs,
-        y: label,
+        accountId: record.accountId,
+        occurredAtMs,
         invokeId: record.invokeId,
-        accountDisplayName: record.accountDisplayName,
         occurredAt: record.occurredAt,
         status: record.status,
         httpStatus: record.httpStatus,
@@ -254,74 +238,22 @@ function formatBeijingRange(startMs: number, endMs: number, localeTag: string) {
   return `${formatter.format(new Date(startMs))} - ${formatter.format(new Date(endMs))}`;
 }
 
-function StateBandShape({
-  x,
-  y,
-  width,
-  height,
-  fill,
-  label,
-  onOpenAccount,
-}: BarShapeProps & { fill: string; label: string; onOpenAccount: () => void }) {
-  if (!(width > 0) || !(height > 0)) return null;
-  const bandY = y + Math.max(2, height * 0.2);
-  const bandHeight = Math.max(4, height * 0.6);
-  return (
-    <g>
-      <title>{label}</title>
-      <rect x={x} y={bandY} width={width} height={bandHeight} rx={2} fill={fill} />
-      <foreignObject x={x} y={bandY} width={width} height={bandHeight}>
-        <button
-          type="button"
-          className="block h-full w-full cursor-pointer border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          aria-label={label}
-          onClick={onOpenAccount}
-        >
-          <span className="sr-only">{label}</span>
-        </button>
-      </foreignObject>
-    </g>
-  );
+function percentAt(value: number, start: number, end: number) {
+  if (!(end > start)) return 0;
+  return ((clampToRange(value, start, end) - start) / (end - start)) * 100;
 }
 
-function AttemptMarker({
-  cx,
-  cy,
-  payload,
-  fill,
-  label,
-  onOpenInvocation,
-}: {
-  cx?: number;
-  cy?: number;
-  payload?: RoutingGanttAttempt;
-  fill: string;
-  label: string;
-  onOpenInvocation: (invokeId: string) => void;
-}) {
-  if (cx == null || cy == null || !payload) return null;
-  const openable = Boolean(payload.invokeId);
-  return (
-    <g>
-      <title>{label}</title>
-      <path
-        d={`M ${cx} ${cy - 5} L ${cx + 5} ${cy} L ${cx} ${cy + 5} L ${cx - 5} ${cy} Z`}
-        fill={fill}
-      />
-      {openable ? (
-        <foreignObject x={cx - 8} y={cy - 8} width={16} height={16}>
-          <button
-            type="button"
-            className="block h-full w-full cursor-pointer border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label={label}
-            onClick={() => onOpenInvocation(payload.invokeId ?? "")}
-          >
-            <span className="sr-only">{label}</span>
-          </button>
-        </foreignObject>
-      ) : null}
-    </g>
-  );
+function bandStyle(band: RoutingGanttBand, rangeStartMs: number, rangeEndMs: number) {
+  const left = percentAt(band.startMs, rangeStartMs, rangeEndMs);
+  const naturalWidth = percentAt(band.endMs, rangeStartMs, rangeEndMs) - left;
+  const width = Math.min(100 - left, Math.max(0.75, naturalWidth));
+  return { left: `${left}%`, width: `${width}%` };
+}
+
+function edgeClass(index: number, lastIndex: number) {
+  if (index === 0) return "left-0";
+  if (index === lastIndex) return "-translate-x-full";
+  return "-translate-x-1/2";
 }
 
 export function ModelRoutingGantt({
@@ -344,8 +276,6 @@ export function ModelRoutingGantt({
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const chartHostRef = useRef<HTMLDivElement>(null);
-  const [chartHostWidth, setChartHostWidth] = useState(0);
   const timeline = useMemo(
     () => buildModelRoutingGanttData({ model, accounts, records, generatedAt, window }),
     [accounts, generatedAt, model, records, window],
@@ -354,60 +284,34 @@ export function ModelRoutingGantt({
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
     return {
-      available: withOpacity(status.success, 0.82),
-      degraded: withOpacity(metricAccent("totalCost", themeMode), 0.82),
-      cooling_down: withOpacity(metricAccent("totalCost", themeMode), 0.48),
+      available: withOpacity(status.success, 0.76),
+      degraded: withOpacity(metricAccent("totalCost", themeMode), 0.76),
+      cooling_down: withOpacity(metricAccent("totalCost", themeMode), 0.46),
       unknown: withOpacity(base.axisText, 0.2),
       attemptSuccess: status.success,
       attemptFailure: status.failure,
-      axis: base.axisText,
+      attemptUnknown: base.axisText,
       grid: base.gridLine,
     };
   }, [themeMode]);
-  const chartRows = useMemo<RoutingGanttChartDatum[]>(() => {
-    return timeline.lanes.map((lane) => ({
-      lane: lane.label,
-      accountId: lane.accountId,
-      bandValues: Object.fromEntries(
-        lane.bands.map((band, index) => [`band-${index}`, band.endMs - band.startMs]),
-      ),
-    }));
-  }, [timeline.lanes]);
-  const bandCount = Math.max(0, ...timeline.lanes.map((lane) => lane.bands.length));
-  const bandKeys = Array.from({ length: bandCount }, (_, index) => `band-${index}`);
-  const chartHeight = Math.max(186, timeline.lanes.length * 48 + 86);
-  const tickValues = Array.from(
-    { length: 5 },
-    (_, index) => ((timeline.rangeEndMs - timeline.rangeStartMs) * index) / 4,
-  );
   const stateLabels: Record<RoutingTimelineState, string> = {
     available: t("live.routing.states.available"),
     degraded: t("live.routing.states.degraded"),
     cooling_down: t("live.routing.states.cooling_down"),
     unknown: t("live.routing.states.unknown"),
   };
-
-  useLayoutEffect(() => {
-    const host = chartHostRef.current;
-    if (!host) return undefined;
-
-    const updateWidth = () => {
-      const nextWidth = Math.round(host.getBoundingClientRect().width);
-      if (nextWidth > 0) {
-        setChartHostWidth((currentWidth) =>
-          currentWidth === nextWidth ? currentWidth : nextWidth,
-        );
-      }
-    };
-
-    updateWidth();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateWidth);
-    observer?.observe(host);
-
-    return () => {
-      observer?.disconnect();
-    };
-  }, []);
+  const desktopTicks = Array.from({ length: 5 }, (_, index) => index);
+  const mobileTicks = [0, 2, 4];
+  const gridTicks = desktopTicks.slice(1, -1);
+  const attemptsByAccount = useMemo(() => {
+    const byAccount = new Map<number, RoutingGanttAttempt[]>();
+    for (const attempt of timeline.attempts) {
+      const current = byAccount.get(attempt.accountId) ?? [];
+      current.push(attempt);
+      byAccount.set(attempt.accountId, current);
+    }
+    return byAccount;
+  }, [timeline.attempts]);
 
   if (timeline.lanes.length === 0) {
     return (
@@ -422,7 +326,10 @@ export function ModelRoutingGantt({
 
   return (
     <div data-testid={`model-routing-gantt-${model}`}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-base-300/60 px-3 py-2 text-xs text-base-content/70">
+      <div
+        className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-base-300/60 px-3 py-2 text-xs text-base-content/70"
+        data-testid={`model-routing-gantt-legend-${model}`}
+      >
         {(["available", "degraded", "cooling_down", "unknown"] as RoutingTimelineState[]).map(
           (state) => (
             <span key={state} className="inline-flex items-center gap-1.5">
@@ -444,96 +351,117 @@ export function ModelRoutingGantt({
           {t("live.routing.timeline.attempt")}
         </span>
       </div>
-      <div className="overflow-x-auto" data-testid={`model-routing-gantt-scroll-${model}`}>
-        <div ref={chartHostRef} className="min-w-0 px-3 pb-3 pt-2 desktop:min-w-[46rem]">
-          <ResponsiveContainer width="100%" height={chartHeight}>
-            <ComposedChart
-              key={`routing-chart-${chartHostWidth}`}
-              layout="vertical"
-              data={chartRows.map((row) => ({ ...row, ...row.bandValues }))}
-              margin={{ top: 8, right: 14, bottom: 28, left: 8 }}
-              barCategoryGap="36%"
-              aria-label={t("live.routing.timeline.aria", { model })}
-            >
-              <CartesianGrid stroke={colors.grid} strokeDasharray="3 4" horizontal={false} />
-              <XAxis
-                xAxisId="state"
-                type="number"
-                domain={[0, timeline.rangeEndMs - timeline.rangeStartMs]}
-                ticks={tickValues}
-                tickFormatter={(value) =>
-                  formatBeijingTime(timeline.rangeStartMs + Number(value), localeTag)
-                }
-                tick={{ fill: colors.axis, fontSize: 11 }}
-                axisLine={{ stroke: colors.grid }}
-                tickLine={{ stroke: colors.grid }}
-                minTickGap={32}
-              />
-              <YAxis
-                yAxisId="state"
-                type="category"
-                dataKey="lane"
-                width={148}
-                tick={{ fill: colors.axis, fontSize: 12 }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <XAxis
-                xAxisId="attempt"
-                type="number"
-                dataKey="x"
-                domain={[0, timeline.rangeEndMs - timeline.rangeStartMs]}
-                hide
-              />
-              <YAxis yAxisId="attempt" type="category" dataKey="y" hide />
-              <Tooltip cursor={{ fill: withOpacity(colors.axis, 0.05) }} content={() => null} />
-              {bandKeys.map((key, bandIndex) => (
-                <Bar
-                  key={key}
-                  dataKey={key}
-                  xAxisId="state"
-                  yAxisId="state"
-                  stackId="routing-state"
-                  isAnimationActive={false}
-                  legendType="none"
-                  shape={(shapeProps) => {
-                    const lane = timeline.lanes[shapeProps.index];
-                    const band = lane?.bands[bandIndex];
-                    if (!lane || !band) return null;
-                    const label = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
-                      band.startMs,
-                      band.endMs,
+      <section
+        className="grid grid-cols-[minmax(7.5rem,9rem)_minmax(0,1fr)] border-b border-base-300/60 desktop:grid-cols-[minmax(10rem,12rem)_minmax(0,1fr)]"
+        data-testid={`model-routing-gantt-grid-${model}`}
+        aria-label={t("live.routing.timeline.aria", { model })}
+      >
+        <div className="flex h-10 items-center border-r border-base-300/60 px-3 text-xs font-medium text-base-content/60">
+          {t("live.routing.timeline.apiKey")}
+        </div>
+        <div className="relative h-10 overflow-hidden text-xs font-medium text-base-content/60">
+          <span className="absolute left-3 top-1.5">{t("live.routing.timeline.time")}</span>
+          <div className="absolute inset-x-0 bottom-1.5 h-4">
+            <div className="desktop:hidden">
+              {mobileTicks.map((tick, index) => {
+                const left = (tick / 4) * 100;
+                return (
+                  <span
+                    key={tick}
+                    className={`absolute bottom-0 whitespace-nowrap ${edgeClass(index, mobileTicks.length - 1)}`}
+                    style={{ left: `${left}%` }}
+                  >
+                    {formatBeijingTime(
+                      timeline.rangeStartMs +
+                        ((timeline.rangeEndMs - timeline.rangeStartMs) * tick) / 4,
                       localeTag,
-                    )}`;
-                    return (
-                      <StateBandShape
-                        {...shapeProps}
-                        fill={colors[band.state]}
-                        label={label}
-                        onOpenAccount={() => onOpenAccount(lane.accountId, lane.model)}
-                      />
-                    );
-                  }}
-                >
-                  {chartRows.map((row, rowIndex) => {
-                    const state = timeline.lanes[rowIndex]?.bands[bandIndex]?.state ?? "unknown";
-                    return <Cell key={`${row.accountId}-${key}`} fill={colors[state]} />;
-                  })}
-                </Bar>
-              ))}
-              <Scatter
-                xAxisId="attempt"
-                yAxisId="attempt"
-                data={timeline.attempts}
-                isAnimationActive={false}
-                legendType="none"
-                shape={(shapeProps) => {
-                  const attempt = shapeProps.payload as RoutingGanttAttempt | undefined;
-                  if (!attempt) return null;
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+            <div className="hidden desktop:block">
+              {desktopTicks.map((tick, index) => {
+                const left = (tick / 4) * 100;
+                return (
+                  <span
+                    key={tick}
+                    className={`absolute bottom-0 whitespace-nowrap ${edgeClass(index, desktopTicks.length - 1)}`}
+                    style={{ left: `${left}%` }}
+                  >
+                    {formatBeijingTime(
+                      timeline.rangeStartMs +
+                        ((timeline.rangeEndMs - timeline.rangeStartMs) * tick) / 4,
+                      localeTag,
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        {timeline.lanes.map((lane) => {
+          const laneAttempts = attemptsByAccount.get(lane.accountId) ?? [];
+          return (
+            <div key={lane.accountId} className="contents">
+              <button
+                type="button"
+                className="flex h-16 min-w-0 flex-col justify-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
+                onClick={() => onOpenAccount(lane.accountId, lane.model)}
+              >
+                <span className="truncate font-mono text-xs font-semibold text-base-content">
+                  {lane.label}
+                </span>
+                <span className="mt-0.5 text-xs text-base-content/60">
+                  {stateLabels[lane.state]}
+                </span>
+              </button>
+              <div
+                className="relative h-16 overflow-hidden border-t border-base-300/60"
+                data-testid={`model-routing-lane-${lane.accountId}`}
+              >
+                {gridTicks.map((tick) => (
+                  <span
+                    key={tick}
+                    className="absolute inset-y-0 border-l border-dashed border-base-300/70"
+                    style={{ left: `${(tick / 4) * 100}%` }}
+                    aria-hidden
+                  />
+                ))}
+                <div
+                  className="absolute inset-x-0 top-6 h-3 rounded-sm bg-base-200/70"
+                  aria-hidden
+                />
+                {lane.bands.map((band) => {
+                  const label = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
+                    band.startMs,
+                    band.endMs,
+                    localeTag,
+                  )}`;
+                  return (
+                    <button
+                      key={`${band.state}-${band.startMs}-${band.endMs}`}
+                      type="button"
+                      className="absolute top-6 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary"
+                      style={{
+                        ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
+                        backgroundColor: colors[band.state],
+                      }}
+                      aria-label={label}
+                      title={label}
+                      onClick={() => onOpenAccount(lane.accountId, lane.model)}
+                    >
+                      <span className="sr-only">{label}</span>
+                    </button>
+                  );
+                })}
+                {laneAttempts.map((attempt) => {
                   const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
+                  const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
                   const result = attempt.httpStatus
                     ? `HTTP ${attempt.httpStatus}`
-                    : attempt.status || "-";
+                    : attempt.status || t("live.routing.record.unknown");
                   const latency =
                     attempt.totalLatencyMs != null
                       ? ` · ${Math.round(attempt.totalLatencyMs)} ms`
@@ -542,28 +470,62 @@ export function ModelRoutingGantt({
                     (attempt.retryIndex ?? 0) > 0
                       ? ` · ${t("live.routing.timeline.retry", { index: attempt.retryIndex ?? 0 })}`
                       : "";
-                  const atMs = parseTimestamp(attempt.occurredAt) ?? timeline.rangeStartMs;
-                  return (
-                    <AttemptMarker
-                      cx={shapeProps.cx}
-                      cy={shapeProps.cy}
-                      payload={attempt}
-                      fill={successful ? colors.attemptSuccess : colors.attemptFailure}
-                      label={`${attempt.accountDisplayName} · ${t("live.routing.timeline.attempt")} · ${formatBeijingRange(
-                        atMs,
-                        atMs,
-                        localeTag,
-                      )} · ${result}${latency}${retry}`}
-                      onOpenInvocation={onOpenInvocation}
+                  const label = `${lane.label} · ${t("live.routing.timeline.attempt")} · ${formatBeijingRange(
+                    attempt.occurredAtMs,
+                    attempt.occurredAtMs,
+                    localeTag,
+                  )} · ${result}${latency}${retry}`;
+                  const color = successful
+                    ? colors.attemptSuccess
+                    : failed
+                      ? colors.attemptFailure
+                      : colors.attemptUnknown;
+                  const markerLeft = Math.max(
+                    1,
+                    Math.min(
+                      99,
+                      percentAt(attempt.occurredAtMs, timeline.rangeStartMs, timeline.rangeEndMs),
+                    ),
+                  );
+                  const marker = (
+                    <span
+                      key={attempt.id}
+                      className="absolute top-[21px] z-20 h-3 w-3 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
+                      style={{ left: `${markerLeft}%`, backgroundColor: color }}
+                      aria-hidden
                     />
                   );
-                }}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-      <p className="px-3 pb-3 text-xs text-base-content/60">{t("live.routing.timeline.hint")}</p>
+                  return attempt.invokeId ? (
+                    <button
+                      key={attempt.id}
+                      type="button"
+                      className="absolute inset-y-0 z-30 w-5 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                      style={{ left: `${markerLeft}%` }}
+                      aria-label={label}
+                      title={label}
+                      onClick={() => onOpenInvocation(attempt.invokeId ?? "")}
+                    >
+                      {marker}
+                    </button>
+                  ) : (
+                    <span
+                      key={attempt.id}
+                      title={label}
+                      className="absolute inset-y-0 z-20 w-5 -translate-x-1/2"
+                      style={{ left: `${markerLeft}%` }}
+                    >
+                      {marker}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+      <p className="px-3 pb-3 pt-2 text-xs text-base-content/60">
+        {t("live.routing.timeline.hint")}
+      </p>
     </div>
   );
 }

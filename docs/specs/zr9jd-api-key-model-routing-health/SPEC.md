@@ -77,7 +77,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。实时快照和路由历史不返回账号分组字段；账号分组是账号池管理元数据，不是组合路由维度。
-- 独立模型路由页面默认显示最近 24 小时。页面以模型分组，每个模型块使用 Recharts 甘特图呈现该模型的精确账号组合：账号仅作为 Y 轴泳道标签，不得渲染账号分组、账号列表或跨模型的全局记录列表。色带表示根据真实状态事件可重建的 `available/degraded/cooling_down` 区间；无法重建的间隔必须显示为 `unknown`，不得声称为正常。每个真实选择和每次重试各自显示为独立菱形标记；色带下钻账号模型详情，菱形下钻关联调用。手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
+- 独立模型路由页面默认显示最近 24 小时。页面以模型为唯一分组；每个模型块必须是标准二维甘特图：左侧固定泳道列、右侧为该模型全行共享且连续的北京时间轴。每条泳道精确对应一个 `(upstream_account_id, model)` 组合，标识固定为 `API Key #<id>`，不得使用账号池显示名、所属分组或账号列表作为分类或第二层信息。状态区间按真实起止时间显示为 `available/degraded/cooling_down/unknown` 色带；无法重建的间隔必须显示为 `unknown`，不得声称为正常。每个真实选择和每次重试各自显示为同轴独立菱形标记。不得以堆叠柱状图、分类柱图或脱离时间比例的色块代替甘特图。色带下钻账号模型详情，菱形下钻关联调用。手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
 - `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容，不返回账号分组字段。
 - `pool.model-routing-live` 实时主题只在独立“模型路由”页面处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
 - “实况”与“模型路由”是并列主导航，不存在包含关系。实况页在共享摘要带下使用“对话 / 最新记录 / 代理”三个内容宽度页签，默认并持久化“对话”；历史遗留的 `routing` 页签选择回退到“对话”。模型路由独立为 `/model-routing` 页面，只承载 API Key 模型路由状态、筛选、决策记录与账号/调用下钻，不渲染对话页签或对话内容。
@@ -120,11 +120,11 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given a successful API Key request has 3839 input tokens, exactly the configured hit rate, or incomplete usage, When it completes, Then it does not trigger a low-hit transition; a 3840-token request strictly below the threshold does.
 - Given repeated low-hit samples for one account/model combination, When its future concurrency reaches one, Then the third consecutive low-hit sample enters 15/30/60-second cache cooldown and an expired cooldown admits exactly one controlled real business request.
 - Given a limited combination has a legal alternative and `overflowMode=reroute`, When its limit is full, Then routing can select the alternative; with `queue`, forced binding, no-switch, or no alternative, it waits only within existing bounded request deadlines.
-- Given the standalone model-routing page is opened, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model Gantt updates its corresponding state band or individual attempt marker through the bounded `pool.model-routing-live` view without creating new upstream traffic.
+- Given the standalone model-routing page is opened, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model Gantt updates its corresponding state band or individual attempt marker on the affected combination lane through the bounded `pool.model-routing-live` view without creating new upstream traffic.
 - Given a route attempt has retries, When the global or account model history renders, Then every retry remains a separate time-ordered record with its routing selection audit and normalized terminal evidence.
 - Given an operator opens an API Key account's model details, When the model row expands, Then the first page contains only that model's last 48 hours of history and older records load by cursor without duplication.
 - Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 代理”, with “对话” selected; inactive tabs do not retain their real-time subscription. Given `/model-routing` renders, Then it is a separate top-level page with no conversation tab or conversation content.
-- Given the model-routing page renders at desktop or mobile widths, Then each model has a real Recharts 24-hour Gantt chart with account Y-axis lanes, time X-axis ticks, observed `available/degraded/cooling_down/unknown` color bands and separate real-request markers; account groups and account-list layouts are absent.
+- Given the model-routing page renders at desktop or mobile widths, Then each model has a standards-compliant 24-hour Gantt with a fixed `API Key #id` lane column and a shared Beijing-time axis, proportional `available/degraded/cooling_down/unknown` state bands and separate real-request markers; account display names, account groups, account-list layouts and stacked/category-bar charts are absent.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 
 ## 验收清单（Acceptance checklist）
@@ -158,23 +158,23 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` Autodocs/交互覆盖）
 视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=通过（两张模型路由页面截图均经过 `trim_only` 规范化；桌面边缘不均匀而原样保留，移动端没有可安全移除的空白）
-聊天回图=已展示，待主人确认
-证据落盘=已落盘
-代码来源sha=见当前会话确认卡
-证据绑定sha=见当前会话确认卡
-submission_gate=pending-owner-approval
+空白裁剪=待重新采集
+聊天回图=待重新展示
+证据落盘=待重新采集
+代码来源sha=待当前甘特图重构完成后绑定
+证据绑定sha=待当前甘特图重构完成后绑定
+submission_gate=local-pending
 target_program=mock-only
 sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取，页面证据在同一 mock-only 演示路由中以受控 1440×900 和 393×852 CSS 视口采集，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
 
-source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `gpt-5.5` 与 `gpt-5.4-mini` 的 Recharts 24 小时甘特图：账号仅为 Y 轴泳道，灰色未知与绿色可用色带按真实事件重建，菱形为逐次真实请求；实时快照、历史记录和渲染界面均不含账号分组字段或账号分组布局。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=待重新采集：必须展示模型唯一分组、左侧 `API Key #id` 精确组合泳道、右侧共享北京时间轴、按真实时间比例重建的状态色带和逐次真实请求菱形；界面不得出现账号池显示名、账号分组、账号列表或堆叠柱图。
 
 PR: include
 ![桌面模型路由页](./assets/model-routing-account-groups-removed-desktop.png)
 
-source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端自适应 Recharts 甘特图：账号泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内，不需要横向滚动；页面不含对话内容、账号列表或账号分组字段。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=待重新采集：验证移动端标准甘特图的精确组合泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内；页面不含对话内容、账号池显示名、账号列表或账号分组字段。
 
 PR: include
 ![移动模型路由页](./assets/model-routing-account-groups-removed-mobile.png)

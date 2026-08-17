@@ -9,7 +9,7 @@ const generatedAt = "2026-08-16T04:00:00.000Z";
 const accounts: ModelRoutingLiveAccount[] = [
   {
     accountId: 11,
-    accountDisplayName: "Ciii",
+    accountDisplayName: "API Key #11",
     model: "gpt-5.5",
     state: "available",
     priority: "normal",
@@ -19,7 +19,7 @@ const accounts: ModelRoutingLiveAccount[] = [
   },
   {
     accountId: 12,
-    accountDisplayName: "Ciii2",
+    accountDisplayName: "API Key #12",
     model: "gpt-5.5",
     state: "degraded",
     priority: "deprioritized",
@@ -29,7 +29,7 @@ const accounts: ModelRoutingLiveAccount[] = [
   },
   {
     accountId: 13,
-    accountDisplayName: "Ciii-recovery",
+    accountDisplayName: "API Key #13",
     model: "gpt-5.5",
     state: "cooling_down",
     priority: "excluded",
@@ -42,14 +42,14 @@ const accounts: ModelRoutingLiveAccount[] = [
 
 const records: ModelRoutingTimelineRecord[] = [
   {
-    id: "attempt:ciii-recovery",
+    id: "attempt:11-recovery",
     kind: "attempt",
     occurredAt: "2026-08-16T03:35:00.000Z",
     accountId: 11,
-    accountDisplayName: "Ciii",
+    accountDisplayName: "API Key #11",
     model: "gpt-5.5",
-    attemptId: "attempt-ciii-recovery",
-    invokeId: "invoke-ciii-recovery",
+    attemptId: "attempt-11-recovery",
+    invokeId: "invoke-11-recovery",
     attemptIndex: 1,
     sameAccountRetryIndex: 0,
     status: "success",
@@ -60,14 +60,14 @@ const records: ModelRoutingTimelineRecord[] = [
     modelRouteStateAfter: "available",
   },
   {
-    id: "attempt:ciii2-degraded",
+    id: "attempt:12-degraded",
     kind: "attempt",
     occurredAt: "2026-08-16T03:42:00.000Z",
     accountId: 12,
-    accountDisplayName: "Ciii2",
+    accountDisplayName: "API Key #12",
     model: "gpt-5.5",
-    attemptId: "attempt-ciii2-degraded",
-    invokeId: "invoke-ciii2-degraded",
+    attemptId: "attempt-12-degraded",
+    invokeId: "invoke-12-degraded",
     attemptIndex: 2,
     sameAccountRetryIndex: 1,
     status: "failed",
@@ -78,11 +78,11 @@ const records: ModelRoutingTimelineRecord[] = [
     modelRouteStateAfter: "degraded",
   },
   {
-    id: "event:ciii2-cooling",
+    id: "event:13-cooling",
     kind: "event",
     occurredAt: "2026-08-16T03:49:00.000Z",
     accountId: 13,
-    accountDisplayName: "Ciii-recovery",
+    accountDisplayName: "API Key #13",
     model: "gpt-5.5",
     status: "cooling_down",
     action: "model_route_cooldown",
@@ -130,15 +130,17 @@ export const Operational24Hours: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("model-routing-gantt-gpt-5.5")).toBeVisible();
-    await expect(canvas.getByText("可用")).toBeVisible();
-    await expect(canvas.getByText("降权")).toBeVisible();
-    await expect(canvas.getByText("冷却中")).toBeVisible();
-    await expect(canvas.getByText("未知")).toBeVisible();
-    await expect(canvas.getByText("请求尝试")).toBeVisible();
+    const legend = within(canvas.getByTestId("model-routing-gantt-legend-gpt-5.5"));
+    await expect(legend.getByText("可用")).toBeVisible();
+    await expect(legend.getByText("降权")).toBeVisible();
+    await expect(legend.getByText("冷却中")).toBeVisible();
+    await expect(legend.getByText("未知")).toBeVisible();
+    await expect(legend.getByText("请求尝试")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "API Key #11 · 可用" })).toBeVisible();
 
-    const attempt = canvas.getByRole("button", { name: /^Ciii · 请求尝试/ });
+    const attempt = canvas.getByRole("button", { name: /^API Key #11 · 请求尝试/ });
     await userEvent.click(attempt);
-    await expect(args.onOpenInvocation).toHaveBeenCalledWith("invoke-ciii-recovery");
+    await expect(args.onOpenInvocation).toHaveBeenCalledWith("invoke-11-recovery");
   },
 };
 
