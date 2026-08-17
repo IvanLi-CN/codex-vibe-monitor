@@ -143,6 +143,17 @@ export const Operational24Hours: Story = {
     await expect(legend.getByText("请求尝试")).toBeVisible();
     await expect(canvas.findByTestId("model-routing-svg-system")).resolves.toBeVisible();
     await expect(canvas.findByTestId("model-routing-model-group-gpt-5.5")).resolves.toBeVisible();
+    const ganttHost = canvas.getByTestId("model-routing-gantt-chart-system");
+    const ganttContainer = ganttHost.querySelector<HTMLElement>(".gantt-container");
+    const laneBar = ganttHost.querySelector<SVGRectElement>(
+      '.bar-wrapper[data-id="route-gpt-5-5-11"] .bar',
+    );
+    if (!ganttContainer || !laneBar) throw new Error("routing Gantt layout is incomplete");
+    await expect(
+      Math.abs(
+        ganttContainer.getBoundingClientRect().width - laneBar.getBoundingClientRect().width,
+      ),
+    ).toBeLessThanOrEqual(4);
     await expect(
       canvas.findByRole("button", { name: /^API Key #11 · 可用 ·/ }),
     ).resolves.toBeVisible();

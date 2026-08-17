@@ -605,7 +605,8 @@ function ModelRoutingSvgChart({
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
-    const fittedColumnWidth = Math.floor((host.clientWidth - (compact ? 24 : 0)) / spec.columns);
+    const timelineIntervals = Math.max(1, spec.columns - 1);
+    const fittedColumnWidth = Math.floor(host.clientWidth / timelineIntervals);
     const columnWidth = compact
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);

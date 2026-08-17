@@ -27,6 +27,8 @@
     border-radius: 0;
     max-height: 36rem;
     min-height: 5.25rem;
+    overflow-x: hidden;
+    overflow-y: auto;
     background: oklch(var(--color-base-100));
   }
 
