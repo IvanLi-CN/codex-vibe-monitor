@@ -45,6 +45,7 @@ export interface InvocationModelContextClusterProps {
   grouped: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
+  showModelLabel?: boolean;
   testId?: string;
   modelTestId?: string;
 }
@@ -52,16 +53,21 @@ export interface InvocationModelContextClusterProps {
 export function InvocationReasoningEffortChip({
   value,
   testId,
+  className,
 }: {
   value: string;
   testId?: string;
+  className?: string;
 }) {
   const displayValue = formatReasoningEffort(value);
   if (displayValue === FALLBACK_CELL) {
     return (
       <span
         data-testid={testId}
-        className="inline-flex shrink-0 items-center font-mono text-xs font-semibold text-base-content/48"
+        className={cn(
+          "inline-flex shrink-0 items-center font-mono text-xs font-semibold text-base-content/48",
+          className,
+        )}
         title={displayValue}
       >
         {displayValue}
@@ -86,7 +92,7 @@ export function InvocationReasoningEffortChip({
       tone={chipTone}
       data-testid={testId}
       data-reasoning-effort-tone={tone}
-      className="max-w-[5rem] px-2 text-xs font-semibold tracking-[0.01em]"
+      className={cn("max-w-[5rem] px-2 text-xs font-semibold tracking-[0.01em]", className)}
       title={displayValue}
     >
       <span className="truncate whitespace-nowrap">{displayValue}</span>
@@ -102,6 +108,7 @@ export function InvocationModelContextCluster({
   grouped,
   t,
   className,
+  showModelLabel = false,
   testId,
   modelTestId,
 }: InvocationModelContextClusterProps) {
@@ -149,7 +156,12 @@ export function InvocationModelContextCluster({
         <span
           data-testid={modelTestId}
           data-model-context-part="model"
-          className="flex w-5 shrink-0 items-center justify-center text-base-content/72"
+          className={cn(
+            "flex shrink-0 items-center text-base-content/72",
+            showModelLabel
+              ? "min-w-[2.5rem] max-w-[9rem] flex-1 justify-start px-1.5"
+              : "w-5 justify-center",
+          )}
         >
           {model}
         </span>

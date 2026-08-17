@@ -691,7 +691,7 @@ function renderSection(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -736,7 +736,7 @@ function renderSectionWithCards(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -842,7 +842,7 @@ function rerenderSection(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -888,7 +888,7 @@ function rerenderSectionWithCards(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -2764,8 +2764,8 @@ describe("DashboardWorkingConversationsSection", () => {
     const accountName = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-account-name"]',
     );
-    const accountMeta = currentSlot.querySelector(
-      '[data-testid="dashboard-working-conversation-account-meta"]',
+    const slotModel = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-model"]',
     );
     const compactBadge = currentSlot.querySelector(
       '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
@@ -2775,22 +2775,20 @@ describe("DashboardWorkingConversationsSection", () => {
       !(accountLine instanceof HTMLDivElement) ||
       !(accountChip instanceof HTMLElement) ||
       !(accountName instanceof HTMLElement) ||
-      !(accountMeta instanceof HTMLDivElement) ||
+      !(slotModel instanceof HTMLDivElement) ||
       !(compactBadge instanceof HTMLElement)
     ) {
       throw new Error("missing account row or compact endpoint markers");
     }
 
-    expect(accountLine.className).toContain("sm:flex-nowrap");
+    expect(accountLine.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     expect(accountChip.className).not.toContain("bg-base-100");
     expect(accountChip.className).not.toContain("px-1.5");
     expect(accountName.className).toContain("truncate");
     expect(accountName.className).toContain("whitespace-nowrap");
     expect(accountName.className).not.toContain("line-clamp-2");
     expect(accountName.className).not.toContain("break-all");
-    expect(
-      accountChip.compareDocumentPosition(accountMeta) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    expect(slotModel.getAttribute("title")).toContain("gpt-5.4");
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
     expect(currentSlot.textContent).toContain("Team");
     expect(currentSlot.textContent).not.toContain("RQ ");
@@ -4088,13 +4086,18 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const placeholder = host?.querySelector(
+    const placeholders = host?.querySelectorAll(
       '[data-testid="dashboard-working-conversation-placeholder"]',
     );
 
-    expect(placeholder).not.toBeNull();
-    expect(placeholder?.textContent).toContain("上一条调用");
-    expect(placeholder?.textContent).toContain("等高占位");
+    expect(placeholders).toHaveLength(2);
+    for (const placeholder of placeholders ?? []) {
+      expect(placeholder.textContent).toBe("");
+      expect(placeholder.querySelectorAll(".working-conversation-placeholder-line")).toHaveLength(
+        2,
+      );
+      expect(placeholder.getAttribute("role")).toBe("group");
+    }
   });
 
   it("keeps the placeholder slot non-interactive when there is no previous invocation", () => {
@@ -4128,7 +4131,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(previousSlot).toBeNull();
-    expect(placeholder.getAttribute("role")).toBeNull();
+    expect(placeholder.getAttribute("role")).toBe("group");
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
@@ -4796,16 +4799,25 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing slot header");
     }
     expect(slotHeader.className).toContain("grid");
-    expect(slotHeader.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
       throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
     }
     expect(
-      slotHeader
-        .querySelector('[data-testid="dashboard-working-conversation-slot-label"]')
-        ?.textContent?.trim(),
-    ).toBe("当前调用");
+      slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
+    ).toBeNull();
+    const slotTime = slotHeader.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-time"]',
+    );
+    const headerModel = slotHeader.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-model"]',
+    );
+    expect(slotTime).toBeInstanceOf(HTMLElement);
+    expect(headerModel).toBeInstanceOf(HTMLElement);
+    expect(
+      slotTime!.compareDocumentPosition(headerModel!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(slotHeader.querySelector('[data-testid="invocation-phase-badge"]')).toBe(statusLabel);
     expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
     expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");

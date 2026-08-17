@@ -1104,6 +1104,15 @@ const currentAndPreviousResponse = createResponse([
       requestedServiceTier: "auto",
       serviceTier: "auto",
     }),
+    createPreview({
+      id: 10,
+      invokeId: "invoke-10",
+      occurredAt: "2026-04-04T09:58:44Z",
+      status: "completed",
+      model: "gpt-5.4-long-context-preview",
+      upstreamAccountName: "backup-alpha-long-account-label-for-truncation@example.com",
+      upstreamAccountPlanType: "team",
+    }),
   ]),
 ]);
 
@@ -2722,14 +2731,18 @@ function resolveInitialSelection(
   cards: ReturnType<typeof buildCards>,
   target?: {
     promptCacheKey: string;
-    slotKind: "current" | "previous";
+    slotKind: "current" | "previous" | "earlier";
   },
 ): DashboardWorkingConversationInvocationSelection | null {
   if (!target) return null;
   const card = cards.find((candidate) => candidate.promptCacheKey === target.promptCacheKey);
   if (!card) return null;
   const invocation =
-    target.slotKind === "previous" ? card.previousInvocation : card.currentInvocation;
+    target.slotKind === "earlier"
+      ? card.earlierInvocation
+      : target.slotKind === "previous"
+        ? card.previousInvocation
+        : card.currentInvocation;
   if (!invocation) return null;
   return {
     slotKind: target.slotKind,
@@ -2868,7 +2881,7 @@ function DrawerPreviewStory({
   response: PromptCacheConversationsResponse;
   initialSelection?: {
     promptCacheKey: string;
-    slotKind: "current" | "previous";
+    slotKind: "current" | "previous" | "earlier";
   };
   initialConversationKey?: string;
   initialConversationTab?: "overview" | "calls" | "settings";
@@ -3522,7 +3535,13 @@ export const CurrentAndPrevious: Story = {
     }
     await expect(
       slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
-    ).toHaveTextContent(/当前调用|Current invocation/);
+    ).toBeNull();
+    await expect(
+      slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-model"]'),
+    ).toBeInTheDocument();
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]'),
+    ).toHaveLength(3);
     await expect(slotHeader).toContainElement(firstByteLatency);
     await expect(slotHeader).toContainElement(responseLatency);
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
@@ -3602,6 +3621,19 @@ export const CurrentOnlyPlaceholder: Story = {
     cards: buildCards(currentOnlyResponse),
     isLoading: false,
     error: null,
+  },
+  play: async ({ canvasElement }) => {
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-placeholder"]'),
+    ).toHaveLength(2);
+    for (const placeholder of canvasElement.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-placeholder"]',
+    )) {
+      await expect(placeholder).toHaveAttribute("role", "group");
+      await expect(
+        placeholder.querySelectorAll(".working-conversation-placeholder-line"),
+      ).toHaveLength(2);
+    }
   },
 };
 
@@ -3801,7 +3833,7 @@ export const RunningOnlyConversation: Story = {
     );
     expect(currentSlotHeader).toBeInstanceOf(HTMLElement);
     expect(currentSlotHeader?.className).toContain("grid");
-    expect(currentSlotHeader?.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    expect(currentSlotHeader?.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     expect(
       currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
     ).toBeInstanceOf(HTMLElement);
@@ -3939,6 +3971,10 @@ export const FailedStatusIconDedup: Story = {
       slotHeader.querySelectorAll('[title*="upstream gateway closed before first byte"]'),
     ).toHaveLength(1);
     await expect(currentSlot).not.toHaveTextContent(/^失败$/);
+    await expect(
+      currentSlot.querySelector('[data-testid="invocation-error-summary"]'),
+    ).toBeInTheDocument();
+    await expect(currentSlot).not.toHaveTextContent(/错误|Error/);
   },
   parameters: {
     docs: {
@@ -6406,7 +6442,7 @@ export const Mobile390: Story = {
     docs: {
       description: {
         story:
-          "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and dual-slot summary hierarchy.",
+          "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and three-slot summary hierarchy.",
       },
     },
   },

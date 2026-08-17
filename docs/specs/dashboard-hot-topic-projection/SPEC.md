@@ -14,7 +14,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 
 - 将订阅 topic 强制分类为 `HotProjection`、`ClosedSnapshot` 或 `BoundedColdHydrate`。
 - 将 working-conversations、parallel-work open range 与 open-window timeseries 迁入 revision-aware typed projection。
-- 保持 Dashboard HTTP/SSE wire shape、topic、排序、range、recent 与 owner-facing 交互不变。
+- 保持 Dashboard HTTP/SSE wire shape、topic、排序、range、recent 上限与调用详情/账号跳转交互不变；working-conversations 卡片允许通过客户端投影收紧 owner-facing 信息密度。
 - 每个 topic revision 只生成一个共享不可变 serialized frame，订阅者数量不增加 builder、serialization 或数据库读取。
 - 通过 additive `runtimePressureHealth.dashboardHotTopics` 准确报告 hot topic 的事实源、负载与退化状态。
 
@@ -49,6 +49,8 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - `HotProjection` 必须提供 typed materializer；穷举分派不得落入通用 `build_payload`、通用 JSON overlay 或健康路径 SQL fallback。
 - working-conversations 首订阅必须建立同一事务 cursor baseline，后续只应用 compact delta；旧 key 重入、metadata 变化和候选补位只允许按 key 或 identity 有界 hydrate。
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
+- working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留两行中性占位。该展示数量不改变 HTTP/SSE wire shape、`recentInvocationLimit=16` 或后端 compact 默认值。
+- 三个槽位的正常/进行中记录与缺失占位均保持两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。
 - parallel-work 必须复用既有 minute-key/hourly rollup baseline，并以 current boundary identities 和 runtime overlay 精确维护 `today`、`1d`、`7d`；`yesterday` 必须作为 `ClosedSnapshot`，不受当前 mutation 触发。
 - open-window timeseries 必须复用 `timeseries_minute_projection_v2`，并以 terminal/runtime revisions 更新当前桶；健康发布不得调用通用 timeseries fetch builder。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
@@ -81,6 +83,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - Metadata 变更只影响相关 key/account，不得触发 working full-window hydrate。
 - Timezone、DST、account scope、unassigned 和 conversation spans 必须与既有 exact builder 保持精确一致。
 - SSE selection 只有显式导航、分页、range 或 filter 变化时才允许触发 `topic-change` reconnect；recent 可见数量变化不得改变连接签名。
+- 三槽位选择的 `slotKind` 为 `current | previous | earlier`；第三槽位在详情抽屉、aria 名称和缺失说明中称为“更早调用”，但卡片表面不显示该槽位名称。第三槽位仍参与进行中与 blocked-binding 诊断。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -162,6 +165,38 @@ evidence_note: The mobile System Status layout keeps every topic and the activit
 
 PR: include
 ![System Status Dashboard hot topics mobile cadence miss](./assets/system-status-hot-topics-mobile.jpg)
+
+### Dashboard working conversations
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: element
+requested_viewport: desktop1660
+viewport_strategy: storybook-viewport
+margin_policy: require_margin
+evidence_surface: component
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--current-and-previous
+state: three invocation slots with long model/account values and failed-summary coverage
+evidence_note: The compact card shows three two-line invocation slots, with usage aligned to the account row's right edge and no visible slot/account/usage labels.
+
+PR: none
+![Dashboard working conversations three slots desktop](./assets/dashboard-working-conversations-three-slots-desktop.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: element
+requested_viewport: mobile390
+viewport_strategy: storybook-viewport
+margin_policy: require_margin
+evidence_surface: component
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--mobile-390
+state: one invocation with previous and earlier missing placeholders
+evidence_note: The mobile card keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
+
+PR: none
+![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
 
 ## Related PRs
 

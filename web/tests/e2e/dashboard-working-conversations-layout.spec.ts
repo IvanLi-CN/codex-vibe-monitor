@@ -139,6 +139,15 @@ function buildWorkingConversationsResponse() {
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
       }),
+      createPreview({
+        id: 15,
+        invokeId: "wc-1-c",
+        occurredAt: "2026-04-06T11:54:08.000Z",
+        status: "success",
+        model: "gpt-5.4-long-context-preview",
+        upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
+        endpoint: "/v1/responses/compact",
+      }),
     ]),
     createConversation("wc-current-2", [
       createPreview({
@@ -473,6 +482,48 @@ const VIEWPORTS: LayoutExpectation[] = [
 ];
 
 async function installDashboardRoutes(page: Page) {
+  await page.route("**/events**", async (route) => {
+    const url = new URL(route.request().url());
+    const topicsParam = url.searchParams.get("topics");
+    if (!topicsParam) {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: ": ready\n\n" });
+      return;
+    }
+
+    const topics = JSON.parse(Buffer.from(topicsParam, "base64url").toString("utf8")) as Array<{
+      topic: string;
+      params?: Record<string, string>;
+    }>;
+    const frames = topics
+      .filter(
+        (descriptor) =>
+          descriptor.topic === "dashboard.working-conversations.current" ||
+          descriptor.topic === "dashboard.activity.current",
+      )
+      .map((descriptor) =>
+        JSON.stringify({
+          type: "snapshot",
+          topic: descriptor,
+          topic_key: "e2e-dashboard-working-conversations",
+          schema_epoch: "e2e-schema-1",
+          cursor: 1,
+          payload:
+            descriptor.topic === "dashboard.activity.current"
+              ? buildDashboardActivityResponse()
+              : buildWorkingConversationsResponse(),
+        }),
+      )
+      .map((frame) => `data: ${frame}\n\n`)
+      .join("");
+
+    await route.fulfill({
+      status: 200,
+      headers: { "Cache-Control": "no-cache" },
+      contentType: "text/event-stream",
+      body: frames || ": ready\n\n",
+    });
+  });
+
   await page.route("**/api/stats/summary**", async (route) => {
     const url = new URL(route.request().url());
     await route.fulfill({
@@ -569,9 +620,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     });
   }
 
-  test("keeps account metadata inline on wide desktop cards and shows compact endpoint badges", async ({
-    page,
-  }) => {
+  test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 1660, height: 1180 });
     await page.goto("/dashboard");
@@ -601,30 +650,112 @@ test.describe("Dashboard working conversations responsive layout", () => {
       const accountChip = slot?.querySelector<HTMLElement>(
         '[data-testid="dashboard-working-conversation-account-chip"]',
       );
-      const accountMeta = slot?.querySelector<HTMLElement>(
-        '[data-testid="dashboard-working-conversation-account-meta"]',
+      const slotModel = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-slot-model"]',
       );
-      if (!slot || !accountLine || !accountChip || !accountMeta) {
+      const usageLine = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-usage-line"]',
+      );
+      if (!slot || !accountLine || !accountChip || !slotModel || !usageLine) {
         throw new Error("missing account line geometry anchors");
       }
 
       const slotRect = slot.getBoundingClientRect();
       const lineRect = accountLine.getBoundingClientRect();
       const chipRect = accountChip.getBoundingClientRect();
-      const metaRect = accountMeta.getBoundingClientRect();
+      const modelRect = slotModel.getBoundingClientRect();
+      const usageRect = usageLine.getBoundingClientRect();
+      const slotTime = slot.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-slot-time"]',
+      );
+      if (!slotTime) throw new Error("missing slot time geometry anchor");
+      const timeRect = slotTime.getBoundingClientRect();
 
       return {
-        chipMetaTopDelta: Math.abs(chipRect.top - metaRect.top),
+        chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
+        modelAfterTime: modelRect.left >= timeRect.right,
+        usageRightDelta: Math.abs(usageRect.right - accountLine.getBoundingClientRect().right),
         lineOverflowRight: lineRect.right - slotRect.right,
         lineHeight: lineRect.height,
-        chipBottomDelta: Math.abs(chipRect.bottom - metaRect.bottom),
       };
     });
 
-    expect(layout.chipMetaTopDelta).toBeLessThanOrEqual(4);
-    expect(layout.chipBottomDelta).toBeLessThanOrEqual(8);
+    expect(layout.chipModelTopDelta).toBeLessThanOrEqual(4);
+    expect(layout.modelAfterTime).toBe(true);
+    expect(layout.usageRightDelta).toBeLessThanOrEqual(1);
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1);
     expect(layout.lineHeight).toBeLessThan(32);
+  });
+
+  test("keeps three slots and two-line records inside a narrow viewport", async ({ page }) => {
+    await installDashboardRoutes(page);
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.goto("/dashboard");
+
+    await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const root = document.documentElement;
+      const cards = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      );
+      const slots = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-slot"]',
+        ),
+      );
+      const placeholders = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-placeholder"]',
+        ),
+      );
+      const labels = document.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-slot-label"]',
+      );
+      const usageLines = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-usage-line"]',
+        ),
+      );
+      const accountLines = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-account-line"]',
+        ),
+      );
+      return {
+        rootOverflow: root.scrollWidth - root.clientWidth,
+        cards: cards.length,
+        slotCount: slots.length + placeholders.length,
+        labels: labels.length,
+        usageRightAligned: usageLines.every((line) => {
+          const accountLine = line.closest<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-account-line"]',
+          );
+          return (
+            accountLine != null &&
+            Math.abs(
+              line.getBoundingClientRect().right - accountLine.getBoundingClientRect().right,
+            ) <= 1
+          );
+        }),
+        accountLineOverflow: Math.max(
+          0,
+          ...accountLines.map(
+            (line) =>
+              line.getBoundingClientRect().right -
+              line.parentElement!.getBoundingClientRect().right,
+          ),
+        ),
+      };
+    });
+
+    expect(layout.rootOverflow).toBeLessThanOrEqual(1);
+    expect(layout.cards).toBeGreaterThan(0);
+    expect(layout.slotCount).toBeGreaterThanOrEqual(layout.cards * 3);
+    expect(layout.labels).toBe(0);
+    expect(layout.usageRightAligned).toBe(true);
+    expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
   });
 
   test("keeps long recent error summaries inside their upstream account cards", async ({

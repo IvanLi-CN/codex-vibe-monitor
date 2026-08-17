@@ -6,6 +6,8 @@
 
 - 将 working-conversations、parallel-work 与 open-window timeseries 从通用订阅构建路径中独立出来，定义为必须使用 typed projection 的 Dashboard HotProjection。
 - 将 activity topic 的 `recentLimit` 固定为 16，动态显示数量改由客户端本地截断，避免数据变化触发 SSE descriptor 重建。
+- 将 working-conversations 卡片固定为 current/previous/earlier 三槽位：三条记录共享既有 16 条 recent 预览，缺失时保留紧凑占位，从而让卡片扫描密度稳定且不引入新的后端数据合同。
+- 将每个正常槽位收紧为“时间 + 模型 + 读取状态”与“账号 + 右端用量”两行；失败槽位额外保留无 label 的错误摘要，以保持诊断能力并消除重复的 owner-facing label。
 - 将 System Status additive 诊断视为允许的 owner-facing 只读变更；Dashboard 的既有交互和公开数据合同保持不变。
 
 ## Key Reasons / Replacements

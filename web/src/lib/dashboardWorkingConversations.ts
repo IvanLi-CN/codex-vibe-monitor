@@ -44,7 +44,9 @@ export interface DashboardWorkingConversationCardModel {
   createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
+  earlierInvocation: DashboardWorkingConversationInvocationModel | null;
   hasPreviousPlaceholder: boolean;
+  hasEarlierPlaceholder: boolean;
   sortAnchorEpoch: number;
   lastTerminalAtEpoch: number | null;
   lastInFlightAtEpoch: number | null;
@@ -55,7 +57,7 @@ export interface DashboardWorkingConversationCardModel {
 }
 
 export interface DashboardWorkingConversationInvocationSelection {
-  slotKind: "current" | "previous";
+  slotKind: "current" | "previous" | "earlier";
   conversationSequenceId: string;
   promptCacheKey: string;
   invocation: DashboardWorkingConversationInvocationModel;
@@ -175,6 +177,7 @@ function buildPendingCardModel(
   if (!currentInvocation) return null;
 
   const previousInvocation = invocations[1] ?? null;
+  const earlierInvocation = invocations[2] ?? null;
   const lastTerminalAtEpoch =
     parseEpoch(conversation.lastTerminalAt) ??
     invocations.find(
@@ -201,7 +204,9 @@ function buildPendingCardModel(
     createdAtEpoch: parseEpoch(conversation.createdAt),
     currentInvocation,
     previousInvocation,
+    earlierInvocation,
     hasPreviousPlaceholder: previousInvocation == null,
+    hasEarlierPlaceholder: earlierInvocation == null,
     sortAnchorEpoch,
     lastTerminalAtEpoch,
     lastInFlightAtEpoch,

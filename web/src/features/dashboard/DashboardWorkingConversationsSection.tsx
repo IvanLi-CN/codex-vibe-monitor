@@ -2327,81 +2327,24 @@ function AccountRecentInvocationRow({
   );
 }
 
-function InvocationMetaLine({
-  label,
-  value,
-  title,
-  toneClassName,
-}: {
-  label: string;
-  value: ReactNode;
-  title?: string;
-  toneClassName?: string;
-}) {
-  return (
-    <div className="grid min-w-0 grid-cols-[2.2rem_minmax(0,1fr)] items-start gap-1.5">
-      <span className="pt-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-base-content/48">
-        {label}
-      </span>
-      <div
-        className={cn(
-          "min-w-0 font-mono text-[9.5px] font-semibold leading-[1.35] text-base-content/86",
-          toneClassName,
-        )}
-        title={title}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function resolveInvocationLineLabels(locale: "zh" | "en") {
-  return locale === "zh"
-    ? {
-        account: "账号",
-        usage: "用量",
-        timing: "耗时",
-        error: "错误",
-      }
-    : {
-        account: "Account",
-        usage: "Usage",
-        timing: "Timing",
-        error: "Error",
-      };
-}
-
-function PlaceholderSlot() {
+function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
   const { t } = useTranslation();
+  const accessibleLabel =
+    slotKind === "earlier"
+      ? t("dashboard.workingConversations.earlierPlaceholderAccessible")
+      : t("dashboard.workingConversations.previousPlaceholderAccessible");
 
   return (
     <div
       data-testid="dashboard-working-conversation-placeholder"
+      data-slot-kind={slotKind}
+      role="group"
+      aria-label={accessibleLabel}
       className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME)}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
-          {t("dashboard.workingConversations.previousInvocation")}
-        </div>
-        <div className="font-mono text-[9px] text-base-content/62">
-          {t("dashboard.workingConversations.previousPlaceholder")}
-        </div>
-        <div className="flex-1" />
-        <Chip tone="secondary" className="h-5 px-2 py-0 text-[9px] shadow-none">
-          {t("dashboard.workingConversations.placeholderBadge")}
-        </Chip>
-      </div>
-      <p
-        className="mt-1.5 text-[8.5px] leading-[1.35] text-base-content/56"
-        title={t("dashboard.workingConversations.previousPlaceholderHint")}
-      >
-        {t("dashboard.workingConversations.previousPlaceholderHint")}
-      </p>
-      <div className="mt-2 space-y-1" aria-hidden>
-        {Array.from({ length: 3 }, (_, index) => (
-          <div key={index} className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
-        ))}
+      <div className="space-y-1.5" aria-hidden="true">
+        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
+        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
       </div>
     </div>
   );
@@ -2421,7 +2364,7 @@ function InvocationSlot({
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
   label: string;
-  slotKind: "current" | "previous";
+  slotKind: "current" | "previous" | "earlier";
   conversationSequenceId: string;
   promptCacheKey: string;
   nowMs: number;
@@ -2543,7 +2486,6 @@ function InvocationSlot({
       ? timeOnlyFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
 
-  const lineLabels = resolveInvocationLineLabels(locale);
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
     !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
@@ -2619,20 +2561,61 @@ function InvocationSlot({
     >
       <div
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
+        className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1"
       >
-        <div className="flex min-w-0 shrink-0 items-center gap-1.5">
-          <div
-            data-testid="dashboard-working-conversation-slot-label"
-            className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/62"
-          >
-            {label}
-          </div>
+        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
           <div
             data-testid="dashboard-working-conversation-slot-time"
             className="shrink-0 font-mono text-[10px] text-base-content/72"
           >
             {occurredAtShortLabel}
+          </div>
+          <div
+            data-testid="dashboard-working-conversation-slot-model"
+            className="min-w-0 max-w-full flex-1 truncate text-[9.5px] font-semibold text-base-content/76"
+            title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`}
+          >
+            {shouldGroupModelContext ? (
+              <InvocationModelContextCluster
+                modelValue={viewModel.modelValue}
+                reasoningEffortValue={viewModel.reasoningEffortValue}
+                fastIndicatorState={viewModel.fastIndicatorState}
+                grouped
+                t={t}
+                className="min-w-0 max-w-full"
+                showModelLabel
+                testId="dashboard-working-conversation-model-context"
+                modelTestId="dashboard-working-conversation-model-name"
+              />
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                <span
+                  data-testid="dashboard-working-conversation-model-name"
+                  className="min-w-[2.5rem] flex-1 truncate whitespace-nowrap"
+                >
+                  {renderInvocationModelChip(viewModel.modelValue, {
+                    t,
+                    hasMismatch: viewModel.modelHasMismatch,
+                    className: "max-w-full",
+                    textClassName: "font-mono",
+                    iconClassName: "h-3 w-3",
+                    testId: "dashboard-working-conversation-model",
+                  })}
+                </span>
+                <span className="shrink-0 text-base-content/28">·</span>
+                <InvocationReasoningEffortChip
+                  value={viewModel.reasoningEffortValue}
+                  testId="dashboard-working-conversation-reasoning-effort"
+                  className="min-w-0 max-w-[3rem] shrink px-1"
+                />
+                {fastIndicator ? (
+                  <>
+                    <span className="shrink-0 text-base-content/28">·</span>
+                    {fastIndicator}
+                  </>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
         <div
@@ -2681,151 +2664,91 @@ function InvocationSlot({
       </div>
 
       <div className="mt-1.5 space-y-1">
-        <InvocationMetaLine
-          label={lineLabels.account}
-          value={
-            <div
-              data-testid="dashboard-working-conversation-account-line"
-              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[9.5px] leading-[1.3] text-base-content sm:flex-nowrap"
-            >
-              <div className="flex min-w-[7rem] max-w-full flex-1 items-baseline gap-1.5 font-mono font-semibold">
-                {viewModel.accountClickable && viewModel.accountId != null ? (
-                  interactionsDisabled ? (
-                    <span
-                      data-testid="dashboard-working-conversation-account-chip"
-                      className={cn(
-                        "inline-flex min-w-0 max-w-full items-baseline font-mono text-[9.5px] font-semibold text-base-content",
-                        viewModel.accountRoutingInProgress &&
-                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                      )}
-                      title={viewModel.accountLabel}
-                    >
-                      <span
-                        data-testid="dashboard-working-conversation-account-name"
-                        className="block min-w-0 truncate whitespace-nowrap text-left"
-                      >
-                        {viewModel.accountLabel}
-                      </span>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      data-testid="dashboard-working-conversation-account-chip"
-                      className={cn(
-                        "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                        viewModel.accountRoutingInProgress &&
-                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                      )}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
-                      }}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                      title={viewModel.accountLabel}
-                      aria-label={viewModel.accountLabel}
-                    >
-                      <span
-                        data-testid="dashboard-working-conversation-account-name"
-                        className="block min-w-0 truncate whitespace-nowrap text-left"
-                      >
-                        {viewModel.accountLabel}
-                      </span>
-                    </button>
-                  )
-                ) : (
+        <div
+          data-testid="dashboard-working-conversation-account-line"
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[9.5px] leading-[1.3] text-base-content"
+        >
+          <div className="flex min-w-0 items-center gap-1.5 font-mono font-semibold">
+            {viewModel.accountClickable && viewModel.accountId != null ? (
+              interactionsDisabled ? (
+                <span
+                  data-testid="dashboard-working-conversation-account-chip"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-full items-baseline font-mono text-[9.5px] font-semibold text-base-content",
+                    viewModel.accountRoutingInProgress &&
+                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                  )}
+                  title={viewModel.accountLabel}
+                >
                   <span
-                    data-testid="dashboard-working-conversation-account-chip"
-                    className={cn(
-                      "inline-flex min-w-0 max-w-full items-baseline",
-                      viewModel.accountRoutingInProgress &&
-                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                    )}
-                    title={viewModel.accountLabel}
+                    data-testid="dashboard-working-conversation-account-name"
+                    className="block min-w-0 truncate whitespace-nowrap text-left"
                   >
-                    <span
-                      data-testid="dashboard-working-conversation-account-name"
-                      className="block min-w-0 truncate whitespace-nowrap text-left"
-                    >
-                      {viewModel.accountLabel}
-                    </span>
+                    {viewModel.accountLabel}
                   </span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="dashboard-working-conversation-account-chip"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    viewModel.accountRoutingInProgress &&
+                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                  )}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  title={viewModel.accountLabel}
+                  aria-label={viewModel.accountLabel}
+                >
+                  <span
+                    data-testid="dashboard-working-conversation-account-name"
+                    className="block min-w-0 truncate whitespace-nowrap text-left"
+                  >
+                    {viewModel.accountLabel}
+                  </span>
+                </button>
+              )
+            ) : (
+              <span
+                data-testid="dashboard-working-conversation-account-chip"
+                className={cn(
+                  "inline-flex min-w-0 max-w-full items-baseline",
+                  viewModel.accountRoutingInProgress &&
+                    INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
                 )}
-                <CompactAccountPlanChip planType={viewModel.accountPlanType} />
-              </div>
-              <div
-                data-testid="dashboard-working-conversation-account-meta"
-                className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70 sm:flex-nowrap"
-                title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
+                title={viewModel.accountLabel}
               >
-                {shouldGroupModelContext ? (
-                  <InvocationModelContextCluster
-                    modelValue={viewModel.modelValue}
-                    reasoningEffortValue={viewModel.reasoningEffortValue}
-                    fastIndicatorState={viewModel.fastIndicatorState}
-                    grouped
-                    t={t}
-                    testId="dashboard-working-conversation-model-context"
-                    modelTestId="dashboard-working-conversation-model-name"
-                  />
-                ) : (
-                  <>
-                    <span
-                      data-testid="dashboard-working-conversation-model-name"
-                      className="min-w-0"
-                    >
-                      {renderInvocationModelChip(viewModel.modelValue, {
-                        t,
-                        hasMismatch: viewModel.modelHasMismatch,
-                        className: "max-w-full",
-                        textClassName: "font-mono",
-                        iconClassName: "h-3 w-3",
-                        testId: "dashboard-working-conversation-model",
-                      })}
-                    </span>
-                    <span className="shrink-0 text-base-content/28">·</span>
-                    <InvocationReasoningEffortChip
-                      value={viewModel.reasoningEffortValue}
-                      testId="dashboard-working-conversation-reasoning-effort"
-                    />
-                    {fastIndicator ? (
-                      <>
-                        <span className="shrink-0 text-base-content/28">·</span>
-                        {fastIndicator}
-                      </>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </div>
-          }
-        />
-
-        <InvocationMetaLine
-          label={lineLabels.usage}
-          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
-          value={
-            <div
-              data-testid="dashboard-working-conversation-usage-line"
-              className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
-            >
+                <span
+                  data-testid="dashboard-working-conversation-account-name"
+                  className="block min-w-0 truncate whitespace-nowrap text-left"
+                >
+                  {viewModel.accountLabel}
+                </span>
+              </span>
+            )}
+            <CompactAccountPlanChip planType={viewModel.accountPlanType} />
+          </div>
+          <div
+            className="min-w-0 whitespace-nowrap text-right font-mono text-[9.5px] font-semibold text-base-content/74"
+            title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
+          >
+            <div data-testid="dashboard-working-conversation-usage-line">
               {renderInvocationSummaryFields(usageSummaryFields)}
             </div>
-          }
-        />
+          </div>
+        </div>
 
         {viewModel.collapsedErrorSummary ? (
-          <InvocationMetaLine
-            label={lineLabels.error}
-            value={
-              <InvocationErrorSummary
-                className="max-w-full"
-                textClassName="text-[9.5px] text-error"
-                message={viewModel.collapsedErrorSummary}
-              />
-            }
-            toneClassName="text-error"
+          <InvocationErrorSummary
+            className="max-w-full"
+            textClassName="text-[9.5px] text-error"
+            message={viewModel.collapsedErrorSummary}
           />
         ) : null}
       </div>
@@ -4121,7 +4044,10 @@ export function DashboardWorkingConversationsSection({
     setGridElement(node);
   }, []);
   const hasInFlightCards = cards.some(
-    (card) => card.currentInvocation.isInFlight || card.previousInvocation?.isInFlight === true,
+    (card) =>
+      card.currentInvocation.isInFlight ||
+      card.previousInvocation?.isInFlight === true ||
+      card.earlierInvocation?.isInFlight === true,
   );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
@@ -4862,10 +4788,13 @@ export function DashboardWorkingConversationsSection({
       cards.find(
         (card) =>
           card.currentInvocation.preview.blockedBinding != null ||
-          card.previousInvocation?.preview.blockedBinding != null,
+          card.previousInvocation?.preview.blockedBinding != null ||
+          card.earlierInvocation?.preview.blockedBinding != null,
       )?.currentInvocation.preview.blockedBinding ??
       cards.find((card) => card.previousInvocation?.preview.blockedBinding != null)
         ?.previousInvocation?.preview.blockedBinding ??
+      cards.find((card) => card.earlierInvocation?.preview.blockedBinding != null)
+        ?.earlierInvocation?.preview.blockedBinding ??
       null;
     const upstreamAccountId = activeBlockedBindingFilter.upstreamAccountId ?? null;
     const accountLabel =
@@ -5965,7 +5894,23 @@ export function DashboardWorkingConversationsSection({
                                     onOpenInvocation={onOpenInvocation}
                                   />
                                 ) : (
-                                  <PlaceholderSlot />
+                                  <PlaceholderSlot slotKind="previous" />
+                                )}
+                                {card.earlierInvocation ? (
+                                  <InvocationSlot
+                                    invocation={card.earlierInvocation}
+                                    label={t("dashboard.workingConversations.earlierInvocation")}
+                                    slotKind="earlier"
+                                    conversationSequenceId={card.conversationSequenceId}
+                                    promptCacheKey={card.promptCacheKey}
+                                    nowMs={nowMs}
+                                    locale={locale}
+                                    interactionsDisabled={selectionModeEnabled}
+                                    onOpenUpstreamAccount={onOpenUpstreamAccount}
+                                    onOpenInvocation={onOpenInvocation}
+                                  />
+                                ) : (
+                                  <PlaceholderSlot slotKind="earlier" />
                                 )}
                               </div>
                             </div>

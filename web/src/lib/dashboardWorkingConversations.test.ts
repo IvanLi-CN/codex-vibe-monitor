@@ -116,6 +116,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(first[0]?.conversationSequenceId).toMatch(/^WC-[A-F0-9]{6}$/);
     expect(first[0]?.conversationSequenceId).toBe(second[0]?.conversationSequenceId);
     expect(first[0]?.hasPreviousPlaceholder).toBe(true);
+    expect(first[0]?.hasEarlierPlaceholder).toBe(true);
   });
 
   it("preserves manual binding summaries for dashboard badge rendering", () => {
@@ -243,7 +244,41 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     ]);
     expect(cards[2]?.currentInvocation.displayStatus).toBe("running");
     expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
+    expect(cards[2]?.earlierInvocation).toBeNull();
     expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+  });
+
+  it("maps the three invocation slots in descending occurrence order", () => {
+    const response = createResponse([
+      createConversation("pck-three-slots", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-oldest",
+          occurredAt: "2026-04-04T10:01:00Z",
+          status: "completed",
+        }),
+        createPreview({
+          id: 2,
+          invokeId: "invoke-previous",
+          occurredAt: "2026-04-04T10:03:00Z",
+          status: "completed",
+        }),
+        createPreview({
+          id: 3,
+          invokeId: "invoke-current",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "running",
+        }),
+      ]),
+    ]);
+
+    const card = mapPromptCacheConversationsToDashboardCards(response)[0];
+
+    expect(card?.currentInvocation.preview.invokeId).toBe("invoke-current");
+    expect(card?.previousInvocation?.preview.invokeId).toBe("invoke-previous");
+    expect(card?.earlierInvocation?.preview.invokeId).toBe("invoke-oldest");
+    expect(card?.hasPreviousPlaceholder).toBe(false);
+    expect(card?.hasEarlierPlaceholder).toBe(false);
   });
 
   it("uses the latest of terminal and in-flight anchors when both are present", () => {
