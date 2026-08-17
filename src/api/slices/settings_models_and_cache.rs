@@ -2127,6 +2127,10 @@ pub(crate) struct PerfQuery {
     #[serde(default = "default_range")]
     pub(crate) range: String,
     pub(crate) time_zone: Option<String>,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) group_name: Option<String>,
+    pub(crate) live_first_revision: Option<String>,
+    pub(crate) cohort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2136,6 +2140,41 @@ pub(crate) struct PerfStatsResponse {
     pub(crate) range_end: String,
     pub(crate) source: String,
     pub(crate) stages: Vec<PerfStageStats>,
+    pub(crate) live_request_streaming: LiveRequestStreamingPerfResponse,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingPerfResponse {
+    pub(crate) coverage: f64,
+    pub(crate) measured_invocation_count: i64,
+    pub(crate) response_invocation_count: i64,
+    pub(crate) cohorts: Vec<LiveRequestStreamingCohortStats>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingCohortStats {
+    pub(crate) cohort: String,
+    pub(crate) transport_mode: String,
+    pub(crate) success_sample_count: i64,
+    pub(crate) invocation_count: i64,
+    pub(crate) sufficient_samples: bool,
+    pub(crate) first_response_byte_total_ms: Option<LiveRequestStreamingPercentiles>,
+    pub(crate) first_token_ms: Option<LiveRequestStreamingPercentiles>,
+    pub(crate) request_upstream_overlap_ms: Option<LiveRequestStreamingPercentiles>,
+    pub(crate) first_attempt_failure_rate: f64,
+    pub(crate) fallback_or_retry_rate: f64,
+    pub(crate) capture_failure_rate: f64,
+    pub(crate) ambiguous_upstream_delivery_rate: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingPercentiles {
+    pub(crate) p50_ms: f64,
+    pub(crate) p90_ms: f64,
+    pub(crate) p99_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]

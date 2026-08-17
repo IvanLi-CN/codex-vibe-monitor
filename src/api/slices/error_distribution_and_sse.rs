@@ -1697,6 +1697,13 @@ pub(crate) async fn fetch_perf_stats(
 
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    let live_request_streaming = query_live_request_streaming_perf(
+        &state.pool,
+        &range_window,
+        &params,
+        state.config.invocation_max_days,
+    )
+    .await?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
         let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
@@ -1831,6 +1838,7 @@ pub(crate) async fn fetch_perf_stats(
             range_end: format_utc_iso(range_window.display_end),
             source: SOURCE_PROXY.to_string(),
             stages,
+            live_request_streaming,
         }));
     }
     let mut query = QueryBuilder::new(
@@ -1925,7 +1933,256 @@ pub(crate) async fn fetch_perf_stats(
         range_end: format_utc_iso(range_window.display_end),
         source: SOURCE_PROXY.to_string(),
         stages,
+        live_request_streaming,
     }))
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct LiveRequestStreamingPerfRow {
+    id: i64,
+    status: Option<String>,
+    failure_kind: Option<String>,
+    payload: Option<String>,
+}
+
+#[derive(Default)]
+struct LiveRequestStreamingCohortAccumulator {
+    invocation_count: i64,
+    success_sample_count: i64,
+    first_response_byte_total_ms: Vec<f64>,
+    first_token_ms: Vec<f64>,
+    request_upstream_overlap_ms: Vec<f64>,
+    first_attempt_failure_count: i64,
+    fallback_or_retry_count: i64,
+    capture_failure_count: i64,
+    ambiguous_upstream_delivery_count: i64,
+}
+
+async fn query_live_request_streaming_perf(
+    pool: &sqlx::SqlitePool,
+    range: &RangeWindow,
+    params: &PerfQuery,
+    invocation_max_days: u64,
+) -> Result<LiveRequestStreamingPerfResponse, ApiError> {
+    let rows = sqlx::query_as::<_, LiveRequestStreamingPerfRow>(
+        "SELECT id, status, failure_kind, payload FROM codex_invocations \
+         WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at <= ?3",
+    )
+    .bind(SOURCE_PROXY)
+    .bind(db_occurred_at_lower_bound(range.start))
+    .bind(db_occurred_at_lower_bound(range.display_end))
+    .fetch_all(pool)
+    .await?;
+
+    let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    let mut rows = rows;
+    if range.start < shanghai_retention_cutoff(invocation_max_days) {
+        let archived_rows = crate::stats::load_live_request_streaming_rows_from_archives(
+            pool,
+            range.start,
+            range.display_end,
+            Some(&live_ids),
+        )
+        .await?;
+        rows.extend(
+            archived_rows
+                .into_iter()
+                .map(|row| LiveRequestStreamingPerfRow {
+                    id: row.id,
+                    status: row.status,
+                    failure_kind: row.failure_kind,
+                    payload: row.payload,
+                }),
+        );
+    }
+
+    let requested_endpoint = params
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requested_group = params
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requested_revision = params
+        .live_first_revision
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requested_cohort = params
+        .cohort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut response_invocation_count = 0_i64;
+    let mut measured_invocation_count = 0_i64;
+    let mut by_cohort =
+        std::collections::BTreeMap::<String, LiveRequestStreamingCohortAccumulator>::new();
+
+    for row in rows {
+        let Some(payload) = row
+            .payload
+            .as_deref()
+            .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+        else {
+            continue;
+        };
+        let endpoint = payload.get("endpoint").and_then(serde_json::Value::as_str);
+        if endpoint != Some("/v1/responses") {
+            continue;
+        }
+        if requested_endpoint.is_some_and(|requested| requested != "/v1/responses") {
+            continue;
+        }
+        if requested_group.is_some_and(|group| {
+            payload
+                .get("liveFirstAccountGroup")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    payload
+                        .get("upstreamAccountGroup")
+                        .and_then(serde_json::Value::as_str)
+                })
+                != Some(group)
+        }) {
+            continue;
+        }
+        if requested_revision.is_some_and(|revision| {
+            payload
+                .get("liveFirstRevision")
+                .and_then(serde_json::Value::as_str)
+                != Some(revision)
+        }) {
+            continue;
+        }
+        let cohort = payload
+            .get("liveFirstExperimentVariant")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        if requested_cohort.is_some_and(|requested| requested != cohort) {
+            continue;
+        }
+        response_invocation_count += 1;
+        let transport_mode = payload
+            .get("requestBodyTransportMode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        measured_invocation_count += 1;
+        let key = format!("{cohort}:{transport_mode}");
+        let entry = by_cohort.entry(key).or_default();
+        entry.invocation_count += 1;
+        entry.first_attempt_failure_count +=
+            i64::from(payload_bool(&payload, "liveFirstAttemptFailed"));
+        entry.fallback_or_retry_count +=
+            i64::from(payload_bool(&payload, "liveFirstFallbackOrRetry"));
+        entry.capture_failure_count += i64::from(payload_bool(&payload, "liveFirstCaptureFailed"));
+        entry.ambiguous_upstream_delivery_count +=
+            i64::from(payload_bool(&payload, "ambiguousUpstreamDelivery"));
+        if row.status.as_deref() != Some("success") || row.failure_kind.is_some() {
+            continue;
+        }
+        entry.success_sample_count += 1;
+        push_payload_ms(
+            &mut entry.first_response_byte_total_ms,
+            &payload,
+            "firstResponseByteTotalMs",
+        );
+        push_payload_ms(&mut entry.first_token_ms, &payload, "firstTokenTotalMs");
+        push_payload_ms(
+            &mut entry.request_upstream_overlap_ms,
+            &payload,
+            "requestUpstreamOverlapMs",
+        );
+    }
+
+    let cohorts = by_cohort
+        .into_iter()
+        .map(|(key, mut entry)| {
+            let (cohort, transport_mode) = key
+                .split_once(':')
+                .map(|(cohort, mode)| (cohort.to_string(), mode.to_string()))
+                .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+            LiveRequestStreamingCohortStats {
+                cohort,
+                transport_mode,
+                success_sample_count: entry.success_sample_count,
+                invocation_count: entry.invocation_count,
+                sufficient_samples: entry.success_sample_count
+                    >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+                first_response_byte_total_ms: live_request_streaming_percentiles(
+                    &mut entry.first_response_byte_total_ms,
+                ),
+                first_token_ms: live_request_streaming_percentiles(&mut entry.first_token_ms),
+                request_upstream_overlap_ms: live_request_streaming_percentiles(
+                    &mut entry.request_upstream_overlap_ms,
+                ),
+                first_attempt_failure_rate: live_request_streaming_rate(
+                    entry.first_attempt_failure_count,
+                    entry.invocation_count,
+                ),
+                fallback_or_retry_rate: live_request_streaming_rate(
+                    entry.fallback_or_retry_count,
+                    entry.invocation_count,
+                ),
+                capture_failure_rate: live_request_streaming_rate(
+                    entry.capture_failure_count,
+                    entry.invocation_count,
+                ),
+                ambiguous_upstream_delivery_rate: live_request_streaming_rate(
+                    entry.ambiguous_upstream_delivery_count,
+                    entry.invocation_count,
+                ),
+            }
+        })
+        .collect();
+
+    Ok(LiveRequestStreamingPerfResponse {
+        coverage: live_request_streaming_rate(measured_invocation_count, response_invocation_count),
+        measured_invocation_count,
+        response_invocation_count,
+        cohorts,
+    })
+}
+
+fn payload_bool(payload: &serde_json::Value, key: &str) -> bool {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn push_payload_ms(values: &mut Vec<f64>, payload: &serde_json::Value, key: &str) {
+    if let Some(value) = payload
+        .get(key)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        values.push(value);
+    }
+}
+
+fn live_request_streaming_percentiles(
+    values: &mut [f64],
+) -> Option<LiveRequestStreamingPercentiles> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    Some(LiveRequestStreamingPercentiles {
+        p50_ms: percentile_sorted_f64(values, 0.50),
+        p90_ms: percentile_sorted_f64(values, 0.90),
+        p99_ms: percentile_sorted_f64(values, 0.99),
+    })
+}
+
+fn live_request_streaming_rate(numerator: i64, denominator: i64) -> f64 {
+    if denominator <= 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
 }
 
 pub(crate) async fn latest_quota_snapshot(

@@ -1967,6 +1967,7 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) available_models_mode: AvailableModelsMode,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
     pub(crate) cache_hit_protection: CacheHitProtectionSettingsResponse,
+    pub(crate) live_request_streaming: LiveRequestStreamingSettingsResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1976,6 +1977,14 @@ pub(crate) struct CacheHitProtectionSettingsResponse {
     pub(crate) low_hit_rate_threshold_percent: u8,
     pub(crate) overflow_mode: String,
     pub(crate) minimum_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingSettingsResponse {
+    pub(crate) enabled: bool,
+    pub(crate) group_names: Vec<String>,
+    pub(crate) treatment_percent: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2007,6 +2016,8 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
     #[serde(default)]
     pub(crate) cache_hit_protection: Option<UpdateCacheHitProtectionSettingsRequest>,
+    #[serde(default)]
+    pub(crate) live_request_streaming: Option<UpdateLiveRequestStreamingSettingsRequest>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2018,6 +2029,17 @@ pub(crate) struct UpdateCacheHitProtectionSettingsRequest {
     pub(crate) low_hit_rate_threshold_percent: Option<u8>,
     #[serde(default)]
     pub(crate) overflow_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateLiveRequestStreamingSettingsRequest {
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) group_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) treatment_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

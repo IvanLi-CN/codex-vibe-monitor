@@ -5951,6 +5951,10 @@ async fn historical_perf_stats_include_unmaterialized_archived_hours() {
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await
@@ -5964,6 +5968,125 @@ async fn historical_perf_stats_include_unmaterialized_archived_hours() {
     assert_eq!(upstream_first_byte.count, 2);
     assert_f64_close(upstream_first_byte.avg_ms, 150.0);
     assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
+async fn live_request_streaming_perf_uses_the_filtered_cohort_as_its_coverage_denominator() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let rows = [
+        (
+            "live-control-success",
+            "success",
+            None,
+            json!({
+                "endpoint": "/v1/responses",
+                "upstreamAccountGroup": "canary",
+                "requestBodyTransportMode": "buffered",
+                "liveFirstRevision": LIVE_REQUEST_STREAMING_REVISION,
+                "liveFirstExperimentVariant": "control",
+                "firstResponseByteTotalMs": 220.0,
+                "firstTokenTotalMs": 340.0,
+                "requestUpstreamOverlapMs": 0.0,
+            }),
+        ),
+        (
+            "live-treatment-success",
+            "success",
+            None,
+            json!({
+                "endpoint": "/v1/responses",
+                "upstreamAccountGroup": "canary",
+                "requestBodyTransportMode": "live_first",
+                "liveFirstRevision": LIVE_REQUEST_STREAMING_REVISION,
+                "liveFirstExperimentVariant": "treatment",
+                "firstResponseByteTotalMs": 140.0,
+                "firstTokenTotalMs": 250.0,
+                "requestUpstreamOverlapMs": 80.0,
+            }),
+        ),
+        (
+            "live-treatment-failed",
+            "failed",
+            Some("upstream_stream_error"),
+            json!({
+                "endpoint": "/v1/responses",
+                "upstreamAccountGroup": "canary",
+                "requestBodyTransportMode": "live_first",
+                "liveFirstRevision": LIVE_REQUEST_STREAMING_REVISION,
+                "liveFirstExperimentVariant": "treatment",
+                "liveFirstAttemptFailed": true,
+            }),
+        ),
+        (
+            "live-other-group",
+            "success",
+            None,
+            json!({
+                "endpoint": "/v1/responses",
+                "upstreamAccountGroup": "other",
+                "requestBodyTransportMode": "live_first",
+                "liveFirstRevision": LIVE_REQUEST_STREAMING_REVISION,
+                "liveFirstExperimentVariant": "treatment",
+            }),
+        ),
+    ];
+
+    for (invoke_id, status, failure_kind, payload) in rows {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, failure_kind, payload, raw_response, detail_level
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(failure_kind)
+        .bind(payload.to_string())
+        .bind(DETAIL_LEVEL_FULL)
+        .execute(&state.pool)
+        .await
+        .expect("insert live request streaming invocation");
+    }
+
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: "24h".to_string(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: Some("/v1/responses".to_string()),
+            group_name: Some("canary".to_string()),
+            live_first_revision: Some(LIVE_REQUEST_STREAMING_REVISION.to_string()),
+            cohort: None,
+        }),
+    )
+    .await
+    .expect("fetch filtered live request streaming performance");
+
+    let live = perf_stats.live_request_streaming;
+    assert_eq!(live.response_invocation_count, 3);
+    assert_eq!(live.measured_invocation_count, 3);
+    assert_f64_close(live.coverage, 1.0);
+    assert_eq!(live.cohorts.len(), 2);
+    let treatment = live
+        .cohorts
+        .iter()
+        .find(|cohort| cohort.cohort == "treatment")
+        .expect("treatment cohort");
+    assert_eq!(treatment.invocation_count, 2);
+    assert_eq!(treatment.success_sample_count, 1);
+    assert_f64_close(
+        treatment
+            .first_response_byte_total_ms
+            .as_ref()
+            .map(|stats| stats.p50_ms)
+            .unwrap_or_default(),
+        140.0,
+    );
+    assert_f64_close(treatment.first_attempt_failure_rate, 0.5);
 }
 
 #[tokio::test]
@@ -6051,6 +6174,10 @@ async fn historical_perf_stats_fill_missing_samples_from_partially_materialized_
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await
@@ -6126,6 +6253,10 @@ async fn historical_perf_stats_include_unreplayed_full_hour_tail_without_inline_
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await
@@ -6580,6 +6711,10 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await
@@ -6736,6 +6871,10 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await
@@ -6828,6 +6967,10 @@ async fn historical_perf_read_path_skips_unreadable_pending_archives() {
         Query(PerfQuery {
             range: historical_range,
             time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: None,
+            group_name: None,
+            live_first_revision: None,
+            cohort: None,
         }),
     )
     .await

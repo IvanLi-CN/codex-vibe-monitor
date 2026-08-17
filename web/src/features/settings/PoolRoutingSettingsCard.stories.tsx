@@ -32,6 +32,9 @@ const meta = {
       cacheHitProtectionEnabled: false,
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
+      liveRequestStreamingEnabled: false,
+      liveRequestStreamingGroupNames: "canary-a, canary-b",
+      liveRequestStreamingTreatmentPercent: "50",
     },
     busy: false,
     writesEnabled: true,
@@ -44,6 +47,7 @@ const meta = {
     onAvailableModelsModeChange: () => undefined,
     onTimeoutChange: () => undefined,
     onCacheHitProtectionChange: () => undefined,
+    onLiveRequestStreamingChange: () => undefined,
     onSave: () => undefined,
   },
   decorators: [
@@ -85,6 +89,9 @@ export const ModelPolicy: Story = {
           cacheHitProtectionEnabled: false,
           cacheHitRateThresholdPercent: "10",
           cacheHitOverflowMode: "queue",
+          liveRequestStreamingEnabled: false,
+          liveRequestStreamingGroupNames: "canary-a, canary-b",
+          liveRequestStreamingTreatmentPercent: "50",
         }}
         busy={false}
         writesEnabled
@@ -97,6 +104,7 @@ export const ModelPolicy: Story = {
         onAvailableModelsModeChange={setAvailableModelsMode}
         onTimeoutChange={() => undefined}
         onCacheHitProtectionChange={() => undefined}
+        onLiveRequestStreamingChange={() => undefined}
         onSave={() => undefined}
       />
     );
@@ -119,6 +127,9 @@ export const CacheHitProtection: Story = {
       cacheHitProtectionEnabled: true,
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "reroute",
+      liveRequestStreamingEnabled: true,
+      liveRequestStreamingGroupNames: "canary-a",
+      liveRequestStreamingTreatmentPercent: "50",
     },
   },
   tags: ["test"],

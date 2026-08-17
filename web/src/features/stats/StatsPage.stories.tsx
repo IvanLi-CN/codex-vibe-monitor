@@ -7,6 +7,7 @@ import type {
   FailureSummaryResponse,
   ParallelWorkConversation,
   ParallelWorkStatsResponse,
+  PerfStatsResponse,
   StatsResponse,
   TimeseriesPoint,
   TimeseriesResponse,
@@ -275,6 +276,47 @@ function buildStatsStoryFixtures() {
     actionableFailureRate: 0.864,
   };
 
+  const perf: PerfStatsResponse = {
+    rangeStart: new Date(todayStart).toISOString(),
+    rangeEnd: new Date(now).toISOString(),
+    stages: [],
+    liveRequestStreaming: {
+      coverage: 0.96,
+      measuredInvocationCount: 264,
+      responseInvocationCount: 275,
+      cohorts: [
+        {
+          cohort: "control",
+          transportMode: "buffered",
+          successSampleCount: 132,
+          invocationCount: 137,
+          sufficientSamples: false,
+          firstResponseByteTotalMs: { p50Ms: 860, p90Ms: 1240, p99Ms: 1900 },
+          firstTokenMs: { p50Ms: 1120, p90Ms: 1630, p99Ms: 2300 },
+          requestUpstreamOverlapMs: { p50Ms: 0, p90Ms: 0, p99Ms: 0 },
+          firstAttemptFailureRate: 0.01,
+          fallbackOrRetryRate: 0.03,
+          captureFailureRate: 0,
+          ambiguousUpstreamDeliveryRate: 0,
+        },
+        {
+          cohort: "treatment",
+          transportMode: "live_first",
+          successSampleCount: 132,
+          invocationCount: 127,
+          sufficientSamples: false,
+          firstResponseByteTotalMs: { p50Ms: 720, p90Ms: 1080, p99Ms: 1580 },
+          firstTokenMs: { p50Ms: 940, p90Ms: 1400, p99Ms: 2050 },
+          requestUpstreamOverlapMs: { p50Ms: 145, p90Ms: 310, p99Ms: 500 },
+          firstAttemptFailureRate: 0.01,
+          fallbackOrRetryRate: 0.04,
+          captureFailureRate: 0,
+          ambiguousUpstreamDeliveryRate: 0.002,
+        },
+      ],
+    },
+  };
+
   const buildTimeseriesForRange = (range: string, bucket: string) => {
     const rangeStart = rangeStartByRange(range);
     if (range === "7d") {
@@ -343,6 +385,7 @@ function buildStatsStoryFixtures() {
     summaryByWindow,
     errorDistribution,
     failureSummary,
+    perf,
     buildTimeseriesForRange,
     buildParallelWorkForRange,
   };
@@ -372,6 +415,10 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
 
     if (url.pathname === "/api/stats/failures/summary") {
       return jsonResponse(fixtures.failureSummary);
+    }
+
+    if (url.pathname === "/api/stats/perf") {
+      return jsonResponse(fixtures.perf);
     }
 
     if (url.pathname === "/api/stats/parallel-work") {
@@ -412,7 +459,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
   };
 }
 
-function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
+function StatsPageSseBootstrap() {
   useEffect(() => {
     const controller = getStorybookPageSseController();
     if (!controller) return;
@@ -478,7 +525,7 @@ function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [scenario]);
+  }, []);
 
   return null;
 }
@@ -499,7 +546,7 @@ const meta = {
       return (
         <I18nProvider>
           <StorybookPageEnvironment onRequest={buildStatsRequestHandler(scenario)}>
-            <StatsPageSseBootstrap scenario={scenario} />
+            <StatsPageSseBootstrap />
             <FullPageStorySurface>
               <Story />
             </FullPageStorySurface>

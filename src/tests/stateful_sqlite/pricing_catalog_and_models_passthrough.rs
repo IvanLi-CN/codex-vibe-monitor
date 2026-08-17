@@ -2696,6 +2696,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
@@ -2761,6 +2762,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
             low_hit_rate_threshold_percent: Some(15),
             overflow_mode: Some("reroute".to_string()),
         }),
+        live_request_streaming: None,
     };
     let Json(updated) =
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
@@ -2787,6 +2789,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
             low_hit_rate_threshold_percent: Some(0),
             overflow_mode: None,
         }),
+        live_request_streaming: None,
     };
     let error = update_pool_routing_settings(State(state), HeaderMap::new(), Json(invalid))
         .await
@@ -2814,6 +2817,7 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2860,6 +2864,7 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2910,6 +2915,7 @@ async fn pool_routing_settings_api_key_updates_require_crypto_key() {
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: None,
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
@@ -2932,6 +2938,7 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2969,6 +2976,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         available_models: None,
         available_models_mode: None,
         cache_hit_protection: None,
+        live_request_streaming: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),

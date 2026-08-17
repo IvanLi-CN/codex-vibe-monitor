@@ -6,6 +6,7 @@ use aes_gcm::{
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub(crate) const CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS: u64 = 3_840;
 
@@ -97,6 +98,104 @@ pub(crate) fn merge_cache_hit_protection_settings(
         low_hit_rate_threshold_percent,
         overflow_mode,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveRequestStreamingSettings {
+    pub(crate) enabled: bool,
+    pub(crate) group_names: Vec<String>,
+    pub(crate) treatment_percent: u8,
+}
+
+impl LiveRequestStreamingSettings {
+    pub(crate) fn into_response(self) -> LiveRequestStreamingSettingsResponse {
+        LiveRequestStreamingSettingsResponse {
+            enabled: self.enabled,
+            group_names: self.group_names,
+            treatment_percent: self.treatment_percent,
+        }
+    }
+
+    pub(crate) fn includes_group(&self, group_name: Option<&str>) -> bool {
+        let Some(group_name) = group_name.map(str::trim).filter(|value| !value.is_empty()) else {
+            return false;
+        };
+        self.group_names
+            .iter()
+            .any(|configured| configured == group_name)
+    }
+}
+
+pub(crate) fn resolve_live_request_streaming_settings(
+    row: &PoolRoutingSettingsRow,
+) -> LiveRequestStreamingSettings {
+    let (group_names, invalid) = parse_string_array_json_with_invalid(
+        row.live_request_streaming_group_names_json.as_deref(),
+    );
+    LiveRequestStreamingSettings {
+        enabled: row.live_request_streaming_enabled.unwrap_or_default() != 0,
+        group_names: if invalid {
+            Vec::new()
+        } else {
+            normalize_live_request_streaming_group_names(group_names).unwrap_or_default()
+        },
+        treatment_percent: row
+            .live_request_streaming_treatment_percent
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(50),
+    }
+}
+
+pub(crate) fn merge_live_request_streaming_settings(
+    current: LiveRequestStreamingSettings,
+    patch: Option<&UpdateLiveRequestStreamingSettingsRequest>,
+) -> Result<LiveRequestStreamingSettings, (StatusCode, String)> {
+    let Some(patch) = patch else {
+        return Ok(current);
+    };
+    let group_names = patch
+        .group_names
+        .clone()
+        .map(normalize_live_request_streaming_group_names)
+        .transpose()?
+        .unwrap_or(current.group_names);
+    let treatment_percent = patch.treatment_percent.unwrap_or(current.treatment_percent);
+    if treatment_percent > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "liveRequestStreaming.treatmentPercent must be between 0 and 100".to_string(),
+        ));
+    }
+    Ok(LiveRequestStreamingSettings {
+        enabled: patch.enabled.unwrap_or(current.enabled),
+        group_names,
+        treatment_percent,
+    })
+}
+
+fn normalize_live_request_streaming_group_names(
+    group_names: Vec<String>,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let mut normalized = BTreeSet::new();
+    for group_name in group_names {
+        let group_name = group_name.trim();
+        if group_name.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "liveRequestStreaming.groupNames cannot contain empty values".to_string(),
+            ));
+        }
+        if group_name.len() > 128 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "liveRequestStreaming.groupNames entries must be at most 128 characters"
+                    .to_string(),
+            ));
+        }
+        normalized.insert(group_name.to_string());
+    }
+    Ok(normalized.into_iter().collect())
 }
 
 pub(crate) fn pool_routing_timeouts_from_config(
@@ -683,6 +782,9 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_protection_enabled
             ,cache_hit_low_rate_threshold_percent
             ,cache_hit_overflow_mode
+            ,live_request_streaming_enabled
+            ,live_request_streaming_group_names_json
+            ,live_request_streaming_treatment_percent
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -759,6 +861,7 @@ pub(crate) fn build_pool_routing_settings_response(
         },
         timeouts: pool_routing_timeouts_response(timeouts),
         cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
+        live_request_streaming: resolve_live_request_streaming_settings(row).into_response(),
     }
 }
 
@@ -887,6 +990,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
     pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
+    pub(crate) live_request_streaming: Option<LiveRequestStreamingSettings>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -992,6 +1096,10 @@ pub(crate) async fn save_pool_routing_settings(
     let cache_hit_protection = update
         .cache_hit_protection
         .unwrap_or_else(|| resolve_cache_hit_protection_settings(&current));
+    let live_request_streaming_updated = update.live_request_streaming.is_some();
+    let live_request_streaming = update
+        .live_request_streaming
+        .unwrap_or_else(|| resolve_live_request_streaming_settings(&current));
     let now_iso = format_utc_iso(Utc::now());
 
     let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
@@ -1094,6 +1202,23 @@ pub(crate) async fn save_pool_routing_settings(
         .bind(if cache_hit_protection.enabled { 1_i64 } else { 0_i64 })
         .bind(i64::from(cache_hit_protection.low_hit_rate_threshold_percent))
         .bind(cache_hit_protection.overflow_mode.as_str())
+        .bind(format_utc_iso(Utc::now()))
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+    }
+
+    if live_request_streaming_updated {
+        sqlx::query(
+            "UPDATE pool_routing_settings SET live_request_streaming_enabled = ?2, live_request_streaming_group_names_json = ?3, live_request_streaming_treatment_percent = ?4, updated_at = ?5 WHERE id = ?1",
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .bind(if live_request_streaming.enabled { 1_i64 } else { 0_i64 })
+        .bind(
+            serde_json::to_string(&live_request_streaming.group_names)
+                .unwrap_or_else(|_| "[]".to_string()),
+        )
+        .bind(i64::from(live_request_streaming.treatment_percent))
         .bind(format_utc_iso(Utc::now()))
         .execute(&mut *tx)
         .await
@@ -1449,4 +1574,70 @@ pub(crate) fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<Stri
         .decrypt(aes_gcm::Nonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|err| anyhow!("failed to decrypt secret: {err}"))?;
     String::from_utf8(plaintext).context("failed to decode decrypted secret")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_request_streaming_settings_default_to_disabled_and_normalize_groups() {
+        let current = LiveRequestStreamingSettings {
+            enabled: false,
+            group_names: Vec::new(),
+            treatment_percent: 50,
+        };
+        let default = merge_live_request_streaming_settings(current.clone(), None)
+            .expect("default settings should be valid");
+        assert_eq!(default, current);
+
+        let updated = merge_live_request_streaming_settings(
+            current,
+            Some(&UpdateLiveRequestStreamingSettingsRequest {
+                enabled: Some(true),
+                group_names: Some(vec![
+                    " beta ".to_string(),
+                    "alpha".to_string(),
+                    "beta".to_string(),
+                ]),
+                treatment_percent: Some(50),
+            }),
+        )
+        .expect("valid settings should merge");
+        assert!(updated.enabled);
+        assert_eq!(updated.group_names, vec!["alpha", "beta"]);
+        assert_eq!(updated.treatment_percent, 50);
+        assert!(updated.includes_group(Some("alpha")));
+        assert!(!updated.includes_group(Some("missing")));
+    }
+
+    #[test]
+    fn live_request_streaming_settings_reject_invalid_group_and_treatment() {
+        let current = LiveRequestStreamingSettings {
+            enabled: false,
+            group_names: Vec::new(),
+            treatment_percent: 50,
+        };
+        let empty_group = merge_live_request_streaming_settings(
+            current.clone(),
+            Some(&UpdateLiveRequestStreamingSettingsRequest {
+                enabled: None,
+                group_names: Some(vec![" ".to_string()]),
+                treatment_percent: None,
+            }),
+        )
+        .expect_err("empty group should be rejected");
+        assert_eq!(empty_group.0, StatusCode::BAD_REQUEST);
+
+        let invalid_percent = merge_live_request_streaming_settings(
+            current,
+            Some(&UpdateLiveRequestStreamingSettingsRequest {
+                enabled: None,
+                group_names: None,
+                treatment_percent: Some(101),
+            }),
+        )
+        .expect_err("treatment percent above 100 should be rejected");
+        assert_eq!(invalid_percent.0, StatusCode::BAD_REQUEST);
+    }
 }

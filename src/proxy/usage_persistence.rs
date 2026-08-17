@@ -2801,6 +2801,135 @@ pub(crate) fn with_proxy_stream_terminal_diagnostics(
     serde_json::to_string(&value).unwrap_or(payload)
 }
 
+/// Adds transport-only request-streaming observations to the invocation audit
+/// payload. Request content is intentionally never copied into this payload.
+pub(crate) fn with_live_request_streaming_payload_summary(
+    payload: String,
+    decision: &LiveRequestStreamingDecision,
+    measurement: &LiveRequestStreamingMeasurement,
+) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
+        return payload;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return payload;
+    };
+    object.insert(
+        "requestBodyTransportMode".to_string(),
+        Value::String(decision.transport_mode.as_str().to_string()),
+    );
+    object.insert(
+        "liveFirstEligibility".to_string(),
+        Value::Bool(decision.eligible),
+    );
+    object.insert(
+        "liveFirstReason".to_string(),
+        Value::String(decision.reason.to_string()),
+    );
+    insert_payload_optional_text(object, "liveFirstRevision", decision.revision);
+    insert_payload_optional_text(
+        object,
+        "liveFirstExperimentVariant",
+        decision
+            .variant
+            .map(LiveRequestStreamingExperimentVariant::as_str),
+    );
+    insert_payload_optional_text(
+        object,
+        "upstreamAccountGroup",
+        measurement.upstream_account_group.as_deref(),
+    );
+    insert_payload_optional_text(
+        object,
+        "liveFirstAccountGroup",
+        measurement.experiment_account_group.as_deref(),
+    );
+    insert_payload_optional_usize(object, "requestBodyRawBytes", measurement.raw_body_bytes);
+    insert_payload_optional_usize(
+        object,
+        "requestBodyLogicalBytes",
+        measurement.logical_body_bytes,
+    );
+    insert_payload_optional_f64(
+        object,
+        "upstreamRequestFirstByteMs",
+        measurement.upstream_request_first_byte_ms,
+    );
+    insert_payload_optional_f64(
+        object,
+        "requestBodyCaptureCompleteMs",
+        measurement.request_body_capture_complete_ms,
+    );
+    insert_payload_optional_f64(
+        object,
+        "requestUpstreamOverlapMs",
+        measurement.request_upstream_overlap_ms,
+    );
+    insert_payload_optional_f64(
+        object,
+        "firstResponseByteTotalMs",
+        measurement.first_response_byte_total_ms,
+    );
+    insert_payload_optional_f64(object, "firstTokenTotalMs", measurement.first_token_ms);
+    object.insert(
+        "liveFirstAttemptFailed".to_string(),
+        Value::Bool(measurement.first_attempt_failed),
+    );
+    object.insert(
+        "liveFirstFallbackOrRetry".to_string(),
+        Value::Bool(measurement.fallback_or_retry),
+    );
+    object.insert(
+        "liveFirstCaptureFailed".to_string(),
+        Value::Bool(measurement.capture_failed),
+    );
+    object.insert(
+        "ambiguousUpstreamDelivery".to_string(),
+        Value::Bool(measurement.ambiguous_upstream_delivery),
+    );
+    serde_json::to_string(&value).unwrap_or(payload)
+}
+
+fn insert_payload_optional_text(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    object.insert(
+        key.to_string(),
+        value
+            .map(|value| Value::String(value.to_string()))
+            .unwrap_or(Value::Null),
+    );
+}
+
+fn insert_payload_optional_usize(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<usize>,
+) {
+    object.insert(
+        key.to_string(),
+        value
+            .map(|value| Value::Number(serde_json::Number::from(value)))
+            .unwrap_or(Value::Null),
+    );
+}
+
+fn insert_payload_optional_f64(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<f64>,
+) {
+    object.insert(
+        key.to_string(),
+        value
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+    );
+}
+
 pub(crate) fn with_image_tool_rewrite_payload_summary(
     payload: String,
     image_tool_rewrite: Option<&Value>,

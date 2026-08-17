@@ -835,6 +835,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) connect_latency_ms: f64,
     pub(crate) attempt_started_at_utc: DateTime<Utc>,
     pub(crate) first_byte_latency_ms: f64,
+    pub(crate) live_request_body_first_byte_at: Option<Instant>,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) first_chunk_received_at: Option<Instant>,
     pub(crate) first_stream_chunk_received_at: Option<Instant>,
@@ -1258,6 +1259,9 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) owner_auto_guard_active: bool,
     pub(crate) t_req_read_ms: f64,
     pub(crate) t_req_parse_ms: f64,
+    pub(crate) live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
+    pub(crate) live_request_streaming_experiment_group: Option<String>,
+    pub(crate) live_first_attempt_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1641,6 +1645,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
+    pub(crate) image_intent: ImageIntent,
 }
 
 /// Immutable request semantics derived from the single replay snapshot.
@@ -1677,7 +1682,35 @@ pub(crate) struct PoolReplayableRequestBody {
     pub(crate) body: Body,
     pub(crate) status_rx: watch::Receiver<PoolReplayBodyStatus>,
     pub(crate) sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
+    pub(crate) first_live_chunk_sent_at_rx: watch::Receiver<Option<Instant>>,
     pub(crate) cancel: CancellationToken,
+}
+
+/// Records the first point at which Hyper polls the replay body. This is later
+/// than the producer enqueueing a chunk, so it is the closest local signal to
+/// the first upstream request byte being consumed by the transport.
+pub(crate) struct TimestampedReplayBodyStream {
+    pub(crate) inner: ReceiverStream<Result<Bytes, io::Error>>,
+    pub(crate) first_polled_at_tx: watch::Sender<Option<Instant>>,
+}
+
+impl futures_util::Stream for TimestampedReplayBodyStream {
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            std::task::Poll::Ready(Some(item)) => {
+                if self.first_polled_at_tx.borrow().is_none() {
+                    let _ = self.first_polled_at_tx.send(Some(Instant::now()));
+                }
+                std::task::Poll::Ready(Some(item))
+            }
+            next => next,
+        }
+    }
 }
 
 pub(crate) fn proxy_forward_response_status_is_success(
@@ -2770,7 +2803,7 @@ pub(crate) fn counted_http_body_from_bytes(bytes: Bytes, counter: ObservedByteCo
     Body::from_stream(stream)
 }
 
-fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
+pub(crate) fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
 where
     R: AsyncRead + Send + 'static,
 {
@@ -2831,9 +2864,9 @@ pub(crate) fn counted_http_body_from_snapshot(
     }
 }
 
-type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+pub(crate) type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
 
-fn request_compression_preset_to_async_level(
+pub(crate) fn request_compression_preset_to_async_level(
     preset: RequestCompressionLevelPreset,
 ) -> AsyncCompressionLevel {
     match preset {
@@ -2843,7 +2876,7 @@ fn request_compression_preset_to_async_level(
     }
 }
 
-fn resolve_request_body_content_encoding_from_prefix(
+pub(crate) fn resolve_request_body_content_encoding_from_prefix(
     prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -2890,6 +2923,14 @@ async fn resolve_request_body_content_encoding(
         prefix.as_ref().map(Bytes::as_ref),
         content_encoding,
     )
+}
+
+pub(crate) async fn pool_request_snapshot_logical_body_bytes(
+    snapshot: &PoolReplayBodySnapshot,
+    content_encoding: Option<&str>,
+) -> Result<usize, PoolRequestBodyPreparationError> {
+    let encoding = resolve_request_body_content_encoding(snapshot, content_encoding).await?;
+    count_decoded_request_snapshot_bytes(snapshot, encoding).await
 }
 
 pub(crate) fn observe_request_compression_from_bytes(
@@ -2952,7 +2993,7 @@ async fn count_decoded_request_snapshot_bytes(
     }
 }
 
-fn decode_request_payload_bytes(
+pub(crate) fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,
 ) -> Result<Bytes, PoolRequestBodyPreparationError> {
@@ -3020,7 +3061,7 @@ async fn open_pool_request_snapshot_reader(
     }
 }
 
-async fn decode_pool_request_reader(
+pub(crate) async fn decode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
 ) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
@@ -3048,7 +3089,7 @@ async fn decode_pool_request_reader(
     }
 }
 
-fn encode_pool_request_reader(
+pub(crate) fn encode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
     level: AsyncCompressionLevel,
@@ -3919,7 +3960,7 @@ pub(crate) fn codex_imagegen_audit_has_canonical_namespace(audit: Option<&Value>
             .is_some_and(Vec::is_empty)
 }
 
-fn rewrite_codex_imagegen_tools(
+pub(crate) fn rewrite_codex_imagegen_tools(
     value: &mut Value,
     protocol: CodexImagegenProtocol,
     mode: crate::CodexImagegenRewriteMode,
@@ -5068,6 +5109,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
     let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
     let (sticky_key_probe_tx, sticky_key_probe_rx) =
         watch::channel(PoolReplayBodyStickyKeyProbeStatus::Pending);
+    let (first_live_chunk_sent_at_tx, first_live_chunk_sent_at_rx) = watch::channel(None);
     let cancel = CancellationToken::new();
     let cancel_for_task = cancel.clone();
 
@@ -5188,6 +5230,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 best_effort_extract_encrypted_content_from_request_body_prefix(
                                     &sticky_key_probe,
                                 ),
+                            image_intent: ImageIntent::Unknown,
                         },
                     ));
                 }
@@ -5274,6 +5317,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         best_effort_extract_encrypted_content_from_request_body_prefix(
                             &sticky_key_probe,
                         ),
+                    image_intent: ImageIntent::Unknown,
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
@@ -5293,9 +5337,13 @@ pub(crate) fn spawn_pool_replayable_request_body(
     });
 
     PoolReplayableRequestBody {
-        body: Body::from_stream(ReceiverStream::new(rx)),
+        body: Body::from_stream(TimestampedReplayBodyStream {
+            inner: ReceiverStream::new(rx),
+            first_polled_at_tx: first_live_chunk_sent_at_tx,
+        }),
         status_rx,
         sticky_key_probe_rx,
+        first_live_chunk_sent_at_rx,
         cancel,
     }
 }
@@ -5432,6 +5480,23 @@ pub(crate) async fn wait_for_replay_body_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn logical_body_measurement_decodes_compressed_replay_snapshots() {
+        let logical = br#"{\"model\":\"gpt-5.6\",\"input\":\"compressed\"}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(logical).expect("write gzip body");
+        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(
+            encoder.finish().expect("finish gzip body"),
+        ));
+
+        assert_eq!(
+            pool_request_snapshot_logical_body_bytes(&snapshot, Some("gzip"))
+                .await
+                .expect("measure decoded gzip body"),
+            logical.len()
+        );
+    }
 
     #[test]
     fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {
@@ -6657,5 +6722,127 @@ mod tests {
             original
         );
         assert_eq!(projection.whole_body_materialization_count, 0);
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_body_starts_before_downstream_eof() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            b"{\"model\":\"gpt-5.6\",\"input\":\"",
+        )))
+        .await
+        .expect("send request prefix");
+        let replay = spawn_pool_replayable_request_body(
+            Body::from_stream(ReceiverStream::new(rx)),
+            1024 * 1024,
+            Duration::from_secs(1),
+            42,
+        );
+        let mut upstream_body = replay.body.into_data_stream();
+        let first = upstream_body
+            .next()
+            .await
+            .expect("upstream should receive a first body chunk")
+            .expect("first body chunk should be valid");
+
+        assert_eq!(
+            first,
+            Bytes::from_static(b"{\"model\":\"gpt-5.6\",\"input\":\"")
+        );
+        assert!(replay.first_live_chunk_sent_at_rx.borrow().is_some());
+        assert!(matches!(
+            *replay.status_rx.borrow(),
+            PoolReplayBodyStatus::Reading
+        ));
+        tx.send(Ok(Bytes::from_static(b"delayed tail\"}")))
+            .await
+            .expect("send delayed request tail");
+        drop(tx);
+        let snapshot = timeout(Duration::from_secs(1), async {
+            let mut status_rx = replay.status_rx.clone();
+            loop {
+                if let PoolReplayBodyStatus::Complete(snapshot) = status_rx.borrow().clone() {
+                    break snapshot;
+                }
+                status_rx
+                    .changed()
+                    .await
+                    .expect("replay worker should stay alive");
+            }
+        })
+        .await
+        .expect("replay should finish after downstream eof");
+        assert_eq!(
+            snapshot.to_bytes().await.expect("read snapshot"),
+            Bytes::from_static(b"{\"model\":\"gpt-5.6\",\"input\":\"delayed tail\"}")
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_live_consumer_allows_replay_snapshot_to_finish() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(64);
+        tx.send(Ok(Bytes::from_static(br#"{"model":"gpt-5.6"}"#)))
+            .await
+            .expect("send complete routing object");
+        for _ in 0..32 {
+            tx.send(Ok(Bytes::from_static(b" ")))
+                .await
+                .expect("send trailing whitespace");
+        }
+        drop(tx);
+
+        let replay = spawn_pool_replayable_request_body(
+            Body::from_stream(ReceiverStream::new(rx)),
+            1024 * 1024,
+            Duration::from_secs(1),
+            43,
+        );
+        let pipeline = spawn_live_responses_request_body_pipeline(replay.body, None);
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+
+        let mut status_rx = replay.status_rx.clone();
+        assert!(
+            timeout(Duration::from_millis(50), async {
+                loop {
+                    if !matches!(*status_rx.borrow(), PoolReplayBodyStatus::Reading) {
+                        break;
+                    }
+                    status_rx
+                        .changed()
+                        .await
+                        .expect("replay worker should stay alive");
+                }
+            })
+            .await
+            .is_err(),
+            "the bounded replay channel should wait for the live consumer"
+        );
+
+        drop(pipeline);
+        let snapshot = timeout(Duration::from_secs(1), async {
+            loop {
+                if let PoolReplayBodyStatus::Complete(snapshot) = status_rx.borrow().clone() {
+                    break snapshot;
+                }
+                status_rx
+                    .changed()
+                    .await
+                    .expect("replay worker should stay alive");
+            }
+        })
+        .await
+        .expect("dropping the buffered live consumer must release the replay producer");
+        assert!(
+            snapshot
+                .to_bytes()
+                .await
+                .expect("read snapshot")
+                .starts_with(br#"{"model":"gpt-5.6"}"#)
+        );
     }
 }
