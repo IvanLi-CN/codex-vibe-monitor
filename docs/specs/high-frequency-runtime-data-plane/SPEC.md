@@ -122,11 +122,11 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 PR: include
 
-![System Status runtime pressure degraded state on desktop](assets/runtime-pressure-desktop.png)
+![System Status runtime pressure degraded state on desktop](./assets/runtime-pressure-desktop.png)
 
 PR: include
 
-![System Status runtime pressure accounting error state on mobile](assets/runtime-pressure-mobile.png)
+![System Status runtime pressure accounting error state on mobile](./assets/runtime-pressure-mobile.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Stats/LiveRequestStreamingPerfPanel/Measured
