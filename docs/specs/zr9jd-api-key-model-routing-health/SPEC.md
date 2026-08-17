@@ -155,29 +155,29 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` Autodocs/交互覆盖）
+Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` 的 6 个交互用例）
 视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=待重新采集
-聊天回图=待重新展示
-证据落盘=待重新采集
-代码来源sha=待当前甘特图重构完成后绑定
-证据绑定sha=待当前甘特图重构完成后绑定
+空白裁剪=无需裁剪（桌面边缘背景不均匀而保留原图；移动端没有可安全移除的空白）
+聊天回图=待展示
+证据落盘=已落盘
+代码来源sha=6fc55ff1
+证据绑定sha=6fc55ff1
 submission_gate=local-pending
 target_program=mock-only
 sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取，页面证据在同一 mock-only 演示路由中以受控 1440×900 和 393×852 CSS 视口采集，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
 
-source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=待重新采集：必须展示模型唯一分组、左侧 `API Key #id` 精确组合泳道、右侧共享北京时间轴、按真实时间比例重建的状态色带和逐次真实请求菱形；界面不得出现账号池显示名、账号分组、账号列表或堆叠柱图。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; rendered_viewport=1440x900 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=展示模型唯一分组、左侧 `API Key #id` 精确组合泳道、右侧共享北京时间轴、按真实时间比例重建的状态色带和逐次真实请求菱形；页面不含对话内容、账号池显示名、账号分组、账号列表或堆叠柱图。
 
 PR: include
-![桌面模型路由页](./assets/model-routing-account-groups-removed-desktop.png)
+![桌面模型路由甘特图](./assets/model-routing-standard-gantt-desktop.png)
 
-source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=待重新采集：验证移动端标准甘特图的精确组合泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内；页面不含对话内容、账号池显示名、账号列表或账号分组字段。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端标准甘特图的精确组合泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内；三个时间图的 `scrollWidth` 与 `clientWidth` 均为 352px。页面不含对话内容、账号池显示名、账号列表或账号分组字段。
 
 PR: include
-![移动模型路由页](./assets/model-routing-account-groups-removed-mobile.png)
+![移动模型路由甘特图](./assets/model-routing-standard-gantt-mobile.png)
 
 source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的压缩登录健康摘要、精确模型当前冷却状态、恢复时间、状态事件、同账号重试和 HTTP 502。展开区直接呈现事件，不重复时间窗说明。
 
