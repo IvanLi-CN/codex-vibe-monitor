@@ -161,8 +161,8 @@ Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` 的 6 �
 空白裁剪=无需裁剪（桌面边缘背景不均匀而保留原图；移动端没有可安全移除的空白）
 聊天回图=待展示
 证据落盘=已落盘
-代码来源sha=c5a92939993fb00669eaf86cc3487cd34856f16d
-证据绑定sha=c5a92939993fb00669eaf86cc3487cd34856f16d
+代码来源sha=37d60bcb36edf9ac39ba17e2e55f6a4eb70c08c9
+证据绑定sha=37d60bcb36edf9ac39ba17e2e55f6a4eb70c08c9
 submission_gate=local-pending
 target_program=mock-only
 sensitive_exclusion=N/A
@@ -174,7 +174,7 @@ source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=lig
 PR: include
 ![桌面模型路由甘特图](./assets/model-routing-standard-gantt-desktop.png)
 
-source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端同一甘特表的模型分组行、精确组合泳道、北京时间刻度、按可用期调用分配变化的颜色强度、透明虚线未知区间与缩小后的请求菱形在同一可见图面内；表格网格 `scrollWidth` 与 `clientWidth` 相等，无横向溢出。页面不含对话内容、账号池显示名、账号列表或账号分组字段。
+source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端同一甘特表的模型分组行、精确组合泳道、北京时间刻度、按可用期调用分配变化的颜色强度、透明虚线未知区间与缩小后的请求菱形在同一可见图面内；表格网格 `scrollWidth` 与 `clientWidth` 相等，无横向溢出。页面不含对话内容、账号池显示名、账号列表或账号分组字段。
 
 PR: include
 ![移动模型路由甘特图](./assets/model-routing-standard-gantt-mobile.png)
