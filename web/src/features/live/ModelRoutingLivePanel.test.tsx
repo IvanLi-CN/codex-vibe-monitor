@@ -155,4 +155,19 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain("没有符合筛选条件的 API Key 模型路由状态。");
     expect(html).not.toContain('data-testid="model-routing-gantt-');
   });
+
+  it("keeps the model text visible when the model has an identity icon", () => {
+    const html = renderPanel({
+      ...snapshot,
+      groups: [
+        ...snapshot.groups,
+        {
+          model: "gpt-5.6-terra",
+          accounts: [],
+        },
+      ],
+    });
+
+    expect(html).toContain("gpt-5.6-terra");
+  });
 });

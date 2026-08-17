@@ -10,7 +10,7 @@ import type {
   ModelRoutingTimelineRecord,
 } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
-import { ModelIdentity } from "../shared/ModelIdentity";
+import { resolveModelIdentityIcon } from "../shared/ModelIdentity";
 import { ModelRoutingGantt } from "./ModelRoutingGantt";
 
 function statusLabel(state: string, t: (key: string) => string) {
@@ -153,6 +153,7 @@ export function ModelRoutingLivePanel({
         <div className="grid gap-3">
           {groups.map((group) => {
             const modelRecords = recordsByModel.get(group.model) ?? [];
+            const modelIdentityIcon = resolveModelIdentityIcon(group.model);
             return (
               <section
                 key={group.model}
@@ -161,10 +162,18 @@ export function ModelRoutingLivePanel({
               >
                 <div className="flex items-center justify-between gap-3 px-3 py-2">
                   <h2 className="min-w-0">
-                    <ModelIdentity
-                      model={group.model}
-                      textClassName="truncate font-mono text-sm font-semibold"
-                    />
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {modelIdentityIcon ? (
+                        <AppIcon
+                          name={modelIdentityIcon}
+                          className="h-4 w-4 shrink-0 text-success"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <span className="truncate font-mono text-sm font-semibold">
+                        {group.model}
+                      </span>
+                    </span>
                   </h2>
                   <div className="flex shrink-0 items-center gap-3 text-xs tabular-nums text-base-content/65">
                     <span>{t("live.routing.accountsCount", { count: group.accounts.length })}</span>
