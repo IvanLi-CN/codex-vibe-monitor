@@ -1,4 +1,5 @@
-import { Fragment, useMemo } from "react";
+import Gantt, { type GanttTask, type GanttViewMode } from "frappe-gantt";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "../../i18n";
 import type {
   ModelRoutingLiveAccount,
@@ -13,8 +14,6 @@ import {
   withOpacity,
 } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
-import { AppIcon } from "../shared/AppIcon";
-import { resolveModelIdentityIcon } from "../shared/ModelIdentity";
 
 type RoutingTimelineState = "available" | "degraded" | "cooling_down" | "unknown";
 
@@ -51,10 +50,33 @@ interface RoutingGanttData {
   attempts: RoutingGanttAttempt[];
 }
 
-export function availableBandOpacity(callCount: number, maxCallCount: number) {
-  if (maxCallCount <= 0) return 0.56;
-  const ratio = Math.max(0, Math.min(1, callCount / maxCallCount));
-  return 0.3 + ratio * 0.7;
+interface RoutingGanttColors {
+  available: string;
+  degraded: string;
+  cooling_down: string;
+  unknown: string;
+  attemptSuccess: string;
+  attemptFailure: string;
+  attemptUnknown: string;
+}
+
+interface RoutingFrappeTask extends GanttTask {
+  kind: "model" | "lane";
+  accountId?: number;
+  model: string;
+}
+
+interface RoutingTimelineGroup {
+  model: string;
+  accountCount: number;
+  recordCount: number;
+  timeline: RoutingGanttData;
+}
+
+interface RoutingViewSpec {
+  step: string;
+  minimumColumnWidth: number;
+  columns: number;
 }
 
 const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
@@ -64,7 +86,23 @@ const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
   "24h": 24 * 60 * 60_000,
 };
 
+const VIEW_SPECS: Record<ModelRoutingLiveWindow, RoutingViewSpec> = {
+  "15m": { step: "5min", minimumColumnWidth: 96, columns: 4 },
+  "1h": { step: "15min", minimumColumnWidth: 80, columns: 5 },
+  "6h": { step: "1h", minimumColumnWidth: 96, columns: 7 },
+  "24h": { step: "4h", minimumColumnWidth: 112, columns: 7 },
+};
+
 const ROUTING_STATES = new Set<RoutingTimelineState>(["available", "degraded", "cooling_down"]);
+const SVG_NS = "http://www.w3.org/2000/svg";
+// A one-second offset avoids Frappe treating a midnight end as an all-day task.
+const NORMALIZED_START_MS = new Date(2000, 0, 1, 0, 0, 1, 0).getTime();
+
+export function availableBandOpacity(callCount: number, maxCallCount: number) {
+  if (maxCallCount <= 0) return 0.56;
+  const ratio = Math.max(0, Math.min(1, callCount / maxCallCount));
+  return 0.3 + ratio * 0.7;
+}
 
 function parseTimestamp(value?: string | null) {
   if (!value) return null;
@@ -153,6 +191,14 @@ function routingLaneLabel(accountId: number) {
   return `API Key #${accountId}`;
 }
 
+function routingTaskId(model: string, accountId: number) {
+  return `route-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}-${accountId}`;
+}
+
+function routingModelTaskId(model: string) {
+  return `model-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
 export function buildModelRoutingGanttData({
   model,
   accounts,
@@ -226,20 +272,11 @@ export function buildModelRoutingGanttData({
   return { rangeStartMs, rangeEndMs, lanes, attempts };
 }
 
-function formatBeijingTime(value: number, localeTag: string) {
+function formatBeijing(value: number, localeTag: string, options: Intl.DateTimeFormatOptions) {
   return new Intl.DateTimeFormat(localeTag, {
     timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
     hour12: false,
-  }).format(new Date(value));
-}
-
-function formatBeijingDate(value: number, localeTag: string) {
-  return new Intl.DateTimeFormat(localeTag, {
-    timeZone: "Asia/Shanghai",
-    month: "2-digit",
-    day: "2-digit",
+    ...options,
   }).format(new Date(value));
 }
 
@@ -253,24 +290,6 @@ function formatBeijingRange(startMs: number, endMs: number, localeTag: string) {
     hour12: false,
   });
   return `${formatter.format(new Date(startMs))} - ${formatter.format(new Date(endMs))}`;
-}
-
-function percentAt(value: number, start: number, end: number) {
-  if (!(end > start)) return 0;
-  return ((clampToRange(value, start, end) - start) / (end - start)) * 100;
-}
-
-function bandStyle(band: RoutingGanttBand, rangeStartMs: number, rangeEndMs: number) {
-  const left = percentAt(band.startMs, rangeStartMs, rangeEndMs);
-  const naturalWidth = percentAt(band.endMs, rangeStartMs, rangeEndMs) - left;
-  const width = Math.min(100 - left, Math.max(0.75, naturalWidth));
-  return { left: `${left}%`, width: `${width}%` };
-}
-
-function edgeClass(index: number, lastIndex: number) {
-  if (index === 0) return "left-0";
-  if (index === lastIndex) return "-translate-x-full";
-  return "-translate-x-1/2";
 }
 
 function bandKey(model: string, accountId: number, band: RoutingGanttBand) {
@@ -287,6 +306,420 @@ function countAttemptsInBand(
       attempt.occurredAtMs >= band.startMs &&
       (attempt.occurredAtMs < band.endMs || attempt.occurredAtMs === rangeEndMs),
   ).length;
+}
+
+export function buildFrappeRoutingTasks(timeline: RoutingGanttData): RoutingFrappeTask[] {
+  const normalizedEndMs = NORMALIZED_START_MS + (timeline.rangeEndMs - timeline.rangeStartMs);
+  return timeline.lanes.map((lane) => ({
+    id: routingTaskId(lane.model, lane.accountId),
+    name: lane.label,
+    start: new Date(NORMALIZED_START_MS),
+    end: new Date(normalizedEndMs),
+    progress: 0,
+    custom_class: "model-routing-task",
+    kind: "lane",
+    accountId: lane.accountId,
+    model: lane.model,
+  }));
+}
+
+export function buildFrappeSystemRoutingTasks(
+  timelines: RoutingTimelineGroup[],
+): RoutingFrappeTask[] {
+  return timelines.flatMap((group) => {
+    const normalizedEndMs =
+      NORMALIZED_START_MS + (group.timeline.rangeEndMs - group.timeline.rangeStartMs);
+    const modelTask: RoutingFrappeTask = {
+      id: routingModelTaskId(group.model),
+      name: group.model,
+      start: new Date(NORMALIZED_START_MS),
+      end: new Date(normalizedEndMs),
+      progress: 0,
+      custom_class: "model-routing-model-task",
+      kind: "model",
+      model: group.model,
+    };
+    return [modelTask, ...buildFrappeRoutingTasks(group.timeline)];
+  });
+}
+
+function svgElement<K extends keyof SVGElementTagNameMap>(
+  name: K,
+  attributes: Record<string, string>,
+) {
+  const element = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+  return element;
+}
+
+function appendSvgTitle(element: SVGElement, label: string) {
+  const title = svgElement("title", {});
+  title.textContent = label;
+  element.appendChild(title);
+}
+
+function bindSvgAction(element: SVGElement, action: () => void) {
+  element.setAttribute("role", "button");
+  element.setAttribute("tabindex", "0");
+  element.addEventListener("click", (event) => {
+    event.stopPropagation();
+    action();
+  });
+  element.addEventListener("keydown", (event) => {
+    if (event instanceof KeyboardEvent && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      event.stopPropagation();
+      action();
+    }
+  });
+}
+
+function decorateTimelineSvg({
+  host,
+  timeline,
+  stateLabels,
+  colors,
+  availableCounts,
+  maxAvailableCount,
+  totalAvailableCount,
+  localeTag,
+  attemptLabel,
+  retryLabel,
+  unknownLabel,
+  allocationLabel,
+  onOpenAccount,
+  onOpenInvocation,
+}: {
+  host: HTMLElement;
+  timeline: RoutingGanttData;
+  stateLabels: Record<RoutingTimelineState, string>;
+  colors: RoutingGanttColors;
+  availableCounts: Map<string, number>;
+  maxAvailableCount: number;
+  totalAvailableCount: number;
+  localeTag: string;
+  attemptLabel: string;
+  retryLabel: (index: number) => string;
+  unknownLabel: string;
+  allocationLabel: (count: number, percent: number) => string;
+  onOpenAccount: (accountId: number, model: string) => void;
+  onOpenInvocation: (invokeId: string) => void;
+}) {
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  if (!svg) return;
+  svg.setAttribute("data-testid", `model-routing-svg-${timeline.lanes[0]?.model ?? "empty"}`);
+  svg.setAttribute("aria-label", timeline.lanes[0]?.model ?? "model routing");
+
+  const rangeDuration = timeline.rangeEndMs - timeline.rangeStartMs;
+  for (const lane of timeline.lanes) {
+    const taskId = routingTaskId(lane.model, lane.accountId);
+    const wrapper = Array.from(svg.querySelectorAll<SVGGElement>(".bar-wrapper")).find(
+      (candidate) => candidate.getAttribute("data-id") === taskId,
+    );
+    const baseBar = wrapper?.querySelector<SVGRectElement>(".bar");
+    const barGroup = wrapper?.querySelector<SVGGElement>(".bar-group");
+    const label = wrapper?.querySelector<SVGTextElement>(".bar-label");
+    if (!wrapper || !baseBar || !barGroup || !label || rangeDuration <= 0) continue;
+
+    const x = Number(baseBar.getAttribute("x"));
+    const y = Number(baseBar.getAttribute("y"));
+    const width = Number(baseBar.getAttribute("width"));
+    const height = Number(baseBar.getAttribute("height"));
+    baseBar.setAttribute("fill", "transparent");
+    baseBar.setAttribute("stroke", "transparent");
+    label.setAttribute("x", String(x + 8));
+    label.setAttribute("text-anchor", "start");
+    wrapper.setAttribute("data-testid", `model-routing-lane-${lane.model}-${lane.accountId}`);
+
+    const segmentGroup = svgElement("g", { class: "model-routing-segments" });
+    for (const band of lane.bands) {
+      const startRatio = (band.startMs - timeline.rangeStartMs) / rangeDuration;
+      const endRatio = (band.endMs - timeline.rangeStartMs) / rangeDuration;
+      const bandX = x + Math.max(0, startRatio) * width;
+      const bandWidth = Math.max(1.5, (Math.min(1, endRatio) - Math.max(0, startRatio)) * width);
+      const callCount =
+        band.state === "available"
+          ? (availableCounts.get(bandKey(lane.model, lane.accountId, band)) ?? 0)
+          : 0;
+      const allocationPercent =
+        totalAvailableCount > 0 ? Math.round((callCount / totalAvailableCount) * 100) : 0;
+      const baseText = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
+        band.startMs,
+        band.endMs,
+        localeTag,
+      )}`;
+      const accessibleText =
+        band.state === "available"
+          ? `${baseText} · ${allocationLabel(callCount, allocationPercent)}`
+          : baseText;
+      const rect = svgElement("rect", {
+        x: String(bandX),
+        y: String(y),
+        width: String(bandWidth),
+        height: String(height),
+        rx: "2",
+        class: `model-routing-band model-routing-band--${band.state}`,
+        fill: colors[band.state],
+        "aria-label": accessibleText,
+        "data-routing-state": band.state,
+      });
+      if (band.state === "available") {
+        rect.setAttribute(
+          "fill-opacity",
+          String(availableBandOpacity(callCount, maxAvailableCount)),
+        );
+      }
+      if (band.state === "unknown") rect.setAttribute("stroke-dasharray", "3 2");
+      appendSvgTitle(rect, accessibleText);
+      bindSvgAction(rect, () => onOpenAccount(lane.accountId, lane.model));
+      segmentGroup.appendChild(rect);
+    }
+
+    const laneAttempts = timeline.attempts.filter(
+      (attempt) => attempt.accountId === lane.accountId,
+    );
+    for (const attempt of laneAttempts) {
+      const ratio = (attempt.occurredAtMs - timeline.rangeStartMs) / rangeDuration;
+      const centerX = x + Math.max(0.006, Math.min(0.994, ratio)) * width;
+      const centerY = y + height / 2;
+      const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
+      const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
+      const result = attempt.httpStatus
+        ? `HTTP ${attempt.httpStatus}`
+        : attempt.status || unknownLabel;
+      const latency =
+        attempt.totalLatencyMs != null ? ` · ${Math.round(attempt.totalLatencyMs)} ms` : "";
+      const retry =
+        (attempt.retryIndex ?? 0) > 0 ? ` · ${retryLabel(attempt.retryIndex ?? 0)}` : "";
+      const accessibleText = `${lane.label} · ${attemptLabel} · ${formatBeijingRange(
+        attempt.occurredAtMs,
+        attempt.occurredAtMs,
+        localeTag,
+      )} · ${result}${latency}${retry}`;
+      const color = successful
+        ? colors.attemptSuccess
+        : failed
+          ? colors.attemptFailure
+          : colors.attemptUnknown;
+      const marker = svgElement("polygon", {
+        points: `${centerX},${centerY - 3} ${centerX + 3},${centerY} ${centerX},${centerY + 3} ${centerX - 3},${centerY}`,
+        class: "model-routing-attempt",
+        fill: color,
+        stroke: "var(--g-header-background)",
+        "stroke-width": "1",
+        "aria-label": accessibleText,
+        "data-attempt-id": attempt.id,
+      });
+      appendSvgTitle(marker, accessibleText);
+      if (attempt.invokeId) bindSvgAction(marker, () => onOpenInvocation(attempt.invokeId ?? ""));
+      segmentGroup.appendChild(marker);
+    }
+
+    barGroup.insertBefore(segmentGroup, label);
+  }
+}
+
+function decorateSystemRoutingSvg({
+  host,
+  timelines,
+  modelSummaryLabel,
+  ...options
+}: Omit<Parameters<typeof decorateTimelineSvg>[0], "timeline"> & {
+  timelines: RoutingTimelineGroup[];
+  modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+}) {
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  if (!svg) return;
+
+  for (const group of timelines) {
+    decorateTimelineSvg({ host, timeline: group.timeline, ...options });
+    const wrapper = Array.from(svg.querySelectorAll<SVGGElement>(".bar-wrapper")).find(
+      (candidate) => candidate.getAttribute("data-id") === routingModelTaskId(group.model),
+    );
+    const baseBar = wrapper?.querySelector<SVGRectElement>(".bar");
+    const barGroup = wrapper?.querySelector<SVGGElement>(".bar-group");
+    const label = wrapper?.querySelector<SVGTextElement>(".bar-label");
+    if (!wrapper || !baseBar || !barGroup || !label) continue;
+
+    const x = Number(baseBar.getAttribute("x"));
+    const y = Number(baseBar.getAttribute("y"));
+    const width = Number(baseBar.getAttribute("width"));
+    const height = Number(baseBar.getAttribute("height"));
+    wrapper.setAttribute("data-testid", `model-routing-model-group-${group.model}`);
+    label.setAttribute("x", String(x + 8));
+    label.setAttribute("text-anchor", "start");
+    const countLabel = svgElement("text", {
+      x: String(x + width - 8),
+      y: String(y + height / 2),
+      class: "model-routing-model-count",
+      "text-anchor": "end",
+    });
+    countLabel.textContent = modelSummaryLabel(group.accountCount, group.recordCount);
+    barGroup.appendChild(countLabel);
+  }
+
+  svg.setAttribute("data-testid", "model-routing-svg-system");
+  svg.setAttribute("aria-label", "model routing");
+}
+
+function ModelRoutingSvgChart({
+  timelines,
+  window,
+  localeTag,
+  stateLabels,
+  colors,
+  availableCounts,
+  maxAvailableCount,
+  totalAvailableCount,
+  attemptLabel,
+  retryLabel,
+  unknownLabel,
+  allocationLabel,
+  modelSummaryLabel,
+  onOpenAccount,
+  onOpenInvocation,
+}: {
+  timelines: RoutingTimelineGroup[];
+  window: ModelRoutingLiveWindow;
+  localeTag: string;
+  stateLabels: Record<RoutingTimelineState, string>;
+  colors: RoutingGanttColors;
+  availableCounts: Map<string, number>;
+  maxAvailableCount: number;
+  totalAvailableCount: number;
+  attemptLabel: string;
+  retryLabel: (index: number) => string;
+  unknownLabel: string;
+  allocationLabel: (count: number, percent: number) => string;
+  modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+  onOpenAccount: (accountId: number, model: string) => void;
+  onOpenInvocation: (invokeId: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const tasks = useMemo(() => buildFrappeSystemRoutingTasks(timelines), [timelines]);
+  const range = timelines[0]?.timeline;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || tasks.length === 0 || !range) return;
+    host.replaceChildren();
+    const spec = VIEW_SPECS[window];
+    const compact = host.clientWidth < 640;
+    const fittedColumnWidth = Math.floor((host.clientWidth - (compact ? 24 : 0)) / spec.columns);
+    const columnWidth = compact
+      ? Math.max(44, fittedColumnWidth)
+      : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
+    const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
+    const toObservedMs = (normalizedDate: Date) =>
+      range.rangeStartMs + (normalizedDate.getTime() - NORMALIZED_START_MS);
+    const viewMode: GanttViewMode = {
+      name: `routing-${window}`,
+      padding: ["0h", "0h"],
+      step: spec.step,
+      date_format: "YYYY-MM-DD HH:mm",
+      lower_text: (date) => {
+        const normalizedIndex = Math.round(
+          (date.getTime() - NORMALIZED_START_MS) /
+            (WINDOW_DURATION_MS[window] / (spec.columns - 1)),
+        );
+        if (compact && normalizedIndex % compactLabelStride !== 0) return "";
+        return formatBeijing(toObservedMs(date), localeTag, {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      },
+      upper_text: (date, previous) => {
+        const currentMs = toObservedMs(date);
+        const previousMs = previous ? toObservedMs(previous) : null;
+        const currentDate = formatBeijing(currentMs, localeTag, {
+          month: "2-digit",
+          day: "2-digit",
+        });
+        const previousDate =
+          previousMs == null
+            ? null
+            : formatBeijing(previousMs, localeTag, {
+                month: "2-digit",
+                day: "2-digit",
+              });
+        return currentDate === previousDate ? "" : currentDate;
+      },
+      upper_text_frequency: Math.max(1, Math.round(24 / Number.parseInt(spec.step, 10))),
+    };
+    new Gantt(host, tasks, {
+      view_mode: viewMode.name,
+      view_modes: [viewMode],
+      column_width: columnWidth,
+      bar_height: 22,
+      bar_corner_radius: 2,
+      padding: 10,
+      upper_header_height: 20,
+      lower_header_height: 24,
+      container_height: "auto",
+      infinite_padding: false,
+      lines: "both",
+      holidays: {},
+      readonly: true,
+      today_button: false,
+      scroll_to: "start",
+      popup: false,
+      on_click: (task) => {
+        const routingTask = task as RoutingFrappeTask;
+        if (routingTask.kind === "lane" && routingTask.accountId != null) {
+          onOpenAccount(routingTask.accountId, routingTask.model);
+        }
+      },
+    });
+    const frame = requestAnimationFrame(() =>
+      decorateSystemRoutingSvg({
+        host,
+        timelines,
+        stateLabels,
+        colors,
+        availableCounts,
+        maxAvailableCount,
+        totalAvailableCount,
+        localeTag,
+        attemptLabel,
+        retryLabel,
+        unknownLabel,
+        allocationLabel,
+        modelSummaryLabel,
+        onOpenAccount,
+        onOpenInvocation,
+      }),
+    );
+    return () => {
+      cancelAnimationFrame(frame);
+      host.replaceChildren();
+    };
+  }, [
+    allocationLabel,
+    attemptLabel,
+    availableCounts,
+    colors,
+    localeTag,
+    maxAvailableCount,
+    modelSummaryLabel,
+    onOpenAccount,
+    onOpenInvocation,
+    range,
+    retryLabel,
+    stateLabels,
+    tasks,
+    timelines,
+    totalAvailableCount,
+    unknownLabel,
+    window,
+  ]);
+
+  return (
+    <div
+      ref={hostRef}
+      className="model-routing-frappe-gantt"
+      data-testid="model-routing-gantt-chart-system"
+    />
+  );
 }
 
 export function ModelRoutingGantt({
@@ -323,31 +756,28 @@ export function ModelRoutingGantt({
       })),
     [generatedAt, groups, records, window],
   );
-  const range = timelines[0]?.timeline;
-  const colors = useMemo(() => {
+  const colors = useMemo<RoutingGanttColors>(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
     return {
       available: status.success,
-      availableLegend: withOpacity(status.success, 0.62),
-      degraded: withOpacity(metricAccent("totalCost", themeMode), 0.76),
-      cooling_down: withOpacity(metricAccent("totalCost", themeMode), 0.46),
-      unknown: withOpacity(base.axisText, 0.58),
+      degraded: withOpacity(metricAccent("totalCost", themeMode), 0.82),
+      cooling_down: withOpacity(status.failure, 0.7),
+      unknown: withOpacity(base.axisText, 0.25),
       attemptSuccess: status.success,
       attemptFailure: status.failure,
       attemptUnknown: base.axisText,
-      grid: base.gridLine,
     };
   }, [themeMode]);
-  const stateLabels: Record<RoutingTimelineState, string> = {
-    available: t("live.routing.states.available"),
-    degraded: t("live.routing.states.degraded"),
-    cooling_down: t("live.routing.states.cooling_down"),
-    unknown: t("live.routing.states.unknown"),
-  };
-  const desktopTicks = Array.from({ length: 5 }, (_, index) => index);
-  const mobileTicks = [0, 2, 4];
-  const gridTicks = desktopTicks.slice(1, -1);
+  const stateLabels = useMemo<Record<RoutingTimelineState, string>>(
+    () => ({
+      available: t("live.routing.states.available"),
+      degraded: t("live.routing.states.degraded"),
+      cooling_down: t("live.routing.states.cooling_down"),
+      unknown: t("live.routing.states.unknown"),
+    }),
+    [t],
+  );
   const availableCallStats = useMemo(() => {
     const counts = new Map<string, number>();
     let max = 0;
@@ -369,7 +799,7 @@ export function ModelRoutingGantt({
     return { counts, max, total };
   }, [timelines]);
 
-  if (!range || timelines.length === 0) {
+  if (timelines.length === 0) {
     return (
       <p className="px-3 py-4 text-sm text-base-content/70" data-testid="model-routing-gantt-empty">
         {t("live.routing.timeline.empty")}
@@ -387,18 +817,11 @@ export function ModelRoutingGantt({
           (state) => (
             <span key={state} className="inline-flex items-center gap-1.5">
               <span
-                className={
-                  state === "unknown"
-                    ? "h-2.5 w-2.5 rounded-sm border border-dashed"
-                    : "h-2.5 w-2.5 rounded-sm"
-                }
+                className={`h-2.5 w-2.5 rounded-sm ${state === "unknown" ? "border border-dashed" : ""}`}
                 style={
                   state === "unknown"
-                    ? { borderColor: colors.unknown }
-                    : {
-                        backgroundColor:
-                          state === "available" ? colors.availableLegend : colors[state],
-                      }
+                    ? { borderColor: colors.attemptUnknown }
+                    : { backgroundColor: colors[state] }
                 }
                 aria-hidden
               />
@@ -408,253 +831,37 @@ export function ModelRoutingGantt({
         )}
         <span className="inline-flex items-center gap-1.5">
           <span
-            className="h-2.5 w-2.5 rotate-45"
+            className="h-2 w-2 rotate-45 border border-base-100"
             style={{ backgroundColor: colors.attemptSuccess }}
             aria-hidden
           />
           {t("live.routing.timeline.attempt")}
         </span>
       </div>
-      <section
-        className="grid grid-cols-[minmax(8rem,9rem)_minmax(0,1fr)] border-b border-base-300/60 desktop:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)]"
-        data-testid="model-routing-gantt-grid"
-        aria-label={t("live.routing.title")}
-      >
-        <div className="flex h-14 items-center border-r border-base-300/60 px-3 text-xs font-medium text-base-content/60">
-          <span>{t("live.routing.timeline.lane")}</span>
-        </div>
-        <div className="relative h-14 overflow-hidden text-xs font-medium text-base-content/60">
-          <span className="absolute left-3 top-1.5">{t("live.routing.timeline.time")}</span>
-          <div className="absolute inset-x-0 bottom-1 h-7">
-            <div className="desktop:hidden">
-              {mobileTicks.map((tick, index) => {
-                const left = (tick / 4) * 100;
-                const atMs =
-                  range.rangeStartMs + ((range.rangeEndMs - range.rangeStartMs) * tick) / 4;
-                return (
-                  <span
-                    key={tick}
-                    className={`absolute bottom-0 flex flex-col whitespace-nowrap leading-tight ${edgeClass(index, mobileTicks.length - 1)}`}
-                    style={{ left: `${left}%` }}
-                  >
-                    <span>{formatBeijingDate(atMs, localeTag)}</span>
-                    <span>{formatBeijingTime(atMs, localeTag)}</span>
-                  </span>
-                );
-              })}
-            </div>
-            <div className="hidden desktop:block">
-              {desktopTicks.map((tick, index) => {
-                const left = (tick / 4) * 100;
-                const atMs =
-                  range.rangeStartMs + ((range.rangeEndMs - range.rangeStartMs) * tick) / 4;
-                return (
-                  <span
-                    key={tick}
-                    className={`absolute bottom-0 flex flex-col whitespace-nowrap leading-tight ${edgeClass(index, desktopTicks.length - 1)}`}
-                    style={{ left: `${left}%` }}
-                  >
-                    <span>{formatBeijingDate(atMs, localeTag)}</span>
-                    <span>{formatBeijingTime(atMs, localeTag)}</span>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-        {timelines.map(({ model, accountCount, recordCount, timeline }) => {
-          const modelIdentityIcon = resolveModelIdentityIcon(model);
-          const attemptsByAccount = new Map<number, RoutingGanttAttempt[]>();
-          for (const attempt of timeline.attempts) {
-            const current = attemptsByAccount.get(attempt.accountId) ?? [];
-            current.push(attempt);
-            attemptsByAccount.set(attempt.accountId, current);
-          }
-
-          return (
-            <Fragment key={model}>
-              <div
-                className="flex h-9 min-w-0 items-center border-r border-t border-base-300/60 bg-base-200/35 px-3"
-                data-testid={`model-routing-model-group-${model}`}
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  {modelIdentityIcon ? (
-                    <AppIcon
-                      name={modelIdentityIcon}
-                      className="h-4 w-4 shrink-0 text-success"
-                      aria-hidden
-                    />
-                  ) : null}
-                  <span className="truncate font-mono text-xs font-semibold text-base-content">
-                    {model}
-                  </span>
-                </span>
-              </div>
-              <div className="flex h-9 items-center justify-end border-t border-base-300/60 bg-base-200/35 px-3 text-xs tabular-nums text-base-content/60">
-                <span>
-                  {t("live.routing.accountsCount", { count: accountCount })} ·{" "}
-                  {t("live.routing.modelRecordsCount", { count: recordCount })}
-                </span>
-              </div>
-              {timeline.lanes.map((lane) => {
-                const laneAttempts = attemptsByAccount.get(lane.accountId) ?? [];
-                return (
-                  <div key={`${model}-${lane.accountId}`} className="contents">
-                    <button
-                      type="button"
-                      className="flex h-9 min-w-0 items-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                      aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
-                      onClick={() => onOpenAccount(lane.accountId, lane.model)}
-                    >
-                      <span className="truncate font-mono text-xs font-semibold text-base-content">
-                        {lane.label}
-                      </span>
-                    </button>
-                    <div
-                      className="relative h-9 overflow-hidden border-t border-base-300/60"
-                      data-testid={`model-routing-lane-${model}-${lane.accountId}`}
-                    >
-                      {gridTicks.map((tick) => (
-                        <span
-                          key={tick}
-                          className="absolute inset-y-0 border-l border-dashed border-base-300/70"
-                          style={{ left: `${(tick / 4) * 100}%` }}
-                          aria-hidden
-                        />
-                      ))}
-                      {lane.bands.map((band) => {
-                        const callCount =
-                          band.state === "available"
-                            ? (availableCallStats.counts.get(
-                                bandKey(model, lane.accountId, band),
-                              ) ?? 0)
-                            : 0;
-                        const allocationPercent =
-                          availableCallStats.total > 0
-                            ? Math.round((callCount / availableCallStats.total) * 100)
-                            : 0;
-                        const baseLabel = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
-                          band.startMs,
-                          band.endMs,
-                          localeTag,
-                        )}`;
-                        const label =
-                          band.state === "available"
-                            ? `${baseLabel} · ${t("live.routing.timeline.availableAllocation", {
-                                count: callCount,
-                                percent: allocationPercent,
-                              })}`
-                            : baseLabel;
-                        const availableOpacity = availableBandOpacity(
-                          callCount,
-                          availableCallStats.max,
-                        );
-                        return (
-                          <button
-                            key={`${band.state}-${band.startMs}-${band.endMs}`}
-                            type="button"
-                            className={`absolute top-3 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary ${
-                              band.state === "unknown" ? "border border-dashed" : ""
-                            }`}
-                            style={
-                              band.state === "unknown"
-                                ? {
-                                    ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
-                                    borderColor: colors.unknown,
-                                  }
-                                : {
-                                    ...bandStyle(band, timeline.rangeStartMs, timeline.rangeEndMs),
-                                    backgroundColor:
-                                      band.state === "available"
-                                        ? withOpacity(colors.available, availableOpacity)
-                                        : colors[band.state],
-                                  }
-                            }
-                            aria-label={label}
-                            title={label}
-                            onClick={() => onOpenAccount(lane.accountId, lane.model)}
-                          >
-                            <span className="sr-only">{label}</span>
-                          </button>
-                        );
-                      })}
-                      {laneAttempts.map((attempt) => {
-                        const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
-                        const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
-                        const result = attempt.httpStatus
-                          ? `HTTP ${attempt.httpStatus}`
-                          : attempt.status || t("live.routing.record.unknown");
-                        const latency =
-                          attempt.totalLatencyMs != null
-                            ? ` · ${Math.round(attempt.totalLatencyMs)} ms`
-                            : "";
-                        const retry =
-                          (attempt.retryIndex ?? 0) > 0
-                            ? ` · ${t("live.routing.timeline.retry", { index: attempt.retryIndex ?? 0 })}`
-                            : "";
-                        const label = `${lane.label} · ${t("live.routing.timeline.attempt")} · ${formatBeijingRange(
-                          attempt.occurredAtMs,
-                          attempt.occurredAtMs,
-                          localeTag,
-                        )} · ${result}${latency}${retry}`;
-                        const color = successful
-                          ? colors.attemptSuccess
-                          : failed
-                            ? colors.attemptFailure
-                            : colors.attemptUnknown;
-                        const markerLeft = Math.max(
-                          1,
-                          Math.min(
-                            99,
-                            percentAt(
-                              attempt.occurredAtMs,
-                              timeline.rangeStartMs,
-                              timeline.rangeEndMs,
-                            ),
-                          ),
-                        );
-                        const marker = (
-                          <span
-                            key={attempt.id}
-                            className="absolute top-3.5 z-20 h-1.5 w-1.5 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
-                            style={{ left: `${markerLeft}%`, backgroundColor: color }}
-                            aria-hidden
-                          />
-                        );
-                        return attempt.invokeId ? (
-                          <button
-                            key={attempt.id}
-                            type="button"
-                            className="absolute inset-y-0 z-30 w-4 -translate-x-1/2 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                            style={{ left: `${markerLeft}%` }}
-                            aria-label={label}
-                            title={label}
-                            onClick={() => onOpenInvocation(attempt.invokeId ?? "")}
-                          >
-                            {marker}
-                          </button>
-                        ) : (
-                          <span
-                            key={attempt.id}
-                            title={label}
-                            className="absolute inset-y-0 z-20 w-5 -translate-x-1/2"
-                            style={{ left: `${markerLeft}%` }}
-                          >
-                            {marker}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </Fragment>
-          );
-        })}
-      </section>
-      <p className="px-3 pb-3 pt-2 text-xs text-base-content/60">
-        {t("live.routing.timeline.hint")}
-      </p>
+      <ModelRoutingSvgChart
+        timelines={timelines}
+        window={window}
+        localeTag={localeTag}
+        stateLabels={stateLabels}
+        colors={colors}
+        availableCounts={availableCallStats.counts}
+        maxAvailableCount={availableCallStats.max}
+        totalAvailableCount={availableCallStats.total}
+        attemptLabel={t("live.routing.timeline.attempt")}
+        retryLabel={(index) => t("live.routing.timeline.retry", { index })}
+        unknownLabel={t("live.routing.record.unknown")}
+        allocationLabel={(count, percent) =>
+          t("live.routing.timeline.availableAllocation", { count, percent })
+        }
+        modelSummaryLabel={(accountCount, recordCount) =>
+          `${t("live.routing.accountsCount", { count: accountCount })} · ${t(
+            "live.routing.modelRecordsCount",
+            { count: recordCount },
+          )}`
+        }
+        onOpenAccount={onOpenAccount}
+        onOpenInvocation={onOpenInvocation}
+      />
     </div>
   );
 }

@@ -141,9 +141,15 @@ export const Operational24Hours: Story = {
     await expect(legend.getByText("冷却中")).toBeVisible();
     await expect(legend.getByText("未知")).toBeVisible();
     await expect(legend.getByText("请求尝试")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "API Key #11 · 可用" })).toBeVisible();
+    await expect(canvas.findByTestId("model-routing-svg-system")).resolves.toBeVisible();
+    await expect(canvas.findByTestId("model-routing-model-group-gpt-5.5")).resolves.toBeVisible();
+    await expect(
+      canvas.findByRole("button", { name: /^API Key #11 · 可用 ·/ }),
+    ).resolves.toBeVisible();
 
-    const attempt = canvas.getByRole("button", { name: /^API Key #11 · 请求尝试/ });
+    const attempt = await canvas.findByRole("button", {
+      name: /^API Key #11 · 请求尝试/,
+    });
     await userEvent.click(attempt);
     await expect(args.onOpenInvocation).toHaveBeenCalledWith("invoke-11-recovery");
   },

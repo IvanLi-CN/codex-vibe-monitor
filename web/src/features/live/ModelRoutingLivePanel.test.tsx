@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingLiveResponse } from "../../lib/api";
 import { ThemeProvider } from "../../theme";
-import { availableBandOpacity, buildModelRoutingGanttData } from "./ModelRoutingGantt";
+import {
+  availableBandOpacity,
+  buildFrappeRoutingTasks,
+  buildFrappeSystemRoutingTasks,
+  buildModelRoutingGanttData,
+} from "./ModelRoutingGantt";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
 
 const snapshot: ModelRoutingLiveResponse = {
@@ -106,19 +111,15 @@ describe("ModelRoutingLivePanel", () => {
     expect(availableBandOpacity(10, 0)).toBeCloseTo(0.56);
   });
 
-  it("renders one model-first gantt with one shared time axis and no account-pool aliases", () => {
+  it("renders model-first SVG gantt hosts without the removed HTML grid", () => {
     const html = renderPanel();
 
-    expect(html).toContain("gpt-5.5-codex");
-    expect(html).toContain("gpt-5.4-mini");
     expect(html).toContain('data-testid="model-routing-gantt"');
-    expect(html).toContain('data-testid="model-routing-gantt-grid"');
+    expect(html).toContain('data-testid="model-routing-gantt-chart-system"');
+    expect(html).not.toContain('data-testid="model-routing-gantt-grid"');
     expect(html.match(/data-testid="model-routing-gantt-legend"/g)).toHaveLength(1);
     expect(html).toContain("请求尝试");
-    expect(html).toContain("1 次真实调用 · 可用期分配 100%");
     expect(html).toContain("未知");
-    expect(html).toContain("API Key #11");
-    expect(html).toContain("API Key #12");
     expect(html).not.toContain("Ciii");
     expect(html).not.toContain("recharts-responsive-container");
     expect(html).not.toContain('data-testid="model-routing-account-');
@@ -132,12 +133,26 @@ describe("ModelRoutingLivePanel", () => {
     expect(html.indexOf('name="modelRoutingModel"')).toBeLessThan(
       html.indexOf('aria-label="路由时间窗"'),
     );
-    const primaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.5-codex"');
-    const secondaryGroup = html.indexOf('data-testid="model-routing-model-group-gpt-5.4-mini"');
-    expect(primaryGroup).toBeLessThan(secondaryGroup);
-    expect(html).toContain('data-testid="model-routing-lane-gpt-5.5-codex-11"');
-    expect(html).toContain('data-testid="model-routing-lane-gpt-5.4-mini-12"');
-    expect(html).toContain("1 条决策");
+    const tasks = buildFrappeSystemRoutingTasks(
+      snapshot.groups.map((group) => ({
+        model: group.model,
+        accountCount: group.accounts.length,
+        recordCount: snapshot.records.filter((record) => record.model === group.model).length,
+        timeline: buildModelRoutingGanttData({
+          model: group.model,
+          accounts: group.accounts,
+          records: snapshot.records,
+          generatedAt: snapshot.generatedAt,
+          window: "1h",
+        }),
+      })),
+    );
+    expect(tasks.map((task) => task.name)).toEqual([
+      "gpt-5.5-codex",
+      "API Key #11",
+      "gpt-5.4-mini",
+      "API Key #12",
+    ]);
   });
 
   it("preserves unknown gaps and renders attempts independently from route-state bands", () => {
@@ -152,29 +167,57 @@ describe("ModelRoutingLivePanel", () => {
     expect(timeline.lanes).toHaveLength(1);
     expect(timeline.lanes[0].bands.map((band) => band.state)).toEqual(["unknown", "available"]);
     expect(timeline.attempts).toEqual([
-      expect.objectContaining({ id: "attempt:31", invokeId: "invoke-31", retryIndex: 1 }),
+      expect.objectContaining({
+        id: "attempt:31",
+        invokeId: "invoke-31",
+        retryIndex: 1,
+      }),
+    ]);
+    expect(buildFrappeRoutingTasks(timeline)).toEqual([
+      expect.objectContaining({
+        id: "route-gpt-5-5-codex-11",
+        name: "API Key #11",
+        accountId: 11,
+        model: "gpt-5.5-codex",
+        custom_class: "model-routing-task",
+      }),
     ]);
   });
 
   it("renders one model-routing empty state without inventing a routing attempt", () => {
-    const html = renderPanel({ generatedAt: "2026-08-16T01:00:00Z", groups: [], records: [] });
+    const html = renderPanel({
+      generatedAt: "2026-08-16T01:00:00Z",
+      groups: [],
+      records: [],
+    });
 
     expect(html).toContain("没有符合筛选条件的 API Key 模型路由状态。");
     expect(html).not.toContain('data-testid="model-routing-gantt"');
   });
 
-  it("keeps the model text visible when the model has an identity icon", () => {
-    const html = renderPanel({
-      ...snapshot,
-      groups: [
-        ...snapshot.groups,
-        {
-          model: "gpt-5.6-terra",
-          accounts: [],
-        },
-      ],
+  it("keeps a model group task when the model has no account lanes", () => {
+    const timeline = buildModelRoutingGanttData({
+      model: "gpt-5.6-terra",
+      accounts: [],
+      records: [],
+      generatedAt: snapshot.generatedAt,
+      window: "1h",
     });
+    const tasks = buildFrappeSystemRoutingTasks([
+      {
+        model: "gpt-5.6-terra",
+        accountCount: 0,
+        recordCount: 0,
+        timeline,
+      },
+    ]);
 
-    expect(html).toContain("gpt-5.6-terra");
+    expect(tasks).toEqual([
+      expect.objectContaining({
+        name: "gpt-5.6-terra",
+        kind: "model",
+        custom_class: "model-routing-model-task",
+      }),
+    ]);
   });
 });

@@ -1,6 +1,104 @@
+@import "../node_modules/frappe-gantt/dist/frappe-gantt.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  .model-routing-frappe-gantt {
+    --g-header-background: oklch(var(--color-base-100));
+    --g-row-color: oklch(var(--color-base-100));
+    --g-row-border-color: oklch(var(--color-base-300) / 0.72);
+    --g-border-color: oklch(var(--color-base-300) / 0.72);
+    --g-tick-color: oklch(var(--color-base-300) / 0.62);
+    --g-tick-color-thick: oklch(var(--color-base-300));
+    --g-text-dark: oklch(var(--color-base-content));
+    --g-text-muted: oklch(var(--color-base-content) / 0.58);
+    --g-text-light: oklch(var(--color-base-content) / 0.7);
+    --g-bar-color: transparent;
+    --g-bar-border: transparent;
+    --g-progress-color: transparent;
+    --g-weekend-highlight-color: transparent;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .model-routing-frappe-gantt .gantt-container {
+    border-radius: 0;
+    max-height: 36rem;
+    min-height: 5.25rem;
+    background: oklch(var(--color-base-100));
+  }
+
+  .model-routing-frappe-gantt .gantt {
+    min-width: 100%;
+  }
+
+  .model-routing-frappe-gantt .grid-header {
+    border-radius: 0;
+  }
+
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-task .bar,
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-task .bar-progress {
+    fill: transparent;
+    stroke: transparent;
+  }
+
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-task .bar-label {
+    fill: oklch(var(--color-base-content));
+    font-family:
+      "IBM Plex Sans", "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    pointer-events: none;
+  }
+
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-model-task .bar {
+    fill: oklch(var(--color-base-200));
+    stroke: transparent;
+  }
+
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-model-task .bar-progress {
+    fill: transparent;
+  }
+
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-model-task .bar-label,
+  .model-routing-frappe-gantt .model-routing-model-count {
+    fill: oklch(var(--color-base-content));
+    dominant-baseline: central;
+    font-family:
+      "IBM Plex Sans", "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    pointer-events: none;
+  }
+
+  .model-routing-frappe-gantt .model-routing-model-count {
+    fill: oklch(var(--color-base-content) / 0.58);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .model-routing-frappe-gantt .model-routing-band,
+  .model-routing-frappe-gantt .model-routing-attempt {
+    cursor: pointer;
+    outline: none;
+  }
+
+  .model-routing-frappe-gantt .model-routing-band:focus,
+  .model-routing-frappe-gantt .model-routing-attempt:focus {
+    stroke: oklch(var(--color-primary));
+    stroke-width: 2;
+  }
+
+  .model-routing-frappe-gantt .model-routing-band--unknown {
+    fill: transparent;
+    stroke: oklch(var(--color-base-content) / 0.38);
+    stroke-width: 1;
+  }
+}
 
 html,
 body,
