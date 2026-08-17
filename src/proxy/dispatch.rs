@@ -1781,12 +1781,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let live_request_streaming_measurement =
                     pool_attempt_runtime_snapshot.as_ref().and_then(|context| {
                         context.live_request_streaming_decision.as_ref().map(|_| {
-                            let attempted_failover = context.live_first_attempt_failed
-                                || err.attempt_summary.pool_attempt_count > 1;
+                            let risk = live_request_streaming_risk_flags(
+                                context.live_first_attempt_failed,
+                                err.attempt_summary.pool_attempt_count,
+                            );
                             LiveRequestStreamingMeasurement {
-                                first_attempt_failed: attempted_failover,
-                                fallback_or_retry: attempted_failover,
-                                ambiguous_upstream_delivery: attempted_failover,
+                                first_attempt_failed: risk.first_attempt_failed,
+                                fallback_or_retry: risk.fallback_or_retry,
+                                ambiguous_upstream_delivery: risk.ambiguous_upstream_delivery,
                                 upstream_account_group: err
                                     .account
                                     .as_ref()
@@ -1974,13 +1976,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_persist_ms: 0.0,
                     },
                 };
-                if let (Some(decision), Some(measurement), Some(payload)) = (
+                if let (Some(decision), Some(measurement)) = (
                     pool_attempt_runtime_snapshot
                         .as_ref()
                         .and_then(|context| context.live_request_streaming_decision.as_ref()),
                     live_request_streaming_measurement.as_ref(),
-                    record.payload.take(),
-                ) {
+                ) && let Some(payload) = record.payload.take()
+                {
                     record.payload = Some(with_live_request_streaming_payload_summary(
                         payload,
                         decision,
@@ -2510,6 +2512,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             .as_secs_f64()
             * 1_000.0
     });
+    let live_request_streaming_risk = live_request_streaming_risk_flags(
+        live_first_attempt_failed,
+        pending_pool_attempt_summary.pool_attempt_count,
+    );
     let live_request_streaming_measurement = LiveRequestStreamingMeasurement {
         raw_body_bytes: Some(request_body_bytes_len),
         logical_body_bytes: logical_request_body_bytes,
@@ -2525,13 +2531,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .as_secs_f64()
                 * 1_000.0
         }),
-        first_attempt_failed: live_first_attempt_failed
-            || pending_pool_attempt_summary.pool_attempt_count > 1,
-        fallback_or_retry: live_first_attempt_failed
-            || pending_pool_attempt_summary.pool_attempt_count > 1,
+        first_attempt_failed: live_request_streaming_risk.first_attempt_failed,
+        fallback_or_retry: live_request_streaming_risk.fallback_or_retry,
         capture_failed: false,
-        ambiguous_upstream_delivery: live_first_attempt_failed
-            || pending_pool_attempt_summary.pool_attempt_count > 1,
+        ambiguous_upstream_delivery: live_request_streaming_risk.ambiguous_upstream_delivery,
         upstream_account_group: pool_account
             .as_ref()
             .and_then(|account| account.group_name.clone()),

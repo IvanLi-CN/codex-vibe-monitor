@@ -145,6 +145,25 @@ pub(crate) struct LiveRequestStreamingMeasurement {
     pub(crate) experiment_account_group: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LiveRequestStreamingRiskFlags {
+    pub(crate) first_attempt_failed: bool,
+    pub(crate) fallback_or_retry: bool,
+    pub(crate) ambiguous_upstream_delivery: bool,
+}
+
+pub(crate) fn live_request_streaming_risk_flags(
+    live_first_attempt_failed: bool,
+    pool_attempt_count: usize,
+) -> LiveRequestStreamingRiskFlags {
+    let pool_retry = pool_attempt_count > 1;
+    LiveRequestStreamingRiskFlags {
+        first_attempt_failed: live_first_attempt_failed || pool_retry,
+        fallback_or_retry: live_first_attempt_failed || pool_retry,
+        ambiguous_upstream_delivery: live_first_attempt_failed,
+    }
+}
+
 pub(crate) fn request_upstream_overlap_ms(
     capture_complete_ms: Option<f64>,
     upstream_first_byte_ms: Option<f64>,
@@ -199,6 +218,26 @@ mod tests {
             )
             .reason,
             "account_group_not_selected"
+        );
+    }
+
+    #[test]
+    fn live_first_risk_flags_keep_control_retry_separate_from_ambiguous_delivery() {
+        assert_eq!(
+            live_request_streaming_risk_flags(false, 2),
+            LiveRequestStreamingRiskFlags {
+                first_attempt_failed: true,
+                fallback_or_retry: true,
+                ambiguous_upstream_delivery: false,
+            }
+        );
+        assert_eq!(
+            live_request_streaming_risk_flags(true, 1),
+            LiveRequestStreamingRiskFlags {
+                first_attempt_failed: true,
+                fallback_or_retry: true,
+                ambiguous_upstream_delivery: true,
+            }
         );
     }
 

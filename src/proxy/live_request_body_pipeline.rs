@@ -1255,6 +1255,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_first_cancellation_rejects_invalid_json_after_upstream_prefix() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":"ready"}"#,
+        )))
+        .await
+        .expect("send complete routing object");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+        }));
+
+        let mut upstream = pipeline.body.into_data_stream();
+        let prefix = timeout(Duration::from_secs(1), upstream.next())
+            .await
+            .expect("upstream prefix should be emitted before downstream eof")
+            .expect("upstream stream should contain a prefix")
+            .expect("upstream prefix should be valid");
+        assert!(prefix.starts_with(br#"{"model":"gpt-5.6""#));
+
+        tx.send(Ok(Bytes::from_static(b"x")))
+            .await
+            .expect("send invalid trailing JSON");
+        drop(tx);
+        let mut observed_error = None;
+        while let Some(chunk) = upstream.next().await {
+            if let Err(error) = chunk {
+                observed_error = Some(error);
+                break;
+            }
+        }
+        assert!(
+            observed_error.is_some(),
+            "invalid trailing JSON should cancel the upstream body"
+        );
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
     async fn live_first_capture_responses_falls_back_when_model_exceeds_probe_budget() {
         let mut body = br#"{"padding":""#.to_vec();
         body.resize(LIVE_ROUTE_PREFIX_BUFFER_BYTES + 64, b'x');
