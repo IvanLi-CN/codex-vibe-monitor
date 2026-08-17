@@ -177,6 +177,7 @@ pub(crate) enum CountedOauthUpstreamRequestBody {
         request_is_stream: Option<bool>,
         request_is_stream_rx: Option<watch::Receiver<Option<bool>>>,
         snapshot_kind: Option<&'static str>,
+        live_rewrite_pending: bool,
     },
 }
 
@@ -610,14 +611,23 @@ async fn counted_oauth_responses(
             request_is_stream,
             request_is_stream_rx,
             snapshot_kind,
+            live_rewrite_pending,
         } => {
+            let rewrite = live_rewrite_pending.then(|| OauthResponsesRewriteSummary {
+                applied: true,
+                ..OauthResponsesRewriteSummary::default()
+            });
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
                 &forwarded_headers,
                 debug_body_prefix.as_deref(),
-                OauthResponsesRewriteSummary::default(),
+                rewrite.unwrap_or_default(),
                 snapshot_kind.or(Some("stream")),
-                Some("large_body_passthrough"),
+                Some(if live_rewrite_pending {
+                    "live_streaming_rewrite_pending"
+                } else {
+                    "large_body_passthrough"
+                }),
                 crypto_key,
             );
             (body, request_debug, request_is_stream, request_is_stream_rx)

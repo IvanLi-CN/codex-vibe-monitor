@@ -2922,6 +2922,14 @@ async fn resolve_request_body_content_encoding(
     )
 }
 
+pub(crate) async fn pool_request_snapshot_logical_body_bytes(
+    snapshot: &PoolReplayBodySnapshot,
+    content_encoding: Option<&str>,
+) -> Result<usize, PoolRequestBodyPreparationError> {
+    let encoding = resolve_request_body_content_encoding(snapshot, content_encoding).await?;
+    count_decoded_request_snapshot_bytes(snapshot, encoding).await
+}
+
 pub(crate) fn observe_request_compression_from_bytes(
     bytes: &[u8],
     content_encoding: Option<&str>,
@@ -5469,6 +5477,23 @@ pub(crate) async fn wait_for_replay_body_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn logical_body_measurement_decodes_compressed_replay_snapshots() {
+        let logical = br#"{\"model\":\"gpt-5.6\",\"input\":\"compressed\"}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(logical).expect("write gzip body");
+        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(
+            encoder.finish().expect("finish gzip body"),
+        ));
+
+        assert_eq!(
+            pool_request_snapshot_logical_body_bytes(&snapshot, Some("gzip"))
+                .await
+                .expect("measure decoded gzip body"),
+            logical.len()
+        );
+    }
 
     #[test]
     fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {

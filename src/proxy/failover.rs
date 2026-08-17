@@ -2837,6 +2837,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             } else {
                                 None
                             },
+                            live_rewrite_pending: false,
                             body: snapshot.to_http_body(),
                         },
                     };

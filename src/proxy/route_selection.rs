@@ -2263,6 +2263,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     request_is_stream: None,
                     request_is_stream_rx: oauth_original_request_stream_rx,
                     snapshot_kind: None,
+                    live_rewrite_pending: true,
                 },
                 attempt_send_timeout,
                 attempt_pre_first_byte_timeout,

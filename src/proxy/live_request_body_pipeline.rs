@@ -27,6 +27,8 @@ pub(crate) struct LiveResponsesRequestBodyPipeline {
     pub(crate) first_upstream_body_poll_at_rx: watch::Receiver<Option<Instant>>,
     pub(crate) original_request_stream_rx: watch::Receiver<Option<bool>>,
     pub(crate) request_body_error_rx: watch::Receiver<Option<RequestBodyReadError>>,
+    pub(crate) oauth_rewrite_rx:
+        watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
     config_tx: Option<oneshot::Sender<LiveResponsesBodyTransformConfig>>,
 }
 
@@ -53,6 +55,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
     let (first_poll_tx, first_poll_rx) = watch::channel(None);
     let (request_stream_tx, request_stream_rx) = watch::channel(None);
     let (request_body_error_tx, request_body_error_rx) = watch::channel(None);
+    let (oauth_rewrite_tx, oauth_rewrite_rx) = watch::channel(None);
 
     tokio::spawn(async move {
         let mut logical_tx = Some(logical_tx);
@@ -66,6 +69,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
             &mut logical_rx,
             output_tx.clone(),
             request_stream_tx,
+            oauth_rewrite_tx,
         )
         .await;
         if let Err(err) = result {
@@ -98,6 +102,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
         first_upstream_body_poll_at_rx: first_poll_rx,
         original_request_stream_rx: request_stream_rx,
         request_body_error_rx,
+        oauth_rewrite_rx,
         config_tx: Some(config_tx),
     }
 }
@@ -136,6 +141,7 @@ async fn run_live_responses_request_body_pipeline(
     logical_rx: &mut Option<mpsc::Receiver<Result<Bytes, io::Error>>>,
     output_tx: mpsc::Sender<Result<Bytes, io::Error>>,
     request_stream_tx: watch::Sender<Option<bool>>,
+    oauth_rewrite_tx: watch::Sender<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
 ) -> io::Result<()> {
     let mut reader = live_decoded_request_reader(raw_body, downstream_content_encoding).await?;
     let Some(first) = read_non_whitespace(&mut reader).await? else {
@@ -210,6 +216,9 @@ async fn run_live_responses_request_body_pipeline(
                 return Err(invalid_live_json("request body has trailing content"));
             }
             selected_transformer.finish(&mut selected_writer).await?;
+            if let Some(summary) = selected_transformer.oauth_rewrite_summary() {
+                let _ = oauth_rewrite_tx.send(Some(summary));
+            }
             selected_writer.write_raw(b"}").await?;
             selected_writer.finish().await?;
             logical_tx.take();
@@ -361,6 +370,7 @@ struct LiveRootFieldTransformer {
     client_metadata: Option<Value>,
     request_stream_tx: watch::Sender<Option<bool>>,
     rewrite_fields: serde_json::Map<String, Value>,
+    oauth_rewrite: oauth_bridge::OauthResponsesRewriteSummary,
 }
 
 impl LiveRootFieldTransformer {
@@ -377,6 +387,7 @@ impl LiveRootFieldTransformer {
             client_metadata: None,
             request_stream_tx,
             rewrite_fields: serde_json::Map::new(),
+            oauth_rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
         }
     }
 
@@ -429,7 +440,9 @@ impl LiveRootFieldTransformer {
             }
             "stream_options" => self.stream_options = Some(value),
             "client_metadata" if self.config.oauth.is_some() => self.client_metadata = Some(value),
-            "max_output_tokens" if self.config.oauth.is_some() => {}
+            "max_output_tokens" if self.config.oauth.is_some() => {
+                self.oauth_rewrite.removed_max_output_tokens = true;
+            }
             key if self.account_rewrite_required()
                 && matches!(
                     key,
@@ -485,6 +498,10 @@ impl LiveRootFieldTransformer {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if let Some(oauth) = self.config.oauth {
+            self.oauth_rewrite.added_instructions = self.instructions.is_none();
+            self.oauth_rewrite.added_store = self.store.is_none();
+            self.oauth_rewrite.forced_stream_true =
+                self.stream.as_ref().and_then(Value::as_bool) != Some(true);
             writer
                 .write_field_value(
                     "instructions",
@@ -500,15 +517,23 @@ impl LiveRootFieldTransformer {
                 .write_field_value("stream", &Value::Bool(true))
                 .await?;
             if let Some(client_metadata) = self.client_metadata.take() {
-                let (client_metadata, _) = oauth_bridge::rewrite_live_oauth_client_metadata(
+                let (client_metadata, rewrite) = oauth_bridge::rewrite_live_oauth_client_metadata(
                     client_metadata,
                     oauth.account_id,
                     oauth.installation_seed.as_ref(),
                 );
+                self.oauth_rewrite.rewrote_installation_id = rewrite.rewrote_installation_id;
+                self.oauth_rewrite.removed_installation_id = rewrite.removed_installation_id;
                 writer
                     .write_field_value("client_metadata", &client_metadata)
                     .await?;
             }
+            self.oauth_rewrite.applied = self.oauth_rewrite.added_instructions
+                || self.oauth_rewrite.added_store
+                || self.oauth_rewrite.forced_stream_true
+                || self.oauth_rewrite.removed_max_output_tokens
+                || self.oauth_rewrite.rewrote_installation_id
+                || self.oauth_rewrite.removed_installation_id;
         } else if let Some(stream) = self.stream.take() {
             writer.write_field_value("stream", &stream).await?;
         }
@@ -533,6 +558,10 @@ impl LiveRootFieldTransformer {
                 .await?;
         }
         Ok(())
+    }
+
+    fn oauth_rewrite_summary(&self) -> Option<oauth_bridge::OauthResponsesRewriteSummary> {
+        self.config.oauth.map(|_| self.oauth_rewrite.clone())
     }
 }
 
@@ -1086,6 +1115,7 @@ mod tests {
             codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
             codex_imagegen_protocol: None,
         }));
+        let oauth_rewrite_rx = pipeline.oauth_rewrite_rx.clone();
         let output = collect_body(pipeline.body).await;
         let value: Value = serde_json::from_slice(&output).expect("decode OAuth live body");
         assert_eq!(value["stream"], true);
@@ -1098,6 +1128,16 @@ mod tests {
             Value::String("downstream".to_string())
         );
         assert!(value.get("stream_options").is_none());
+        let rewrite = oauth_rewrite_rx
+            .borrow()
+            .clone()
+            .expect("OAuth rewrite audit should be finalized with the request body");
+        assert!(rewrite.applied);
+        assert!(rewrite.added_instructions);
+        assert!(rewrite.added_store);
+        assert!(rewrite.forced_stream_true);
+        assert!(rewrite.removed_max_output_tokens);
+        assert!(rewrite.rewrote_installation_id);
     }
 
     #[tokio::test]

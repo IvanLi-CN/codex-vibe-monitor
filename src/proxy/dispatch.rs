@@ -614,6 +614,8 @@ struct PreparedCaptureRequestBody {
     prepared_live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
     live_first_attempt_failed: bool,
     live_first_request_body_first_byte_at: Option<Instant>,
+    live_oauth_rewrite_rx:
+        Option<watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -650,6 +652,7 @@ async fn prepare_capture_request_body(
             prepared_live_request_streaming_decision: None,
             live_first_attempt_failed: false,
             live_first_request_body_first_byte_at: None,
+            live_oauth_rewrite_rx: None,
         };
     }
 
@@ -670,6 +673,7 @@ async fn prepare_capture_request_body(
             prepared_live_request_streaming_decision: None,
             live_first_attempt_failed: false,
             live_first_request_body_first_byte_at: None,
+            live_oauth_rewrite_rx: None,
         };
     };
 
@@ -691,6 +695,11 @@ async fn prepare_capture_request_body(
         .as_ref()
         .expect("live pipeline is present before the first attempt")
         .request_body_error_rx
+        .clone();
+    let live_oauth_rewrite_rx = live_pipeline
+        .as_ref()
+        .expect("live pipeline is present before routing")
+        .oauth_rewrite_rx
         .clone();
     let replay_status_rx = replayable_body.status_rx.clone();
     let replay_cancel = replayable_body.cancel.clone();
@@ -791,9 +800,17 @@ async fn prepare_capture_request_body(
                             partial_body: Vec::new(),
                         }),
                         live_first_pool_response: None,
-                        prepared_live_request_streaming_decision: Some(decision),
+                        prepared_live_request_streaming_decision: Some(
+                            LiveRequestStreamingDecision {
+                                transport_mode: RequestBodyTransportMode::Buffered,
+                                eligible: false,
+                                reason: "downstream_content_encoding_not_supported",
+                                ..decision
+                            },
+                        ),
                         live_first_attempt_failed: false,
                         live_first_request_body_first_byte_at: None,
+                        live_oauth_rewrite_rx: None,
                     };
                 };
                 let oauth = match &initial_account.auth {
@@ -924,6 +941,7 @@ async fn prepare_capture_request_body(
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
         live_first_request_body_first_byte_at,
+        live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
     }
 }
 
@@ -1018,6 +1036,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
         live_first_request_body_first_byte_at,
+        live_oauth_rewrite_rx,
     } = Box::pin(prepare_capture_request_body(
         state.clone(),
         proxy_request_id,
@@ -2305,12 +2324,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     } else {
         LiveRequestStreamingDecision::buffered("endpoint_not_supported")
     };
-    let logical_request_body_bytes = headers
-        .get(header::CONTENT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .is_none_or(|encoding| encoding.is_empty() || encoding.eq_ignore_ascii_case("identity"))
-        .then_some(request_body_bytes_len);
+    let logical_request_body_bytes = pool_request_snapshot_logical_body_bytes(
+        &request_body_snapshot,
+        headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+    )
+    .await
+    .ok();
     let upstream_request_first_byte_ms = live_first_request_body_first_byte_at.map(|sent_at| {
         sent_at
             .saturating_duration_since(req_read_started)
@@ -2424,7 +2445,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
     let image_tool_rewrite_for_task = image_tool_rewrite.clone();
-    let oauth_responses_debug_for_task = oauth_responses_debug.clone();
+    let mut oauth_responses_debug_for_task = oauth_responses_debug.clone();
+    let live_oauth_rewrite_rx_for_task = live_oauth_rewrite_rx.clone();
     let downstream_request_observer_for_task = downstream_request_observer.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
@@ -3551,6 +3573,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             || pure_downstream_closed
             || !upstream_status.is_success())
         .then_some(&request_chain_metadata_for_task);
+        if let (Some(debug), Some(rewrite_rx)) = (
+            oauth_responses_debug_for_task.as_mut(),
+            live_oauth_rewrite_rx_for_task.as_ref(),
+        ) && let Some(rewrite) = rewrite_rx.borrow().clone()
+        {
+            debug.rewrite = rewrite;
+            debug.responses_body_mode = Some("live_streaming_rewrite");
+        }
         let payload = with_live_request_streaming_payload_summary(
             with_proxy_stream_terminal_diagnostics(
                 with_codex_imagegen_rewrite_payload_summary(
