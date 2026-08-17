@@ -364,7 +364,7 @@ type StatusMeta = {
 };
 
 const CARD_CLASS_NAME =
-  "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2.5 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
+  "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
 
 const SLOT_CLASS_NAME =
   "flex min-w-0 flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
@@ -917,11 +917,11 @@ function invocationCacheHitRate({
 
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
-      <span className="truncate text-[7px] font-semibold text-base-content/48 sm:text-[7.5px]">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1 py-0.5 sm:px-2 sm:py-1">
+      <span className="truncate text-[8px] font-semibold text-base-content/48 sm:text-[7.5px]">
         {label}
       </span>
-      <span className="min-w-0 truncate text-right font-mono text-[9.5px] font-semibold text-base-content sm:text-[10px]">
+      <span className="min-w-0 truncate text-right font-mono text-[10.5px] font-semibold text-base-content sm:text-[10px]">
         {value}
       </span>
     </div>
@@ -5832,7 +5832,7 @@ export function DashboardWorkingConversationsSection({
                                 </div>
                               </div>
 
-                              <div className="mt-2">
+                              <div className="mt-1.5 sm:mt-2">
                                 <div className="grid grid-cols-3 gap-1.5">
                                   <SummaryMetric
                                     label={t("dashboard.workingConversations.requestCountLabel")}
@@ -5849,7 +5849,7 @@ export function DashboardWorkingConversationsSection({
                                 </div>
                               </div>
 
-                              <div className="mt-2.5 space-y-1.5 sm:mt-3 sm:space-y-2">
+                              <div className="mt-2 space-y-1.5 sm:mt-3 sm:space-y-2">
                                 <InvocationSlot
                                   invocation={card.currentInvocation}
                                   label={t("dashboard.workingConversations.currentInvocation")}

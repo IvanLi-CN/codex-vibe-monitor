@@ -13,6 +13,33 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it("serves account request attempts with an in-flight TTFT and no completed response duration", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/101/call-attempts?page=1&pageSize=50",
+    );
+    const payload = (await response.json()) as {
+      items: Array<{
+        attemptId: string;
+        phase: string | null;
+        firstByteLatencyMs: number | null;
+        streamLatencyMs: number | null;
+      }>;
+      total: number;
+    };
+
+    expect(response.ok).toBe(true);
+    expect(payload.total).toBeGreaterThan(0);
+    expect(payload.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "responding",
+          firstByteLatencyMs: 210,
+          streamLatencyMs: null,
+        }),
+      ]),
+    );
+  });
+
   it.each([
     ["runtime-pressure-healthy", "healthy"],
     ["runtime-pressure-deferred", "deferred"],

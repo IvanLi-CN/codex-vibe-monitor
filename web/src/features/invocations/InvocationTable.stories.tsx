@@ -143,6 +143,25 @@ const inFlightResponseDurationUnavailableRecords: ApiInvocation[] = [
   },
 ];
 
+const compactLatencyFormattingRecords: ApiInvocation[] = [
+  {
+    ...records[0]!,
+    id: -1005,
+    invokeId: "inv_storybook_compact_latency_decimal",
+    firstTokenMs: 1_234,
+    tUpstreamStreamMs: 7_890,
+  },
+  {
+    ...records[0]!,
+    id: -1006,
+    invokeId: "inv_storybook_compact_latency_integer",
+    occurredAt: "2026-02-25T10:30:01Z",
+    createdAt: "2026-02-25T10:30:01Z",
+    firstTokenMs: 100_040,
+    tUpstreamStreamMs: 123_460,
+  },
+];
+
 const modelRoutingMismatchRecords: ApiInvocation[] = [
   {
     ...records[0],
@@ -1163,7 +1182,7 @@ function InvocationTableStoryShell({ children }: { children: ReactNode }) {
     <div className="bg-base-200 px-6 py-6 text-base-content">
       <div className="mx-auto w-full max-w-6xl p-6">
         <section className="card bg-base-100 shadow-sm">
-          <div className="card-body gap-4">{children}</div>
+          <div className="card-body gap-4 p-6">{children}</div>
         </section>
       </div>
     </div>
@@ -2018,6 +2037,32 @@ export const TtftAndResponseDuration: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByTestId("invocation-card-ttft")[0]).toHaveTextContent("9.4 s");
     await expect(canvas.getAllByTestId("invocation-card-response")[0]).toHaveTextContent("10.1 s");
+  },
+};
+
+export const CompactLatencyFormatting: Story = {
+  args: {
+    records: compactLatencyFormattingRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Compact latency formatting keeps at most one decimal below 100 seconds and removes the decimal at 100 seconds or above.",
+      },
+    },
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const ttftValues = await canvas.findAllByTestId("invocation-card-ttft");
+    const responseValues = await canvas.findAllByTestId("invocation-card-response");
+    await expect(ttftValues[0]).toHaveTextContent("1.2 s");
+    await expect(responseValues[0]).toHaveTextContent("7.9 s");
+    await expect(ttftValues[1]).toHaveTextContent("100 s");
+    await expect(responseValues[1]).toHaveTextContent("124 s");
   },
 };
 

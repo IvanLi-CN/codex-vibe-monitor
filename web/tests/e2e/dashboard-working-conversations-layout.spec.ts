@@ -564,7 +564,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     test(`keeps ${expectedColumns} columns at ${viewport.width}px`, async ({ page }) => {
       await installDashboardRoutes(page);
       await page.setViewportSize(viewport);
-      await page.goto("/dashboard");
+      await page.goto("/#/dashboard");
 
       await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
       await expect(page.getByTestId("dashboard-working-conversation-card")).toHaveCount(8);
@@ -623,7 +623,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
   test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 1660, height: 1180 });
-    await page.goto("/dashboard");
+    await page.goto("/#/dashboard");
 
     const compactBadge = page.locator(
       '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
@@ -728,7 +728,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
   test("keeps three slots and two-line records inside a narrow viewport", async ({ page }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 393, height: 852 });
-    await page.goto("/dashboard");
+    await page.goto("/#/dashboard");
 
     await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
     const layout = await page.evaluate(() => {
@@ -818,7 +818,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
   }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 1660, height: 1180 });
-    await page.goto("/dashboard");
+    await page.goto("/#/dashboard");
 
     await page.getByRole("tab", { name: "上游账号" }).click();
     await expect(page.getByTestId("dashboard-upstream-account-card")).toHaveCount(2);

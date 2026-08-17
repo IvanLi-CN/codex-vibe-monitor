@@ -2062,7 +2062,7 @@ const createdAtDescendingOrderResponse = createResponse([
 const wideDesktopRunningCurrent = createPreview({
   id: 81,
   invokeId: "invoke-wide-running-current",
-  occurredAt: createRelativeStoryIso(-35_000),
+  occurredAt: "2026-04-04T10:04:50Z",
   status: "running",
   reasoningEffort: "medium",
   upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
@@ -2160,7 +2160,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 121,
       invokeId: "invoke-wide-pending-current",
-      occurredAt: createRelativeStoryIso(-12_000),
+      occurredAt: "2026-04-04T10:04:30Z",
       status: "pending",
       upstreamAccountName: "wide-pending@example.com",
       tTotalMs: null,
@@ -2201,7 +2201,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 141,
       invokeId: "invoke-wide-running-b-current",
-      occurredAt: createRelativeStoryIso(-65_000),
+      occurredAt: "2026-04-04T10:04:05Z",
       status: "running",
       upstreamAccountName: "wide-running-b@example.com",
       tTotalMs: null,
@@ -2239,6 +2239,11 @@ const wideDesktopResponse = createResponse([
       upstreamAccountName: "wide-warning@example.com",
     }),
   ]),
+]);
+
+const fourCardParallelThreeSlotProofResponse = createResponse([
+  currentAndPreviousResponse.conversations[0]!,
+  ...wideDesktopResponse.conversations.slice(0, 3),
 ]);
 
 const summaryThresholdResponse = createResponse([
@@ -6501,6 +6506,19 @@ export const Mobile390: Story = {
   },
 };
 
+export const Mobile393: Story = {
+  ...Mobile390,
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+    docs: {
+      description: {
+        story:
+          "393x852 responsive acceptance viewport keeps the working-conversations section in a single column without horizontal overflow.",
+      },
+    },
+  },
+};
+
 export const WideDesktop1660: Story = {
   args: {
     activeRange: "today",
@@ -6514,7 +6532,7 @@ export const WideDesktop1660: Story = {
     docs: {
       description: {
         story:
-          "Wide desktop state gallery proving the 1660px shell now renders the working conversations section in four columns without horizontal overflow.",
+          "Wide desktop state gallery proving the 1660px shell renders the working conversations section in four columns without horizontal overflow.",
       },
     },
   },
@@ -6533,6 +6551,43 @@ export const WideDesktop1660: Story = {
       canvasElement.querySelectorAll('[data-testid="dashboard-compact-latency-response-time"]'),
     ).map((element) => element.textContent);
     await expect(responseTimes).toContain("--");
+  },
+};
+
+export const FourCardParallelThreeSlotProof: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(fourCardParallelThreeSlotProofResponse),
+    totalMatched: fourCardParallelThreeSlotProofResponse.conversations.length,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Direct proof for the compact invocation layout: the native 1660px four-card row includes a card with current, previous, and earlier real invocations.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const cards = Array.from(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-card"]'),
+    );
+    await expect(cards).toHaveLength(4);
+    const targetCard = cards.find((card) =>
+      card.textContent?.includes("gpt-5.4-long-context-preview"),
+    );
+    if (!(targetCard instanceof HTMLElement)) {
+      throw new Error("missing three-real-invocation proof card");
+    }
+    await expect(
+      targetCard.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]'),
+    ).toHaveLength(3);
+    await expect(
+      targetCard.querySelectorAll('[data-testid="dashboard-working-conversation-placeholder"]'),
+    ).toHaveLength(0);
   },
 };
 

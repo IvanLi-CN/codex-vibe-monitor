@@ -150,7 +150,7 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsHotDbRead
 state: hot-db-read
 evidence_note: System Status renders all seven Dashboard hot topics and marks parallel work degraded when the mock reports three live-path database reads.
 
-PR: include
+PR: none
 ![System Status Dashboard hot topics desktop hot DB read](./assets/system-status-hot-topics-desktop.jpg)
 
 source_type: storybook_canvas
@@ -165,60 +165,108 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsCadenceMiss
 state: cadence-miss
 evidence_note: The mobile System Status layout keeps every topic and the activity cadence miss readable at the source-managed mobile viewport.
 
-PR: include
+PR: none
 ![System Status Dashboard hot topics mobile cadence miss](./assets/system-status-hot-topics-mobile.jpg)
 
 ### Dashboard working conversations
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: element
-requested_viewport: desktop1660
+capture_scope: browser-viewport
+requested_viewport: 1440x900
 viewport_strategy: storybook-viewport
-margin_policy: require_margin
-evidence_surface: component
+margin_policy: trim_only
+evidence_surface: page
 sensitive_exclusion: N/A
 story_id_or_title: dashboard-workingconversationssection--current-and-previous
-state: three invocation slots with long model/account values and failed-summary coverage
-evidence_note: The compact card shows three two-line invocation slots, with usage aligned to the account row's right edge and no visible slot/account/usage labels.
+state: complete conversation state matrix: missing slots, responding with unavailable response duration, failure summary, success, pending, running, and warning
+evidence_note: The 1440px Dashboard workspace uses its native two-column grid: workspace width is 1392px, every visible card is 667px wide, and horizontal overflow is 0px. The full grid provides size reference while covering the supported invocation states.
 
 PR: none
 ![Dashboard working conversations three slots desktop](./assets/dashboard-working-conversations-three-slots-desktop.png)
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: element
-requested_viewport: mobile390
-viewport_strategy: storybook-viewport
-margin_policy: require_margin
-evidence_surface: component
+capture_scope: browser-viewport
+requested_viewport: 1660x900
+viewport_strategy: exact main-line desktop1660 breakpoint
+margin_policy: trim_only
+evidence_surface: page
 sensitive_exclusion: N/A
-story_id_or_title: dashboard-workingconversationssection--mobile-390
-state: one invocation with previous and earlier missing placeholders
-evidence_note: The mobile card keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
+story_id_or_title: dashboard-workingconversationssection--four-card-parallel-three-slot-proof
+state: native four-card row with a current/previous/earlier three-real-invocation card
+evidence_note: This capture matches the main application shell maximum and `desktop1660` breakpoint. The 1612px workspace contains four 380.5px cards in one row with 0px horizontal overflow. The fourth card contains three real invocation slots and no placeholders.
 
-The mobile component capture keeps the Storybook `bg-base-200` surface as its evidence margin; no synthetic gray frame is added.
-
-PR: none
-![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
-
-### Account detail invocations
+PR: include
+![Dashboard working conversations four cards and three real slots](./assets/dashboard-working-conversations-four-card-parallel-three-slots-desktop.png)
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: element
-requested_viewport: 1660x900
-viewport_strategy: browser-resize-fallback
-margin_policy: require_margin
-evidence_surface: component
+capture_scope: browser-viewport
+requested_viewport: 393x852
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
 sensitive_exclusion: N/A
-submission_gate: pending-owner-approval
-story_id_or_title: Monitoring/InvocationCardList/InFlightResponseDurationUnavailable
-state: responding invocation with measured `firstTokenMs` and no `tUpstreamStreamMs`
-evidence_note: The normal 1104px desktop card shows a measured green TTFT and an unavailable response duration, with no horizontal overflow.
+story_id_or_title: dashboard-workingconversationssection--mobile-390
+state: one invocation with previous and earlier missing placeholders
+evidence_note: The source-managed 393px Dashboard viewport keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
 
-PR: none
+The mobile viewport capture keeps the Storybook `bg-base-200` surface; no synthetic gray frame is added.
+
+PR: include
+![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
+
+### Dashboard upstream account recents
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1660x900
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--upstream-account-recent-layout
+state: paired account cards with completed, failed, and in-flight recent invocations
+evidence_note: The 1660px Dashboard workspace uses its native two-column upstream-account grid: workspace width is 1612px, each account card is 777px wide, horizontal overflow is 0px, TTFT remains green, and an in-flight response duration remains `--`.
+
+PR: include
+![Dashboard upstream account recent invocation layout](./assets/dashboard-upstream-account-recent-layout-desktop.png)
+
+### Account detail invocations
+
+source_type: ui_demo
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: browser-default
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+demo_route: /account-pool/upstream-accounts?upstreamAccountId=101&demoScene=operational&demoTheme=dark&demoEmbed=1
+state: account request timeline with responding and completed attempts
+evidence_note: The deterministic account detail request panel loads without a 501 response, has no horizontal overflow, and keeps in-flight first-byte data separate from an unavailable completed stream duration.
+
+PR: include
 ![Account detail invocation in-flight timing unavailable desktop](./assets/account-detail-invocation-inflight-timing-desktop.png)
+
+### Live invocation timing
+
+source_type: ui_demo
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: browser-default
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+demo_route: /live?demoScene=operational&demoTheme=dark&demoEmbed=1
+state: responding invocation with measured `firstTokenMs` and no `tUpstreamStreamMs`
+evidence_note: The product invocation list shows a green measured TTFT and `响应 --` for an in-flight response, without using elapsed time as a response duration.
+
+PR: include
+![Live invocation in-flight timing unavailable](./assets/live-invocation-inflight-timing-demo.png)
 
 ## Related PRs
 

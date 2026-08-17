@@ -845,7 +845,7 @@ function invocations() {
       10880,
       1640,
       0.014,
-      null,
+      210,
       null,
       "demo-conversation-a",
     ],
@@ -1455,11 +1455,11 @@ function invocations() {
           tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
           tUpstreamTtfbMs: ttfb,
           firstTokenMs:
-            ttfb == null ||
-            total == null ||
-            !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
+            ttfb == null || !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
               ? null
-              : Math.min(total, ttfb + 420 + (id % 5) * 75),
+              : total == null
+                ? ttfb + 420 + (id % 5) * 75
+                : Math.min(total, ttfb + 420 + (id % 5) * 75),
           tUpstreamStreamMs: total == null ? null : Math.max(0, total - (ttfb ?? 0)),
           tTotalMs: total,
           timings:
@@ -2328,6 +2328,9 @@ function poolAttempts(invokeId: string) {
     invokeId,
     occurredAt: startedAt,
     endpoint: record.endpoint ?? "/v1/responses",
+    model: record.model ?? null,
+    requestModel: record.requestModel ?? record.model ?? null,
+    responseModel: record.responseModel ?? null,
     stickyKey: record.stickyKey ?? null,
     requesterIp: record.requesterIp ?? null,
     createdAt: startedAt,
@@ -2410,6 +2413,40 @@ function poolAttempts(invokeId: string) {
       upstreamRequestId: `up_demo_${record.id}_2`,
     },
   ];
+}
+
+function upstreamAccountAttempts(accountId: number, search: URLSearchParams) {
+  const type = search.get("type")?.trim() ?? "";
+  const model = search.get("model")?.trim().toLowerCase() ?? "";
+  const stickyKey = search.get("stickyKey")?.trim() ?? "";
+  const page = Math.max(1, Number(search.get("page") ?? 1) || 1);
+  const pageSize = Math.max(1, Number(search.get("pageSize") ?? 50) || 50);
+  const endpointMatchesType = (endpoint: string) => {
+    if (!type) return true;
+    if (type === "image") return endpoint.startsWith("/v1/images/");
+    if (type === "compact") return endpoint.includes("/compact");
+    if (type === "remote_v2") return endpoint.includes("/remote");
+    return !endpoint.startsWith("/v1/images/") && !endpoint.includes("/compact");
+  };
+  const items = invocations()
+    .flatMap((record) => poolAttempts(record.invokeId))
+    .filter((attempt) => attempt.upstreamAccountId === accountId)
+    .filter((attempt) => endpointMatchesType(attempt.endpoint))
+    .filter((attempt) => !model || attempt.requestModel?.toLowerCase().includes(model))
+    .filter((attempt) => !stickyKey || attempt.stickyKey === stickyKey)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const start = (page - 1) * pageSize;
+  const stickyKeyOptions = Array.from(
+    new Set(items.map((attempt) => attempt.stickyKey).filter(Boolean)),
+  ).map((value) => ({ value }));
+
+  return {
+    items: items.slice(start, start + pageSize),
+    total: items.length,
+    page,
+    pageSize,
+    stickyKeyOptions,
+  };
 }
 
 function buildDemoInvocationWorkflowDetail(
@@ -3334,6 +3371,23 @@ export async function handleDemoRequest(request: Request) {
   }
   if (pathname.endsWith("/pool-attempts"))
     return json(poolAttempts(decodeURIComponent(pathname.split("/").at(-2) ?? "")));
+
+  const upstreamAccountAttemptsMatch = pathname.match(
+    /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
+  );
+  if (upstreamAccountAttemptsMatch && request.method === "GET") {
+    const accountId = Number(upstreamAccountAttemptsMatch[1]);
+    const response = upstreamAccountAttempts(accountId, url.searchParams);
+    const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
+    if (
+      pathname.endsWith("/locate") &&
+      requestedAttemptId &&
+      !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
+    ) {
+      return json({ message: "upstream account attempt was not found" }, { status: 404 });
+    }
+    return json(response);
+  }
 
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
