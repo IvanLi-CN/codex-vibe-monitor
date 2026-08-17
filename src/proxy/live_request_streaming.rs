@@ -142,6 +142,7 @@ pub(crate) struct LiveRequestStreamingMeasurement {
     pub(crate) capture_failed: bool,
     pub(crate) ambiguous_upstream_delivery: bool,
     pub(crate) upstream_account_group: Option<String>,
+    pub(crate) experiment_account_group: Option<String>,
 }
 
 pub(crate) fn request_upstream_overlap_ms(

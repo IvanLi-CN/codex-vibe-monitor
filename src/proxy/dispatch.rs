@@ -616,6 +616,7 @@ struct PreparedCaptureRequestBody {
     live_first_request_body_first_byte_at: Option<Instant>,
     live_oauth_rewrite_rx:
         Option<watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>>,
+    live_first_experiment_group: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -653,6 +654,7 @@ async fn prepare_capture_request_body(
             live_first_attempt_failed: false,
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
+            live_first_experiment_group: None,
         };
     }
 
@@ -674,6 +676,7 @@ async fn prepare_capture_request_body(
             live_first_attempt_failed: false,
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
+            live_first_experiment_group: None,
         };
     };
 
@@ -721,6 +724,7 @@ async fn prepare_capture_request_body(
     let mut prepared_live_request_streaming_decision = None;
     let mut live_first_attempt_failed = false;
     let mut live_first_request_body_first_byte_at = None;
+    let mut live_first_experiment_group = None;
 
     if live_candidate {
         let mut no_available_wait_deadline = None;
@@ -744,6 +748,7 @@ async fn prepare_capture_request_body(
             initial_account,
         ))) = resolution
         {
+            live_first_experiment_group = initial_account.group_name.clone();
             let decision = decide_live_request_streaming(
                 &live_settings,
                 invoke_id,
@@ -811,6 +816,7 @@ async fn prepare_capture_request_body(
                         live_first_attempt_failed: false,
                         live_first_request_body_first_byte_at: None,
                         live_oauth_rewrite_rx: None,
+                        live_first_experiment_group,
                     };
                 };
                 let oauth = match &initial_account.auth {
@@ -942,6 +948,7 @@ async fn prepare_capture_request_body(
         live_first_attempt_failed,
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
+        live_first_experiment_group,
     }
 }
 
@@ -1037,6 +1044,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         live_first_attempt_failed,
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx,
+        live_first_experiment_group,
     } = Box::pin(prepare_capture_request_body(
         state.clone(),
         proxy_request_id,
@@ -1081,6 +1089,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
+            let capture_failure_decision = prepared_live_request_streaming_decision
+                .clone()
+                .unwrap_or_else(|| {
+                    LiveRequestStreamingDecision::buffered("request_body_capture_failed")
+                });
 
             warn!(
                 proxy_request_id,
@@ -1107,95 +1120,103 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 },
                 error_message: Some(error_message),
                 failure_kind: Some(read_err.failure_kind.to_string()),
-                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
-                    target: capture_target,
-                    status: read_err.status,
-                    is_stream: request_info.is_stream,
-                    request_contains_encrypted_content: request_info.contains_encrypted_content,
-                    response_contains_encrypted_content: false,
-                    compaction_request_kind: request_info.compaction_request_kind,
-                    compaction_response_kind: None,
-                    image_intent: request_info.image_intent.as_deref(),
-                    request_model: request_info.model.as_deref(),
-                    requested_service_tier: request_info.requested_service_tier.as_deref(),
-                    billing_service_tier: None,
-                    reasoning_effort: request_info.reasoning_effort.as_deref(),
-                    response_model: None,
-                    usage_missing_reason: None,
-                    request_parse_error: request_info.parse_error.as_deref(),
-                    request_compression_algorithm: None,
-                    request_compression_mode: None,
-                    request_compression_logical_body_bytes: None,
-                    request_compression_transmitted_body_bytes: None,
-                    request_compression_transmission_complete: None,
-                    failure_kind: Some(read_err.failure_kind),
-                    requester_ip: requester_ip.as_deref(),
-                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                    upstream_scope: if pool_route_active {
-                        INVOCATION_UPSTREAM_SCOPE_INTERNAL
-                    } else {
-                        INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+                payload: Some(with_live_request_streaming_payload_summary(
+                    build_proxy_payload_summary(ProxyPayloadSummary {
+                        target: capture_target,
+                        status: read_err.status,
+                        is_stream: request_info.is_stream,
+                        request_contains_encrypted_content: request_info.contains_encrypted_content,
+                        response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
+                        image_intent: request_info.image_intent.as_deref(),
+                        request_model: request_info.model.as_deref(),
+                        requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        billing_service_tier: None,
+                        reasoning_effort: request_info.reasoning_effort.as_deref(),
+                        response_model: None,
+                        usage_missing_reason: None,
+                        request_parse_error: request_info.parse_error.as_deref(),
+                        request_compression_algorithm: None,
+                        request_compression_mode: None,
+                        request_compression_logical_body_bytes: None,
+                        request_compression_transmitted_body_bytes: None,
+                        request_compression_transmission_complete: None,
+                        failure_kind: Some(read_err.failure_kind),
+                        requester_ip: requester_ip.as_deref(),
+                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+                        upstream_scope: if pool_route_active {
+                            INVOCATION_UPSTREAM_SCOPE_INTERNAL
+                        } else {
+                            INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+                        },
+                        route_mode: if pool_route_active {
+                            INVOCATION_ROUTE_MODE_POOL
+                        } else {
+                            INVOCATION_ROUTE_MODE_FORWARD_PROXY
+                        },
+                        sticky_key: header_sticky_key.as_deref(),
+                        prompt_cache_key: header_prompt_cache_key.as_deref(),
+                        prompt_cache_key_attribution_source: header_prompt_cache_key
+                            .as_ref()
+                            .map(|_| "request"),
+                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                        client_header_fingerprints: Some(
+                            &client_attribution_context.header_fingerprints,
+                        )
+                        .filter(|fingerprints| !fingerprints.is_empty()),
+                        upstream_account_id: None,
+                        upstream_account_name: None,
+                        upstream_account_kind: None,
+                        upstream_base_url_host: None,
+                        oauth_account_header_attached: None,
+                        oauth_account_id_shape: None,
+                        oauth_forwarded_header_count: None,
+                        oauth_forwarded_header_names: None,
+                        oauth_fingerprint_version: None,
+                        oauth_forwarded_header_fingerprints: None,
+                        oauth_prompt_cache_header_forwarded: None,
+                        oauth_request_body_prefix_fingerprint: None,
+                        oauth_request_body_prefix_bytes: None,
+                        oauth_request_body_snapshot_kind: None,
+                        oauth_responses_body_mode: None,
+                        oauth_responses_rewrite: None,
+                        service_tier: None,
+                        stream_terminal_event: None,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        downstream_status_code: Some(read_err.status),
+                        downstream_error_message: Some(read_err.message.as_str()),
+                        upstream_request_id: None,
+                        response_content_encoding: None,
+                        stream_failure_origin: None,
+                        upstream_read_error_kind: None,
+                        content_encoding_chain: None,
+                        forwarded_chunk_count: None,
+                        forwarded_bytes: None,
+                        usage_observed: None,
+                        downstream_close_phase: None,
+                        downstream_write_error_kind: None,
+                        last_upstream_chunk_gap_ms: None,
+                        upstream_approx_upload_bytes: None,
+                        upstream_approx_download_bytes: None,
+                        proxy_display_name: None,
+                        proxy_weight_delta: None,
+                        pool_attempt_count: None,
+                        pool_distinct_account_count: None,
+                        pool_attempt_terminal_reason: None,
+                        blocked_binding: None,
+                    }),
+                    &capture_failure_decision,
+                    &LiveRequestStreamingMeasurement {
+                        capture_failed: true,
+                        experiment_account_group: live_first_experiment_group.clone(),
+                        ..LiveRequestStreamingMeasurement::default()
                     },
-                    route_mode: if pool_route_active {
-                        INVOCATION_ROUTE_MODE_POOL
-                    } else {
-                        INVOCATION_ROUTE_MODE_FORWARD_PROXY
-                    },
-                    sticky_key: header_sticky_key.as_deref(),
-                    prompt_cache_key: header_prompt_cache_key.as_deref(),
-                    prompt_cache_key_attribution_source: header_prompt_cache_key
-                        .as_ref()
-                        .map(|_| "request"),
-                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                    client_header_fingerprints: Some(
-                        &client_attribution_context.header_fingerprints,
-                    )
-                    .filter(|fingerprints| !fingerprints.is_empty()),
-                    upstream_account_id: None,
-                    upstream_account_name: None,
-                    upstream_account_kind: None,
-                    upstream_base_url_host: None,
-                    oauth_account_header_attached: None,
-                    oauth_account_id_shape: None,
-                    oauth_forwarded_header_count: None,
-                    oauth_forwarded_header_names: None,
-                    oauth_fingerprint_version: None,
-                    oauth_forwarded_header_fingerprints: None,
-                    oauth_prompt_cache_header_forwarded: None,
-                    oauth_request_body_prefix_fingerprint: None,
-                    oauth_request_body_prefix_bytes: None,
-                    oauth_request_body_snapshot_kind: None,
-                    oauth_responses_body_mode: None,
-                    oauth_responses_rewrite: None,
-                    service_tier: None,
-                    stream_terminal_event: None,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    downstream_status_code: Some(read_err.status),
-                    downstream_error_message: Some(read_err.message.as_str()),
-                    upstream_request_id: None,
-                    response_content_encoding: None,
-                    stream_failure_origin: None,
-                    upstream_read_error_kind: None,
-                    content_encoding_chain: None,
-                    forwarded_chunk_count: None,
-                    forwarded_bytes: None,
-                    usage_observed: None,
-                    downstream_close_phase: None,
-                    downstream_write_error_kind: None,
-                    last_upstream_chunk_gap_ms: None,
-                    upstream_approx_upload_bytes: None,
-                    upstream_approx_download_bytes: None,
-                    proxy_display_name: None,
-                    proxy_weight_delta: None,
-                    pool_attempt_count: None,
-                    pool_distinct_account_count: None,
-                    pool_attempt_terminal_reason: None,
-                    blocked_binding: None,
-                })),
+                )),
                 raw_response: response_envelope.body_text.clone(),
                 response_body_preview_enabled: true,
                 req_raw,
@@ -2361,6 +2382,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         upstream_account_group: pool_account
             .as_ref()
             .and_then(|account| account.group_name.clone()),
+        experiment_account_group: live_first_experiment_group,
         ..LiveRequestStreamingMeasurement::default()
     };
     let mut response_running_record = build_running_proxy_capture_record(

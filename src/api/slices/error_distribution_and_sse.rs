@@ -1697,8 +1697,13 @@ pub(crate) async fn fetch_perf_stats(
 
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
-    let live_request_streaming =
-        query_live_request_streaming_perf(&state.pool, &range_window, &params).await?;
+    let live_request_streaming = query_live_request_streaming_perf(
+        &state.pool,
+        &range_window,
+        &params,
+        state.config.invocation_max_days,
+    )
+    .await?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
         let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
@@ -1934,6 +1939,7 @@ pub(crate) async fn fetch_perf_stats(
 
 #[derive(Debug, sqlx::FromRow)]
 struct LiveRequestStreamingPerfRow {
+    id: i64,
     status: Option<String>,
     failure_kind: Option<String>,
     payload: Option<String>,
@@ -1956,9 +1962,10 @@ async fn query_live_request_streaming_perf(
     pool: &sqlx::SqlitePool,
     range: &RangeWindow,
     params: &PerfQuery,
+    invocation_max_days: u64,
 ) -> Result<LiveRequestStreamingPerfResponse, ApiError> {
     let rows = sqlx::query_as::<_, LiveRequestStreamingPerfRow>(
-        "SELECT status, failure_kind, payload FROM codex_invocations \
+        "SELECT id, status, failure_kind, payload FROM codex_invocations \
          WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at <= ?3",
     )
     .bind(SOURCE_PROXY)
@@ -1966,6 +1973,28 @@ async fn query_live_request_streaming_perf(
     .bind(db_occurred_at_lower_bound(range.display_end))
     .fetch_all(pool)
     .await?;
+
+    let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    let mut rows = rows;
+    if range.start < shanghai_retention_cutoff(invocation_max_days) {
+        let archived_rows = crate::stats::load_live_request_streaming_rows_from_archives(
+            pool,
+            range.start,
+            range.display_end,
+            Some(&live_ids),
+        )
+        .await?;
+        rows.extend(
+            archived_rows
+                .into_iter()
+                .map(|row| LiveRequestStreamingPerfRow {
+                    id: row.id,
+                    status: row.status,
+                    failure_kind: row.failure_kind,
+                    payload: row.payload,
+                }),
+        );
+    }
 
     let requested_endpoint = params
         .endpoint
@@ -2009,7 +2038,8 @@ async fn query_live_request_streaming_perf(
         }
         if requested_group.is_some_and(|group| {
             payload
-                .get("upstreamAccountGroup")
+                .get("liveFirstAccountGroup")
+                .or_else(|| payload.get("upstreamAccountGroup"))
                 .and_then(serde_json::Value::as_str)
                 != Some(group)
         }) {

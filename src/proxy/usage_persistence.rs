@@ -2839,6 +2839,11 @@ pub(crate) fn with_live_request_streaming_payload_summary(
         "upstreamAccountGroup",
         measurement.upstream_account_group.as_deref(),
     );
+    insert_payload_optional_text(
+        object,
+        "liveFirstAccountGroup",
+        measurement.experiment_account_group.as_deref(),
+    );
     insert_payload_optional_usize(object, "requestBodyRawBytes", measurement.raw_body_bytes);
     insert_payload_optional_usize(
         object,
