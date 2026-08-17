@@ -104,5 +104,7 @@ describe("LiveRequestStreamingPerfPanel", () => {
     });
 
     expect(host?.textContent).toContain("Insufficient samples: 8 / 200");
+    expect(host?.textContent).not.toContain("+200 ms (+20.0%)");
+    expect(host?.textContent).not.toContain("+300 ms (+21.4%)");
   });
 });

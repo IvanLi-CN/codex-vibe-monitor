@@ -1642,6 +1642,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
+    pub(crate) image_intent: ImageIntent,
 }
 
 /// Immutable request semantics derived from the single replay snapshot.
@@ -5218,6 +5219,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 best_effort_extract_encrypted_content_from_request_body_prefix(
                                     &sticky_key_probe,
                                 ),
+                            image_intent: ImageIntent::Unknown,
                         },
                     ));
                 }
@@ -5304,6 +5306,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         best_effort_extract_encrypted_content_from_request_body_prefix(
                             &sticky_key_probe,
                         ),
+                    image_intent: ImageIntent::Unknown,
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
@@ -6744,6 +6747,74 @@ mod tests {
         assert_eq!(
             snapshot.to_bytes().await.expect("read snapshot"),
             Bytes::from_static(b"{\"model\":\"gpt-5.6\",\"input\":\"delayed tail\"}")
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_live_consumer_allows_replay_snapshot_to_finish() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(64);
+        tx.send(Ok(Bytes::from_static(br#"{"model":"gpt-5.6"}"#)))
+            .await
+            .expect("send complete routing object");
+        for _ in 0..32 {
+            tx.send(Ok(Bytes::from_static(b" ")))
+                .await
+                .expect("send trailing whitespace");
+        }
+        drop(tx);
+
+        let replay = spawn_pool_replayable_request_body(
+            Body::from_stream(ReceiverStream::new(rx)),
+            1024 * 1024,
+            Duration::from_secs(1),
+            43,
+        );
+        let pipeline = spawn_live_responses_request_body_pipeline(replay.body, None);
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+
+        let mut status_rx = replay.status_rx.clone();
+        assert!(
+            timeout(Duration::from_millis(50), async {
+                loop {
+                    if !matches!(*status_rx.borrow(), PoolReplayBodyStatus::Reading) {
+                        break;
+                    }
+                    status_rx
+                        .changed()
+                        .await
+                        .expect("replay worker should stay alive");
+                }
+            })
+            .await
+            .is_err(),
+            "the bounded replay channel should wait for the live consumer"
+        );
+
+        drop(pipeline);
+        let snapshot = timeout(Duration::from_secs(1), async {
+            loop {
+                if let PoolReplayBodyStatus::Complete(snapshot) = status_rx.borrow().clone() {
+                    break snapshot;
+                }
+                status_rx
+                    .changed()
+                    .await
+                    .expect("replay worker should stay alive");
+            }
+        })
+        .await
+        .expect("dropping the buffered live consumer must release the replay producer");
+        assert!(
+            snapshot
+                .to_bytes()
+                .await
+                .expect("read snapshot")
+                .starts_with(br#"{"model":"gpt-5.6"}"#)
         );
     }
 }

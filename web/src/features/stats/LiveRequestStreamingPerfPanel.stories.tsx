@@ -52,7 +52,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-5xl bg-base-100 p-3">
+          <div className="mx-auto w-full max-w-5xl border border-base-content/40 bg-base-100 p-3">
             <Story />
           </div>
         </div>
@@ -91,5 +91,6 @@ export const InsufficientSamples: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText("样本不足：17 / 200")).toHaveLength(2);
+    await expect(canvas.queryByText("+220 ms (+22.4%)")).not.toBeInTheDocument();
   },
 };

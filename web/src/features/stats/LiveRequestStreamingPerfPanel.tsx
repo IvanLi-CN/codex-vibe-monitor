@@ -103,6 +103,7 @@ export function LiveRequestStreamingPerfPanel({
   const { t } = useTranslation();
   const control = findCohort(data?.cohorts ?? [], "control", "buffered");
   const treatment = findCohort(data?.cohorts ?? [], "treatment", "live_first");
+  const benefitsReady = Boolean(control?.sufficientSamples && treatment?.sufficientSamples);
 
   return (
     <section className="surface-panel" data-testid="live-request-streaming-perf-panel">
@@ -136,21 +137,33 @@ export function LiveRequestStreamingPerfPanel({
             <dl className="grid grid-cols-1 gap-2 border-t border-base-300/70 pt-3 text-sm sm:grid-cols-3">
               <Metric
                 label={t("stats.liveRequestStreaming.responseBenefit")}
-                value={formatBenefit(
-                  control?.firstResponseByteTotalMs?.p50Ms,
-                  treatment?.firstResponseByteTotalMs?.p50Ms,
-                )}
+                value={
+                  benefitsReady
+                    ? formatBenefit(
+                        control?.firstResponseByteTotalMs?.p50Ms,
+                        treatment?.firstResponseByteTotalMs?.p50Ms,
+                      )
+                    : "-"
+                }
               />
               <Metric
                 label={t("stats.liveRequestStreaming.tokenBenefit")}
-                value={formatBenefit(control?.firstTokenMs?.p50Ms, treatment?.firstTokenMs?.p50Ms)}
+                value={
+                  benefitsReady
+                    ? formatBenefit(control?.firstTokenMs?.p50Ms, treatment?.firstTokenMs?.p50Ms)
+                    : "-"
+                }
               />
               <Metric
                 label={t("stats.liveRequestStreaming.overlapBenefit")}
-                value={formatBenefit(
-                  control?.requestUpstreamOverlapMs?.p50Ms,
-                  treatment?.requestUpstreamOverlapMs?.p50Ms,
-                )}
+                value={
+                  benefitsReady
+                    ? formatBenefit(
+                        control?.requestUpstreamOverlapMs?.p50Ms,
+                        treatment?.requestUpstreamOverlapMs?.p50Ms,
+                      )
+                    : "-"
+                }
               />
             </dl>
           </>

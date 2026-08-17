@@ -156,7 +156,7 @@ PR: include
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
   state: 两个 cohort 均少于 200 个成功样本
-  evidence_note: 验证样本不足时在两个 cohort 明确显示 17 / 200，界面不将对照数值作为可用的收益结论。
+  evidence_note: 验证样本不足时在两个 cohort 明确显示 17 / 200，三项收益固定为 -，界面不将对照数值作为可用的收益结论。
 
 PR: include
 

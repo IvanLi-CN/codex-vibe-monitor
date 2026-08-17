@@ -148,12 +148,9 @@ async fn run_live_responses_request_body_pipeline(
         return Err(invalid_live_json("request body must be a JSON object"));
     }
 
-    let mut probe = PoolReplayBodyKeyProbe::default();
     let mut pending_fields: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut config: Option<LiveResponsesBodyTransformConfig> = None;
+    let mut pending_bytes = 0usize;
     let mut config_rx = Some(config_rx);
-    let mut writer: Option<LiveLogicalJsonWriter> = None;
-    let mut transformer: Option<LiveRootFieldTransformer> = None;
     let mut delimiter = None;
 
     loop {
@@ -170,68 +167,8 @@ async fn run_live_responses_request_body_pipeline(
                 .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
         }
         if next == b'}' {
-            if read_non_whitespace(&mut reader).await?.is_some() {
-                return Err(invalid_live_json("request body has trailing content"));
-            }
-            break;
-        }
-        if next != b'"' {
-            return Err(invalid_live_json(
-                "request object key must be a JSON string",
-            ));
-        }
-        let raw_key =
-            match read_json_string(&mut reader, next, LIVE_ROUTE_PREFIX_BUFFER_BYTES).await {
-                Ok(raw_key) => raw_key,
-                Err(err) if is_live_route_probe_budget_error(&err) && config.is_none() => {
-                    let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                    return Ok(());
-                }
-                Err(err) => return Err(err),
-            };
-        let key: String = serde_json::from_slice(&raw_key)
-            .map_err(|_| invalid_live_json("request object key is invalid"))?;
-        let Some(colon) = read_non_whitespace(&mut reader).await? else {
-            return Err(invalid_live_json("request object key is missing a value"));
-        };
-        if colon != b':' {
-            return Err(invalid_live_json("request object key is missing ':'"));
-        }
-        let Some(value_start) = read_non_whitespace(&mut reader).await? else {
-            return Err(invalid_live_json("request object value is missing"));
-        };
-
-        if config.is_none() {
-            let (value, terminal) = match read_json_value_to_vec(
-                &mut reader,
-                value_start,
-                LIVE_ROUTE_PREFIX_BUFFER_BYTES,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(err) if is_live_route_probe_budget_error(&err) => {
-                    let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                    return Ok(());
-                }
-                Err(err) => return Err(err),
-            };
-            if serde_json::from_slice::<Value>(&value).is_err() {
-                return Err(invalid_live_json("request field value is invalid"));
-            }
-            update_live_routing_probe(&mut probe, key.as_str(), value.as_slice());
-            pending_fields.push((key, value));
-            delimiter = Some(terminal);
-
-            if probe.model.is_none() {
-                continue;
-            }
-
-            let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(probe.clone()));
+            let probe = live_routing_probe_from_fields(&pending_fields);
+            let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(probe));
             let Ok(selected_config) = config_rx
                 .take()
                 .expect("live configuration is awaited once")
@@ -267,50 +204,73 @@ async fn run_live_responses_request_body_pipeline(
                     )
                     .await?;
             }
-            // Flush the routing prefix before waiting for the next downstream
-            // chunk. The upstream transport may now begin its request while a
-            // large `input` value is still arriving from the client.
             selected_writer.flush().await?;
-            config = Some(selected_config);
-            writer = Some(selected_writer);
-            transformer = Some(selected_transformer);
-            continue;
-        }
 
-        let selected_transformer = transformer
-            .as_mut()
-            .expect("transformer is initialized with live configuration");
-        let selected_writer = writer
-            .as_mut()
-            .expect("writer is initialized with live configuration");
-        if selected_transformer.buffers_field(key.as_str()) {
-            // Account-level transformations can require one complete logical
-            // field (notably Lite Codex `input`). The replay producer already
-            // enforces the configured request-body limit, so do not misclassify
-            // a valid large transform field as an invalid routing prefix.
-            let (value, terminal) =
-                read_json_value_to_vec(&mut reader, value_start, usize::MAX).await?;
-            selected_transformer
-                .write_buffered_field(selected_writer, key.as_str(), &value)
-                .await?;
-            delimiter = Some(terminal);
-        } else {
-            selected_writer.begin_field(key.as_str()).await?;
-            delimiter = Some(forward_json_value(&mut reader, value_start, selected_writer).await?);
+            if read_non_whitespace(&mut reader).await?.is_some() {
+                return Err(invalid_live_json("request body has trailing content"));
+            }
+            selected_transformer.finish(&mut selected_writer).await?;
+            selected_writer.write_raw(b"}").await?;
+            selected_writer.finish().await?;
+            logical_tx.take();
+            return Ok(());
         }
-    }
+        if next != b'"' {
+            return Err(invalid_live_json(
+                "request object key must be a JSON string",
+            ));
+        }
+        let raw_key =
+            match read_json_string(&mut reader, next, LIVE_ROUTE_PREFIX_BUFFER_BYTES).await {
+                Ok(raw_key) => raw_key,
+                Err(err) if is_live_route_probe_budget_error(&err) => {
+                    let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+        let key: String = serde_json::from_slice(&raw_key)
+            .map_err(|_| invalid_live_json("request object key is invalid"))?;
+        let Some(colon) = read_non_whitespace(&mut reader).await? else {
+            return Err(invalid_live_json("request object key is missing a value"));
+        };
+        if colon != b':' {
+            return Err(invalid_live_json("request object key is missing ':'"));
+        }
+        let Some(value_start) = read_non_whitespace(&mut reader).await? else {
+            return Err(invalid_live_json("request object value is missing"));
+        };
 
-    if let (Some(mut selected_writer), Some(mut selected_transformer)) = (writer, transformer) {
-        selected_transformer.finish(&mut selected_writer).await?;
-        selected_writer.write_raw(b"}").await?;
-        selected_writer.finish().await?;
-        logical_tx.take();
-    } else {
-        let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-            PoolReplayBodyKeyProbe::default(),
-        ));
+        let (value, terminal) =
+            match read_json_value_to_vec(&mut reader, value_start, LIVE_ROUTE_PREFIX_BUFFER_BYTES)
+                .await
+            {
+                Ok(value) => value,
+                Err(err) if is_live_route_probe_budget_error(&err) => {
+                    let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+        if serde_json::from_slice::<Value>(&value).is_err() {
+            return Err(invalid_live_json("request field value is invalid"));
+        }
+        pending_bytes = pending_bytes
+            .saturating_add(key.len())
+            .saturating_add(value.len());
+        if pending_bytes > LIVE_ROUTE_PREFIX_BUFFER_BYTES {
+            let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                PoolReplayBodyKeyProbe::default(),
+            ));
+            return Ok(());
+        }
+        pending_fields.push((key, value));
+        delimiter = Some(terminal);
     }
-    Ok(())
 }
 
 fn start_live_encoder(
@@ -368,40 +328,27 @@ async fn live_decoded_request_reader(
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.message))
 }
 
-fn update_live_routing_probe(probe: &mut PoolReplayBodyKeyProbe, key: &str, value: &[u8]) {
-    let Ok(value) = serde_json::from_slice::<Value>(value) else {
-        return;
-    };
-    match key {
-        "model" => probe.model = value.as_str().map(str::to_string),
-        "sticky_key" | "stickyKey" => {
-            probe.sticky_key = value
-                .as_str()
-                .map(str::to_string)
-                .filter(|value| !value.is_empty())
-        }
-        "prompt_cache_key" | "promptCacheKey" => {
-            probe.prompt_cache_key = value
-                .as_str()
-                .map(str::to_string)
-                .filter(|value| !value.is_empty())
-        }
-        "metadata" => {
-            let wrapped = serde_json::json!({ "metadata": value });
-            probe.sticky_key = probe
-                .sticky_key
-                .take()
-                .or_else(|| extract_sticky_key_from_request_body(&wrapped));
-            probe.prompt_cache_key = probe
-                .prompt_cache_key
-                .take()
-                .or_else(|| extract_prompt_cache_key_from_request_body(&wrapped));
-        }
-        "input" => {
-            let wrapped = serde_json::json!({ "input": value });
-            probe.contains_encrypted_content |= value_contains_encrypted_content(&wrapped);
-        }
-        _ => {}
+fn live_routing_probe_from_fields(fields: &[(String, Vec<u8>)]) -> PoolReplayBodyKeyProbe {
+    let mut object = serde_json::Map::new();
+    for (key, value) in fields {
+        let Ok(value) = serde_json::from_slice::<Value>(value) else {
+            continue;
+        };
+        object.insert(key.clone(), value);
+    }
+    let value = Value::Object(object);
+    PoolReplayBodyKeyProbe {
+        sticky_key: extract_sticky_key_from_request_body(&value),
+        prompt_cache_key: extract_prompt_cache_key_from_request_body(&value),
+        model: value
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        contains_encrypted_content: value_contains_encrypted_content(&value),
+        image_intent: infer_hosted_image_intent_from_request_body(
+            ProxyCaptureTarget::Responses,
+            &value,
+        ),
     }
 }
 
@@ -1044,7 +991,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_first_capture_responses_body_starts_before_downstream_eof() {
+    async fn live_first_capture_responses_waits_for_complete_routing_context_before_eof() {
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
         tx.send(Ok(Bytes::from_static(
             br#"{"model":"gpt-5.6","input":"delayed "#,
@@ -1055,12 +1002,29 @@ mod tests {
             Body::from_stream(ReceiverStream::new(rx)),
             None,
         );
+        assert!(
+            timeout(
+                Duration::from_millis(50),
+                wait_for_replay_body_sticky_key_probe(
+                    &pipeline.routing_probe_rx,
+                    Duration::from_secs(1),
+                ),
+            )
+            .await
+            .is_err(),
+            "routing must not be finalized before a late input field is complete"
+        );
+
+        tx.send(Ok(Bytes::from_static(br#"tail"}"#)))
+            .await
+            .expect("send delayed tail");
         let probe = wait_for_replay_body_sticky_key_probe(
             &pipeline.routing_probe_rx,
             Duration::from_secs(1),
         )
         .await;
         assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(probe.image_intent, ImageIntent::No);
         assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
             target_encoding: RequestBodyContentEncoding::Identity,
             compression_level: RequestCompressionLevelPreset::Balanced,
@@ -1078,12 +1042,12 @@ mod tests {
             .expect("upstream body should begin before downstream EOF")
             .expect("upstream body should have a prefix")
             .expect("upstream prefix should be valid");
-        assert_eq!(first, Bytes::from_static(b"{\"model\":\"gpt-5.6\""));
+        assert_eq!(
+            first,
+            Bytes::from_static(br#"{"model":"gpt-5.6","input":"delayed tail""#)
+        );
         assert!(pipeline.first_upstream_body_poll_at_rx.borrow().is_some());
 
-        tx.send(Ok(Bytes::from_static(br#"tail"}"#)))
-            .await
-            .expect("send delayed tail");
         drop(tx);
         let mut output = first.to_vec();
         while let Some(chunk) = upstream.next().await {
@@ -1278,7 +1242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_rewrites_large_input_without_rejecting_it() {
+    async fn responses_streaming_transform_falls_back_for_large_rewrite_input() {
         let mut input = String::with_capacity(LIVE_ROUTE_PREFIX_BUFFER_BYTES + 64);
         input.extend(std::iter::repeat_n(
             'x',
@@ -1294,26 +1258,19 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
-            target_encoding: RequestBodyContentEncoding::Identity,
-            compression_level: RequestCompressionLevelPreset::Balanced,
-            enforce_include_usage: false,
-            oauth: None,
-            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
-            image_tool_rewrite_mode: ImageToolRewriteMode::ForceAdd,
-            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
-            codex_imagegen_protocol: None,
-        }));
-        let output = collect_body(pipeline.body).await;
-        let value: Value = serde_json::from_slice(&output).expect("decode rewritten body");
-        assert_eq!(value["input"].as_str(), Some(input.as_str()));
+        assert!(probe.model.is_none());
         assert!(
-            value["tools"]
-                .as_array()
-                .expect("rewritten tools")
-                .iter()
-                .any(|tool| tool["type"] == "image_generation")
+            !pipeline.configure(LiveResponsesBodyTransformConfig {
+                target_encoding: RequestBodyContentEncoding::Identity,
+                compression_level: RequestCompressionLevelPreset::Balanced,
+                enforce_include_usage: false,
+                oauth: None,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+                image_tool_rewrite_mode: ImageToolRewriteMode::ForceAdd,
+                codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+                codex_imagegen_protocol: None,
+            }),
+            "large rewrite fields must choose the raw replay path rather than materializing"
         );
         assert!(pipeline.request_body_error_rx.borrow().is_none());
     }

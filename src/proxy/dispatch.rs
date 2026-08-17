@@ -683,15 +683,22 @@ async fn prepare_capture_request_body(
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let mut live_pipeline = spawn_live_responses_request_body_pipeline(
+    let mut live_pipeline = Some(spawn_live_responses_request_body_pipeline(
         replayable_body.body,
         downstream_content_encoding.clone(),
-    );
-    let live_request_body_error_rx = live_pipeline.request_body_error_rx.clone();
+    ));
+    let live_request_body_error_rx = live_pipeline
+        .as_ref()
+        .expect("live pipeline is present before the first attempt")
+        .request_body_error_rx
+        .clone();
     let replay_status_rx = replayable_body.status_rx.clone();
     let replay_cancel = replayable_body.cancel.clone();
     let live_body_key_probe = wait_for_replay_body_sticky_key_probe(
-        &live_pipeline.routing_probe_rx,
+        &live_pipeline
+            .as_ref()
+            .expect("live pipeline is present before routing")
+            .routing_probe_rx,
         runtime_timeouts.request_read_timeout,
     )
     .await;
@@ -720,7 +727,7 @@ async fn prepare_capture_request_body(
                 &mut no_available_wait_deadline,
                 None,
                 capture_target.endpoint(),
-                ImageIntent::Unknown,
+                live_body_key_probe.image_intent,
                 true,
             )
             .await;
@@ -801,16 +808,20 @@ async fn prepare_capture_request_body(
                     .and_then(|settings| settings.request_compression_level_preset.as_deref())
                     .map(RequestCompressionLevelPreset::from_str)
                     .unwrap_or_default();
-                if !live_pipeline.configure(LiveResponsesBodyTransformConfig {
-                    target_encoding,
-                    compression_level,
-                    enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
-                    oauth,
-                    fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
-                    image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
-                    codex_imagegen_rewrite_mode: initial_account.codex_imagegen_rewrite_mode,
-                    codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
-                }) {
+                if !live_pipeline
+                    .as_mut()
+                    .expect("live pipeline is present before configuration")
+                    .configure(LiveResponsesBodyTransformConfig {
+                        target_encoding,
+                        compression_level,
+                        enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
+                        oauth,
+                        fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
+                        image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
+                        codex_imagegen_rewrite_mode: initial_account.codex_imagegen_rewrite_mode,
+                        codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
+                    })
+                {
                     live_first_attempt_failed = true;
                 } else {
                     let mut live_headers = headers.clone();
@@ -824,16 +835,22 @@ async fn prepare_capture_request_body(
                             live_headers.remove(header::CONTENT_ENCODING);
                         }
                     }
+                    let pipeline = live_pipeline
+                        .take()
+                        .expect("live pipeline is consumed by the live-first attempt");
+                    let first_upstream_body_poll_at_rx =
+                        pipeline.first_upstream_body_poll_at_rx.clone();
+                    let original_request_stream_rx = pipeline.original_request_stream_rx.clone();
                     match send_pool_request_live_first_attempt(
                         state.clone(),
                         proxy_request_id,
                         Method::POST,
                         original_uri,
                         &live_headers,
-                        live_pipeline.body,
+                        pipeline.body,
                         None,
                         None,
-                        ImageIntent::Unknown,
+                        live_body_key_probe.image_intent,
                         proxy_upstream_send_timeout_for_capture_target(
                             runtime_timeouts,
                             Some(capture_target),
@@ -844,8 +861,8 @@ async fn prepare_capture_request_body(
                         initial_account,
                         Some(&trace_context),
                         &replay_status_rx,
-                        &live_pipeline.first_upstream_body_poll_at_rx,
-                        Some(live_pipeline.original_request_stream_rx.clone()),
+                        &first_upstream_body_poll_at_rx,
+                        Some(original_request_stream_rx),
                     )
                     .await
                     {
@@ -864,9 +881,17 @@ async fn prepare_capture_request_body(
                         }
                     }
                 }
+            } else {
+                drop(live_pipeline.take());
             }
+        } else {
+            drop(live_pipeline.take());
         }
+    } else {
+        drop(live_pipeline.take());
     }
+
+    drop(live_pipeline);
 
     PreparedCaptureRequestBody {
         request_body_snapshot_result: {
