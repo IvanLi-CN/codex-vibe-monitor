@@ -11,6 +11,7 @@
 - Safari / iOS 继续只提供 manual Add to Home Screen guidance；更新与离线快照扩容并没有改变这一浏览器边界。
 - install prompt 从头栏常驻 button 改为自动弹出的一次性 modal / guidance。原因是 install 是首次交付动作，不应长期占用 owner-facing 头栏空间，也不该让“已安装 / 未安装”状态伪装成普通工具按钮。
 - 自动安装提示在窄屏上改为居中 modal，而不是继续复用移动端贴底 dialog。原因是这块语义属于“状态说明 + 操作确认”，owner-facing 预期是弹窗，不是会与页面滚动/抽屉语义混淆的 bottom sheet。
+- install icon 从预烘焙白色圆角卡片改为 product mark 的多角色派生。regular 保持透明构图，maskable/Apple 使用不透明安全画布，让浏览器和系统独立施加圆角、阴影与外壳；内容版本 URL 使安装面能可靠接收新字节。
 
 ## References
 

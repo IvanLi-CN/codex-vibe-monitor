@@ -41,6 +41,8 @@
 ### Install surface
 
 - 应用必须生成 base-aware manifest，包含稳定 identity、icons、theme color、`start_url=./#/dashboard`、`scope=./` 与高价值 shortcuts。
+- install icon 必须从 `scripts/export_brand_assets.py` 的 product mark 单一几何源导出：透明 regular `purpose: "any"` 保留品牌构图；不透明 `#FBFDFF` maskable 与 180px Apple touch 采用独立资源。maskable/Apple 的重要前景最大边为画布 58%-62%，且位于中心半径 40% 的安全圆；图源不得预烘焙系统圆角、描边、阴影或外框。
+- regular、maskable、Apple touch、favicon 与 shortcut 的字节变化必须同步更新 manifest、HTML 和 precache 可见引用。每一代安装资源使用内容派生版本 URL，`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
 - 主界面头栏不得放置常驻 install/status button；当浏览器满足安装条件时，应改为自动弹出明确的 install prompt 或 manual guidance。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
@@ -141,6 +143,7 @@
 
 ### Testing
 
+- `python3 scripts/export_brand_assets.py && cd web && bun run test:pwa-assets`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
 - `cd web && bun run test:e2e:pwa`
@@ -160,6 +163,15 @@
 - Evidence source: `storybook-static` + local PWA preview/test server; no login, production account, secret, or live backend payload was used.
 - Bound source revision: working tree after the validated auto-open install prompt capture recorded on July 18, 2026.
 - Viewport: desktop `1440x1000`, mobile `393x852`.
+
+### Application Icon Contract
+
+![Codex Vibe Monitor application icon comparison](./assets/pwa-application-icon-comparison.png)
+
+- source_type: deterministic generated contact sheet from the locked pre-change asset and the candidate build
+- target_program: mock-only platform-mask preview
+- capture_scope: Regular/`any`, maskable, 180px Apple touch, 48/128/512px previews, circle/squircle/macOS masks
+- state: owner-confirmed candidate freeze
 
 ### Install / Update / Shell
 
