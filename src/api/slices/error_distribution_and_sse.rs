@@ -2366,6 +2366,7 @@ mod tests {
         requesting.t_upstream_connect_ms = Some(4.0);
         let mut responding = live_record("responding", Some(42), "running", None, 1);
         responding.t_upstream_ttfb_ms = Some(12.0);
+        responding.first_token_ms = Some(12.0);
 
         let snapshot = build_dashboard_activity_live_snapshot(10, [requesting, responding]);
 

@@ -12143,9 +12143,9 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     let stats_phase_counts = stats
         .in_progress_phase_counts
         .expect("stats should include live phase counts");
-    assert_eq!(stats_phase_counts.queued, 2);
+    assert_eq!(stats_phase_counts.queued, 3);
     assert_eq!(stats_phase_counts.requesting, 1);
-    assert_eq!(stats_phase_counts.responding, 1);
+    assert_eq!(stats_phase_counts.responding, 0);
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -12162,9 +12162,9 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     let summary_phase_counts = summary
         .in_progress_phase_counts
         .expect("summary should include live phase counts");
-    assert_eq!(summary_phase_counts.queued, 2);
+    assert_eq!(summary_phase_counts.queued, 3);
     assert_eq!(summary_phase_counts.requesting, 1);
-    assert_eq!(summary_phase_counts.responding, 1);
+    assert_eq!(summary_phase_counts.responding, 0);
 }
 
 #[tokio::test]
@@ -19357,7 +19357,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(120.0_f64),
-            first_token_ms: None,
+            first_token_ms: Some(120.0_f64),
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
