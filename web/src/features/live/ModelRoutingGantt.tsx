@@ -502,15 +502,12 @@ export function ModelRoutingGantt({
                   <div key={`${model}-${lane.accountId}`} className="contents">
                     <button
                       type="button"
-                      className="flex h-12 min-w-0 flex-col justify-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                      className="flex h-12 min-w-0 items-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                       aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
                       onClick={() => onOpenAccount(lane.accountId, lane.model)}
                     >
                       <span className="truncate font-mono text-xs font-semibold text-base-content">
                         {lane.label}
-                      </span>
-                      <span className="mt-0.5 text-xs text-base-content/60">
-                        {stateLabels[lane.state]}
                       </span>
                     </button>
                     <div
