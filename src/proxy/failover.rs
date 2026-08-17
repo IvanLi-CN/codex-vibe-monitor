@@ -688,6 +688,19 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
             .flatten(),
         pool_terminal_request_compression_algorithm(headers, error).map(str::to_string),
     );
+    let live_request_streaming_decision = runtime_snapshot_context
+        .and_then(|context| context.live_request_streaming_decision.as_ref());
+    let live_request_streaming_measurement =
+        live_request_streaming_decision.map(|_| LiveRequestStreamingMeasurement {
+            first_attempt_failed: runtime_snapshot_context
+                .is_some_and(|context| context.live_first_attempt_failed),
+            fallback_or_retry: error.attempt_summary.pool_attempt_count > 1,
+            ambiguous_upstream_delivery: runtime_snapshot_context
+                .is_some_and(|context| context.live_first_attempt_failed),
+            experiment_account_group: runtime_snapshot_context
+                .and_then(|context| context.live_request_streaming_experiment_group.clone()),
+            ..LiveRequestStreamingMeasurement::default()
+        });
     let _ = persist_pre_attempt_proxy_capture_error(
         state,
         proxy_request_id,
@@ -719,6 +732,8 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
         Some(error),
         terminal_request_compression_algorithm.as_deref(),
         Some(response_envelope),
+        live_request_streaming_decision,
+        live_request_streaming_measurement.as_ref(),
     )
     .await;
 }

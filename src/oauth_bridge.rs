@@ -708,10 +708,8 @@ async fn counted_oauth_responses(
             request_debug: Some(request_debug),
         };
     }
-    let wants_stream = request_is_stream_rx
-        .as_ref()
-        .and_then(|rx| *rx.borrow())
-        .or(request_is_stream)
+    let wants_stream = request_is_stream
+        .or_else(|| request_is_stream_rx.as_ref().and_then(|rx| *rx.borrow()))
         .unwrap_or(false);
     if wants_stream {
         return OauthUpstreamResponse {

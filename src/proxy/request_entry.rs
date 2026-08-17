@@ -1259,6 +1259,9 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) owner_auto_guard_active: bool,
     pub(crate) t_req_read_ms: f64,
     pub(crate) t_req_parse_ms: f64,
+    pub(crate) live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
+    pub(crate) live_request_streaming_experiment_group: Option<String>,
+    pub(crate) live_first_attempt_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

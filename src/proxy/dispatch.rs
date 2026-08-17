@@ -445,6 +445,8 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_error: Option<&PoolUpstreamError>,
     terminal_request_compression_algorithm: Option<&str>,
     response_envelope_override: Option<ProxyErrorResponseEnvelope>,
+    live_request_streaming_decision: Option<&LiveRequestStreamingDecision>,
+    live_request_streaming_measurement: Option<&LiveRequestStreamingMeasurement>,
 ) -> bool {
     let response_envelope = response_envelope_override
         .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
@@ -491,92 +493,201 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
         },
         error_message: Some(format!("[{failure_kind}] {error_message}")),
         failure_kind: Some(failure_kind.to_string()),
-        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
-            target: capture_target,
-            status,
-            is_stream: request_info.is_stream,
-            request_contains_encrypted_content: request_info.contains_encrypted_content,
-            response_contains_encrypted_content: false,
-            compaction_request_kind: request_info.compaction_request_kind,
-            compaction_response_kind: None,
-            image_intent: request_info.image_intent.as_deref(),
-            request_model: request_info.model.as_deref(),
-            requested_service_tier: request_info.requested_service_tier.as_deref(),
-            billing_service_tier: None,
-            reasoning_effort: request_info.reasoning_effort.as_deref(),
-            response_model: None,
-            usage_missing_reason: None,
-            request_parse_error: request_info.parse_error.as_deref(),
-            request_compression_algorithm: terminal_request_compression_algorithm,
-            request_compression_mode: None,
-            request_compression_logical_body_bytes: None,
-            request_compression_transmitted_body_bytes: None,
-            request_compression_transmission_complete: None,
-            failure_kind: Some(failure_kind),
-            requester_ip,
-            request_user_agent: request_chain_metadata.user_agent.as_deref(),
-            request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-            request_forwarded: request_chain_metadata.forwarded.as_deref(),
-            request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-            upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-            route_mode: INVOCATION_ROUTE_MODE_POOL,
-            sticky_key,
-            prompt_cache_key,
-            prompt_cache_key_attribution_source: request_info
-                .prompt_cache_key_attribution_source
-                .as_deref(),
-            client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-            client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
-                .filter(|fingerprints| !fingerprints.is_empty()),
-            upstream_account_id: terminal_account.map(|account| account.account_id),
-            upstream_account_name: terminal_account.map(|account| account.display_name.as_str()),
-            upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
-            upstream_base_url_host: terminal_account
-                .and_then(|account| account.upstream_base_url.host_str()),
-            oauth_account_header_attached: None,
-            oauth_account_id_shape: None,
-            oauth_forwarded_header_count: None,
-            oauth_forwarded_header_names: None,
-            oauth_fingerprint_version: None,
-            oauth_forwarded_header_fingerprints: None,
-            oauth_prompt_cache_header_forwarded: None,
-            oauth_request_body_prefix_fingerprint: None,
-            oauth_request_body_prefix_bytes: None,
-            oauth_request_body_snapshot_kind: None,
-            oauth_responses_body_mode: None,
-            oauth_responses_rewrite: None,
-            service_tier: None,
-            stream_terminal_event: None,
-            upstream_error_code: terminal_error
-                .and_then(|error| error.upstream_error_code.as_deref()),
-            upstream_error_message: terminal_error
-                .and_then(|error| error.upstream_error_message.as_deref()),
-            downstream_status_code: Some(status),
-            downstream_error_message: Some(error_message),
-            upstream_request_id: terminal_error
-                .and_then(|error| error.upstream_request_id.as_deref()),
-            response_content_encoding: None,
-            stream_failure_origin: None,
-            upstream_read_error_kind: None,
-            content_encoding_chain: None,
-            forwarded_chunk_count: None,
-            forwarded_bytes: None,
-            usage_observed: None,
-            downstream_close_phase: None,
-            downstream_write_error_kind: None,
-            last_upstream_chunk_gap_ms: None,
-            upstream_approx_upload_bytes: None,
-            upstream_approx_download_bytes: None,
-            proxy_display_name: None,
-            proxy_weight_delta: None,
-            pool_attempt_count: terminal_attempt_summary.map(|summary| summary.pool_attempt_count),
-            pool_distinct_account_count: terminal_attempt_summary
-                .map(|summary| summary.pool_distinct_account_count),
-            pool_attempt_terminal_reason: terminal_attempt_summary
-                .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
-                .or(Some(failure_kind)),
-            blocked_binding: terminal_error.and_then(|error| error.blocked_binding.as_ref()),
-        })),
+        payload: Some(
+            if let (Some(decision), Some(measurement)) = (
+                live_request_streaming_decision,
+                live_request_streaming_measurement,
+            ) {
+                with_live_request_streaming_payload_summary(
+                    build_proxy_payload_summary(ProxyPayloadSummary {
+                        target: capture_target,
+                        status,
+                        is_stream: request_info.is_stream,
+                        request_contains_encrypted_content: request_info.contains_encrypted_content,
+                        response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
+                        image_intent: request_info.image_intent.as_deref(),
+                        request_model: request_info.model.as_deref(),
+                        requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        billing_service_tier: None,
+                        reasoning_effort: request_info.reasoning_effort.as_deref(),
+                        response_model: None,
+                        usage_missing_reason: None,
+                        request_parse_error: request_info.parse_error.as_deref(),
+                        request_compression_algorithm: terminal_request_compression_algorithm,
+                        request_compression_mode: None,
+                        request_compression_logical_body_bytes: None,
+                        request_compression_transmitted_body_bytes: None,
+                        request_compression_transmission_complete: None,
+                        failure_kind: Some(failure_kind),
+                        requester_ip,
+                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+                        upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+                        route_mode: INVOCATION_ROUTE_MODE_POOL,
+                        sticky_key,
+                        prompt_cache_key,
+                        prompt_cache_key_attribution_source: request_info
+                            .prompt_cache_key_attribution_source
+                            .as_deref(),
+                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                        client_header_fingerprints: Some(
+                            &client_attribution_context.header_fingerprints,
+                        )
+                        .filter(|fingerprints| !fingerprints.is_empty()),
+                        upstream_account_id: terminal_account.map(|account| account.account_id),
+                        upstream_account_name: terminal_account
+                            .map(|account| account.display_name.as_str()),
+                        upstream_account_kind: terminal_account
+                            .map(|account| account.kind.as_str()),
+                        upstream_base_url_host: terminal_account
+                            .and_then(|account| account.upstream_base_url.host_str()),
+                        oauth_account_header_attached: None,
+                        oauth_account_id_shape: None,
+                        oauth_forwarded_header_count: None,
+                        oauth_forwarded_header_names: None,
+                        oauth_fingerprint_version: None,
+                        oauth_forwarded_header_fingerprints: None,
+                        oauth_prompt_cache_header_forwarded: None,
+                        oauth_request_body_prefix_fingerprint: None,
+                        oauth_request_body_prefix_bytes: None,
+                        oauth_request_body_snapshot_kind: None,
+                        oauth_responses_body_mode: None,
+                        oauth_responses_rewrite: None,
+                        service_tier: None,
+                        stream_terminal_event: None,
+                        upstream_error_code: terminal_error
+                            .and_then(|error| error.upstream_error_code.as_deref()),
+                        upstream_error_message: terminal_error
+                            .and_then(|error| error.upstream_error_message.as_deref()),
+                        downstream_status_code: Some(status),
+                        downstream_error_message: Some(error_message),
+                        upstream_request_id: terminal_error
+                            .and_then(|error| error.upstream_request_id.as_deref()),
+                        response_content_encoding: None,
+                        stream_failure_origin: None,
+                        upstream_read_error_kind: None,
+                        content_encoding_chain: None,
+                        forwarded_chunk_count: None,
+                        forwarded_bytes: None,
+                        usage_observed: None,
+                        downstream_close_phase: None,
+                        downstream_write_error_kind: None,
+                        last_upstream_chunk_gap_ms: None,
+                        upstream_approx_upload_bytes: None,
+                        upstream_approx_download_bytes: None,
+                        proxy_display_name: None,
+                        proxy_weight_delta: None,
+                        pool_attempt_count: terminal_attempt_summary
+                            .map(|summary| summary.pool_attempt_count),
+                        pool_distinct_account_count: terminal_attempt_summary
+                            .map(|summary| summary.pool_distinct_account_count),
+                        pool_attempt_terminal_reason: terminal_attempt_summary
+                            .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
+                            .or(Some(failure_kind)),
+                        blocked_binding: terminal_error
+                            .and_then(|error| error.blocked_binding.as_ref()),
+                    }),
+                    decision,
+                    measurement,
+                )
+            } else {
+                build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status,
+                    is_stream: request_info.is_stream,
+                    request_contains_encrypted_content: request_info.contains_encrypted_content,
+                    response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
+                    image_intent: request_info.image_intent.as_deref(),
+                    request_model: request_info.model.as_deref(),
+                    requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    billing_service_tier: None,
+                    reasoning_effort: request_info.reasoning_effort.as_deref(),
+                    response_model: None,
+                    usage_missing_reason: None,
+                    request_parse_error: request_info.parse_error.as_deref(),
+                    request_compression_algorithm: terminal_request_compression_algorithm,
+                    request_compression_mode: None,
+                    request_compression_logical_body_bytes: None,
+                    request_compression_transmitted_body_bytes: None,
+                    request_compression_transmission_complete: None,
+                    failure_kind: Some(failure_kind),
+                    requester_ip,
+                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+                    upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+                    route_mode: INVOCATION_ROUTE_MODE_POOL,
+                    sticky_key,
+                    prompt_cache_key,
+                    prompt_cache_key_attribution_source: request_info
+                        .prompt_cache_key_attribution_source
+                        .as_deref(),
+                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
+                    upstream_account_id: terminal_account.map(|account| account.account_id),
+                    upstream_account_name: terminal_account
+                        .map(|account| account.display_name.as_str()),
+                    upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
+                    upstream_base_url_host: terminal_account
+                        .and_then(|account| account.upstream_base_url.host_str()),
+                    oauth_account_header_attached: None,
+                    oauth_account_id_shape: None,
+                    oauth_forwarded_header_count: None,
+                    oauth_forwarded_header_names: None,
+                    oauth_fingerprint_version: None,
+                    oauth_forwarded_header_fingerprints: None,
+                    oauth_prompt_cache_header_forwarded: None,
+                    oauth_request_body_prefix_fingerprint: None,
+                    oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
+                    oauth_responses_rewrite: None,
+                    service_tier: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: terminal_error
+                        .and_then(|error| error.upstream_error_code.as_deref()),
+                    upstream_error_message: terminal_error
+                        .and_then(|error| error.upstream_error_message.as_deref()),
+                    downstream_status_code: Some(status),
+                    downstream_error_message: Some(error_message),
+                    upstream_request_id: terminal_error
+                        .and_then(|error| error.upstream_request_id.as_deref()),
+                    response_content_encoding: None,
+                    stream_failure_origin: None,
+                    upstream_read_error_kind: None,
+                    content_encoding_chain: None,
+                    forwarded_chunk_count: None,
+                    forwarded_bytes: None,
+                    usage_observed: None,
+                    downstream_close_phase: None,
+                    downstream_write_error_kind: None,
+                    last_upstream_chunk_gap_ms: None,
+                    upstream_approx_upload_bytes: None,
+                    upstream_approx_download_bytes: None,
+                    proxy_display_name: None,
+                    proxy_weight_delta: None,
+                    pool_attempt_count: terminal_attempt_summary
+                        .map(|summary| summary.pool_attempt_count),
+                    pool_distinct_account_count: terminal_attempt_summary
+                        .map(|summary| summary.pool_distinct_account_count),
+                    pool_attempt_terminal_reason: terminal_attempt_summary
+                        .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
+                        .or(Some(failure_kind)),
+                    blocked_binding: terminal_error
+                        .and_then(|error| error.blocked_binding.as_ref()),
+                })
+            },
+        ),
         raw_response: response_envelope.body_text.clone(),
         response_body_preview_enabled: true,
         req_raw,
@@ -741,7 +852,7 @@ async fn prepare_capture_request_body(
                 None,
                 capture_target.endpoint(),
                 live_body_key_probe.image_intent,
-                true,
+                codex_imagegen_protocol_from_headers(headers).is_some(),
             )
             .await;
         if let Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
@@ -1382,6 +1493,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1426,6 +1539,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -1504,6 +1619,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
             t_req_parse_ms,
+            live_request_streaming_decision: prepared_live_request_streaming_decision.clone(),
+            live_request_streaming_experiment_group: live_first_experiment_group.clone(),
+            live_first_attempt_failed,
         });
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, Some(capture_target));
