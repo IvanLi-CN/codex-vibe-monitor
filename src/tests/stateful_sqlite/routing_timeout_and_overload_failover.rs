@@ -1,6 +1,26 @@
 use super::*;
 use serde_json::json;
 
+fn run_timeout_failover_test_with_large_stack<T, Fut>(future: Fut) -> T
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("timeout-failover-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack timeout failover runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack timeout failover worker")
+        .join()
+        .expect("join large-stack timeout failover worker")
+}
+
 #[tokio::test]
 async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
     #[derive(Debug, sqlx::FromRow)]
@@ -150,9 +170,15 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     shared_upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason()
-{
+#[test]
+fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason() {
+    run_timeout_failover_test_with_large_stack(
+        capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason_case(),
+    );
+}
+
+async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason_case()
+ {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
         upstream_route_key: Option<String>,
@@ -205,9 +231,21 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     )
     .await;
     insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "groupNames": [test_required_group_name()],
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
 
     let chunks = stream::iter(vec![Ok::<Bytes, io::Error>(Bytes::from_static(
-        br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-replay-no-alt-001"}"#,
+        br#"{"model":"gpt-5","input":"hello"}"#,
     ))]);
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -240,7 +278,7 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -258,12 +296,32 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     .fetch_all(&state.pool)
     .await
     .expect("load timeout replay no-alternate rows");
-    assert_eq!(attempt_rows.len(), 1);
+    assert_eq!(attempt_rows.len(), 2);
     assert_eq!(attempt_rows[0].attempt_index, 1);
-    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[1].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 0);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[0].upstream_route_key,
+        attempt_rows[1].upstream_route_key,
+    );
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    );
+    assert_eq!(
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
     );
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
@@ -282,17 +340,20 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
             .expect("timeout replay no-alternate payload should be present"),
     )
     .expect("decode timeout replay no-alternate payload");
-    assert!(
-        row.error_message.as_deref().is_some_and(
-            |msg| msg.contains("no alternate upstream route is available after timeout")
-        )
-    );
+    assert!(row.error_message.as_deref().is_some_and(|msg| {
+        msg.contains("no alternate upstream route is available after timeout")
+    }));
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
+    assert_eq!(payload["requestBodyTransportMode"], "live_first");
+    assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
+    assert_eq!(payload["liveFirstAttemptFailed"], true);
+    assert_eq!(payload["liveFirstFallbackOrRetry"], true);
+    assert_eq!(payload["ambiguousUpstreamDelivery"], true);
     assert!(payload["upstreamErrorMessage"].is_null());
 
     shared_upstream_handle.abort();

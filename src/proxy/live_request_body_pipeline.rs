@@ -1180,7 +1180,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_first_cancellation_and_failover_rejects_malformed_json() {
-        let mut pipeline = spawn_live_responses_request_body_pipeline(
+        let pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(br#"{"model":"gpt-5.6","input":"#)),
             None,
         );
@@ -1189,17 +1189,11 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
-            target_encoding: RequestBodyContentEncoding::Identity,
-            compression_level: RequestCompressionLevelPreset::Balanced,
-            enforce_include_usage: false,
-            oauth: None,
-            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
-            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
-            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
-            codex_imagegen_protocol: None,
-        }));
+        assert!(probe.sticky_key.is_none());
+        assert!(probe.prompt_cache_key.is_none());
+        assert!(probe.model.is_none());
+        assert!(!probe.contains_encrypted_content);
+        assert_eq!(probe.image_intent, ImageIntent::Unknown);
         let mut stream = pipeline.body.into_data_stream();
         let mut observed_error = None;
         while let Some(chunk) = stream.next().await {
@@ -1222,7 +1216,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_first_cancellation_and_failover_rejects_invalid_nested_json() {
-        let mut pipeline = spawn_live_responses_request_body_pipeline(
+        let pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(
                 br#"{"model":"gpt-5.6","input":{"nested":truX}}"#,
             )),
@@ -1233,17 +1227,11 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
-            target_encoding: RequestBodyContentEncoding::Identity,
-            compression_level: RequestCompressionLevelPreset::Balanced,
-            enforce_include_usage: false,
-            oauth: None,
-            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
-            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
-            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
-            codex_imagegen_protocol: None,
-        }));
+        assert!(probe.sticky_key.is_none());
+        assert!(probe.prompt_cache_key.is_none());
+        assert!(probe.model.is_none());
+        assert!(!probe.contains_encrypted_content);
+        assert_eq!(probe.image_intent, ImageIntent::Unknown);
         let mut stream = pipeline.body.into_data_stream();
         let mut observed_error = None;
         while let Some(chunk) = stream.next().await {

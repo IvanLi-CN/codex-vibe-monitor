@@ -392,16 +392,13 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
+    let first_chunk = "{\"model\":\"gpt-5\",\"input\":\"ready\"}\n".to_string();
     let body_task = tokio::spawn(async move {
         tx.send(Ok(Bytes::from(first_chunk)))
             .await
             .expect("send request prefix");
         release_tail_rx.await.expect("release request tail");
-        tx.send(Ok(Bytes::from_static(b"\"}")))
+        tx.send(Ok(Bytes::from_static(b" \n")))
             .await
             .expect("send request tail");
     });

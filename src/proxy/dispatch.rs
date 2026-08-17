@@ -1778,7 +1778,27 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                 });
                 let codex_imagegen_rewrite = err.codex_imagegen_rewrite.clone();
-                let record = ProxyCaptureRecord {
+                let live_request_streaming_measurement =
+                    pool_attempt_runtime_snapshot.as_ref().and_then(|context| {
+                        context.live_request_streaming_decision.as_ref().map(|_| {
+                            let attempted_failover = context.live_first_attempt_failed
+                                || err.attempt_summary.pool_attempt_count > 1;
+                            LiveRequestStreamingMeasurement {
+                                first_attempt_failed: attempted_failover,
+                                fallback_or_retry: attempted_failover,
+                                ambiguous_upstream_delivery: attempted_failover,
+                                upstream_account_group: err
+                                    .account
+                                    .as_ref()
+                                    .and_then(|account| account.group_name.clone()),
+                                experiment_account_group: context
+                                    .live_request_streaming_experiment_group
+                                    .clone(),
+                                ..LiveRequestStreamingMeasurement::default()
+                            }
+                        })
+                    });
+                let mut record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
                     model: request_info.model.clone(),
@@ -1954,6 +1974,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_persist_ms: 0.0,
                     },
                 };
+                if let (Some(decision), Some(measurement), Some(payload)) = (
+                    pool_attempt_runtime_snapshot
+                        .as_ref()
+                        .and_then(|context| context.live_request_streaming_decision.as_ref()),
+                    live_request_streaming_measurement.as_ref(),
+                    record.payload.take(),
+                ) {
+                    record.payload = Some(with_live_request_streaming_payload_summary(
+                        payload,
+                        decision,
+                        measurement,
+                    ));
+                }
                 let terminal_invocation_persisted = if let Err(err) =
                     persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record)
                         .await
