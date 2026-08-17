@@ -634,14 +634,6 @@ async fn prepare_capture_request_body(
     req_read_started: Instant,
 ) -> PreparedCaptureRequestBody {
     let live_eligible = capture_target == ProxyCaptureTarget::Responses
-        && !state.config.proxy_enforce_stream_include_usage
-        && headers
-            .get(header::CONTENT_ENCODING)
-            .and_then(|value| value.to_str().ok())
-            .is_none_or(|encoding| {
-                encoding.trim().is_empty() || encoding.trim().eq_ignore_ascii_case("identity")
-            })
-        && codex_imagegen_protocol_from_headers(headers).is_some()
         && !header_sticky_key_present
         && !header_prompt_cache_key_present;
 
@@ -661,10 +653,10 @@ async fn prepare_capture_request_body(
         };
     }
 
-    let live_settings = load_pool_routing_settings(&state.pool)
-        .await
-        .ok()
-        .map(|settings| resolve_live_request_streaming_settings(&settings));
+    let live_routing_settings = load_pool_routing_settings(&state.pool).await.ok();
+    let live_settings = live_routing_settings
+        .as_ref()
+        .map(resolve_live_request_streaming_settings);
     let Some(live_settings) = live_settings.filter(|settings| settings.enabled) else {
         return PreparedCaptureRequestBody {
             request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
@@ -687,11 +679,19 @@ async fn prepare_capture_request_body(
         runtime_timeouts.request_read_timeout,
         proxy_request_id,
     );
-    let mut upstream_live_body = Some(replayable_body.body);
+    let downstream_content_encoding = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let mut live_pipeline = spawn_live_responses_request_body_pipeline(
+        replayable_body.body,
+        downstream_content_encoding.clone(),
+    );
+    let live_request_body_error_rx = live_pipeline.request_body_error_rx.clone();
     let replay_status_rx = replayable_body.status_rx.clone();
     let replay_cancel = replayable_body.cancel.clone();
     let live_body_key_probe = wait_for_replay_body_sticky_key_probe(
-        &replayable_body.sticky_key_probe_rx,
+        &live_pipeline.routing_probe_rx,
         runtime_timeouts.request_read_timeout,
     )
     .await;
@@ -752,72 +752,149 @@ async fn prepare_capture_request_body(
                     upstream_base_url_host: None,
                     request_model: live_body_key_probe.model.clone(),
                 };
-                match send_pool_request_live_first_attempt(
-                    state.clone(),
-                    proxy_request_id,
-                    Method::POST,
-                    original_uri,
-                    headers,
-                    upstream_live_body
-                        .take()
-                        .expect("live request body should only be sent once"),
-                    None,
-                    None,
-                    ImageIntent::Unknown,
-                    proxy_upstream_send_timeout_for_capture_target(
-                        runtime_timeouts,
-                        Some(capture_target),
-                    ),
-                    response_timeout,
-                    response_timeout.map(|_| req_read_started),
-                    None,
-                    initial_account,
-                    Some(&trace_context),
-                    &replay_status_rx,
-                    &replayable_body.first_live_chunk_sent_at_rx,
-                )
-                .await
-                {
-                    Ok(response) => {
-                        live_first_request_body_first_byte_at =
-                            response.live_request_body_first_byte_at;
-                        live_first_pool_response = Some(response);
+                let target_encoding = live_responses_target_request_content_encoding(
+                    downstream_content_encoding.as_deref(),
+                    initial_account.request_compression_algorithm,
+                );
+                let Ok(target_encoding) = target_encoding else {
+                    warn!(
+                        proxy_request_id,
+                        "live-first request body uses an unsupported Content-Encoding; replaying buffered request"
+                    );
+                    drop(live_pipeline);
+                    return PreparedCaptureRequestBody {
+                        request_body_snapshot_result: wait_for_replay_body_snapshot(
+                            state.as_ref(),
+                            original_uri,
+                            &Method::POST,
+                            &replay_status_rx,
+                            &replay_cancel,
+                            runtime_timeouts.request_read_timeout,
+                            response_timeout.map(|_| req_read_started),
+                        )
+                        .await
+                        .map_err(|(status, message)| RequestBodyReadError {
+                            status,
+                            message,
+                            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
+                                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
+                            } else {
+                                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+                            },
+                            partial_body: Vec::new(),
+                        }),
+                        live_first_pool_response: None,
+                        prepared_live_request_streaming_decision: Some(decision),
+                        live_first_attempt_failed: false,
+                        live_first_request_body_first_byte_at: None,
+                    };
+                };
+                let oauth = match &initial_account.auth {
+                    PoolResolvedAuth::Oauth { .. } => Some(LiveOauthResponsesTransform {
+                        account_id: Some(initial_account.account_id),
+                        installation_seed: Some(state.oauth_installation_seed),
+                    }),
+                    PoolResolvedAuth::ApiKey { .. } => None,
+                };
+                let compression_level = live_routing_settings
+                    .as_ref()
+                    .and_then(|settings| settings.request_compression_level_preset.as_deref())
+                    .map(RequestCompressionLevelPreset::from_str)
+                    .unwrap_or_default();
+                if !live_pipeline.configure(LiveResponsesBodyTransformConfig {
+                    target_encoding,
+                    compression_level,
+                    enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
+                    oauth,
+                    fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
+                    image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode: initial_account.codex_imagegen_rewrite_mode,
+                    codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
+                }) {
+                    live_first_attempt_failed = true;
+                } else {
+                    let mut live_headers = headers.clone();
+                    live_headers.remove(header::CONTENT_LENGTH);
+                    match target_encoding.header_value() {
+                        Some(value) => {
+                            live_headers
+                                .insert(header::CONTENT_ENCODING, HeaderValue::from_static(value));
+                        }
+                        None => {
+                            live_headers.remove(header::CONTENT_ENCODING);
+                        }
                     }
-                    Err(error) => {
-                        live_first_attempt_failed = true;
-                        warn!(
-                            proxy_request_id,
-                            error = %error.message,
-                            "live-first pool attempt failed; replaying the captured request"
-                        );
+                    match send_pool_request_live_first_attempt(
+                        state.clone(),
+                        proxy_request_id,
+                        Method::POST,
+                        original_uri,
+                        &live_headers,
+                        live_pipeline.body,
+                        None,
+                        None,
+                        ImageIntent::Unknown,
+                        proxy_upstream_send_timeout_for_capture_target(
+                            runtime_timeouts,
+                            Some(capture_target),
+                        ),
+                        response_timeout,
+                        response_timeout.map(|_| req_read_started),
+                        None,
+                        initial_account,
+                        Some(&trace_context),
+                        &replay_status_rx,
+                        &live_pipeline.first_upstream_body_poll_at_rx,
+                        Some(live_pipeline.original_request_stream_rx.clone()),
+                    )
+                    .await
+                    {
+                        Ok(response) => {
+                            live_first_request_body_first_byte_at =
+                                response.live_request_body_first_byte_at;
+                            live_first_pool_response = Some(response);
+                        }
+                        Err(error) => {
+                            live_first_attempt_failed = true;
+                            warn!(
+                                proxy_request_id,
+                                error = %error.message,
+                                "live-first pool attempt failed; replaying the captured request"
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    drop(upstream_live_body);
     PreparedCaptureRequestBody {
-        request_body_snapshot_result: wait_for_replay_body_snapshot(
-            state.as_ref(),
-            original_uri,
-            &Method::POST,
-            &replay_status_rx,
-            &replay_cancel,
-            runtime_timeouts.request_read_timeout,
-            response_timeout.map(|_| req_read_started),
-        )
-        .await
-        .map_err(|(status, message)| RequestBodyReadError {
-            status,
-            message,
-            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
-                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
-            } else {
-                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
-            },
-            partial_body: Vec::new(),
-        }),
+        request_body_snapshot_result: {
+            let snapshot_result = wait_for_replay_body_snapshot(
+                state.as_ref(),
+                original_uri,
+                &Method::POST,
+                &replay_status_rx,
+                &replay_cancel,
+                runtime_timeouts.request_read_timeout,
+                response_timeout.map(|_| req_read_started),
+            )
+            .await
+            .map_err(|(status, message)| RequestBodyReadError {
+                status,
+                message,
+                failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
+                } else {
+                    PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+                },
+                partial_body: Vec::new(),
+            });
+            live_request_body_error_rx
+                .borrow()
+                .clone()
+                .map_or(snapshot_result, Err)
+        },
         live_first_pool_response,
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,

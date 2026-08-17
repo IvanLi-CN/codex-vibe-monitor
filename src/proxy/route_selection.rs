@@ -1363,11 +1363,19 @@ pub(crate) fn pool_account_supports_live_request_body(
     }) && codex_imagegen_protocol_from_headers(headers).is_none()
         && account.image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
 
+    // `/v1/responses` has a dedicated live body pipeline. It decodes the
+    // downstream request, applies account/OAuth/include-usage semantics, and
+    // encodes the configured upstream representation before transport sees it.
+    // Compression and request rewrites are therefore not exclusions here.
+    if capture_target == Some(ProxyCaptureTarget::Responses) {
+        return true;
+    }
+
     if headers.contains_key(header::CONTENT_ENCODING)
+        || account.request_compression_algorithm != RequestCompressionAlgorithm::Identity
         || fast_mode_rewrite_required
         || image_tool_rewrite_required
         || codex_imagegen_rewrite_required
-        || account.request_compression_algorithm != RequestCompressionAlgorithm::Identity
     {
         return false;
     }
@@ -1785,6 +1793,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     first_request_body_poll_at_rx: &watch::Receiver<Option<Instant>>,
+    oauth_original_request_stream_rx: Option<watch::Receiver<Option<bool>>>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let capability_endpoint = if method == Method::POST {
         original_uri.path()
@@ -2252,6 +2261,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     body,
                     debug_body_prefix: None,
                     request_is_stream: None,
+                    request_is_stream_rx: oauth_original_request_stream_rx,
                     snapshot_kind: None,
                 },
                 attempt_send_timeout,
@@ -4316,6 +4326,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     Some(&pool_attempt_trace_context),
                                     &replay_status_rx,
                                     &replayable_body.first_live_chunk_sent_at_rx,
+                                    None,
                                 )
                                 .await
                                 {

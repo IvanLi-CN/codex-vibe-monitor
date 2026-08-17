@@ -1685,9 +1685,9 @@ pub(crate) struct PoolReplayableRequestBody {
 /// Records the first point at which Hyper polls the replay body. This is later
 /// than the producer enqueueing a chunk, so it is the closest local signal to
 /// the first upstream request byte being consumed by the transport.
-struct TimestampedReplayBodyStream {
-    inner: ReceiverStream<Result<Bytes, io::Error>>,
-    first_polled_at_tx: watch::Sender<Option<Instant>>,
+pub(crate) struct TimestampedReplayBodyStream {
+    pub(crate) inner: ReceiverStream<Result<Bytes, io::Error>>,
+    pub(crate) first_polled_at_tx: watch::Sender<Option<Instant>>,
 }
 
 impl futures_util::Stream for TimestampedReplayBodyStream {
@@ -2799,7 +2799,7 @@ pub(crate) fn counted_http_body_from_bytes(bytes: Bytes, counter: ObservedByteCo
     Body::from_stream(stream)
 }
 
-fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
+pub(crate) fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
 where
     R: AsyncRead + Send + 'static,
 {
@@ -2860,9 +2860,9 @@ pub(crate) fn counted_http_body_from_snapshot(
     }
 }
 
-type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+pub(crate) type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
 
-fn request_compression_preset_to_async_level(
+pub(crate) fn request_compression_preset_to_async_level(
     preset: RequestCompressionLevelPreset,
 ) -> AsyncCompressionLevel {
     match preset {
@@ -2872,7 +2872,7 @@ fn request_compression_preset_to_async_level(
     }
 }
 
-fn resolve_request_body_content_encoding_from_prefix(
+pub(crate) fn resolve_request_body_content_encoding_from_prefix(
     prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -2981,7 +2981,7 @@ async fn count_decoded_request_snapshot_bytes(
     }
 }
 
-fn decode_request_payload_bytes(
+pub(crate) fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,
 ) -> Result<Bytes, PoolRequestBodyPreparationError> {
@@ -3049,7 +3049,7 @@ async fn open_pool_request_snapshot_reader(
     }
 }
 
-async fn decode_pool_request_reader(
+pub(crate) async fn decode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
 ) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
@@ -3077,7 +3077,7 @@ async fn decode_pool_request_reader(
     }
 }
 
-fn encode_pool_request_reader(
+pub(crate) fn encode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
     level: AsyncCompressionLevel,
@@ -3948,7 +3948,7 @@ pub(crate) fn codex_imagegen_audit_has_canonical_namespace(audit: Option<&Value>
             .is_some_and(Vec::is_empty)
 }
 
-fn rewrite_codex_imagegen_tools(
+pub(crate) fn rewrite_codex_imagegen_tools(
     value: &mut Value,
     protocol: CodexImagegenProtocol,
     mode: crate::CodexImagegenRewriteMode,

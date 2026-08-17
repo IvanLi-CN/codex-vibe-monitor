@@ -2831,6 +2831,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             } else {
                                 None
                             },
+                            request_is_stream_rx: None,
                             snapshot_kind: if original_uri.path() == "/v1/responses" {
                                 Some(pool_request_snapshot_kind(snapshot))
                             } else {

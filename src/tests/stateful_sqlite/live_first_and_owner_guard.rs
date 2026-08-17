@@ -7682,7 +7682,7 @@ fn pool_account_supports_live_request_body_allows_codex_keep_original() {
 }
 
 #[test]
-fn pool_account_supports_live_request_body_buffers_codex_rewrite() {
+fn pool_account_supports_live_request_body_transforms_codex_rewrite() {
     let mut account = test_live_first_pool_account(RequestCompressionAlgorithm::Identity);
     account.codex_imagegen_rewrite_mode = crate::CodexImagegenRewriteMode::ForceAdd;
     let headers = HeaderMap::from_iter([(
@@ -7690,7 +7690,27 @@ fn pool_account_supports_live_request_body_buffers_codex_rewrite() {
         HeaderValue::from_static("true"),
     )]);
 
-    assert!(!pool_account_supports_live_request_body(
+    assert!(pool_account_supports_live_request_body(
+        &account,
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        &headers,
+    ));
+}
+
+#[test]
+fn pool_account_supports_live_responses_oauth_and_request_compression() {
+    let mut account = test_live_first_pool_account(RequestCompressionAlgorithm::Zstd);
+    account.auth = PoolResolvedAuth::Oauth {
+        access_token: "oauth-live-first".to_string(),
+        chatgpt_account_id: Some("account-live-first".to_string()),
+    };
+    let headers = HeaderMap::from_iter([(
+        http_header::CONTENT_ENCODING,
+        HeaderValue::from_static("gzip"),
+    )]);
+
+    assert!(pool_account_supports_live_request_body(
         &account,
         &"/v1/responses".parse().expect("valid uri"),
         &Method::POST,
