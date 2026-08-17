@@ -130,6 +130,12 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
         None,
     )
     .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind("irrelevant-to-routing")
+        .execute(&state.pool)
+        .await
+        .expect("assign account group outside the routing read model");
     let model = "gpt-routing-live-api";
     observe_model_route_seen(&state.pool, account_id, Some(model))
         .await
@@ -159,6 +165,13 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert_eq!(live.records.len(), 2);
     assert!(live.records.iter().all(|record| record.kind == "attempt"));
     assert!(live.records.iter().all(|record| record.model == model));
+    let live_json = serde_json::to_value(&live).expect("serialize routing live response");
+    assert!(
+        live_json
+            .pointer("/groups/0/accounts/0/accountGroupName")
+            .is_none()
+    );
+    assert!(live_json.pointer("/records/0/accountGroupName").is_none());
 
     let available_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -223,6 +236,9 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     .await
     .expect("load first model routing history page");
     assert_eq!(first_page.items.len(), 1);
+    let history_json =
+        serde_json::to_value(&first_page).expect("serialize routing history response");
+    assert!(history_json.pointer("/items/0/accountGroupName").is_none());
     let cursor = first_page
         .next_cursor
         .expect("two attempts should yield a next page cursor");

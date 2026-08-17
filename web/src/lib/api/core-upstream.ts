@@ -352,7 +352,6 @@ export type ModelRoutingLiveWindow = "15m" | "1h" | "6h" | "24h";
 export interface ModelRoutingLiveAccount extends ModelRoutingState {
   accountId: number;
   accountDisplayName: string;
-  accountGroupName?: string | null;
 }
 
 export interface ModelRoutingLiveModelGroup {
@@ -366,7 +365,6 @@ export interface ModelRoutingTimelineRecord {
   occurredAt: string;
   accountId: number;
   accountDisplayName: string;
-  accountGroupName?: string | null;
   model: string;
   attemptId?: string | null;
   invokeId?: string | null;
@@ -1601,8 +1599,6 @@ function normalizeModelRoutingTimelineRecord(raw: unknown): ModelRoutingTimeline
     occurredAt,
     accountId: Math.trunc(accountId),
     accountDisplayName,
-    accountGroupName:
-      typeof payload.accountGroupName === "string" ? payload.accountGroupName : null,
     model,
     attemptId: typeof payload.attemptId === "string" ? payload.attemptId : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
@@ -1657,10 +1653,6 @@ function normalizeModelRoutingLiveResponse(raw: unknown): ModelRoutingLiveRespon
           ...route,
           accountId: Math.trunc(accountId),
           accountDisplayName,
-          accountGroupName:
-            typeof accountPayload.accountGroupName === "string"
-              ? accountPayload.accountGroupName
-              : null,
         },
       ];
     });

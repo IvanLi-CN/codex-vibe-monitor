@@ -13,7 +13,6 @@ const data: ModelRoutingLiveResponse = {
         {
           accountId: 11,
           accountDisplayName: "Ciii",
-          accountGroupName: "Primary",
           model: "gpt-5.5",
           state: "available",
           priority: "normal",
@@ -24,7 +23,6 @@ const data: ModelRoutingLiveResponse = {
         {
           accountId: 12,
           accountDisplayName: "Ciii2",
-          accountGroupName: "Fallback",
           model: "gpt-5.5",
           state: "cooling_down",
           priority: "excluded",
@@ -46,7 +44,6 @@ const data: ModelRoutingLiveResponse = {
       occurredAt: "2026-08-16T03:59:20.000Z",
       accountId: 11,
       accountDisplayName: "Ciii",
-      accountGroupName: "Primary",
       model: "gpt-5.5",
       attemptId: "attempt-001",
       invokeId: "invoke-001",

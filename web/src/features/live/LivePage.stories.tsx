@@ -289,7 +289,6 @@ function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
           {
             accountId: 42,
             accountDisplayName: "pool-alpha@example.com",
-            accountGroupName: "Primary",
             model: "gpt-5.4",
             state: "available",
             priority: "normal",
@@ -300,7 +299,6 @@ function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
           {
             accountId: 64,
             accountDisplayName: "pool-recovery@example.com",
-            accountGroupName: "Fallback",
             model: "gpt-5.4",
             state: "cooling_down",
             priority: "excluded",
@@ -321,7 +319,6 @@ function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
         occurredAt: "2026-04-06T11:59:54.000Z",
         accountId: 42,
         accountDisplayName: "pool-alpha@example.com",
-        accountGroupName: "Primary",
         model: "gpt-5.4",
         attemptId: "attempt-7001",
         invokeId: "live-2",
@@ -341,7 +338,6 @@ function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
         occurredAt: "2026-04-06T11:57:32.000Z",
         accountId: 64,
         accountDisplayName: "pool-recovery@example.com",
-        accountGroupName: "Fallback",
         model: "gpt-5.4",
         status: "cooling_down",
         action: "model_route_cooldown",

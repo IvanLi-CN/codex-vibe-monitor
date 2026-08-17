@@ -440,8 +440,8 @@ describe("demo MSW handlers", () => {
       ),
     ]);
     const live = (await liveResponse.json()) as {
-      groups: Array<{ accounts: Array<{ accountId: number }> }>;
-      records: Array<{ kind: string; attemptIndex?: number }>;
+      groups: Array<{ accounts: Array<{ accountId: number; accountGroupName?: unknown }> }>;
+      records: Array<{ kind: string; attemptIndex?: number; accountGroupName?: unknown }>;
     };
     const history = (await historyResponse.json()) as {
       items: Array<{ model: string; kind: string; attemptIndex?: number }>;
@@ -460,6 +460,12 @@ describe("demo MSW handlers", () => {
     ).toEqual(expect.arrayContaining([102, 106]));
     expect(live.records).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "attempt", attemptIndex: 2 })]),
+    );
+    expect(live.groups.flatMap((group) => group.accounts)).not.toContainEqual(
+      expect.objectContaining({ accountGroupName: expect.anything() }),
+    );
+    expect(live.records).not.toContainEqual(
+      expect.objectContaining({ accountGroupName: expect.anything() }),
     );
     expect(history.items).toEqual(
       expect.arrayContaining([

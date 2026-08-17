@@ -15,7 +15,6 @@ const snapshot: ModelRoutingLiveResponse = {
         {
           accountId: 11,
           accountDisplayName: "Ciii",
-          accountGroupName: "primary",
           model: "gpt-5.5-codex",
           state: "available",
           priority: "normal",
@@ -33,7 +32,6 @@ const snapshot: ModelRoutingLiveResponse = {
         {
           accountId: 12,
           accountDisplayName: "Ciii2",
-          accountGroupName: "fallback",
           model: "gpt-5.4-mini",
           state: "cooling_down",
           priority: "excluded",

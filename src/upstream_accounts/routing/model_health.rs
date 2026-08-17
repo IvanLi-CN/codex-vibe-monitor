@@ -60,7 +60,6 @@ struct ModelRouteRow {
 struct ModelRoutingLiveRouteRow {
     account_id: i64,
     account_display_name: String,
-    account_group_name: Option<String>,
     model: String,
     state: String,
     priority: String,
@@ -112,7 +111,6 @@ impl ModelRoutingLiveRouteRow {
         ModelRoutingLiveAccount {
             account_id: self.account_id,
             account_display_name: self.account_display_name,
-            account_group_name: self.account_group_name,
             route,
         }
     }
@@ -294,7 +292,6 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
         r#"
         SELECT routes.account_id,
                accounts.display_name AS account_display_name,
-               accounts.group_name AS account_group_name,
                routes.model,
                routes.state,
                routes.priority,

@@ -76,9 +76,9 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 临时失败模型事件保留原始 HTTP 状态、reason code、failure kind、attempt 关联和精确模型；现有 JSON 字段与数据库 schema 保持兼容。
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
-- `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。
+- `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。实时快照和路由历史不返回账号分组字段；账号分组是账号池管理元数据，不是组合路由维度。
 - 独立模型路由页面默认显示最近 24 小时。页面以模型分组，每个模型块使用 Recharts 甘特图呈现该模型的精确账号组合：账号仅作为 Y 轴泳道标签，不得渲染账号分组、账号列表或跨模型的全局记录列表。色带表示根据真实状态事件可重建的 `available/degraded/cooling_down` 区间；无法重建的间隔必须显示为 `unknown`，不得声称为正常。每个真实选择和每次重试各自显示为独立菱形标记；色带下钻账号模型详情，菱形下钻关联调用。手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
-- `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容。
+- `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容，不返回账号分组字段。
 - `pool.model-routing-live` 实时主题只在独立“模型路由”页面处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
 - “实况”与“模型路由”是并列主导航，不存在包含关系。实况页在共享摘要带下使用“对话 / 最新记录 / 代理”三个内容宽度页签，默认并持久化“对话”；历史遗留的 `routing` 页签选择回退到“对话”。模型路由独立为 `/model-routing` 页面，只承载 API Key 模型路由状态、筛选、决策记录与账号/调用下钻，不渲染对话页签或对话内容。
 - 账号详情登录健康默认显示紧凑状态摘要；异常保持显式可见，低频诊断按需展开。模型健康默认显示一行摘要和操作，展开后显示模型 48 小时历史。
@@ -161,7 +161,7 @@ Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` Autodoc
 空白裁剪=通过（两张模型路由页面截图均经过 `trim_only` 规范化；桌面边缘不均匀而原样保留，移动端没有可安全移除的空白）
 聊天回图=已展示，待主人确认
 证据落盘=已落盘
-代码来源sha=`c8e56bb6`
+代码来源sha=见当前会话确认卡
 证据绑定sha=见当前会话确认卡
 submission_gate=pending-owner-approval
 target_program=mock-only
@@ -169,15 +169,15 @@ sensitive_exclusion=N/A
 
 页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取，页面证据在同一 mock-only 演示路由中以受控 1440×900 和 393×852 CSS 视口采集，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
 
-source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=playwright-css-viewport; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `gpt-5.5` 与 `gpt-5.4-mini` 的 Recharts 24 小时甘特图：账号仅为 Y 轴泳道，灰色未知与绿色可用色带按真实事件重建，菱形为逐次真实请求；页面没有账号分组、账号列表或对话内容。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `gpt-5.5` 与 `gpt-5.4-mini` 的 Recharts 24 小时甘特图：账号仅为 Y 轴泳道，灰色未知与绿色可用色带按真实事件重建，菱形为逐次真实请求；实时快照、历史记录和渲染界面均不含账号分组字段或账号分组布局。
 
 PR: include
-![桌面模型路由页](./assets/model-routing-live-page-desktop.png)
+![桌面模型路由页](./assets/model-routing-account-groups-removed-desktop.png)
 
-source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=playwright-css-viewport; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端自适应 Recharts 甘特图：账号泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内，不需要横向滚动；页面无对话内容或账号列表。
+source_type=ui_demo; route=`/#/model-routing`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端自适应 Recharts 甘特图：账号泳道、起止时间刻度、未知与可用色带以及请求菱形在同一可见图面内，不需要横向滚动；页面不含对话内容、账号列表或账号分组字段。
 
 PR: include
-![移动模型路由页](./assets/model-routing-live-page-mobile.png)
+![移动模型路由页](./assets/model-routing-account-groups-removed-mobile.png)
 
 source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的压缩登录健康摘要、精确模型当前冷却状态、恢复时间、状态事件、同账号重试和 HTTP 502。展开区直接呈现事件，不重复时间窗说明。
 

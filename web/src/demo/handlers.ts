@@ -90,7 +90,6 @@ type DemoModelRoutingLiveQuery = {
 type DemoModelRoutingLiveState = ReturnType<typeof demoModelRoutingStates>[number] & {
   accountId: number;
   accountDisplayName: string;
-  accountGroupName: string | null;
 };
 
 function demoAccounts(): DemoAccount[] {
@@ -139,7 +138,6 @@ function demoModelRouteFixtureTimeline(
   const { accountId, model } = fixture;
   const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
   const accountDisplayName = account?.displayName ?? "示例 API Key";
-  const accountGroupName = account?.groupName ?? null;
   const occurredAt = (offsetMinutes = 0) =>
     demoModelRouteTimestamp(fixture.minutesAgo + offsetMinutes);
   const invocation = invocations().find((record) => record.id === fixture.invocationId);
@@ -162,7 +160,6 @@ function demoModelRouteFixtureTimeline(
     occurredAt: occurredAt(4),
     accountId,
     accountDisplayName,
-    accountGroupName,
     model,
     attemptId: `demo-route-${fixture.invocationId}-1`,
     invokeId,
@@ -185,7 +182,6 @@ function demoModelRouteFixtureTimeline(
     occurredAt: occurredAt(),
     accountId,
     accountDisplayName,
-    accountGroupName,
     model,
     invokeId,
     status: "cooling_down",
@@ -206,7 +202,6 @@ function demoModelRouteFixtureTimeline(
         occurredAt: occurredAt(),
         accountId,
         accountDisplayName,
-        accountGroupName,
         model,
         attemptId: `demo-route-${fixture.invocationId}-1`,
         invokeId,
@@ -232,7 +227,6 @@ function demoModelRouteFixtureTimeline(
         occurredAt: occurredAt(),
         accountId,
         accountDisplayName,
-        accountGroupName,
         model,
         attemptId: `demo-route-${fixture.invocationId}-2`,
         invokeId,
@@ -264,7 +258,6 @@ function demoModelRouteFixtureTimeline(
         occurredAt: occurredAt(),
         accountId,
         accountDisplayName,
-        accountGroupName,
         model,
         invokeId,
         status: "degraded",
@@ -286,7 +279,6 @@ function demoModelRouteFixtureTimeline(
       occurredAt: occurredAt(0.1),
       accountId,
       accountDisplayName,
-      accountGroupName,
       model,
       attemptId: `demo-route-${fixture.invocationId}-2`,
       invokeId,
@@ -345,7 +337,6 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
     group.push({
       accountId: account.id,
       accountDisplayName: account.displayName,
-      accountGroupName: account.groupName,
       ...routeState,
     });
     groupsByModel.set(route.model, group);
