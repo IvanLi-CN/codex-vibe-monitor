@@ -50,7 +50,7 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## `/v1/responses` Live Request Body
 
-- Runtime setting keeps live request-body streaming disabled by default. When enabled for selected account groups, requests are split deterministically into buffered control and live-first treatment cohorts.
+- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and live-first treatment cohorts without an account-group filter.
 - The request pipeline reuses the raw replay snapshot for retries, applies incremental JSON/compression transforms before outbound bytes, and only starts an upstream attempt after routing metadata is known.
 - Invocation persistence and hourly statistics retain exact request/response overlap timestamps so the performance surface compares direct first-response and first-token measurements instead of additive stage estimates.
 

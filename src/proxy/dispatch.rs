@@ -864,7 +864,6 @@ async fn prepare_capture_request_body(
                 &live_settings,
                 invoke_id,
                 capture_target,
-                initial_account.group_name.as_deref(),
                 true,
                 pool_account_supports_live_request_body(
                     &initial_account,
@@ -2484,9 +2483,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 &resolve_live_request_streaming_settings(&settings),
                 &invoke_id,
                 capture_target,
-                pool_account
-                    .as_ref()
-                    .and_then(|account| account.group_name.as_deref()),
                 true,
                 false,
             ),

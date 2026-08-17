@@ -52,7 +52,6 @@ type PoolRoutingSettingsCardProps = {
     cacheHitRateThresholdPercent: string;
     cacheHitOverflowMode: "queue" | "reroute";
     liveRequestStreamingEnabled: boolean;
-    liveRequestStreamingGroupNames: string;
     liveRequestStreamingTreatmentPercent: string;
   };
   busy: boolean;
@@ -73,7 +72,6 @@ type PoolRoutingSettingsCardProps = {
   }) => void;
   onLiveRequestStreamingChange: (patch: {
     liveRequestStreamingEnabled?: boolean;
-    liveRequestStreamingGroupNames?: string;
     liveRequestStreamingTreatmentPercent?: string;
   }) => void;
   onSave: () => void;
@@ -251,21 +249,7 @@ export function PoolRoutingSettingsCard({
               }
             />
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="field">
-              <span className="field-label">
-                {t("settings.routing.liveRequestStreaming.groupNames")}
-              </span>
-              <Input
-                value={draft.liveRequestStreamingGroupNames}
-                disabled={!writesEnabled || busy || !draft.liveRequestStreamingEnabled}
-                onChange={(event) =>
-                  onLiveRequestStreamingChange({
-                    liveRequestStreamingGroupNames: event.target.value,
-                  })
-                }
-              />
-            </label>
+          <div className="grid gap-3">
             <label className="field">
               <span className="field-label">
                 {t("settings.routing.liveRequestStreaming.treatmentPercent")}

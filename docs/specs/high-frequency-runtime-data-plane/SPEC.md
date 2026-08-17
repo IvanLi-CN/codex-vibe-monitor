@@ -29,10 +29,10 @@
 ### `/v1/responses` live request body
 
 - `/v1/responses` 可在 pool 的首轮选路完成后把请求体 live-first 发送给上游；原始下游字节同时持续写入同一份 replay snapshot，failover 从该 snapshot 重建请求体。
-- live-first 只在 runtime setting 显式启用、首轮账号属于配置 group、且增量 probe 已确定 model、image intent、sticky/prompt-cache key 与 encrypted-content 后生效。缺少任一影响选路的信息时继续读取，不得为提前发送改变选路。
+- live-first 只在 runtime setting 显式启用、且增量 probe 已确定 model、image intent、sticky/prompt-cache key 与 encrypted-content 后生效。启用后对所有满足这些选路条件的 `/v1/responses` 请求生效；缺少任一影响选路的信息时继续读取，不得为提前发送改变选路。
 - 逻辑 JSON 的增量变换覆盖 `stream_options.include_usage` 和 OAuth `/v1/responses` 的既有 rewrite 规则。输出以 JSON 语义等价为边界，不承诺字段顺序、空白或压缩字节相同；已经发送前缀后发现非法 JSON 时取消上游并向下游返回现有 `400`。
 - live-first 支持现有 `follow`、`identity`、`gzip`、`deflate` 与 `zstd` 请求压缩策略。变换或重新编码的 body 不携带旧 `Content-Length`；不支持的 inbound encoding 沿用现有拒绝行为。
-- 设置默认关闭。启用 group 内使用 `hash(invoke_id + live_first_revision) % 100` 固定 50/50 control/treatment；control 保持完整缓冲，跨账号重试不改变 variant。现有 failover 语义不因该实验改变，但不确定上游交付必须单独记录。
+- 设置默认关闭。启用后使用 `hash(invoke_id + live_first_revision) % 100` 固定按 treatment 百分比分配 control/treatment；control 保持完整缓冲，跨账号重试不改变 variant。现有 failover 语义不因该实验改变，但不确定上游交付必须单独记录。
 
 ### Projection
 
@@ -70,7 +70,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
-- 现有 pool routing settings additive 暴露 `liveRequestStreaming: { enabled, groupNames, treatmentPercent }`；默认值为 `false`、空 group 列表和 `50`，仅影响 `/v1/responses`。
+- 现有 pool routing settings additive 暴露 `liveRequestStreaming: { enabled, treatmentPercent }`；默认值为 `false` 和 `50`，启用后对所有符合其他请求条件的 `/v1/responses` 生效。
 - `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts`。cohort 使用 `buffered`、`live_first`、`unknown` 三种 transport mode；历史缺字段只能归入 `unknown`。
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 

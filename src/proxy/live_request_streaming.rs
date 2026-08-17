@@ -58,14 +58,13 @@ impl LiveRequestStreamingDecision {
     }
 }
 
-/// Deterministically assigns a selected account group before any request body is
-/// sent. The assignment deliberately uses the invocation id rather than account
-/// id so retries and cross-account failover retain their original cohort.
+/// Deterministically assigns a request cohort before any request body is sent.
+/// The assignment deliberately uses the invocation id rather than account id so
+/// retries and cross-account failover retain their original cohort.
 pub(crate) fn decide_live_request_streaming(
     settings: &LiveRequestStreamingSettings,
     invoke_id: &str,
     target: ProxyCaptureTarget,
-    account_group_name: Option<&str>,
     routing_metadata_ready: bool,
     upstream_transform_supported: bool,
 ) -> LiveRequestStreamingDecision {
@@ -74,9 +73,6 @@ pub(crate) fn decide_live_request_streaming(
     }
     if !settings.enabled {
         return LiveRequestStreamingDecision::buffered("disabled");
-    }
-    if !settings.includes_group(account_group_name) {
-        return LiveRequestStreamingDecision::buffered("account_group_not_selected");
     }
 
     let variant = if live_request_streaming_bucket(invoke_id) < settings.treatment_percent {
@@ -183,18 +179,16 @@ mod tests {
     fn settings(percent: u8) -> LiveRequestStreamingSettings {
         LiveRequestStreamingSettings {
             enabled: true,
-            group_names: vec!["canary".to_string()],
             treatment_percent: percent,
         }
     }
 
     #[test]
-    fn live_first_metrics_assignment_is_stable_and_group_scoped() {
+    fn live_first_metrics_assignment_is_stable_when_enabled() {
         let first = decide_live_request_streaming(
             &settings(50),
             "invoke-1",
             ProxyCaptureTarget::Responses,
-            Some("canary"),
             true,
             true,
         );
@@ -202,23 +196,11 @@ mod tests {
             &settings(50),
             "invoke-1",
             ProxyCaptureTarget::Responses,
-            Some("canary"),
             true,
             true,
         );
         assert_eq!(first, second);
-        assert_eq!(
-            decide_live_request_streaming(
-                &settings(100),
-                "invoke-1",
-                ProxyCaptureTarget::Responses,
-                Some("other"),
-                true,
-                true,
-            )
-            .reason,
-            "account_group_not_selected"
-        );
+        assert!(first.eligible);
     }
 
     #[test]
@@ -248,7 +230,6 @@ mod tests {
                 &settings(0),
                 "invoke-1",
                 ProxyCaptureTarget::Responses,
-                Some("canary"),
                 true,
                 true,
             )
@@ -259,7 +240,6 @@ mod tests {
             &settings(100),
             "invoke-1",
             ProxyCaptureTarget::Responses,
-            Some("canary"),
             false,
             true,
         );

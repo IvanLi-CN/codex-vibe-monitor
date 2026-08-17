@@ -418,7 +418,6 @@ export interface CacheHitProtectionSettings {
 
 export interface LiveRequestStreamingSettings {
   enabled: boolean;
-  groupNames: string[];
   treatmentPercent: number;
 }
 

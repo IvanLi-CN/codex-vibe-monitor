@@ -1770,11 +1770,10 @@ const baseTranslations = {
     "settings.routing.cacheHit.reroute": "Route to another account",
     "settings.routing.liveRequestStreaming.title": "Live request streaming",
     "settings.routing.liveRequestStreaming.description":
-      "Run a controlled /v1/responses request-body streaming experiment for selected account groups.",
-    "settings.routing.liveRequestStreaming.groupNames": "Account groups",
+      "Run a controlled /v1/responses request-body streaming experiment when enabled.",
     "settings.routing.liveRequestStreaming.treatmentPercent": "Treatment (%)",
     "settings.routing.liveRequestStreaming.hint":
-      "Disabled by default. Requests in selected groups stay deterministically split between buffered control and live-first treatment.",
+      "Disabled by default. Requests stay deterministically split between buffered control and live-first treatment.",
     "settings.routing.errors.liveRequestStreamingPercent":
       "Live request streaming treatment must be an integer from 0 to 100.",
     "settings.routing.errors.cacheHitThreshold":
@@ -4756,11 +4755,10 @@ const baseTranslations = {
     "settings.routing.cacheHit.reroute": "改路到其他账号",
     "settings.routing.liveRequestStreaming.title": "实时请求体流式转发",
     "settings.routing.liveRequestStreaming.description":
-      "仅对选定账号组的 /v1/responses 请求进行受控的请求体流式实验。",
-    "settings.routing.liveRequestStreaming.groupNames": "账号组",
+      "开启后，/v1/responses 请求会使用受控的请求体流式转发。",
     "settings.routing.liveRequestStreaming.treatmentPercent": "实验组占比（%）",
     "settings.routing.liveRequestStreaming.hint":
-      "默认关闭。选定账号组内的请求会稳定分配到完整缓冲对照组和 live-first 实验组。",
+      "默认关闭。请求会稳定分配到完整缓冲对照组和 live-first 实验组。",
     "settings.routing.errors.liveRequestStreamingPercent":
       "实时请求体流式转发的实验组占比必须是 0 到 100 的整数。",
     "settings.routing.errors.cacheHitThreshold": "缓存命中阈值必须是 1 到 100 的整数。",
