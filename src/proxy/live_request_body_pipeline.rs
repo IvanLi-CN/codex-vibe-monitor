@@ -492,11 +492,12 @@ impl LiveRootFieldTransformer {
                 }
             }
         }
-        let wants_stream = self
-            .stream
-            .as_ref()
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let wants_stream = self.config.oauth.is_some()
+            || self
+                .stream
+                .as_ref()
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         if let Some(oauth) = self.config.oauth {
             self.oauth_rewrite.added_instructions = self.instructions.is_none();
             self.oauth_rewrite.added_store = self.store.is_none();
@@ -1127,7 +1128,7 @@ mod tests {
             value["client_metadata"]["x-codex-installation-id"],
             Value::String("downstream".to_string())
         );
-        assert!(value.get("stream_options").is_none());
+        assert_eq!(value["stream_options"]["include_usage"], true);
         let rewrite = oauth_rewrite_rx
             .borrow()
             .clone()

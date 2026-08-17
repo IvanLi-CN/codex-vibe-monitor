@@ -2039,8 +2039,12 @@ async fn query_live_request_streaming_perf(
         if requested_group.is_some_and(|group| {
             payload
                 .get("liveFirstAccountGroup")
-                .or_else(|| payload.get("upstreamAccountGroup"))
                 .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    payload
+                        .get("upstreamAccountGroup")
+                        .and_then(serde_json::Value::as_str)
+                })
                 != Some(group)
         }) {
             continue;
@@ -2061,13 +2065,10 @@ async fn query_live_request_streaming_perf(
             continue;
         }
         response_invocation_count += 1;
-        let Some(transport_mode) = payload
+        let transport_mode = payload
             .get("requestBodyTransportMode")
             .and_then(serde_json::Value::as_str)
-        else {
-            // Data written before this release is deliberately unknown, not buffered.
-            continue;
-        };
+            .unwrap_or("unknown");
         measured_invocation_count += 1;
         let key = format!("{cohort}:{transport_mode}");
         let entry = by_cohort.entry(key).or_default();

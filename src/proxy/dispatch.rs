@@ -2374,11 +2374,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .as_secs_f64()
                 * 1_000.0
         }),
-        first_attempt_failed: live_first_attempt_failed,
+        first_attempt_failed: live_first_attempt_failed
+            || pending_pool_attempt_summary.pool_attempt_count > 1,
         fallback_or_retry: live_first_attempt_failed
             || pending_pool_attempt_summary.pool_attempt_count > 1,
         capture_failed: false,
-        ambiguous_upstream_delivery: live_first_attempt_failed,
+        ambiguous_upstream_delivery: live_first_attempt_failed
+            || pending_pool_attempt_summary.pool_attempt_count > 1,
         upstream_account_group: pool_account
             .as_ref()
             .and_then(|account| account.group_name.clone()),
