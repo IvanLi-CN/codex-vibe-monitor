@@ -2,31 +2,32 @@ import { describe, expect, it } from "vitest";
 import { resolveInvocationLivePhase, sumInvocationPhaseCounts } from "./invocationPhase";
 
 describe("resolveInvocationLivePhase", () => {
-  it("uses the backend live phase for in-flight invocations", () => {
+  it("uses the backend live phase for in-flight invocations after first token", () => {
     expect(
       resolveInvocationLivePhase({
         status: "running",
         failureClass: "none",
         livePhase: "responding",
+        firstTokenMs: 42,
       }),
     ).toBe("responding");
   });
 
-  it("falls back to timings for non-pool running invocations", () => {
+  it("uses measured first-token time before declaring a running invocation responding", () => {
     expect(
       resolveInvocationLivePhase({
         status: "running",
         failureClass: "none",
         tUpstreamTtfbMs: 42,
       }),
-    ).toBe("responding");
+    ).toBe("queued");
     expect(
       resolveInvocationLivePhase({
         status: "running",
         failureClass: "none",
-        tReqParseMs: 3,
+        firstTokenMs: 42,
       }),
-    ).toBe("requesting");
+    ).toBe("responding");
   });
 
   it("does not treat zero placeholder timings as response progress", () => {
@@ -34,8 +35,7 @@ describe("resolveInvocationLivePhase", () => {
       resolveInvocationLivePhase({
         status: "running",
         failureClass: "none",
-        tUpstreamTtfbMs: 0,
-        tUpstreamStreamMs: 0,
+        firstTokenMs: 0,
       }),
     ).toBe("queued");
     expect(
@@ -44,6 +44,18 @@ describe("resolveInvocationLivePhase", () => {
         failureClass: "none",
         tReqReadMs: 2,
         tUpstreamTtfbMs: 0,
+      }),
+    ).toBe("requesting");
+  });
+
+  it("downgrades an inconsistent explicit responding phase until first-token timing arrives", () => {
+    expect(
+      resolveInvocationLivePhase({
+        status: "running",
+        failureClass: "none",
+        livePhase: "responding",
+        tUpstreamConnectMs: 12,
+        firstTokenMs: null,
       }),
     ).toBe("requesting");
   });

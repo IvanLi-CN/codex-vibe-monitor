@@ -485,14 +485,14 @@ function CompactLatencyPills({
     >
       <span
         data-testid="dashboard-compact-latency-first-byte"
-        className="inline-flex min-w-0 items-center gap-1 text-secondary"
+        className="inline-flex min-w-0 items-center gap-0.5 text-secondary"
       >
         <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
       </span>
       <span
         data-testid="dashboard-compact-latency-response-time"
-        className="inline-flex min-w-0 items-center gap-1 text-primary"
+        className="inline-flex min-w-0 items-center gap-0.5 text-primary"
       >
         <AppIcon name="speedometer" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{responseTimeValue}</span>
@@ -869,23 +869,12 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
 }
 
-function countCompactDisplayDigits(value: number) {
-  const absoluteValue = Math.abs(value);
-  if (absoluteValue < 1) return 1;
-  return Math.trunc(absoluteValue).toString().length;
-}
-
-function resolveCompactSecondsFractionDigits(seconds: number) {
-  return Math.max(0, Math.min(2, 4 - countCompactDisplayDigits(seconds)));
-}
-
 function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
   if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
 
   const seconds = value / 1000;
-  const firstPassFractionDigits = resolveCompactSecondsFractionDigits(seconds);
-  const firstPassRounded = Number(seconds.toFixed(firstPassFractionDigits));
-  const fractionDigits = resolveCompactSecondsFractionDigits(firstPassRounded);
+  const roundedTenths = Math.round(seconds * 10) / 10;
+  const fractionDigits = roundedTenths >= 100 ? 0 : 1;
   const rounded = Number(seconds.toFixed(fractionDigits));
 
   return `${rounded.toLocaleString(localeTag, {
@@ -895,14 +884,9 @@ function formatCompactLatencySecondsValue(value: number | null | undefined, loca
   })} s`;
 }
 
-function formatCompactElapsedSecondsFromTimestamp(
-  occurredAt: string | null | undefined,
-  localeTag: string,
-  nowMs: number,
-) {
-  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
-  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
-  return formatCompactLatencySecondsValue(Math.max(0, nowMs - occurredMs), localeTag);
+function formatCompactResponseTimeValue(value: number | null | undefined, localeTag: string) {
+  const formattedValue = formatCompactLatencySecondsValue(value, localeTag);
+  return formattedValue === FALLBACK_CELL ? "--" : formattedValue;
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -2094,15 +2078,14 @@ function AccountRecentInvocationRow({
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
   const compactLatencyValues = useMemo(() => {
-    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue:
-        normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
+      responseTimeValue: formatCompactResponseTimeValue(
+        invocation.record.tUpstreamStreamMs,
+        localeTag,
+      ),
     };
-  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  }, [invocation.record, localeTag]);
   const recentSummaryFields = useMemo(
     () =>
       buildInvocationSummaryFields({
@@ -2504,15 +2487,14 @@ function InvocationSlot({
     [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
   );
   const compactLatencyValues = useMemo(() => {
-    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue:
-        normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
+      responseTimeValue: formatCompactResponseTimeValue(
+        invocation.record.tUpstreamStreamMs,
+        localeTag,
+      ),
     };
-  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  }, [invocation.record, localeTag]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -2561,9 +2543,9 @@ function InvocationSlot({
     >
       <div
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1"
+        className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
       >
-        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
           <div
             data-testid="dashboard-working-conversation-slot-time"
             className="shrink-0 font-mono text-[10px] text-base-content/72"
@@ -2588,10 +2570,10 @@ function InvocationSlot({
                 modelTestId="dashboard-working-conversation-model-name"
               />
             ) : (
-              <div className="flex min-w-0 flex-1 items-center gap-1">
+              <div className="flex min-w-0 flex-1 items-center gap-0.5">
                 <span
                   data-testid="dashboard-working-conversation-model-name"
-                  className="min-w-[2.5rem] flex-1 truncate whitespace-nowrap"
+                  className="min-w-0 max-w-full shrink truncate whitespace-nowrap"
                 >
                   {renderInvocationModelChip(viewModel.modelValue, {
                     t,
@@ -2606,7 +2588,7 @@ function InvocationSlot({
                 <InvocationReasoningEffortChip
                   value={viewModel.reasoningEffortValue}
                   testId="dashboard-working-conversation-reasoning-effort"
-                  className="min-w-0 max-w-[3rem] shrink px-1"
+                  className="h-4 min-h-4 max-w-[4rem] shrink-0 px-1 py-0 text-[8.5px]"
                 />
                 {fastIndicator ? (
                   <>
@@ -2620,9 +2602,9 @@ function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-nowrap items-center justify-end gap-1"
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-0"
         >
-          <div className="flex min-w-0 shrink items-center justify-end gap-1">
+          <div className="flex min-w-0 shrink items-center justify-end gap-0">
             {invocation.livePhase ? (
               <InvocationPhaseChip
                 phase={invocation.livePhase}
@@ -2640,7 +2622,7 @@ function InvocationSlot({
             )}
             {renderInvocationTransportChip(invocation.record, "h-5 px-1.5 text-[9.5px]")}
             <div className="flex h-5 shrink items-center">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-0">
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
@@ -2658,7 +2640,7 @@ function InvocationSlot({
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
-            className="shrink-0 flex-nowrap gap-1 text-[11px]"
+            className="shrink-0 flex-nowrap gap-0.5 text-[10px]"
           />
         </div>
       </div>

@@ -474,6 +474,7 @@ const BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_SEEDS = [
     reasoningTokens: 600,
     tUpstreamConnectMs: 164,
     tUpstreamTtfbMs: 920,
+    firstTokenMs: 1_340,
     tUpstreamStreamMs: 11_480,
     tTotalMs: 13_970,
     requestedServiceTier: "priority",
@@ -1194,6 +1195,7 @@ function createRunningOnlyResponse() {
         livePhase: "responding",
         upstreamAccountName: "watch-alpha@example.com",
         reasoningEffort: "medium",
+        firstTokenMs: 860,
         tTotalMs: null,
       }),
       createPreview({
@@ -1327,6 +1329,7 @@ function createPoolRoutingAccountStatesResponse() {
         livePhase: "responding",
         upstreamAccountId: 42,
         upstreamAccountName: "pool-alpha@example.com",
+        firstTokenMs: 860,
         tTotalMs: null,
       }),
     ]),
@@ -2056,20 +2059,23 @@ const createdAtDescendingOrderResponse = createResponse([
   ),
 ]);
 
+const wideDesktopRunningCurrent = createPreview({
+  id: 81,
+  invokeId: "invoke-wide-running-current",
+  occurredAt: createRelativeStoryIso(-35_000),
+  status: "running",
+  reasoningEffort: "medium",
+  upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
+  endpoint: "/v1/responses/compact",
+  tTotalMs: null,
+});
+wideDesktopRunningCurrent.tUpstreamStreamMs = null;
+
 const wideDesktopResponse = createResponse([
   createConversation(
     "pck-wide-running",
     [
-      createPreview({
-        id: 81,
-        invokeId: "invoke-wide-running-current",
-        occurredAt: "2026-04-04T10:04:58Z",
-        status: "running",
-        reasoningEffort: "medium",
-        upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
-        endpoint: "/v1/responses/compact",
-        tTotalMs: null,
-      }),
+      wideDesktopRunningCurrent,
       createPreview({
         id: 80,
         invokeId: "invoke-wide-running-previous",
@@ -2154,7 +2160,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 121,
       invokeId: "invoke-wide-pending-current",
-      occurredAt: "2026-04-04T10:03:58Z",
+      occurredAt: createRelativeStoryIso(-12_000),
       status: "pending",
       upstreamAccountName: "wide-pending@example.com",
       tTotalMs: null,
@@ -2195,7 +2201,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 141,
       invokeId: "invoke-wide-running-b-current",
-      occurredAt: "2026-04-04T10:02:44Z",
+      occurredAt: createRelativeStoryIso(-65_000),
       status: "running",
       upstreamAccountName: "wide-running-b@example.com",
       tTotalMs: null,
@@ -3526,7 +3532,20 @@ export const CurrentAndPrevious: Story = {
     const responseLatency = currentSlot.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+    const reasoningEffort = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+    );
+    const reasoningText = reasoningEffort?.querySelector("span");
+    const modelIdentity = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-model-identity"]',
+    );
+    if (
+      !(firstByteLatency instanceof HTMLElement) ||
+      !(responseLatency instanceof HTMLElement) ||
+      !(reasoningEffort instanceof HTMLElement) ||
+      !(reasoningText instanceof HTMLElement) ||
+      !(modelIdentity instanceof HTMLElement)
+    ) {
       throw new Error("missing compact latency readings");
     }
     const slotHeader = currentSlot.querySelector(
@@ -3546,6 +3565,14 @@ export const CurrentAndPrevious: Story = {
     ).toHaveLength(3);
     await expect(slotHeader).toContainElement(firstByteLatency);
     await expect(slotHeader).toContainElement(responseLatency);
+    await expect(firstByteLatency).toHaveTextContent("0.7 s");
+    await expect(responseLatency).toHaveTextContent("0.3 s");
+    await expect(reasoningEffort).toHaveTextContent("medium");
+    await expect(reasoningText.scrollWidth).toBeLessThanOrEqual(reasoningText.clientWidth);
+    await expect(reasoningEffort.getBoundingClientRect().height).toBeLessThanOrEqual(17);
+    await expect(
+      reasoningEffort.getBoundingClientRect().left - modelIdentity.getBoundingClientRect().right,
+    ).toBeLessThanOrEqual(8);
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
     const imageBadge = currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]');
@@ -4736,6 +4763,9 @@ export const UpstreamAccountRecentLayout: Story = {
     ) {
       throw new Error("missing upstream account recent layout row");
     }
+    await expect(
+      recentRow.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+    ).toHaveTextContent("--");
 
     expect(accountGrid.className).toContain("items-start");
     expect(errorCard.className).not.toContain("h-full");
@@ -6499,6 +6529,10 @@ export const WideDesktop1660: Story = {
     await expect(controls.children.item(1)?.getAttribute("data-testid")).toBe(
       "dashboard-working-conversations-actions",
     );
+    const responseTimes = Array.from(
+      canvasElement.querySelectorAll('[data-testid="dashboard-compact-latency-response-time"]'),
+    ).map((element) => element.textContent);
+    await expect(responseTimes).toContain("--");
   },
 };
 

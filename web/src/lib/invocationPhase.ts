@@ -12,7 +12,7 @@ type InvocationPhaseSource = Pick<
   | "tReqParseMs"
   | "tUpstreamConnectMs"
   | "tUpstreamTtfbMs"
-  | "tUpstreamStreamMs"
+  | "firstTokenMs"
 >;
 
 export type InvocationPhaseChipTone = "warning" | "info" | "secondary";
@@ -40,21 +40,7 @@ function hasFiniteTiming(value: number | null | undefined): boolean {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
-export function resolveInvocationLivePhase(
-  record: InvocationPhaseSource,
-): InvocationLivePhase | null {
-  const displayStatus = resolveInvocationDisplayStatus(record);
-  const normalizedStatus = displayStatus.trim().toLowerCase();
-  if (normalizedStatus !== "running" && normalizedStatus !== "pending") {
-    return null;
-  }
-
-  const explicitPhase = normalizePhase(record.livePhase);
-  if (explicitPhase) return explicitPhase;
-  if (normalizedStatus === "pending") return "queued";
-  if (hasFiniteTiming(record.tUpstreamTtfbMs) || hasFiniteTiming(record.tUpstreamStreamMs)) {
-    return "responding";
-  }
+function resolvePreResponsePhase(record: InvocationPhaseSource): InvocationLivePhase {
   if (
     record.upstreamAccountId != null ||
     hasFiniteTiming(record.tUpstreamConnectMs) ||
@@ -64,6 +50,26 @@ export function resolveInvocationLivePhase(
     return "requesting";
   }
   return "queued";
+}
+
+export function resolveInvocationLivePhase(
+  record: InvocationPhaseSource,
+): InvocationLivePhase | null {
+  const displayStatus = resolveInvocationDisplayStatus(record);
+  const normalizedStatus = displayStatus.trim().toLowerCase();
+  if (normalizedStatus !== "running" && normalizedStatus !== "pending") {
+    return null;
+  }
+
+  const hasFirstToken = hasFiniteTiming(record.firstTokenMs);
+  const explicitPhase = normalizePhase(record.livePhase);
+  if (explicitPhase === "responding" && !hasFirstToken) {
+    return resolvePreResponsePhase(record);
+  }
+  if (explicitPhase) return explicitPhase;
+  if (normalizedStatus === "pending") return "queued";
+  if (hasFirstToken) return "responding";
+  return resolvePreResponsePhase(record);
 }
 
 export function getInvocationPhaseDisplay(phase: InvocationLivePhase): InvocationPhaseDisplay {

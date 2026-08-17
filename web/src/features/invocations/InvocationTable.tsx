@@ -69,6 +69,21 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
 const INVOCATION_CARD_GAP_PX = 12;
 
+function formatCompactLatencySeconds(
+  value: number | null | undefined,
+  localeTag: string,
+  fallback: string,
+) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  const roundedSeconds = Math.round((value / 1000) * 10) / 10;
+  const maximumFractionDigits = roundedSeconds >= 100 ? 0 : 1;
+  return `${roundedSeconds.toLocaleString(localeTag, {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  })} s`;
+}
+
 function FittedInvocationId({ invokeId, className }: { invokeId: string; className?: string }) {
   const containerRef = useRef<HTMLSpanElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -206,7 +221,6 @@ export function InvocationCardList({
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const [highlightedInvokeId, setHighlightedInvokeId] = useState<string | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const measureRefs = useRef(new Map<number, HTMLElement>());
   const handledScrollTargetVersionRef = useRef<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
@@ -517,18 +531,6 @@ export function InvocationCardList({
           end: (index + 1) * estimateRowSize(index),
           lane: 0,
         }));
-  const hasVisibleInFlightRows = useMemo(
-    () => fallbackVirtualRows.some((virtualRow) => rows[virtualRow.index]?.livePhase != null),
-    [fallbackVirtualRows, rows],
-  );
-
-  useEffect(() => {
-    if (!hasVisibleInFlightRows) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [hasVisibleInFlightRows]);
-
   const totalVirtualSize =
     virtualRows.length > 0
       ? rowVirtualizer.getTotalSize()
@@ -665,26 +667,8 @@ export function InvocationCardList({
     ? Math.max(0, totalVirtualSize - (lastVirtualRow.end - scrollMargin))
     : 0;
 
-  const formatElapsed = (occurredAt: string, fallback: string) => {
-    const occurredMs = Date.parse(occurredAt);
-    if (!Number.isFinite(occurredMs)) return fallback;
-    const seconds = Math.max(0, nowMs - occurredMs) / 1000;
-    const fractionDigits = seconds >= 10 ? 1 : 2;
-    return `${seconds.toLocaleString(localeTag, {
-      useGrouping: false,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: fractionDigits,
-    })} s`;
-  };
-
   const formatSummaryDuration = (value: number | null) => {
-    if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
-    const seconds = value / 1000;
-    return `${seconds.toLocaleString(localeTag, {
-      useGrouping: false,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: seconds >= 10 ? 1 : 2,
-    })} s`;
+    return formatCompactLatencySeconds(value, localeTag, FALLBACK_CELL);
   };
 
   const formatSummaryNumber = (value: number) => numberFormatter.format(value);
@@ -698,7 +682,7 @@ export function InvocationCardList({
       value: formatSummaryDuration(listSummary.averageFirstToken),
       detail: formatSummaryDuration(listSummary.averageResponse),
       icon: "timer-outline" as const,
-      tone: "text-info",
+      tone: "text-success",
     },
     {
       key: "requests",
@@ -750,18 +734,12 @@ export function InvocationCardList({
       event.preventDefault();
       handleToggle();
     };
-    const firstTokenValue =
-      row.record.firstTokenMs != null && Number.isFinite(row.record.firstTokenMs)
-        ? row.firstTokenValue
-        : row.livePhase
-          ? formatElapsed(row.record.occurredAt, FALLBACK_CELL)
-          : FALLBACK_CELL;
-    const responseDurationValue =
-      row.record.tUpstreamStreamMs != null && Number.isFinite(row.record.tUpstreamStreamMs)
-        ? row.responseDurationValue
-        : row.livePhase
-          ? formatElapsed(row.record.occurredAt, FALLBACK_CELL)
-          : FALLBACK_CELL;
+    const firstTokenValue = formatCompactLatencySeconds(row.record.firstTokenMs, localeTag, "--");
+    const responseDurationValue = formatCompactLatencySeconds(
+      row.record.tUpstreamStreamMs,
+      localeTag,
+      "--",
+    );
     const cacheReadTokens = Math.max(0, row.record.cacheInputTokens ?? 0);
     const cacheWriteTokens = Math.max(
       0,
@@ -866,9 +844,9 @@ export function InvocationCardList({
               {renderImageIntentChip(row.imageIntentDisplay, t, "h-5 px-1.5 text-[10px]")}
             </span>
           </span>
-          <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums text-info">
+          <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums">
             <span
-              className="inline-flex items-center gap-1"
+              className="inline-flex items-center gap-1 text-success"
               data-testid="invocation-card-ttft"
               title={`${t("table.column.firstTokenShort")}: ${firstTokenValue}`}
             >
@@ -876,7 +854,7 @@ export function InvocationCardList({
               {t("table.column.firstTokenShort")} {firstTokenValue}
             </span>
             <span
-              className="inline-flex items-center gap-1"
+              className="inline-flex items-center gap-1 text-info"
               data-testid="invocation-card-response"
               title={`${t("table.column.responseDurationShort")}: ${responseDurationValue}`}
             >

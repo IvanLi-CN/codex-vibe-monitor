@@ -178,6 +178,7 @@ function createPreview(
     tReqParseMs: overrides.tReqParseMs ?? 7,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 90,
     tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 70,
+    firstTokenMs: overrides.firstTokenMs,
     tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
@@ -2580,6 +2581,7 @@ describe("DashboardWorkingConversationsSection", () => {
             invokeId: "invoke-header",
             occurredAt: "2026-04-04T10:04:00Z",
             status: "running",
+            firstTokenMs: 720,
           }),
         ]),
       ]),
@@ -4733,6 +4735,7 @@ describe("DashboardWorkingConversationsSection", () => {
           invokeId: "invoke-sequence-current",
           occurredAt: "2026-04-04T10:04:00Z",
           status: "running",
+          firstTokenMs: 720,
         }),
         createPreview({
           id: 1,
@@ -6265,26 +6268,28 @@ describe("DashboardWorkingConversationsSection", () => {
     });
   });
 
-  it("formats dashboard latency pills with at most two decimals and without overflowing past four digits", () => {
+  it("formats dashboard latency pills with at most one decimal and keeps in-progress response time unavailable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+    const currentInvocation = createPreview({
+      id: 71,
+      invokeId: "invoke-latency-current",
+      occurredAt: "2026-04-04T10:04:57.744Z",
+      status: "running",
+      livePhase: "responding",
+      tReqReadMs: 400,
+      tReqParseMs: 100,
+      tUpstreamConnectMs: 700,
+      tUpstreamTtfbMs: 1_056,
+      firstTokenMs: 1_234,
+      tTotalMs: null,
+    });
+    currentInvocation.tUpstreamStreamMs = null;
 
     renderSection(
       createResponse([
         createConversation("pck-latency-compact", [
-          createPreview({
-            id: 71,
-            invokeId: "invoke-latency-current",
-            occurredAt: "2026-04-04T10:04:57.744Z",
-            status: "running",
-            livePhase: "responding",
-            tReqReadMs: 400,
-            tReqParseMs: 100,
-            tUpstreamConnectMs: 700,
-            tUpstreamTtfbMs: 1_056,
-            tUpstreamStreamMs: null,
-            tTotalMs: null,
-          }),
+          currentInvocation,
           createPreview({
             id: 70,
             invokeId: "invoke-latency-previous",
@@ -6294,7 +6299,17 @@ describe("DashboardWorkingConversationsSection", () => {
             tReqParseMs: 36,
             tUpstreamConnectMs: 100,
             tUpstreamTtfbMs: 0,
+            firstTokenMs: 7_890,
             tUpstreamStreamMs: 8_028_073.3,
+            tTotalMs: 0,
+          }),
+          createPreview({
+            id: 69,
+            invokeId: "invoke-latency-earlier",
+            occurredAt: "2026-04-04T10:02:00.000Z",
+            status: "completed",
+            firstTokenMs: 99_950,
+            tUpstreamStreamMs: 100_000,
             tTotalMs: 0,
           }),
         ]),
@@ -6306,13 +6321,66 @@ describe("DashboardWorkingConversationsSection", () => {
     )
       .map((element) => element.textContent ?? "")
       .join(" ");
+    const latencySlots = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]') ?? [],
+    );
+    expect(latencySlots).toHaveLength(3);
+    expect(
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("1.2 s");
+    expect(
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.textContent,
+    ).toContain("--");
+    expect(
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("7.9 s");
+    expect(
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.textContent,
+    ).toContain("8028 s");
+    expect(
+      latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("100 s");
 
-    expect(readings).toContain("2.26 s");
+    expect(readings).toContain("1.2 s");
+    expect(readings).toContain("--");
+    expect(readings).toContain("7.9 s");
     expect(readings).toContain("8028 s");
-    expect(readings).not.toContain("2.256 s");
+    expect(readings).toContain("100 s");
+    expect(readings).not.toContain("1.234 s");
+    expect(readings).not.toContain("2.3 s");
+    expect(readings).not.toContain("7.89 s");
+    expect(readings).not.toContain("100.0 s");
     expect(readings).not.toContain("8,028");
 
     vi.useRealTimers();
+  });
+
+  it("keeps in-progress upstream account recent response time unavailable", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = null;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const responseTime = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-response-time"]',
+    );
+    expect(responseTime?.textContent).toBe("--");
   });
 
   it("toggles selection mode on conversation cards and restores navigation after exit", async () => {

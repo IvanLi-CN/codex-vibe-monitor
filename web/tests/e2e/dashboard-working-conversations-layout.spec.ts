@@ -670,6 +670,38 @@ test.describe("Dashboard working conversations responsive layout", () => {
       );
       if (!slotTime) throw new Error("missing slot time geometry anchor");
       const timeRect = slotTime.getBoundingClientRect();
+      const reasoningTextOverflow = Array.from(
+        card.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
+        ),
+      ).some((text) => text.scrollWidth > text.clientWidth);
+      const reasoningContextGap = Math.max(
+        0,
+        ...Array.from(
+          slot.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => {
+          const modelIdentity = reasoningEffort
+            .closest<HTMLElement>('[data-testid="dashboard-working-conversation-slot-model"]')
+            ?.querySelector<HTMLElement>(
+              '[data-testid="dashboard-working-conversation-model-identity"]',
+            );
+          if (!modelIdentity) return 0;
+          return (
+            reasoningEffort.getBoundingClientRect().left -
+            modelIdentity.getBoundingClientRect().right
+          );
+        }),
+      );
+      const reasoningChipHeight = Math.max(
+        0,
+        ...Array.from(
+          slot.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
+      );
 
       return {
         chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
@@ -677,6 +709,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
         usageRightDelta: Math.abs(usageRect.right - accountLine.getBoundingClientRect().right),
         lineOverflowRight: lineRect.right - slotRect.right,
         lineHeight: lineRect.height,
+        reasoningTextOverflow,
+        reasoningContextGap,
+        reasoningChipHeight,
       };
     });
 
@@ -685,6 +720,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.usageRightDelta).toBeLessThanOrEqual(1);
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1);
     expect(layout.lineHeight).toBeLessThan(32);
+    expect(layout.reasoningTextOverflow).toBe(false);
+    expect(layout.reasoningContextGap).toBeLessThanOrEqual(8);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
   });
 
   test("keeps three slots and two-line records inside a narrow viewport", async ({ page }) => {
@@ -723,6 +761,19 @@ test.describe("Dashboard working conversations responsive layout", () => {
           '[data-testid="dashboard-working-conversation-account-line"]',
         ),
       );
+      const reasoningTextOverflow = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
+        ),
+      ).some((text) => text.scrollWidth > text.clientWidth);
+      const reasoningChipHeight = Math.max(
+        0,
+        ...Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
+      );
       return {
         rootOverflow: root.scrollWidth - root.clientWidth,
         cards: cards.length,
@@ -747,6 +798,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
               line.parentElement!.getBoundingClientRect().right,
           ),
         ),
+        reasoningTextOverflow,
+        reasoningChipHeight,
       };
     });
 
@@ -756,6 +809,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.labels).toBe(0);
     expect(layout.usageRightAligned).toBe(true);
     expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
+    expect(layout.reasoningTextOverflow).toBe(false);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
   });
 
   test("keeps long recent error summaries inside their upstream account cards", async ({

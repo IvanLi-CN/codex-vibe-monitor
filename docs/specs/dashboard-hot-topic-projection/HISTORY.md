@@ -8,6 +8,7 @@
 - 将 activity topic 的 `recentLimit` 固定为 16，动态显示数量改由客户端本地截断，避免数据变化触发 SSE descriptor 重建。
 - 将 working-conversations 卡片固定为 current/previous/earlier 三槽位：三条记录共享既有 16 条 recent 预览，缺失时保留紧凑占位，从而让卡片扫描密度稳定且不引入新的后端数据合同。
 - 将每个正常槽位收紧为“时间 + 模型 + 读取状态”与“账号 + 右端用量”两行；失败槽位额外保留无 label 的错误摘要，以保持诊断能力并消除重复的 owner-facing label。
+- 将工作对话卡片、上游账号卡片 recent 行及账号详情调用记录的紧凑延迟显示收敛为最多一位小数，并在四舍五入后达到 100 秒时显示整数；TTFT 与响应耗时分别统一为 `firstTokenMs` 与 `tUpstreamStreamMs`，请求或排队中缺失字段显示 `--`，响应中保留已测得的 TTFT 而未完成响应耗时显示 `--`。持久化 SQL、SSE 运行时回退与客户端不再以 `tUpstreamTtfbMs`、流耗时或经过时长判定“响应中”，避免以不同的指标冒充 TTFT；账号详情 TTFT 统一使用绿色，并修复深色主题 `surface-card` 的浅色残留。
 - 将 working-conversations Storybook 的默认 workspace view 固定为 `conversations`，并让移动视觉证据沿用 `bg-base-200` 边距，避免前序 Story 的持久化视图或临时截图边框制造错误的留白状态。
 - 将 System Status additive 诊断视为允许的 owner-facing 只读变更；Dashboard 的既有交互和公开数据合同保持不变。
 

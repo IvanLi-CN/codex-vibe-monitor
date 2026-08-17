@@ -232,9 +232,7 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
         "CASE \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'pending' THEN '{queued}' \
-           WHEN {attempt_phase} = 'streaming_response' \
-             OR ({invocation_ref}.t_upstream_ttfb_ms IS NOT NULL AND {invocation_ref}.t_upstream_ttfb_ms > 0) \
-             OR ({invocation_ref}.t_upstream_stream_ms IS NOT NULL AND {invocation_ref}.t_upstream_stream_ms > 0) THEN '{responding}' \
+           WHEN {invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms > 0 THEN '{responding}' \
            WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
              OR {upstream_account_id} IS NOT NULL \
              OR ({invocation_ref}.t_upstream_connect_ms IS NOT NULL AND {invocation_ref}.t_upstream_connect_ms > 0) \
@@ -261,7 +259,7 @@ pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'
     match normalized_runtime_text(record.status.as_deref()).as_str() {
         "pending" => Some(INVOCATION_LIVE_PHASE_QUEUED),
         "running" => {
-            if has_positive_timing(&[record.t_upstream_ttfb_ms, record.t_upstream_stream_ms]) {
+            if has_positive_timing(&[record.first_token_ms]) {
                 Some(INVOCATION_LIVE_PHASE_RESPONDING)
             } else if record.upstream_account_id.is_some()
                 || has_positive_timing(&[
@@ -276,6 +274,21 @@ pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod invocation_live_phase_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_live_phase_requires_a_measured_first_token_to_be_responding() {
+        let sql = invocation_live_phase_sql("invocation");
+
+        assert!(sql.contains("invocation.first_token_ms IS NOT NULL"));
+        assert!(!sql.contains("t_upstream_ttfb_ms IS NOT NULL"));
+        assert!(!sql.contains("t_upstream_stream_ms IS NOT NULL"));
+        assert!(!sql.contains("streaming_response"));
     }
 }
 

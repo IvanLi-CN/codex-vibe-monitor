@@ -51,6 +51,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
 - working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留两行中性占位。该展示数量不改变 HTTP/SSE wire shape、`recentInvocationLimit=16` 或后端 compact 默认值。
 - 三个槽位的正常/进行中记录与缺失占位均保持两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。
+- 工作对话卡片、上游账号卡片的 recent 调用行与账号详情调用记录使用相同的紧凑延迟合同：秒值最多保留一位小数；按十分之一秒四舍五入后达到 `100 s` 时显示整数。TTFT 使用 `firstTokenMs`，响应耗时始终使用 `tUpstreamStreamMs`；HTTP、SSE 与客户端运行时阶段都只可在 `firstTokenMs` 已测得时声明“响应中”，不得以 `tUpstreamTtfbMs`、流耗时或 `now - occurredAt` 的经过时长替代。请求或排队中两项未产生时显示 `--`，响应中必须已有并显示 TTFT，而尚未结束的响应耗时显示 `--`。TTFT 使用与其他成功指标一致的绿色。
 - parallel-work 必须复用既有 minute-key/hourly rollup baseline，并以 current boundary identities 和 runtime overlay 精确维护 `today`、`1d`、`7d`；`yesterday` 必须作为 `ClosedSnapshot`，不受当前 mutation 触发。
 - open-window timeseries 必须复用 `timeseries_minute_projection_v2`，并以 terminal/runtime revisions 更新当前桶；健康发布不得调用通用 timeseries fetch builder。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
@@ -200,6 +201,24 @@ The mobile component capture keeps the Storybook `bg-base-200` surface as its ev
 
 PR: none
 ![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
+
+### Account detail invocations
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: element
+requested_viewport: 1660x900
+viewport_strategy: browser-resize-fallback
+margin_policy: require_margin
+evidence_surface: component
+sensitive_exclusion: N/A
+submission_gate: pending-owner-approval
+story_id_or_title: Monitoring/InvocationCardList/InFlightResponseDurationUnavailable
+state: responding invocation with measured `firstTokenMs` and no `tUpstreamStreamMs`
+evidence_note: The normal 1104px desktop card shows a measured green TTFT and an unavailable response duration, with no horizontal overflow.
+
+PR: none
+![Account detail invocation in-flight timing unavailable desktop](./assets/account-detail-invocation-inflight-timing-desktop.png)
 
 ## Related PRs
 

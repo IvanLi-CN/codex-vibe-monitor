@@ -132,6 +132,17 @@ const records: ApiInvocation[] = [
   },
 ];
 
+const inFlightResponseDurationUnavailableRecords: ApiInvocation[] = [
+  {
+    ...records[0],
+    id: -1004,
+    invokeId: "inv_storybook_inflight_response_duration_unavailable",
+    status: "running",
+    firstTokenMs: 742.6,
+    tUpstreamStreamMs: null,
+  },
+];
+
 const modelRoutingMismatchRecords: ApiInvocation[] = [
   {
     ...records[0],
@@ -1666,7 +1677,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Shows recent invocation records as compact three-segment cards with status, account attribution, proxy metadata, `TTFT / 响应耗时 / 请求压缩` summaries, and expandable request details. Conversation identity is intentionally supplied by the surrounding drawer and is not repeated in each card. The default story includes pool-routed and reverse-proxy records so you can verify model routing, reasoning/FAST signals, token/cost fields, and the account drawer trigger. The standalone Records search table is not this component.\n\nUse this component to verify desktop and 393px card wrapping, the running-to-terminal live update story, the presentation-only elapsed clock, and the expanded detail section for request metadata, timing stages, account attribution, request compression, and response diagnostics.",
+          "Shows recent invocation records as compact three-segment cards with status, account attribution, proxy metadata, `TTFT / 响应耗时 / 请求压缩` summaries, and expandable request details. Conversation identity is intentionally supplied by the surrounding drawer and is not repeated in each card. The default story includes pool-routed and reverse-proxy records so you can verify model routing, reasoning/FAST signals, token/cost fields, and the account drawer trigger. The standalone Records search table is not this component.\n\nUse this component to verify desktop and 393px card wrapping, the running-to-terminal live update story, unavailable in-flight timings, and the expanded detail section for request metadata, timing stages, account attribution, request compression, and response diagnostics.",
       },
     },
   },
@@ -1936,7 +1947,7 @@ export const Recent20StreamingSimulation: Story = {
     docs: {
       description: {
         story:
-          "Simulates the “最近 20 条实况” surface with a continuously moving stream: new requests keep appearing at the top, several rows remain in `running`, and each request finishes after a different delay so the table mixes success, failure, and in-flight elapsed timers at the same time. New arrivals are randomized between 3 and 10 seconds to better match a real monitoring feed, and the canvas stays capped near 20 visible rows to mirror the real dashboard/live summary view.",
+          "Simulates the “最近 20 条实况” surface with a continuously moving stream: new requests keep appearing at the top, several rows remain in `running`, and each request finishes after a different delay so the table mixes success, failure, and in-flight unavailable timings at the same time. New arrivals are randomized between 3 and 10 seconds to better match a real monitoring feed, and the canvas stays capped near 20 visible rows to mirror the real dashboard/live summary view.",
       },
     },
   },
@@ -1998,15 +2009,46 @@ export const TtftAndResponseDuration: Story = {
     docs: {
       description: {
         story:
-          "Focused verification state for record latency semantics. The first row shows `TTFT = 9.36 s` and independent `响应耗时 = 10.08 s`; expanded diagnostics retain `上游首字节 = 0.0 ms` without using it as either value.",
+          "Focused verification state for record latency semantics. The first row shows compact `TTFT = 9.4 s` and independent `响应耗时 = 10.1 s`; expanded diagnostics retain `上游首字节 = 0.0 ms` without using it as either value.",
       },
     },
   },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByTestId("invocation-card-ttft")[0]).toHaveTextContent("9.36 s");
-    await expect(canvas.getAllByTestId("invocation-card-response")[0]).toHaveTextContent("10.08 s");
+    await expect(canvas.getAllByTestId("invocation-card-ttft")[0]).toHaveTextContent("9.4 s");
+    await expect(canvas.getAllByTestId("invocation-card-response")[0]).toHaveTextContent("10.1 s");
+  },
+};
+
+export const InFlightResponseDurationUnavailable: Story = {
+  args: {
+    records: inFlightResponseDurationUnavailableRecords,
+    isLoading: false,
+    error: null,
+  },
+  globals: { themeMode: "dark" },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Focused responding state: `firstTokenMs` is already measured and shown as TTFT, while the unfinished `tUpstreamStreamMs` remains `--`. The UI never substitutes elapsed wall-clock time, and TTFT uses the shared success green.",
+      },
+    },
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.ownerDocument.documentElement.getAttribute("data-theme")).toBe(
+      "vibe-dark",
+    );
+    await expect(getComputedStyle(canvas.getByTestId("invocation-card")).backgroundColor).toContain(
+      "0.234",
+    );
+    const ttft = canvas.getByTestId("invocation-card-ttft");
+    await expect(ttft).toHaveTextContent("0.7 s");
+    await expect(ttft.className).toContain("text-success");
+    await expect(canvas.getByTestId("invocation-card-response")).toHaveTextContent("--");
   },
 };
 

@@ -1018,8 +1018,8 @@ describe("InvocationTable", () => {
     expect(html).toContain("high");
     expect(html).toContain("推理 41");
     expect(html).toContain("推理 —");
-    expect(html).toContain("3.96 s");
-    expect(html).toContain("3.83 s");
+    expect(html).toContain("4 s");
+    expect(html).toContain("3.8 s");
     expect(html).toContain("/v1/responses");
     expect(html).toContain("/v1/chat/completions");
     expect(html).toContain('data-reasoning-effort-tone="high"');
@@ -1078,8 +1078,8 @@ describe("InvocationTable", () => {
 
     expect(html).toContain("TTFT");
     expect(html).toContain("响应");
-    expect(html).toContain("0.648 s");
-    expect(html).toContain("0.26 s");
+    expect(html).toContain("0.6 s");
+    expect(html).toContain("0.3 s");
     expect(html).toContain("pool-account-a");
     expect(html).toContain("反向代理");
     expect(html).toContain("zstd");
@@ -2001,7 +2001,7 @@ describe("InvocationTable", () => {
     });
 
     await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
-    expect(document.body.textContent).toContain("4.02 s");
+    expect(document.body.textContent).toContain("4 s");
 
     const timingButton = Array.from(document.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFB"),
@@ -2053,8 +2053,8 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable([record]);
 
-    expect(document.body.textContent).toContain("9.36 s");
-    expect(document.body.textContent).toContain("响应 10.08 s");
+    expect(document.body.textContent).toContain("9.4 s");
+    expect(document.body.textContent).toContain("响应 10.1 s");
     expect(document.body.textContent).not.toContain("19.46 s");
 
     const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
@@ -2082,14 +2082,12 @@ describe("InvocationTable", () => {
 
     await waitForCondition(() => document.body.textContent?.includes("时间细分") === true);
     const text = document.body.textContent ?? "";
-    expect(text).toContain("9.36 s");
+    expect(text).toContain("9.4 s");
     expect(text).toContain("TTFB");
     expect(text).toContain("0 ms");
   });
 
-  it("advances both missing in-flight timings once per second", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-16T09:10:31Z"));
+  it("keeps missing in-flight TTFT and response duration unavailable", async () => {
     await renderInteractiveTable([
       {
         id: -91,
@@ -2106,20 +2104,68 @@ describe("InvocationTable", () => {
 
     expect(document.body.textContent).toContain("TTFT");
     expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
-      "1 s",
+      "--",
     );
     expect(
       document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
-    ).toContain("1 s");
-    await act(async () => {
-      vi.advanceTimersByTime(3_000);
-    });
+    ).toContain("--");
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.className).toContain(
+      "text-success",
+    );
+  });
+
+  it("keeps TTFT measured while a responding invocation has no completed response duration", async () => {
+    await renderInteractiveTable([
+      {
+        id: -92,
+        invokeId: "invocation-running-response-duration",
+        occurredAt: "2026-03-16T09:10:30Z",
+        createdAt: "2026-03-16T09:10:30Z",
+        source: "proxy",
+        proxyDisplayName: "relay-running",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "running",
+        firstTokenMs: 742.6,
+        tUpstreamStreamMs: null,
+      },
+    ]);
+
+    expect(document.querySelector('[data-testid="invocation-phase-badge"]')?.textContent).toContain(
+      "响应中",
+    );
     expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
-      "4 s",
+      "0.7 s",
     );
     expect(
       document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
-    ).toContain("4 s");
+    ).toContain("--");
+  });
+
+  it("shows compact latency without decimals after it rounds to 100 seconds", async () => {
+    await renderInteractiveTable([
+      {
+        id: -93,
+        invokeId: "invocation-latency-rounding-boundary",
+        occurredAt: "2026-03-16T09:10:30Z",
+        createdAt: "2026-03-16T09:10:30Z",
+        source: "proxy",
+        proxyDisplayName: "relay-latency-boundary",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "success",
+        firstTokenMs: 99_950,
+        tUpstreamStreamMs: 100_040,
+      },
+    ]);
+
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+      "100 s",
+    );
+    expect(
+      document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
+    ).toContain("100 s");
+    expect(document.body.textContent).not.toContain("100.0 s");
   });
 
   it("forwards pool account clicks to the shared upstream account controller", async () => {
