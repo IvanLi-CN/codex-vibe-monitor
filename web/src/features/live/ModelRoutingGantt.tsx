@@ -502,7 +502,7 @@ export function ModelRoutingGantt({
                   <div key={`${model}-${lane.accountId}`} className="contents">
                     <button
                       type="button"
-                      className="flex h-12 min-w-0 items-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                      className="flex h-9 min-w-0 items-center border-r border-t border-base-300/60 px-3 text-left outline-none transition-colors hover:bg-base-200/50 focus-visible:bg-base-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                       aria-label={`${lane.label} · ${stateLabels[lane.state]}`}
                       onClick={() => onOpenAccount(lane.accountId, lane.model)}
                     >
@@ -511,7 +511,7 @@ export function ModelRoutingGantt({
                       </span>
                     </button>
                     <div
-                      className="relative h-12 overflow-hidden border-t border-base-300/60"
+                      className="relative h-9 overflow-hidden border-t border-base-300/60"
                       data-testid={`model-routing-lane-${model}-${lane.accountId}`}
                     >
                       {gridTicks.map((tick) => (
@@ -553,7 +553,7 @@ export function ModelRoutingGantt({
                           <button
                             key={`${band.state}-${band.startMs}-${band.endMs}`}
                             type="button"
-                            className={`absolute top-5 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary ${
+                            className={`absolute top-3 z-10 h-3 cursor-pointer rounded-sm outline-none ring-offset-base-100 focus-visible:ring-2 focus-visible:ring-primary ${
                               band.state === "unknown" ? "border border-dashed" : ""
                             }`}
                             style={
@@ -616,7 +616,7 @@ export function ModelRoutingGantt({
                         const marker = (
                           <span
                             key={attempt.id}
-                            className="absolute top-5 z-20 h-1.5 w-1.5 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
+                            className="absolute top-3.5 z-20 h-1.5 w-1.5 -translate-x-1/2 rotate-45 border border-base-100 shadow-sm"
                             style={{ left: `${markerLeft}%`, backgroundColor: color }}
                             aria-hidden
                           />
