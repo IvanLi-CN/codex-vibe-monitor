@@ -118,7 +118,7 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).toContain('data-testid="model-routing-gantt-chart-system"');
     expect(html).not.toContain('data-testid="model-routing-gantt-grid"');
     expect(html.match(/data-testid="model-routing-gantt-legend"/g)).toHaveLength(1);
-    expect(html).toContain("请求尝试");
+    expect(html).toContain("恢复尝试");
     expect(html).toContain("未知");
     expect(html).not.toContain("Ciii");
     expect(html).not.toContain("recharts-responsive-container");
@@ -155,11 +155,20 @@ describe("ModelRoutingLivePanel", () => {
     ]);
   });
 
-  it("preserves unknown gaps and renders attempts independently from route-state bands", () => {
+  it("preserves all calls for allocation but marks only controlled recovery attempts", () => {
+    const ordinaryAttempt = {
+      ...snapshot.records[0],
+      id: "attempt:ordinary",
+      occurredAt: "2026-08-16T00:45:00Z",
+      invokeId: "invoke-ordinary",
+      reasonCode: "selected_eligible_route",
+      modelRouteStateBefore: "available",
+      modelRouteStateAfter: "available",
+    };
     const timeline = buildModelRoutingGanttData({
       model: "gpt-5.5-codex",
       accounts: snapshot.groups[0].accounts,
-      records: snapshot.records,
+      records: [...snapshot.records, ordinaryAttempt],
       generatedAt: snapshot.generatedAt,
       window: "1h",
     });
@@ -167,6 +176,10 @@ describe("ModelRoutingLivePanel", () => {
     expect(timeline.lanes).toHaveLength(1);
     expect(timeline.lanes[0].bands.map((band) => band.state)).toEqual(["unknown", "available"]);
     expect(timeline.attempts).toEqual([
+      expect.objectContaining({ id: "attempt:31" }),
+      expect.objectContaining({ id: "attempt:ordinary" }),
+    ]);
+    expect(timeline.recoveryAttempts).toEqual([
       expect.objectContaining({
         id: "attempt:31",
         invokeId: "invoke-31",

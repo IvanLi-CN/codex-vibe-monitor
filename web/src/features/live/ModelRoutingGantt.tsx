@@ -33,6 +33,8 @@ interface RoutingGanttAttempt {
   httpStatus?: number | null;
   totalLatencyMs?: number | null;
   retryIndex?: number | null;
+  stateBefore?: string | null;
+  stateAfter?: string | null;
 }
 
 interface RoutingGanttLane {
@@ -48,6 +50,7 @@ interface RoutingGanttData {
   rangeEndMs: number;
   lanes: RoutingGanttLane[];
   attempts: RoutingGanttAttempt[];
+  recoveryAttempts: RoutingGanttAttempt[];
 }
 
 interface RoutingGanttColors {
@@ -114,6 +117,15 @@ function routingState(value?: string | null): RoutingTimelineState | null {
   return value && ROUTING_STATES.has(value as RoutingTimelineState)
     ? (value as RoutingTimelineState)
     : null;
+}
+
+export function isControlledRecoveryAttempt(record: ModelRoutingTimelineRecord) {
+  if (record.kind !== "attempt") return false;
+  if (record.modelRouteStateBefore === "cooling_down") return true;
+  return [record.reasonCode, record.action, record.routingSource].some((value) => {
+    const normalized = value?.toLowerCase();
+    return normalized?.includes("probe") || normalized?.includes("recovery");
+  });
 }
 
 function clampToRange(value: number, start: number, end: number) {
@@ -265,11 +277,17 @@ export function buildModelRoutingGanttData({
         httpStatus: record.httpStatus,
         totalLatencyMs: record.totalLatencyMs,
         retryIndex: record.sameAccountRetryIndex,
+        stateBefore: record.modelRouteStateBefore,
+        stateAfter: record.modelRouteStateAfter,
       },
     ];
   });
+  const recoveryAttemptIds = new Set(
+    modelRecords.filter(isControlledRecoveryAttempt).map((record) => record.id),
+  );
+  const recoveryAttempts = attempts.filter((attempt) => recoveryAttemptIds.has(attempt.id));
 
-  return { rangeStartMs, rangeEndMs, lanes, attempts };
+  return { rangeStartMs, rangeEndMs, lanes, attempts, recoveryAttempts };
 }
 
 function formatBeijing(value: number, localeTag: string, options: Intl.DateTimeFormatOptions) {
@@ -479,13 +497,13 @@ function decorateTimelineSvg({
       segmentGroup.appendChild(rect);
     }
 
-    const laneAttempts = timeline.attempts.filter(
+    const laneAttempts = timeline.recoveryAttempts.filter(
       (attempt) => attempt.accountId === lane.accountId,
     );
     for (const attempt of laneAttempts) {
       const ratio = (attempt.occurredAtMs - timeline.rangeStartMs) / rangeDuration;
       const centerX = x + Math.max(0.006, Math.min(0.994, ratio)) * width;
-      const centerY = y + height / 2;
+      const centerY = y - 4;
       const successful = attempt.httpStatus != null && attempt.httpStatus < 400;
       const failed = attempt.httpStatus != null && attempt.httpStatus >= 400;
       const result = attempt.httpStatus

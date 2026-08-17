@@ -2367,12 +2367,12 @@ const baseTranslations = {
     "live.routing.timeline.lane": "Model / API key",
     "live.routing.timeline.apiKey": "API key",
     "live.routing.timeline.time": "Beijing time",
-    "live.routing.timeline.attempt": "Request attempt",
+    "live.routing.timeline.attempt": "Recovery attempt",
     "live.routing.timeline.retry": "Retry {{index}}",
     "live.routing.timeline.availableAllocation":
       "{{count}} real requests · {{percent}}% of available calls",
     "live.routing.timeline.hint":
-      "Bars show observed route-state intervals. Diamonds mark real requests; select a bar for account details or a diamond for the invocation.",
+      "Bars show observed route-state intervals. Diamonds mark real business requests admitted for controlled recovery; select a bar for account details or a diamond for the invocation.",
     "live.routing.record.expand": "Show decision details",
     "live.routing.record.collapse": "Hide decision details",
     "live.routing.record.openInvocation": "Open invocation details",
@@ -5393,11 +5393,11 @@ const baseTranslations = {
     "live.routing.timeline.lane": "模型 / API Key",
     "live.routing.timeline.apiKey": "API Key",
     "live.routing.timeline.time": "北京时间",
-    "live.routing.timeline.attempt": "请求尝试",
+    "live.routing.timeline.attempt": "恢复尝试",
     "live.routing.timeline.retry": "重试 {{index}}",
     "live.routing.timeline.availableAllocation": "{{count}} 次真实调用 · 可用期分配 {{percent}}%",
     "live.routing.timeline.hint":
-      "色带表示已观测的路由状态区间；菱形表示真实请求。选择色带可查看账号详情，选择菱形可查看调用详情。",
+      "色带表示已观测的路由状态区间；菱形仅表示受控恢复时放行的真实业务请求。选择色带可查看账号详情，选择菱形可查看调用详情。",
     "live.routing.record.expand": "展开决策详情",
     "live.routing.record.collapse": "收起决策详情",
     "live.routing.record.openInvocation": "打开调用详情",

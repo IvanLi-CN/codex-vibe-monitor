@@ -140,7 +140,7 @@ export const Operational24Hours: Story = {
     await expect(legend.getByText("降权")).toBeVisible();
     await expect(legend.getByText("冷却中")).toBeVisible();
     await expect(legend.getByText("未知")).toBeVisible();
-    await expect(legend.getByText("请求尝试")).toBeVisible();
+    await expect(legend.getByText("恢复尝试")).toBeVisible();
     await expect(canvas.findByTestId("model-routing-svg-system")).resolves.toBeVisible();
     await expect(canvas.findByTestId("model-routing-model-group-gpt-5.5")).resolves.toBeVisible();
     const ganttHost = canvas.getByTestId("model-routing-gantt-chart-system");
@@ -161,12 +161,31 @@ export const Operational24Hours: Story = {
     await expect(laneRect.left - containerRect.left).toBeGreaterThanOrEqual(80);
     await expect(labelRect.right).toBeLessThan(laneRect.left);
     await expect(
+      canvas.queryByRole("button", { name: /^API Key #12 · 恢复尝试/ }),
+    ).not.toBeInTheDocument();
+    await expect(
       canvas.findByRole("button", { name: /^API Key #11 · 可用 ·/ }),
     ).resolves.toBeVisible();
 
     const attempt = await canvas.findByRole("button", {
-      name: /^API Key #11 · 请求尝试/,
+      name: /^API Key #11 · 恢复尝试/,
     });
+    const attemptRect = attempt.getBoundingClientRect();
+    const availableBands = Array.from(
+      attempt.parentElement?.querySelectorAll<SVGRectElement>(".model-routing-band--available") ??
+        [],
+    );
+    await expect(
+      availableBands.some((band) => {
+        const bandRect = band.getBoundingClientRect();
+        return (
+          attemptRect.right > bandRect.left &&
+          attemptRect.left < bandRect.right &&
+          attemptRect.bottom > bandRect.top &&
+          attemptRect.top < bandRect.bottom
+        );
+      }),
+    ).toBe(false);
     await userEvent.click(attempt);
     await expect(args.onOpenInvocation).toHaveBeenCalledWith("invoke-11-recovery");
   },
