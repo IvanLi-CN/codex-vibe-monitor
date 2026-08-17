@@ -150,7 +150,6 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsHotDbRead
 state: hot-db-read
 evidence_note: System Status renders all seven Dashboard hot topics and marks parallel work degraded when the mock reports three live-path database reads.
 
-PR: none
 ![System Status Dashboard hot topics desktop hot DB read](./assets/system-status-hot-topics-desktop.jpg)
 
 source_type: storybook_canvas
@@ -165,7 +164,6 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsCadenceMiss
 state: cadence-miss
 evidence_note: The mobile System Status layout keeps every topic and the activity cadence miss readable at the source-managed mobile viewport.
 
-PR: none
 ![System Status Dashboard hot topics mobile cadence miss](./assets/system-status-hot-topics-mobile.jpg)
 
 ### Dashboard working conversations
@@ -182,7 +180,6 @@ story_id_or_title: dashboard-workingconversationssection--current-and-previous
 state: complete conversation state matrix: missing slots, responding with unavailable response duration, failure summary, success, pending, running, and warning
 evidence_note: The 1440px Dashboard workspace uses its native two-column grid: workspace width is 1392px, every visible card is 667px wide, and horizontal overflow is 0px. The full grid provides size reference while covering the supported invocation states.
 
-PR: none
 ![Dashboard working conversations three slots desktop](./assets/dashboard-working-conversations-three-slots-desktop.png)
 
 source_type: storybook_canvas
