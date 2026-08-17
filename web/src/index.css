@@ -66,7 +66,8 @@
   }
 
   .model-routing-frappe-gantt .bar-wrapper.model-routing-model-task .bar-label,
-  .model-routing-frappe-gantt .model-routing-model-count {
+  .model-routing-frappe-gantt .model-routing-model-count,
+  .model-routing-frappe-gantt .model-routing-lane-header {
     fill: oklch(var(--color-base-content));
     dominant-baseline: central;
     font-family:
@@ -81,6 +82,11 @@
     fill: oklch(var(--color-base-content) / 0.58);
     font-weight: 400;
     font-variant-numeric: tabular-nums;
+  }
+
+  .model-routing-frappe-gantt .model-routing-lane-header {
+    fill: oklch(var(--color-base-content) / 0.62);
+    font-weight: 500;
   }
 
   .model-routing-frappe-gantt .model-routing-band,

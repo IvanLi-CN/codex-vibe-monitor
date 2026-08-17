@@ -148,12 +148,18 @@ export const Operational24Hours: Story = {
     const laneBar = ganttHost.querySelector<SVGRectElement>(
       '.bar-wrapper[data-id="route-gpt-5-5-11"] .bar',
     );
-    if (!ganttContainer || !laneBar) throw new Error("routing Gantt layout is incomplete");
-    await expect(
-      Math.abs(
-        ganttContainer.getBoundingClientRect().width - laneBar.getBoundingClientRect().width,
-      ),
-    ).toBeLessThanOrEqual(4);
+    const laneLabel = ganttHost.querySelector<SVGTextElement>(
+      '.bar-wrapper[data-id="route-gpt-5-5-11"] .bar-label',
+    );
+    if (!ganttContainer || !laneBar || !laneLabel) {
+      throw new Error("routing Gantt layout is incomplete");
+    }
+    const containerRect = ganttContainer.getBoundingClientRect();
+    const laneRect = laneBar.getBoundingClientRect();
+    const labelRect = laneLabel.getBoundingClientRect();
+    await expect(Math.abs(containerRect.right - laneRect.right)).toBeLessThanOrEqual(4);
+    await expect(laneRect.left - containerRect.left).toBeGreaterThanOrEqual(80);
+    await expect(labelRect.right).toBeLessThan(laneRect.left);
     await expect(
       canvas.findByRole("button", { name: /^API Key #11 · 可用 ·/ }),
     ).resolves.toBeVisible();

@@ -308,12 +308,15 @@ function countAttemptsInBand(
   ).length;
 }
 
-export function buildFrappeRoutingTasks(timeline: RoutingGanttData): RoutingFrappeTask[] {
-  const normalizedEndMs = NORMALIZED_START_MS + (timeline.rangeEndMs - timeline.rangeStartMs);
+export function buildFrappeRoutingTasks(
+  timeline: RoutingGanttData,
+  normalizedStartMs = NORMALIZED_START_MS,
+): RoutingFrappeTask[] {
+  const normalizedEndMs = normalizedStartMs + (timeline.rangeEndMs - timeline.rangeStartMs);
   return timeline.lanes.map((lane) => ({
     id: routingTaskId(lane.model, lane.accountId),
     name: lane.label,
-    start: new Date(NORMALIZED_START_MS),
+    start: new Date(normalizedStartMs),
     end: new Date(normalizedEndMs),
     progress: 0,
     custom_class: "model-routing-task",
@@ -325,21 +328,22 @@ export function buildFrappeRoutingTasks(timeline: RoutingGanttData): RoutingFrap
 
 export function buildFrappeSystemRoutingTasks(
   timelines: RoutingTimelineGroup[],
+  normalizedStartMs = NORMALIZED_START_MS,
 ): RoutingFrappeTask[] {
   return timelines.flatMap((group) => {
     const normalizedEndMs =
-      NORMALIZED_START_MS + (group.timeline.rangeEndMs - group.timeline.rangeStartMs);
+      normalizedStartMs + (group.timeline.rangeEndMs - group.timeline.rangeStartMs);
     const modelTask: RoutingFrappeTask = {
       id: routingModelTaskId(group.model),
       name: group.model,
-      start: new Date(NORMALIZED_START_MS),
+      start: new Date(normalizedStartMs),
       end: new Date(normalizedEndMs),
       progress: 0,
       custom_class: "model-routing-model-task",
       kind: "model",
       model: group.model,
     };
-    return [modelTask, ...buildFrappeRoutingTasks(group.timeline)];
+    return [modelTask, ...buildFrappeRoutingTasks(group.timeline, normalizedStartMs)];
   });
 }
 
@@ -427,7 +431,7 @@ function decorateTimelineSvg({
     const height = Number(baseBar.getAttribute("height"));
     baseBar.setAttribute("fill", "transparent");
     baseBar.setAttribute("stroke", "transparent");
-    label.setAttribute("x", String(x + 8));
+    label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
     wrapper.setAttribute("data-testid", `model-routing-lane-${lane.model}-${lane.accountId}`);
 
@@ -523,10 +527,12 @@ function decorateSystemRoutingSvg({
   host,
   timelines,
   modelSummaryLabel,
+  laneHeaderLabel,
   ...options
 }: Omit<Parameters<typeof decorateTimelineSvg>[0], "timeline"> & {
   timelines: RoutingTimelineGroup[];
   modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+  laneHeaderLabel: string;
 }) {
   const svg = host.querySelector<SVGSVGElement>("svg.gantt");
   if (!svg) return;
@@ -546,7 +552,9 @@ function decorateSystemRoutingSvg({
     const width = Number(baseBar.getAttribute("width"));
     const height = Number(baseBar.getAttribute("height"));
     wrapper.setAttribute("data-testid", `model-routing-model-group-${group.model}`);
-    label.setAttribute("x", String(x + 8));
+    baseBar.setAttribute("x", "0");
+    baseBar.setAttribute("width", String(x + width));
+    label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
     const countLabel = svgElement("text", {
       x: String(x + width - 8),
@@ -557,6 +565,14 @@ function decorateSystemRoutingSvg({
     countLabel.textContent = modelSummaryLabel(group.accountCount, group.recordCount);
     barGroup.appendChild(countLabel);
   }
+
+  const laneHeader = svgElement("text", {
+    x: "8",
+    y: "34",
+    class: "model-routing-lane-header",
+  });
+  laneHeader.textContent = laneHeaderLabel;
+  svg.appendChild(laneHeader);
 
   svg.setAttribute("data-testid", "model-routing-svg-system");
   svg.setAttribute("aria-label", "model routing");
@@ -576,6 +592,7 @@ function ModelRoutingSvgChart({
   unknownLabel,
   allocationLabel,
   modelSummaryLabel,
+  laneHeaderLabel,
   onOpenAccount,
   onOpenInvocation,
 }: {
@@ -592,35 +609,40 @@ function ModelRoutingSvgChart({
   unknownLabel: string;
   allocationLabel: (count: number, percent: number) => string;
   modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+  laneHeaderLabel: string;
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const tasks = useMemo(() => buildFrappeSystemRoutingTasks(timelines), [timelines]);
   const range = timelines[0]?.timeline;
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || tasks.length === 0 || !range) return;
+    if (!host || timelines.length === 0 || !range) return;
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
     const timelineIntervals = Math.max(1, spec.columns - 1);
-    const fittedColumnWidth = Math.floor(host.clientWidth / timelineIntervals);
+    const labelIntervals = compact ? 2 : 1;
+    const fittedColumnWidth = Math.floor(host.clientWidth / (timelineIntervals + labelIntervals));
     const columnWidth = compact
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
+    const stepDurationMs = WINDOW_DURATION_MS[window] / timelineIntervals;
+    const normalizedTimelineStartMs = NORMALIZED_START_MS + stepDurationMs * labelIntervals;
+    const tasks = buildFrappeSystemRoutingTasks(timelines, normalizedTimelineStartMs);
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
-      range.rangeStartMs + (normalizedDate.getTime() - NORMALIZED_START_MS);
+      range.rangeStartMs + (normalizedDate.getTime() - normalizedTimelineStartMs);
     const viewMode: GanttViewMode = {
       name: `routing-${window}`,
       padding: ["0h", "0h"],
       step: spec.step,
       date_format: "YYYY-MM-DD HH:mm",
       lower_text: (date) => {
+        if (date.getTime() < normalizedTimelineStartMs) return "";
         const normalizedIndex = Math.round(
-          (date.getTime() - NORMALIZED_START_MS) /
+          (date.getTime() - normalizedTimelineStartMs) /
             (WINDOW_DURATION_MS[window] / (spec.columns - 1)),
         );
         if (compact && normalizedIndex % compactLabelStride !== 0) return "";
@@ -630,6 +652,7 @@ function ModelRoutingSvgChart({
         });
       },
       upper_text: (date, previous) => {
+        if (date.getTime() < normalizedTimelineStartMs) return "\u00a0";
         const currentMs = toObservedMs(date);
         const previousMs = previous ? toObservedMs(previous) : null;
         const currentDate = formatBeijing(currentMs, localeTag, {
@@ -686,6 +709,7 @@ function ModelRoutingSvgChart({
         unknownLabel,
         allocationLabel,
         modelSummaryLabel,
+        laneHeaderLabel,
         onOpenAccount,
         onOpenInvocation,
       }),
@@ -699,6 +723,7 @@ function ModelRoutingSvgChart({
     attemptLabel,
     availableCounts,
     colors,
+    laneHeaderLabel,
     localeTag,
     maxAvailableCount,
     modelSummaryLabel,
@@ -707,7 +732,6 @@ function ModelRoutingSvgChart({
     range,
     retryLabel,
     stateLabels,
-    tasks,
     timelines,
     totalAvailableCount,
     unknownLabel,
@@ -860,6 +884,7 @@ export function ModelRoutingGantt({
             { count: recordCount },
           )}`
         }
+        laneHeaderLabel={t("live.routing.timeline.lane")}
         onOpenAccount={onOpenAccount}
         onOpenInvocation={onOpenInvocation}
       />
