@@ -4111,6 +4111,30 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        UPDATE system_task_runs
+        SET
+            started_at = COALESCE(
+                strftime('%Y-%m-%dT%H:%M:%SZ', started_at),
+                started_at
+            ),
+            finished_at = CASE
+                WHEN finished_at IS NULL THEN NULL
+                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', finished_at), finished_at)
+            END
+        WHERE
+            (strftime('%Y-%m-%dT%H:%M:%SZ', started_at) IS NOT NULL
+                AND started_at <> strftime('%Y-%m-%dT%H:%M:%SZ', started_at))
+            OR (finished_at IS NOT NULL
+                AND strftime('%Y-%m-%dT%H:%M:%SZ', finished_at) IS NOT NULL
+                AND finished_at <> strftime('%Y-%m-%dT%H:%M:%SZ', finished_at))
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to normalize system_task_runs timestamps to UTC ISO")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_system_task_runs_task_time
         ON system_task_runs (task_kind, started_at DESC, id DESC)
         "#,

@@ -2443,6 +2443,7 @@ export interface SystemTaskRunsResponse {
   total: number;
   page: number;
   pageSize: number;
+  nextCursor?: string;
 }
 
 export interface ExternalApiKeySummary {
@@ -4640,6 +4641,7 @@ function normalizeSystemTaskRunsResponse(raw: unknown): SystemTaskRunsResponse {
     total: normalizeFiniteNumber(payload.total) ?? 0,
     page: normalizeFiniteNumber(payload.page) ?? 1,
     pageSize: normalizeFiniteNumber(payload.pageSize) ?? 20,
+    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : undefined,
   };
 }
 
@@ -4719,6 +4721,7 @@ export async function fetchSystemTaskRuns(params?: {
   limit?: number;
   page?: number;
   pageSize?: number;
+  cursor?: string;
 }): Promise<SystemTaskRunsResponse> {
   const query = new URLSearchParams();
   if (params?.taskKind) query.set("taskKind", params.taskKind);
@@ -4728,6 +4731,7 @@ export async function fetchSystemTaskRuns(params?: {
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.page != null) query.set("page", String(params.page));
   if (params?.pageSize != null) query.set("pageSize", String(params.pageSize));
+  if (params?.cursor) query.set("cursor", params.cursor);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const response = await fetchJson<unknown>(`/api/system/tasks${suffix}`);
   return normalizeSystemTaskRunsResponse(response);

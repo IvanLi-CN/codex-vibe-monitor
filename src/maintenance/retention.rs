@@ -587,13 +587,49 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
 
     let success_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(30));
     let failed_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(180));
-    let mut pruned = 0usize;
-
-    while pruned < SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS {
-        let batch_limit = SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS
-            .min(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS.saturating_sub(pruned));
-        let candidates = match sqlx::query_as::<_, SystemTaskRunRetentionCandidate>(
+    if dry_run {
+        let candidates: i64 = sqlx::query_scalar(
             r#"
+            WITH ranked AS (
+                SELECT
+                    task_kind,
+                    status,
+                    started_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY task_kind, status
+                        ORDER BY started_at DESC, id DESC
+                    ) AS retention_rank
+                FROM system_task_runs
+                WHERE status IN ('success', 'skipped', 'failed')
+            )
+            SELECT COUNT(*)
+            FROM ranked
+            WHERE retention_rank > ?1
+              AND (
+                  (status IN ('success', 'skipped')
+                    AND (started_at < ?2 OR retention_rank > 5000))
+                  OR (status = 'failed'
+                    AND (started_at < ?3 OR retention_rank > 10000))
+              )
+            "#,
+        )
+        .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
+        .bind(&success_cutoff)
+        .bind(&failed_cutoff)
+        .fetch_one(pool)
+        .await
+        .map_err(anyhow::Error::from)
+        .or_else(|error| {
+            if system_task_run_retention_handle_pressure(&error) {
+                Ok(0)
+            } else {
+                Err(error.context("failed to count system task retention candidates"))
+            }
+        })?;
+        return Ok((candidates.max(0) as usize).min(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS));
+    }
+    let candidates = match sqlx::query_as::<_, SystemTaskRunRetentionCandidate>(
+        r#"
             WITH ranked AS (
                 SELECT
                     id,
@@ -619,34 +655,29 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
             ORDER BY started_at ASC, id ASC
             LIMIT ?4
             "#,
-        )
-        .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
-        .bind(&success_cutoff)
-        .bind(&failed_cutoff)
-        .bind(batch_limit as i64)
-        .fetch_all(pool)
-        .await
-        {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                let error = anyhow::Error::from(error);
-                if system_task_run_retention_handle_pressure(&error) {
-                    return Ok(pruned);
-                }
-                return Err(error).context("failed to select system task retention candidates");
+    )
+    .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
+    .bind(&success_cutoff)
+    .bind(&failed_cutoff)
+    .bind(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            let error = anyhow::Error::from(error);
+            if system_task_run_retention_handle_pressure(&error) {
+                return Ok(0);
             }
-        };
-        if candidates.is_empty() {
-            break;
+            return Err(error).context("failed to select system task retention candidates");
         }
-        if dry_run {
-            pruned += candidates.len();
-            if candidates.len() < batch_limit {
-                break;
-            }
-            continue;
-        }
+    };
+    if candidates.is_empty() {
+        return Ok(0);
+    }
 
+    let mut pruned = 0usize;
+    for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
         let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
         else {
             break;
@@ -699,10 +730,10 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
             execute_started.elapsed(),
             Duration::ZERO,
             admission.p1_waiter_count(),
-            usize::from(candidates.len() >= batch_limit),
+            usize::from(candidates.len() == SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS),
         );
         pruned += deleted;
-        if candidates.len() < batch_limit || deleted < candidates.len() {
+        if deleted < candidates.len() {
             break;
         }
     }

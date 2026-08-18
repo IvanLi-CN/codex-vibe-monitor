@@ -811,6 +811,29 @@ async fn system_task_runs_schema_indexes_support_time_queries() {
 }
 
 #[tokio::test]
+async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
+    let pool = test_current_schema_pool().await;
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill', 'fixture', 'success', '2026-06-22 08:45:00', '2026-06-22T17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy system task timestamp");
+
+    ensure_schema(&pool)
+        .await
+        .expect("normalize legacy system task timestamps");
+    let (started_at, finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized task timestamps");
+    assert_eq!(started_at, "2026-06-22T08:45:00Z");
+    assert_eq!(finished_at.as_deref(), Some("2026-06-22T09:15:00Z"));
+}
+
+#[tokio::test]
 async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
     reset_system_task_run_retention_schedule();
     let pool = test_current_schema_pool().await;
@@ -878,6 +901,14 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
             .expect("immediate retention pass should be throttled"),
         0,
         "retention passes are spaced by at least 15 seconds"
+    );
+    reset_system_task_run_retention_schedule();
+    assert_eq!(
+        prune_system_task_runs(&pool, true)
+            .await
+            .expect("count remaining retention candidates"),
+        800,
+        "dry run counts each eligible row once and respects the per-pass cap"
     );
     reset_system_task_run_retention_schedule();
 }
