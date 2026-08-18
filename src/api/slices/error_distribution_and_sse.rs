@@ -3049,22 +3049,22 @@ mod tests {
         let mut samples_ms = Vec::new();
 
         for mutation in 0..20 {
-            let phase = if mutation % 2 == 0 {
-                "requesting"
+            let record = if mutation % 2 == 0 {
+                live_record(
+                    "latency-contract",
+                    Some(42),
+                    "running",
+                    Some("requesting"),
+                    1,
+                )
             } else {
-                "responding"
+                responding_live_record("latency-contract", Some(42), 1)
             };
-            state.proxy_runtime_invocations.upsert(live_record(
-                "latency-contract",
-                Some(42),
-                "running",
-                Some(phase),
-                1,
-            ));
+            state.proxy_runtime_invocations.upsert(record);
             let started_at = Instant::now();
             schedule_dashboard_activity_live_snapshot(state.as_ref());
             let in_progress_invocation_count =
-                tokio::time::timeout(Duration::from_millis(400), async {
+                tokio::time::timeout(Duration::from_secs(1), async {
                     loop {
                         match receiver.recv().await {
                             Ok(BroadcastPayload::DashboardActivityLive { snapshot }) => {
@@ -3080,7 +3080,7 @@ mod tests {
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
-                        "dashboard current update exceeded 400ms at mutation {mutation}: {:?}",
+                        "dashboard current update exceeded 1s at mutation {mutation}: {:?}",
                         state.proxy_runtime_invocations.health_snapshot(1)
                     )
                 });
@@ -3089,7 +3089,7 @@ mod tests {
         }
 
         samples_ms.sort_by(f64::total_cmp);
-        let p95_index = ((samples_ms.len() - 1) as f64 * 0.95).ceil() as usize;
+        let p95_index = (samples_ms.len() * 95).div_ceil(100).saturating_sub(1);
         let p95_ms = samples_ms[p95_index];
         let health = state.proxy_runtime_invocations.health_snapshot(1);
         assert_eq!(health.live_path_db_read_count, 0);

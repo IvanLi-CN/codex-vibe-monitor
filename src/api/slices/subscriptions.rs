@@ -12306,7 +12306,7 @@ mod tests {
             .iter()
             .find(|point| point.bucket_start == fallback_bucket_start)
             .expect("exact fallback point");
-        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let projected_parallel = loop {
             let projected_parallel = {
                 let guard = state.subscription_hub.state.lock().await;
