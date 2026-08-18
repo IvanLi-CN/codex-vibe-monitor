@@ -387,7 +387,7 @@ pub(crate) fn parse_system_task_run_bound(
         .with_context(|| format!("invalid {field_name}: {raw_value}"))
         .map_err(ApiError::bad_request)?
         .with_timezone(&Utc);
-    Ok(Some(format_utc_iso(parsed)))
+    Ok(Some(format_utc_iso_millis(parsed)))
 }
 
 fn parse_system_task_run_cursor(
@@ -411,7 +411,7 @@ fn parse_system_task_run_cursor(
         .map_err(ApiError::bad_request)?
         .with_timezone(&Utc);
     Ok(Some(SystemTaskRunCursor {
-        started_at: format_utc_iso(started_at),
+        started_at: format_utc_iso_millis(started_at),
         id: cursor.id,
     }))
 }
@@ -420,7 +420,7 @@ fn encode_system_task_run_cursor(row: &SystemTaskRunRow) -> Result<String, ApiEr
     let started_at = DateTime::parse_from_rfc3339(&row.started_at)
         .context("system task run has a non-ISO started_at")
         .map_err(ApiError::Internal)
-        .map(|value| format_utc_iso(value.with_timezone(&Utc)))?;
+        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))?;
     let payload = serde_json::to_vec(&SystemTaskRunCursor {
         started_at,
         id: row.id,
@@ -1149,7 +1149,7 @@ pub(crate) async fn begin_system_task_run(
     trigger_kind: impl Into<String>,
     summary: Option<String>,
 ) -> Result<SystemTaskRunHandle> {
-    let started_at = format_utc_iso(Utc::now());
+    let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
     let id = sqlx::query_scalar::<_, i64>(
         r#"
@@ -1187,7 +1187,7 @@ pub(crate) async fn finish_system_task_run(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    let finished_at = format_utc_iso(Utc::now());
+    let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
         .elapsed()
@@ -1229,7 +1229,7 @@ pub(crate) async fn finish_system_task_run_batched(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    let finished_at = format_utc_iso(Utc::now());
+    let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
         .elapsed()

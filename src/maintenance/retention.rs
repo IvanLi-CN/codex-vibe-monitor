@@ -579,14 +579,23 @@ fn system_task_run_retention_handle_pressure(error: &anyhow::Error) -> bool {
     true
 }
 
+fn system_task_run_retention_admission_requires_pressure_backoff(
+    reason: Option<crate::db_pressure::DbPressureDenyReason>,
+) -> bool {
+    matches!(
+        reason,
+        Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. })
+    )
+}
+
 pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
     let now_epoch_ms = system_task_run_retention_now_epoch_ms();
     if !system_task_run_retention_pass_is_due(now_epoch_ms) {
         return Ok(0);
     }
 
-    let success_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(30));
-    let failed_cutoff = format_utc_iso(Utc::now() - ChronoDuration::days(180));
+    let success_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(30));
+    let failed_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(180));
     if dry_run {
         let candidates: i64 = sqlx::query_scalar(
             r#"
@@ -680,6 +689,16 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
     for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
         let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
         else {
+            // Admission can be denied before a SQL call observes the pressure error. A
+            // cooldown is distinct from shutdown or a normally busy background slot.
+            if system_task_run_retention_admission_requires_pressure_backoff(
+                crate::db_pressure::global_db_pressure_gate().background_deny_reason(),
+            ) {
+                system_task_run_retention_schedule_next(
+                    system_task_run_retention_now_epoch_ms(),
+                    SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF,
+                );
+            }
             break;
         };
         let execute_started = Instant::now();
@@ -3685,6 +3704,21 @@ mod retention_write_budget_tests {
         let selected =
             take_retention_micro_batch(vec![2 * RETENTION_WRITE_MAX_BYTES, 128], |value| *value);
         assert_eq!(selected, vec![2 * RETENTION_WRITE_MAX_BYTES]);
+    }
+
+    #[test]
+    fn system_task_run_retention_only_backs_off_for_pressure_cooldown() {
+        assert!(
+            system_task_run_retention_admission_requires_pressure_backoff(Some(
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 1 }
+            ))
+        );
+        assert!(
+            !system_task_run_retention_admission_requires_pressure_backoff(Some(
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            ))
+        );
+        assert!(!system_task_run_retention_admission_requires_pressure_backoff(None));
     }
 }
 

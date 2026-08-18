@@ -814,7 +814,7 @@ async fn system_task_runs_schema_indexes_support_time_queries() {
 async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
     let pool = test_current_schema_pool().await;
     sqlx::query(
-        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill', 'fixture', 'success', '2026-06-22 08:45:00', '2026-06-22T17:15:00+08:00')",
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill', 'fixture', 'success', '2026-06-22 08:45:00.125', '2026-06-22T17:15:00+08:00')",
     )
     .execute(&pool)
     .await
@@ -829,8 +829,8 @@ async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
     .fetch_one(&pool)
     .await
     .expect("load normalized task timestamps");
-    assert_eq!(started_at, "2026-06-22T08:45:00Z");
-    assert_eq!(finished_at.as_deref(), Some("2026-06-22T09:15:00Z"));
+    assert_eq!(started_at, "2026-06-22T00:45:00.125Z");
+    assert_eq!(finished_at.as_deref(), Some("2026-06-22T09:15:00.000Z"));
 }
 
 #[tokio::test]

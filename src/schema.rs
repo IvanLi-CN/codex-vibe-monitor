@@ -4113,20 +4113,28 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         r#"
         UPDATE system_task_runs
         SET
-            started_at = COALESCE(
-                strftime('%Y-%m-%dT%H:%M:%SZ', started_at),
-                started_at
-            ),
+            started_at = CASE
+                -- Pre-ISO task rows used the application's Shanghai-local timestamp convention.
+                WHEN started_at GLOB '????-??-?? ??:??:??*'
+                    THEN COALESCE(
+                        strftime('%Y-%m-%dT%H:%M:%fZ', started_at, '-8 hours'),
+                        started_at
+                    )
+                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+            END,
             finished_at = CASE
                 WHEN finished_at IS NULL THEN NULL
-                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', finished_at), finished_at)
+                WHEN finished_at GLOB '????-??-?? ??:??:??*'
+                    THEN COALESCE(
+                        strftime('%Y-%m-%dT%H:%M:%fZ', finished_at, '-8 hours'),
+                        finished_at
+                    )
+                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
             END
         WHERE
-            (strftime('%Y-%m-%dT%H:%M:%SZ', started_at) IS NOT NULL
-                AND started_at <> strftime('%Y-%m-%dT%H:%M:%SZ', started_at))
+            started_at NOT GLOB '????-??-??T??:??:??.???Z'
             OR (finished_at IS NOT NULL
-                AND strftime('%Y-%m-%dT%H:%M:%SZ', finished_at) IS NOT NULL
-                AND finished_at <> strftime('%Y-%m-%dT%H:%M:%SZ', finished_at))
+                AND finished_at NOT GLOB '????-??-??T??:??:??.???Z')
         "#,
     )
     .execute(pool)
