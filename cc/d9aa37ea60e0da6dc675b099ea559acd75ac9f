@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.64.0",
+  "base_stable_version": "2.63.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-18T11:17:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.64.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "47e0385ffed205e81f74c8f8a7a8129414caf471",
+  "pr_number": 807,
+  "pr_title": "feat(web): add live model routing observability",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.64.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.64.0",
+  "target_sha": "ccd9aa37ea60e0da6dc675b099ea559acd75ac9f",
+  "type_label": "type:minor"
+}
