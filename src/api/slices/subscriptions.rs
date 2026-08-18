@@ -3576,10 +3576,17 @@ impl SubscriptionHub {
 
         for descriptor in descriptors {
             let topic = SubscriptionTopic::from_descriptor(&descriptor)?;
+            let topic_key = topic.cache_key()?;
+            let needs_initial_account_attempt_recheck = {
+                let guard = self.state.lock().await;
+                guard
+                    .topics
+                    .get(&topic_key)
+                    .is_none_or(|cached| cached.dirty)
+            };
             let cached = self
                 .ensure_cached_topic(state.clone(), topic.clone())
                 .await?;
-            let topic_key = topic.cache_key()?;
             let resume_cursor = resume_by_topic_key.get(&topic_key);
             let continuity_reset = resume_cursor
                 .zip(cached.continuity_reset_cursor)
@@ -3671,6 +3678,15 @@ impl SubscriptionHub {
             if cached.dirty {
                 self.schedule_dirty_topic_recovery(state.clone(), topic.clone())
                     .await;
+            }
+            if needs_initial_account_attempt_recheck
+                && topic.uses_upstream_account_attempt_refresh()
+            {
+                // The topic is registered before its first database build. A PoolAttempts
+                // broadcast can therefore arrive while the cache entry does not exist yet;
+                // one fixed-window recheck closes that construction gap without polling.
+                self.schedule_upstream_account_attempt_topic_refresh(state.clone(), topic.clone())
+                    .await?;
             }
         }
 
@@ -5773,6 +5789,40 @@ impl SubscriptionHub {
         true
     }
 
+    async fn finish_upstream_account_attempt_topic_refresh_without_owner(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if active {
+            // A reconnect acquired the owner between the task's wake-up and this check. Keep
+            // the task armed so the new owner receives a bounded authoritative rebuild.
+            cached.upstream_account_attempt_refresh_in_flight = false;
+            cached.upstream_account_attempt_refresh_pending = false;
+            cached.upstream_account_attempt_refresh_scheduled = true;
+            return true;
+        }
+        cached.dirty = true;
+        cached.refresh_scheduled = false;
+        cached.upstream_account_attempt_refresh_scheduled = false;
+        cached.upstream_account_attempt_refresh_in_flight = false;
+        cached.upstream_account_attempt_refresh_pending = false;
+        cached.latest_live_snapshot = None;
+        false
+    }
+
     async fn schedule_upstream_account_attempt_topic_refresh(
         &self,
         state: Arc<AppState>,
@@ -5812,10 +5862,10 @@ impl SubscriptionHub {
                 {
                     return;
                 }
-                if !hub.has_active_topic_key(&topic_key).await {
-                    hub.finish_upstream_account_attempt_topic_refresh(&topic)
-                        .await;
-                    hub.mark_topic_dirty(&topic).await;
+                if !hub
+                    .finish_upstream_account_attempt_topic_refresh_without_owner(&topic)
+                    .await
+                {
                     return;
                 }
                 let result = hub

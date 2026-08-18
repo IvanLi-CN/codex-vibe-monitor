@@ -17,12 +17,13 @@ import type {
   ForwardProxyBindingNode,
   UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
-import { locateUpstreamAccountAttempt } from "../../lib/api";
+import { fetchUpstreamAccountAttempts, locateUpstreamAccountAttempt } from "../../lib/api";
 import { normalizeModelComparisonKey } from "../../lib/invocation";
 import { buildTopicDescriptor, getTopicDescriptorKey } from "../../lib/sse";
 import { InvocationWorkflowAttemptRecord } from "../invocations/InvocationWorkflowDetailPanel";
 
 const PAGE_SIZE = 50;
+const SSE_INITIAL_SNAPSHOT_TIMEOUT_MS = 1_500;
 const CALL_SHORT_ID_PATTERN = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$/;
 const UNBOUND_STICKY_KEY = "__unbound__";
 const FILTER_INPUT_CLASS_NAME =
@@ -365,6 +366,14 @@ export function UpstreamAccountAttemptTimeline({
   } | null>(null);
   const [locateLoading, setLocateLoading] = useState(focusedAttemptId != null);
   const [locateError, setLocateError] = useState<string | null>(null);
+  const [restFallback, setRestFallback] = useState<{
+    descriptorKey: string;
+    response: UpstreamAccountAttemptListResponse;
+  } | null>(null);
+  const [restFallbackError, setRestFallbackError] = useState<{
+    descriptorKey: string;
+    message: string;
+  } | null>(null);
   const [activeFocus, setActiveFocus] = useState<{
     attemptId: string;
     version: number;
@@ -381,11 +390,63 @@ export function UpstreamAccountAttemptTimeline({
     attemptTopicDescriptor,
     topicEnabled,
   );
+  const attemptTopicDescriptorKey = attemptTopic.descriptorKey;
+  useEffect(() => {
+    if (!topicEnabled || attemptTopicDescriptorKey == null || attemptTopic.data != null) {
+      return;
+    }
+    let cancelled = false;
+    const delay = attemptTopic.isLoading ? SSE_INITIAL_SNAPSHOT_TIMEOUT_MS : 0;
+    const loadFallback = () => {
+      void fetchUpstreamAccountAttempts(accountId, {
+        type: filters.type || undefined,
+        model: filters.model || undefined,
+        stickyKey: filters.stickyKey || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      })
+        .then((next) => {
+          if (cancelled) return;
+          setRestFallback({ descriptorKey: attemptTopicDescriptorKey, response: next });
+          setRestFallbackError(null);
+        })
+        .catch((requestError) => {
+          if (cancelled) return;
+          setRestFallbackError({
+            descriptorKey: attemptTopicDescriptorKey,
+            message: requestError instanceof Error ? requestError.message : String(requestError),
+          });
+        });
+    };
+    const timeoutId = window.setTimeout(loadFallback, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    accountId,
+    attemptTopic.data,
+    attemptTopic.isLoading,
+    attemptTopicDescriptorKey,
+    filters,
+    page,
+    topicEnabled,
+  ]);
   const response =
     attemptTopic.data ??
-    (locateFallback?.descriptorKey === attemptTopic.descriptorKey ? locateFallback.response : null);
-  const loading = locateLoading || (topicEnabled && attemptTopic.isLoading);
-  const error = locateError;
+    (locateFallback?.descriptorKey === attemptTopicDescriptorKey
+      ? locateFallback.response
+      : restFallback?.descriptorKey === attemptTopicDescriptorKey
+        ? restFallback.response
+        : null);
+  const loading =
+    locateLoading ||
+    (topicEnabled && attemptTopic.isLoading && response == null && restFallbackError == null);
+  const error =
+    locateError ??
+    (attemptTopic.data == null && restFallbackError?.descriptorKey === attemptTopicDescriptorKey
+      ? restFallbackError.message
+      : null);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const isZh = locale === "zh";
   const proxyDirectLabel = t("accountPool.upstreamAttempts.proxyDirect");
@@ -476,6 +537,12 @@ export function UpstreamAccountAttemptTimeline({
     setLocateError(null);
     setActiveFocus(null);
   }, [accountId]);
+
+  useEffect(() => {
+    if (focusedAttemptId == null && locateError != null) {
+      setLocateError(null);
+    }
+  }, [focusedAttemptId, locateError]);
 
   useEffect(() => {
     if (focusedAttemptId == null) return;
