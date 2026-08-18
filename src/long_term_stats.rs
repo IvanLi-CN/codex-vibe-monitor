@@ -200,6 +200,7 @@ pub(crate) struct LongTermProjectionRuntime {
     pub(crate) last_repair_scope: Option<String>,
     pub(crate) last_defer_reason: Option<String>,
     pub(crate) last_error_kind: Option<String>,
+    next_repair_at: Option<Instant>,
     interval_index: HashMap<LongTermProjectionIntervalKey, LongTermProjectionIntervalUnion>,
     loaded_interval_dates: HashSet<String>,
 }
@@ -1023,6 +1024,7 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
 
 const LONG_TERM_PROJECTION_CONSUMER: &str = "long_term_v1";
 const LONG_TERM_PROJECTION_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
+const LONG_TERM_PROJECTION_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH: i64 = 1;
 const LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH: i64 = 2_000;
@@ -1304,6 +1306,9 @@ pub(crate) fn spawn_long_term_projection_supervisor(
         let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
         flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         flush_ticker.tick().await;
+        let mut repair_ticker = interval(LONG_TERM_PROJECTION_REPAIR_INTERVAL);
+        repair_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        repair_ticker.tick().await;
         let mut daily_verify_ticker = interval(LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL);
         daily_verify_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         daily_verify_ticker.tick().await;
@@ -1315,9 +1320,30 @@ pub(crate) fn spawn_long_term_projection_supervisor(
                     debug!(projection = "long_term", trigger = "terminal_p1_ack", "long-term projection marked dirty by terminal persistence");
                 }
                 _ = flush_ticker.tick() => {
-                    if let Err(error) = flush_long_term_projection(&state, "terminal_deadline").await {
-                        mark_long_term_projection_failure(&state, &error).await;
-                        warn!(error = %error, projection = "long_term", trigger = "terminal_deadline", "long-term projection flush failed");
+                    if long_term_projection_terminal_flush_needed(&state).await {
+                        if let Err(error) = flush_long_term_projection(&state, "terminal_deadline").await {
+                            mark_long_term_projection_failure(&state, &error).await;
+                            warn!(error = %error, projection = "long_term", trigger = "terminal_deadline", "long-term projection flush failed");
+                        }
+                    } else {
+                        debug!(projection = "long_term", trigger = "terminal_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection flush");
+                    }
+                }
+                _ = repair_ticker.tick() => {
+                    match long_term_projection_repair_needed(&state).await {
+                        Ok(true) => {
+                            if let Err(error) = flush_long_term_projection(&state, "repair_deadline").await {
+                                mark_long_term_projection_failure(&state, &error).await;
+                                warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "long-term projection repair failed");
+                            }
+                        }
+                        Ok(false) => {
+                            debug!(projection = "long_term", trigger = "repair_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term repair");
+                        }
+                        Err(error) => {
+                            mark_long_term_projection_failure(&state, &error).await;
+                            warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "failed to inspect long-term projection repair work");
+                        }
                     }
                 }
                 _ = daily_verify_ticker.tick() => {
@@ -1333,6 +1359,100 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     })
 }
 
+async fn long_term_projection_terminal_flush_needed(state: &AppState) -> bool {
+    let has_persisted_work = state.terminal_projection_hub.has_persisted_work();
+    let runtime = state.long_term_projection_runtime.lock().await;
+    long_term_projection_terminal_flush_due(has_persisted_work, runtime.state.is_empty())
+}
+
+fn long_term_projection_terminal_flush_due(
+    has_persisted_work: bool,
+    runtime_state_is_empty: bool,
+) -> bool {
+    // A deferred date rebuild must not suppress the bounded terminal delta pass.
+    // The pass can still advance any ready prefix while the repair ticker owns
+    // the expensive rebuild deadline.
+    has_persisted_work || runtime_state_is_empty
+}
+
+async fn long_term_projection_repair_needed(state: &AppState) -> Result<bool> {
+    let has_persisted_work = state.terminal_projection_hub.has_persisted_work();
+    let (runtime_state_is_empty, next_repair_at) = {
+        let runtime = state.long_term_projection_runtime.lock().await;
+        (runtime.state.is_empty(), runtime.next_repair_at)
+    };
+    let now = Instant::now();
+    if long_term_projection_repair_due(
+        has_persisted_work,
+        false,
+        runtime_state_is_empty,
+        next_repair_at,
+        now,
+    ) {
+        return Ok(true);
+    }
+
+    // Correction and archive triggers write durable dirty markers without touching the
+    // in-memory runtime state. Probe them only on the bounded repair cadence.
+    let has_due_dirty_bucket = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now'))",
+    )
+    .fetch_one(&state.pool)
+    .await?
+        != 0;
+    Ok(long_term_projection_repair_due(
+        has_persisted_work,
+        has_due_dirty_bucket,
+        runtime_state_is_empty,
+        next_repair_at,
+        now,
+    ))
+}
+
+fn long_term_projection_repair_due(
+    has_persisted_work: bool,
+    has_due_dirty_bucket: bool,
+    runtime_state_is_empty: bool,
+    next_repair_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    // A scheduled repair owns the expensive rebuild deadline. Persisted terminal
+    // deltas still use the bounded terminal pass, but must not pull this rebuild
+    // forward before the deadline.
+    next_repair_at.map_or(
+        has_persisted_work || has_due_dirty_bucket || runtime_state_is_empty,
+        |retry_at| retry_at <= now,
+    )
+}
+
+async fn defer_long_term_projection_terminal_repair(state: &AppState, defer_reason: &'static str) {
+    let mut runtime = state.long_term_projection_runtime.lock().await;
+    runtime.state = "dirty_last_good".to_string();
+    runtime.last_defer_reason = Some(defer_reason.to_string());
+    runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+        runtime.next_repair_at,
+        Instant::now(),
+    ));
+}
+
+fn long_term_projection_repair_deadline(
+    existing_deadline: Option<Instant>,
+    now: Instant,
+) -> Instant {
+    // Repeated terminal flushes and pressure deferrals may arrive while a
+    // targeted repair is pending. Keep the first deadline so they cannot
+    // postpone recovery indefinitely.
+    existing_deadline.unwrap_or(now + LONG_TERM_PROJECTION_REPAIR_INTERVAL)
+}
+
+fn long_term_projection_allows_expensive_repair(trigger: &str) -> bool {
+    trigger != "terminal_deadline"
+}
+
+fn long_term_projection_runs_hourly_retention(trigger: &str) -> bool {
+    trigger == "daily_verify"
+}
+
 async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Error) {
     let message = error.to_string().to_ascii_lowercase();
     let error_kind =
@@ -1346,6 +1466,10 @@ async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Err
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.state = "dirty_last_good".to_string();
     runtime.last_error_kind = Some(error_kind.to_string());
+    runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+        runtime.next_repair_at,
+        Instant::now(),
+    ));
 }
 
 async fn queue_long_term_projection_daily_verify(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1576,6 +1700,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             let mut runtime = state.long_term_projection_runtime.lock().await;
             runtime.state = "deferred".to_string();
             runtime.last_defer_reason = Some("writer_pressure".to_string());
+            runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+                runtime.next_repair_at,
+                Instant::now(),
+            ));
             debug!(projection = "long_term", trigger, gate_outcome = "deferred", defer_reason = "writer_pressure", reason = %reason, "long-term projection flush deferred by database pressure gate");
             return Ok(0);
         }
@@ -1683,58 +1811,76 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         }
         if let Some(event) = repair_event {
             let repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
-            ensure_long_term_projection_repairs(&state.pool, &repair_dates, "interval_baseline")
-                .await?;
-            let repair_dirty =
-                load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
-            if long_term_projection_repairs_are_deferred(&state.pool, &repair_dates).await? {
+            if !long_term_projection_allows_expensive_repair(trigger) {
                 deferred_repair_count = deferred_repair_count.saturating_add(repair_dates.len());
                 deferred_repair_backoff_count =
                     deferred_repair_backoff_count.saturating_add(repair_dates.len());
                 debug!(
                     projection = "long_term",
                     repair_scope = ?repair_dates,
-                    defer_reason = "repair_backoff",
-                    "long-term cursor repair retained until its retry deadline"
+                    defer_reason = "terminal_hot_path",
+                    "long-term cursor repair deferred to the bounded repair window"
                 );
+                defer_long_term_projection_terminal_repair(state, "terminal_hot_path").await;
             } else {
-                let mut rebuilds = Vec::with_capacity(repair_dates.len());
-                let mut rebuild_error = None;
-                for date in &repair_dates {
-                    match build_long_term_projection_date_rebuild(&state.pool, date).await {
-                        Ok(rebuild) => {
-                            loaded_row_count =
-                                loaded_row_count.saturating_add(rebuild.source_row_count);
-                            rebuilds.push(rebuild);
-                        }
-                        Err(error) => {
-                            rebuild_error = Some(error);
-                            break;
-                        }
-                    }
-                }
-                if let Some(error) = rebuild_error {
-                    defer_long_term_projection_repairs(&state.pool, &repair_dates).await?;
+                ensure_long_term_projection_repairs(
+                    &state.pool,
+                    &repair_dates,
+                    "interval_baseline",
+                )
+                .await?;
+                let repair_dirty =
+                    load_long_term_projection_dirty_buckets(&state.pool, &repair_dates).await?;
+                if long_term_projection_repairs_are_deferred(&state.pool, &repair_dates).await? {
                     deferred_repair_count =
                         deferred_repair_count.saturating_add(repair_dates.len());
-                    warn!(
-                        error = %error,
+                    deferred_repair_backoff_count =
+                        deferred_repair_backoff_count.saturating_add(repair_dates.len());
+                    debug!(
                         projection = "long_term",
                         repair_scope = ?repair_dates,
-                        retry_after_ms = 300_000_u64,
-                        "long-term cursor repair deferred after an unavailable source"
+                        defer_reason = "repair_backoff",
+                        "long-term cursor repair retained until its retry deadline"
                     );
                 } else {
-                    commit_long_term_projection_date_rebuilds(
-                        &state.pool,
-                        &rebuilds,
-                        Some(event.row_id),
-                        &repair_dirty,
-                        false,
-                    )
-                    .await?;
-                    repaired.extend(repair_dates);
-                    cursor = event.row_id;
+                    let mut rebuilds = Vec::with_capacity(repair_dates.len());
+                    let mut rebuild_error = None;
+                    for date in &repair_dates {
+                        match build_long_term_projection_date_rebuild(&state.pool, date).await {
+                            Ok(rebuild) => {
+                                loaded_row_count =
+                                    loaded_row_count.saturating_add(rebuild.source_row_count);
+                                rebuilds.push(rebuild);
+                            }
+                            Err(error) => {
+                                rebuild_error = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(error) = rebuild_error {
+                        defer_long_term_projection_repairs(&state.pool, &repair_dates).await?;
+                        deferred_repair_count =
+                            deferred_repair_count.saturating_add(repair_dates.len());
+                        warn!(
+                            error = %error,
+                            projection = "long_term",
+                            repair_scope = ?repair_dates,
+                            retry_after_ms = 300_000_u64,
+                            "long-term cursor repair deferred after an unavailable source"
+                        );
+                    } else {
+                        commit_long_term_projection_date_rebuilds(
+                            &state.pool,
+                            &rebuilds,
+                            Some(event.row_id),
+                            &repair_dirty,
+                            false,
+                        )
+                        .await?;
+                        repaired.extend(repair_dates);
+                        cursor = event.row_id;
+                    }
                 }
             }
         }
@@ -1744,12 +1890,16 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         invalidate_long_term_projection_interval_cache(state).await;
     }
 
-    let dirty_dates = sqlx::query_as::<_, LongTermProjectionDirtyBucket>(
-        "SELECT bucket_date, generation FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now') ORDER BY queued_at ASC, bucket_date ASC LIMIT ?1",
-    )
-    .bind(LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH)
-    .fetch_all(&state.pool)
-    .await?;
+    let dirty_dates = if !long_term_projection_allows_expensive_repair(trigger) {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, LongTermProjectionDirtyBucket>(
+            "SELECT bucket_date, generation FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now') ORDER BY queued_at ASC, bucket_date ASC LIMIT ?1",
+        )
+        .bind(LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH)
+        .fetch_all(&state.pool)
+        .await?
+    };
     for dirty in dirty_dates {
         let date = dirty.bucket_date.clone();
         if repaired.contains(&date) {
@@ -1786,11 +1936,15 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     }
 
     let (retention_pruned_hourly_rows, retention_pruned_interval_rows) =
-        prune_long_term_projection_hourly_retention(
-            &state.pool,
-            state.config.long_term_stats_hourly_retention_days,
-        )
-        .await?;
+        if long_term_projection_runs_hourly_retention(trigger) {
+            prune_long_term_projection_hourly_retention(
+                &state.pool,
+                state.config.long_term_stats_hourly_retention_days,
+            )
+            .await?
+        } else {
+            (0, 0)
+        };
 
     let dirty_bucket_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_dirty_buckets")
@@ -1811,7 +1965,9 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     let projection_health = state.terminal_projection_hub.health();
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let mut runtime = state.long_term_projection_runtime.lock().await;
-    runtime.state = if dirty_bucket_count == 0 {
+    runtime.state = if deferred_repair_count > 0 {
+        "dirty_last_good"
+    } else if dirty_bucket_count == 0 {
         "healthy"
     } else {
         "repairing"
@@ -1823,14 +1979,27 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     runtime.last_flush_elapsed_ms = Some(elapsed_ms);
     runtime.last_flush_at = Some(Instant::now());
     runtime.last_repair_scope = (!repaired.is_empty()).then(|| repaired.join(","));
-    runtime.last_defer_reason = if deferred_repair_backoff_count > 0 {
+    let terminal_hot_path_deferred =
+        !long_term_projection_allows_expensive_repair(trigger) && deferred_repair_count > 0;
+    runtime.last_defer_reason = if terminal_hot_path_deferred {
+        Some("terminal_hot_path".to_string())
+    } else if deferred_repair_backoff_count > 0 {
         Some("repair_backoff".to_string())
     } else if deferred_repair_count > 0 {
         Some("repair_source_unavailable".to_string())
     } else {
         None
     };
-    runtime.last_error_kind = (deferred_repair_count > 0).then(|| "targeted_repair".to_string());
+    runtime.last_error_kind = (!terminal_hot_path_deferred && deferred_repair_count > 0)
+        .then(|| "targeted_repair".to_string());
+    runtime.next_repair_at = if deferred_repair_count > 0 {
+        Some(long_term_projection_repair_deadline(
+            runtime.next_repair_at,
+            Instant::now(),
+        ))
+    } else {
+        None
+    };
     let interval_bytes = runtime
         .interval_index
         .iter()
@@ -5997,6 +6166,82 @@ fn internal_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_projection_flush_defers_expensive_repairs_and_retention() {
+        assert!(!long_term_projection_allows_expensive_repair(
+            "terminal_deadline"
+        ));
+        assert!(long_term_projection_allows_expensive_repair(
+            "repair_deadline"
+        ));
+        assert!(long_term_projection_allows_expensive_repair("daily_verify"));
+
+        assert!(!long_term_projection_runs_hourly_retention(
+            "terminal_deadline"
+        ));
+        assert!(!long_term_projection_runs_hourly_retention(
+            "repair_deadline"
+        ));
+        assert!(long_term_projection_runs_hourly_retention("daily_verify"));
+    }
+
+    #[test]
+    fn long_term_projection_repair_retries_deferred_and_persisted_dirty_work() {
+        let now = Instant::now();
+
+        assert!(long_term_projection_repair_due(
+            false, true, false, None, now,
+        ));
+        assert!(long_term_projection_repair_due(
+            false,
+            false,
+            false,
+            Some(now - Duration::from_millis(1)),
+            now,
+        ));
+        assert!(!long_term_projection_repair_due(
+            false,
+            false,
+            false,
+            Some(now + Duration::from_secs(1)),
+            now,
+        ));
+    }
+
+    #[test]
+    fn long_term_projection_repair_respects_a_future_deadline_with_pending_work() {
+        let now = Instant::now();
+        assert!(!long_term_projection_repair_due(
+            true,
+            true,
+            true,
+            Some(now + Duration::from_secs(1)),
+            now,
+        ));
+    }
+
+    #[test]
+    fn repeated_terminal_defers_preserve_the_original_repair_deadline() {
+        let now = Instant::now();
+        let original = now + Duration::from_secs(30);
+        assert_eq!(
+            long_term_projection_repair_deadline(Some(original), now),
+            original
+        );
+        let overdue = now - Duration::from_secs(1);
+        assert_eq!(
+            long_term_projection_repair_deadline(Some(overdue), now),
+            overdue
+        );
+    }
+
+    #[test]
+    fn terminal_projection_flush_does_not_share_the_repair_backoff() {
+        assert!(long_term_projection_terminal_flush_due(true, false));
+        assert!(long_term_projection_terminal_flush_due(false, true));
+        assert!(!long_term_projection_terminal_flush_due(false, false));
+    }
 
     async fn create_long_term_test_invocations(pool: &Pool<Sqlite>) {
         sqlx::query(

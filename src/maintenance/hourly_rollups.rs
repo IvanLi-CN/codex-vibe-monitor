@@ -11,17 +11,37 @@ const LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HourlyRollupRefreshScope {
+    Full,
+    SkipActiveAccountActivityV2CoverageRepair,
+}
+
 pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
-    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(pool, None).await
+    sync_hourly_rollups_from_live_tables_with_scope(pool, None, HourlyRollupRefreshScope::Full)
+        .await
 }
 
 pub(crate) async fn sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
     pool: &Pool<Sqlite>,
     invocation_live_days: Option<u64>,
 ) -> Result<()> {
+    sync_hourly_rollups_from_live_tables_with_scope(
+        pool,
+        invocation_live_days,
+        HourlyRollupRefreshScope::Full,
+    )
+    .await
+}
+
+async fn sync_hourly_rollups_from_live_tables_with_scope(
+    pool: &Pool<Sqlite>,
+    invocation_live_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<()> {
     let mut attempt = 1_u32;
     loop {
-        match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days).await {
+        match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days, scope).await {
             Ok(()) => return Ok(()),
             Err(err)
                 if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
@@ -52,8 +72,11 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables_with_parallel_work_cove
 async fn sync_hourly_rollups_from_live_tables_once(
     pool: &Pool<Sqlite>,
     invocation_live_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
-    repair_active_account_activity_v2_coverage(pool).await?;
+    if scope == HourlyRollupRefreshScope::Full {
+        repair_active_account_activity_v2_coverage(pool).await?;
+    }
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         if updated == 0 {
@@ -81,7 +104,7 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
-    wake_historical_rollups_for_live_activity_v2_coverage(pool, repaired_activity_v2_rows).await?;
+    wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
@@ -89,17 +112,13 @@ async fn sync_hourly_rollups_from_live_tables_once(
     Ok(())
 }
 
-pub(crate) async fn wake_historical_rollups_for_live_activity_v2_coverage(
+pub(crate) async fn wake_account_activity_v2_coverage_repair(
     pool: &Pool<Sqlite>,
     repaired_activity_v2_rows: u64,
 ) -> Result<()> {
     if repaired_activity_v2_rows > 0 {
-        wake_startup_backfill_tasks(
-            pool,
-            &[StartupBackfillTask::HistoricalRollups],
-            "live_account_activity_v2_coverage_updated",
-        )
-        .await?;
+        wake_startup_backfill_coverage_repair(pool, "live_account_activity_v2_coverage_updated")
+            .await?;
     }
     Ok(())
 }
@@ -1939,6 +1958,14 @@ mod hourly_rollup_budget_tests {
     }
 
     #[test]
+    fn runtime_startup_bootstrap_leaves_active_coverage_to_the_dedicated_task() {
+        assert_eq!(
+            runtime_startup_hourly_rollup_refresh_scope(),
+            HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+        );
+    }
+
+    #[test]
     fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
         assert!(!historical_rollup_elapsed_budget_reached(
             Instant::now(),
@@ -2020,12 +2047,34 @@ pub(crate) async fn bootstrap_hourly_rollups_with_parallel_work_coverage(
     pool: &Pool<Sqlite>,
     invocation_full_detail_days: Option<u64>,
 ) -> Result<()> {
-    repair_live_invocation_usage_breakdown_rollups(pool).await?;
-    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+    bootstrap_hourly_rollups_with_scope(
         pool,
         invocation_full_detail_days,
+        HourlyRollupRefreshScope::Full,
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+) -> Result<()> {
+    bootstrap_hourly_rollups_with_scope(
+        pool,
+        invocation_full_detail_days,
+        runtime_startup_hourly_rollup_refresh_scope(),
+    )
+    .await
+}
+
+async fn bootstrap_hourly_rollups_with_scope(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<()> {
+    repair_live_invocation_usage_breakdown_rollups(pool).await?;
+    sync_hourly_rollups_from_live_tables_with_scope(pool, invocation_full_detail_days, scope)
+        .await?;
     repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
     repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
@@ -2043,8 +2092,21 @@ pub(crate) async fn bootstrap_hourly_rollups_with_parallel_work_coverage(
     Ok(())
 }
 
+fn runtime_startup_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
+    // The dedicated startup task owns active-window coverage and its backoff.
+    // Bootstrap still catches up rollups, but must not run that planner twice.
+    HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+}
+
 pub(crate) async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>) -> Result<()> {
-    sync_hourly_rollups_from_live_tables(pool).await?;
+    refresh_hourly_rollups_for_read_surfaces_with_scope(pool, HourlyRollupRefreshScope::Full).await
+}
+
+async fn refresh_hourly_rollups_for_read_surfaces_with_scope(
+    pool: &Pool<Sqlite>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<()> {
+    sync_hourly_rollups_from_live_tables_with_scope(pool, None, scope).await?;
     ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
     Ok(())
 }
@@ -2062,6 +2124,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     pool: &Pool<Sqlite>,
     hourly_rollup_sync_lock: &Mutex<()>,
     reason: &'static str,
+    scope: HourlyRollupRefreshScope,
 ) {
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
@@ -2077,7 +2140,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     };
     let _guard = hourly_rollup_sync_lock.lock().await;
 
-    if let Err(err) = refresh_hourly_rollups_for_read_surfaces(pool).await {
+    if let Err(err) = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope).await {
         gate.record_error("hourly_rollup_refresh", &err);
         warn!(
             error = %err,
