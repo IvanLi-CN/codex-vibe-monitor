@@ -30,6 +30,7 @@ type PromptCacheConversationInvocationPreview = {
   tReqParseMs?: number | null;
   tUpstreamConnectMs?: number | null;
   tUpstreamTtfbMs?: number | null;
+  firstTokenMs?: number | null;
   tUpstreamStreamMs?: number | null;
   tRespParseMs?: number | null;
   tPersistMs?: number | null;
@@ -73,11 +74,13 @@ function createPreview(
     tReqReadMs: overrides.tReqReadMs ?? 11,
     tReqParseMs: overrides.tReqParseMs ?? 7,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 84,
-    tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 91,
-    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
+    tUpstreamTtfbMs: "tUpstreamTtfbMs" in overrides ? (overrides.tUpstreamTtfbMs ?? null) : 91,
+    firstTokenMs: overrides.firstTokenMs,
+    tUpstreamStreamMs:
+      "tUpstreamStreamMs" in overrides ? (overrides.tUpstreamStreamMs ?? null) : 220,
     tRespParseMs: overrides.tRespParseMs ?? 10,
     tPersistMs: overrides.tPersistMs ?? 8,
-    tTotalMs: overrides.tTotalMs ?? 431,
+    tTotalMs: "tTotalMs" in overrides ? (overrides.tTotalMs ?? null) : 431,
   };
 }
 
@@ -128,6 +131,9 @@ function buildWorkingConversationsResponse() {
         status: "running",
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
+        firstTokenMs: 740,
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
         tTotalMs: null,
       }),
       createPreview({
@@ -619,6 +625,22 @@ test.describe("Dashboard working conversations responsive layout", () => {
       }
     });
   }
+
+  test("keeps measured in-flight TTFT while response duration is unfinished", async ({ page }) => {
+    await installDashboardRoutes(page);
+    await page.setViewportSize({ width: 1660, height: 1180 });
+    await page.goto("/#/dashboard");
+
+    const currentSlot = page.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
+      "0.7 s",
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+  });
 
   test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
     await installDashboardRoutes(page);

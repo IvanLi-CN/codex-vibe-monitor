@@ -93,6 +93,31 @@ describe("invocationLiveMerge", () => {
     expect(merged[0]?.tUpstreamTtfbMs).toBe(180);
   });
 
+  it("keeps measured live first-token progress when a stale HTTP preview arrives", () => {
+    const live = createRecord({
+      id: 43,
+      invokeId: "invoke-live-first-token",
+      occurredAt: "2026-03-10T02:31:45Z",
+      status: "running",
+      livePhase: "responding",
+      firstTokenMs: 720,
+    });
+    const staleHttp = createRecord({
+      id: 43,
+      invokeId: "invoke-live-first-token",
+      occurredAt: "2026-03-10T02:31:45Z",
+      status: "running",
+      proxyDisplayName: "Persisted preview",
+      tUpstreamTtfbMs: 180,
+    });
+
+    const merged = mergeInvocationRecordCollections([live], [staleHttp]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.firstTokenMs).toBe(720);
+    expect(merged[0]?.livePhase).toBe("responding");
+  });
+
   it("does not backfill stale failure metadata into a recovered terminal success", () => {
     const runtimeFailure = createRecord({
       id: 3,

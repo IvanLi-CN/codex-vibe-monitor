@@ -610,9 +610,10 @@ pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(
         let previews = grouped_recent_invocations
             .entry(prompt_cache_key.clone())
             .or_default();
-        if previews.iter().any(|preview| {
+        if let Some(preview) = previews.iter_mut().find(|preview| {
             preview.invoke_id == record.invoke_id && preview.occurred_at == record.occurred_at
         }) {
+            overlay_runtime_preview_progress(preview, record);
             continue;
         }
         previews.push(prompt_cache_invocation_preview_from_runtime_record(
@@ -630,6 +631,39 @@ pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(
         });
         previews.truncate(recent_invocation_limit as usize);
     }
+}
+
+fn overlay_runtime_preview_progress(
+    preview: &mut PromptCacheConversationInvocationPreviewResponse,
+    record: &ApiInvocation,
+) {
+    let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+        preview.first_token_ms,
+        preview.live_phase.as_deref(),
+        record.first_token_ms,
+        effective_runtime_invocation_live_phase(record),
+    );
+    preview.first_token_ms = first_token_ms;
+    preview.live_phase = live_phase;
+}
+
+fn merged_runtime_preview_progress(
+    persisted_first_token_ms: Option<f64>,
+    persisted_live_phase: Option<&str>,
+    runtime_first_token_ms: Option<f64>,
+    runtime_live_phase: Option<&str>,
+) -> (Option<f64>, Option<String>) {
+    let measured_runtime_first_token_ms =
+        runtime_first_token_ms.filter(|value| value.is_finite() && *value > 0.0);
+    let runtime_is_responding = measured_runtime_first_token_ms.is_some()
+        && runtime_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING);
+
+    (
+        measured_runtime_first_token_ms.or(persisted_first_token_ms),
+        runtime_is_responding
+            .then_some(INVOCATION_LIVE_PHASE_RESPONDING.to_string())
+            .or_else(|| persisted_live_phase.map(str::to_string)),
+    )
 }
 
 pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
@@ -889,4 +923,41 @@ pub(crate) fn resolve_prompt_cache_upstream_account_group_key(
         return format!("name:{name}");
     }
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod runtime_preview_progress_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_first_token_progress_overlays_the_stale_persisted_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+        );
+
+        assert_eq!(first_token_ms, Some(720.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn missing_runtime_timing_does_not_regress_a_persisted_responding_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            Some(0.0),
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+        );
+
+        assert_eq!(first_token_ms, Some(720.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
 }

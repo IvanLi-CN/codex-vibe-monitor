@@ -229,9 +229,10 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
 ) -> String {
     format!(
         "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
-            FROM pool_upstream_request_attempts AS final_attempt \
+           FROM pool_upstream_request_attempts AS final_attempt \
            WHERE final_attempt.invoke_id = {attempt_ref}.invoke_id \
              AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
+             AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
            ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
            LIMIT 1) THEN {invocation_ref}.first_token_ms END AS first_token_ms"
     )
@@ -327,6 +328,7 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("attempts.id"));
         assert!(sql.contains("final_attempt.invoke_id = attempts.invoke_id"));
         assert!(sql.contains("final_attempt.occurred_at = attempts.occurred_at"));
+        assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.ends_with("THEN inv.first_token_ms END AS first_token_ms"));
     }

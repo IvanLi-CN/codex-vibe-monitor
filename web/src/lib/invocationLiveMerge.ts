@@ -90,6 +90,13 @@ function recordCompletenessScore(record: ApiInvocation) {
     score += 2;
   }
   if (
+    typeof record.firstTokenMs === "number" &&
+    Number.isFinite(record.firstTokenMs) &&
+    record.firstTokenMs > 0
+  ) {
+    score += 2;
+  }
+  if (
     typeof record.tTotalMs === "number" &&
     Number.isFinite(record.tTotalMs) &&
     record.tTotalMs > 0
@@ -125,6 +132,7 @@ function compareRecordRuntimeProgress(current: ApiInvocation, next: ApiInvocatio
       comparableNumber(current.poolDistinctAccountCount),
       comparableNumber(next.poolDistinctAccountCount),
     ],
+    [comparableNumber(current.firstTokenMs), comparableNumber(next.firstTokenMs)],
     [comparableNumber(current.tUpstreamTtfbMs), comparableNumber(next.tUpstreamTtfbMs)],
     [comparableNumber(current.tUpstreamStreamMs), comparableNumber(next.tUpstreamStreamMs)],
     [comparableNumber(current.tRespParseMs), comparableNumber(next.tRespParseMs)],
@@ -258,6 +266,7 @@ export function mergeInvocationRecordDetails(
     "tReqParseMs",
     "tUpstreamConnectMs",
     "tUpstreamTtfbMs",
+    "firstTokenMs",
     "tUpstreamStreamMs",
     "tRespParseMs",
     "tPersistMs",

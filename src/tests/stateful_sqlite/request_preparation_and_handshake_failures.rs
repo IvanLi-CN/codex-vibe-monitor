@@ -1004,12 +1004,51 @@ async fn query_pool_attempt_records_from_live_limits_ttft_to_the_final_attempt()
     .await
     .expect("insert pool attempt row");
 
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        3,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert budget pseudo-terminal pool attempt row");
+
     let rows = query_pool_attempt_records_from_live(&pool, invoke_id)
         .await
         .expect("query pool attempt records");
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].first_token_ms, None);
     assert_eq!(rows[1].first_token_ms, Some(840.0));
+    assert_eq!(rows[2].first_token_ms, None);
     assert_eq!(
         rows[1].downstream_request_content_encoding.as_deref(),
         Some("identity")
