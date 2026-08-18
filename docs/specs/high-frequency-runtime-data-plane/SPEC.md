@@ -118,7 +118,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 ## Visual Evidence
 
-以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发组件使用 Storybook 绑定的 `desktop1280` 视口和应用一致的 `bg-base-200` 浅色页面底色。
+以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发性能组件使用 Storybook 绑定的 `desktop1280` 视口，设置面板证据使用应用一致的 `vibe-dark` 深色主题。
 
 PR: include
 
@@ -161,3 +161,20 @@ PR: include
 PR: include
 
 ![Live request streaming insufficient sample guard](./assets/live-request-streaming-perf-insufficient-samples.png)
+
+PR: include
+
+![Pool routing live request streaming without account group field](./assets/pool-routing-live-streaming-no-account-group-dark.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Settings/Components/Pool Routing Settings Card/CacheHitProtection
+  target_program: mock-only
+  capture_scope: page
+  requested_viewport: desktop1280
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: owner-confirmed
+  state: 已删除账号组输入；保留实时转发开关与实验组占比
+  evidence_note: 深色主题内外一致，实时请求体流式转发区域不再显示账号组字段，启用后按实验组占比对满足路由条件的 `/v1/responses` 请求分配 cohort。
