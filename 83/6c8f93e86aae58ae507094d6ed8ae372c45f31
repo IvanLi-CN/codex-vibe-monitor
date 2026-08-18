@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.63.1",
+  "base_stable_version": "2.63.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-18T04:36:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.63.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "15850a4ab1356d3311467a86a5a9ee21ca549315",
+  "pr_number": 806,
+  "pr_title": "fix(settings): remove live streaming account group field",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.63.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.63.1",
+  "target_sha": "836c8f93e86aae58ae507094d6ed8ae372c45f31",
+  "type_label": "type:patch"
+}
