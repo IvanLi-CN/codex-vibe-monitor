@@ -52,7 +52,6 @@ struct ModelRoutingAttemptRow {
     routing_source: Option<String>,
     routing_selection_audit_json: Option<String>,
     account_id: i64,
-    account_display_name: String,
     model: String,
     attempt_index: i64,
     same_account_retry_index: i64,
@@ -77,7 +76,6 @@ struct ModelRoutingEventRow {
     occurred_at: String,
     occurred_epoch_ms: f64,
     account_id: i64,
-    account_display_name: String,
     model: String,
     action: String,
     source: String,
@@ -354,14 +352,14 @@ fn model_routing_timeline_entry_from_attempt(
     let audit = row
         .routing_selection_audit_json
         .as_deref()
-        .and_then(|value| serde_json::from_str::<PoolRoutingSelectionAudit>(value).ok());
+        .and_then(|value| serde_json::from_str::<PoolRoutingSelectionAudit>(value).ok())
+        .map(sanitize_model_routing_selection_audit);
     let total_latency_ms = row.total_latency_ms.filter(|value| *value > 0.0);
     let record = ModelRoutingTimelineRecord {
         id: format!("attempt:{}", row.id),
         kind: "attempt".to_string(),
         occurred_at: normalized_model_routing_timestamp(row.occurred_at),
         account_id: row.account_id,
-        account_display_name: row.account_display_name,
         model: row.model,
         attempt_id: Some(row.attempt_id),
         invoke_id: Some(row.invoke_id),
@@ -391,13 +389,25 @@ fn model_routing_timeline_entry_from_attempt(
     }
 }
 
+fn sanitize_model_routing_selection_audit(
+    mut audit: PoolRoutingSelectionAudit,
+) -> PoolRoutingSelectionAudit {
+    audit.selected_account_name = format!("API Key #{}", audit.selected_account_id);
+    audit.compared_account_name = audit
+        .compared_account_id
+        .map(|account_id| format!("API Key #{account_id}"));
+    for candidate in &mut audit.excluded_candidates {
+        candidate.account_name = format!("API Key #{}", candidate.account_id);
+    }
+    audit
+}
+
 fn model_routing_timeline_entry_from_event(row: ModelRoutingEventRow) -> ModelRoutingTimelineEntry {
     let record = ModelRoutingTimelineRecord {
         id: format!("event:{}", row.id),
         kind: "event".to_string(),
         occurred_at: normalized_model_routing_timestamp(row.occurred_at),
         account_id: row.account_id,
-        account_display_name: row.account_display_name,
         model: row.model,
         attempt_id: None,
         invoke_id: None,
@@ -448,14 +458,13 @@ async fn load_model_routing_timeline_entries(
     let mut attempt_query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT attempts.id,
-               attempts.attempt_public_id AS attempt_id,
+               COALESCE(NULLIF(TRIM(attempts.attempt_public_id), ''), printf('legacy-attempt-%lld', attempts.id)) AS attempt_id,
                attempts.invoke_id,
                attempts.occurred_at,
                {attempt_epoch_sql} AS occurred_epoch_ms,
                attempts.routing_source,
                attempts.routing_selection_audit_json,
                attempts.upstream_account_id AS account_id,
-               accounts.display_name AS account_display_name,
                {model_sql} AS model,
                attempts.attempt_index,
                attempts.same_account_retry_index,
@@ -548,7 +557,6 @@ async fn load_model_routing_timeline_entries(
                event.occurred_at,
                {event_epoch_sql} AS occurred_epoch_ms,
                event.account_id,
-               accounts.display_name AS account_display_name,
                event.model,
                event.action,
                event.source,

@@ -45,6 +45,35 @@ function accountLabel(accountId: number) {
   return `API Key #${accountId}`;
 }
 
+function routeProtocolLabel(
+  value: string | null | undefined,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!value) return t("live.routing.record.unknown");
+  const candidates = [
+    `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.states.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+  ];
+  for (const key of candidates) {
+    const translated = t(key);
+    if (translated !== key) return translated;
+  }
+  return t("live.routing.record.unknown");
+}
+
+function routeSourceLabel(
+  value: string | null | undefined,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!value) return t("live.routing.record.unknown");
+  const key = `live.routing.record.sources.${value}`;
+  const translated = t(key);
+  return translated === key ? t("live.routing.record.unknown") : translated;
+}
+
 export function modelRoutingRecordsId(model: string) {
   return `model-routing-records-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
@@ -73,11 +102,10 @@ function RecordRow({
 }) {
   const { t } = useTranslation();
   const audit = record.routingSelectionAudit;
-  const reason =
-    record.reasonCode || record.action || record.failureKind || t("live.routing.record.unknown");
+  const reason = routeProtocolLabel(record.reasonCode || record.action || record.failureKind, t);
   const result = record.httpStatus
     ? `HTTP ${record.httpStatus}`
-    : record.status || t("live.routing.record.unknown");
+    : routeProtocolLabel(record.status, t);
 
   return (
     <div
@@ -150,7 +178,9 @@ function RecordRow({
             {record.totalLatencyMs != null ? ` · ${Math.round(record.totalLatencyMs)} ms` : ""}
           </DetailItem>
           {record.routingSource ? (
-            <DetailItem label={t("live.routing.record.source")}>{record.routingSource}</DetailItem>
+            <DetailItem label={t("live.routing.record.source")}>
+              {routeSourceLabel(record.routingSource, t)}
+            </DetailItem>
           ) : null}
           {record.modelRouteFailureCount != null ? (
             <DetailItem label={t("live.routing.record.failureCount")}>
@@ -160,7 +190,7 @@ function RecordRow({
           {audit ? (
             <div className="sm:col-span-2">
               <DetailItem label={t("live.routing.record.comparison")}>
-                {audit.winnerReasonCode} ·{" "}
+                {routeProtocolLabel(audit.winnerReasonCode, t)} ·{" "}
                 {t("live.routing.record.eligible", { count: audit.eligibleCandidateCount })}
                 {audit.comparedAccountId != null
                   ? ` · ${t("live.routing.record.comparedId", {
@@ -173,7 +203,7 @@ function RecordRow({
                     })}: ${audit.excludedCandidates
                       .map(
                         (candidate) =>
-                          `${accountLabel(candidate.accountId)} (${candidate.reasonCode})`,
+                          `${accountLabel(candidate.accountId)} (${routeProtocolLabel(candidate.reasonCode, t)})`,
                       )
                       .join(", ")}`
                   : ""}
@@ -182,12 +212,14 @@ function RecordRow({
           ) : null}
           {record.modelRouteStateBefore || record.modelRouteStateAfter ? (
             <DetailItem label={t("live.routing.record.transition")}>
-              {record.modelRouteStateBefore || "-"} → {record.modelRouteStateAfter || "-"}
+              {routeProtocolLabel(record.modelRouteStateBefore, t)} →{" "}
+              {routeProtocolLabel(record.modelRouteStateAfter, t)}
             </DetailItem>
           ) : null}
           {record.modelRoutePriorityBefore || record.modelRoutePriorityAfter ? (
             <DetailItem label={t("live.routing.record.priorityTransition")}>
-              {record.modelRoutePriorityBefore || "-"} → {record.modelRoutePriorityAfter || "-"}
+              {routeProtocolLabel(record.modelRoutePriorityBefore, t)} →{" "}
+              {routeProtocolLabel(record.modelRoutePriorityAfter, t)}
             </DetailItem>
           ) : null}
           {record.modelRouteCooldownUntil ? (

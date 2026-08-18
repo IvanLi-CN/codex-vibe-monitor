@@ -324,6 +324,11 @@ function demoModelRoutingLiveTimeline(): ModelRoutingTimelineRecord[] {
   );
 }
 
+function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
+  const { accountDisplayName: _accountDisplayName, ...publicRecord } = record;
+  return publicRecord;
+}
+
 function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
   const model = query.model?.trim() || null;
   const state = query.state?.trim() || null;
@@ -362,7 +367,7 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
     generatedAt: demoNow(),
     groups: Array.from(groupsByModel, ([groupModel, groupAccounts]) => ({
       model: groupModel,
-      accounts: groupAccounts,
+      accounts: groupAccounts.map(({ accountDisplayName: _accountDisplayName, ...route }) => route),
     })),
     records: demoModelRoutingLiveTimeline()
       .filter(
@@ -371,7 +376,8 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
           Date.parse(record.occurredAt) >= cutoff &&
           (!visibleRouteKeys || visibleRouteKeys.has(`${record.accountId}:${record.model}`)),
       )
-      .slice(0, limit),
+      .slice(0, limit)
+      .map(publicModelRoutingRecord),
   };
 }
 
@@ -3523,7 +3529,7 @@ export async function handleDemoRequest(request: Request) {
       );
     }
 
-    const items = demoModelRoutingTimeline(accountId, model);
+    const items = demoModelRoutingTimeline(accountId, model).map(publicModelRoutingRecord);
     const cursor = url.searchParams.get("cursor");
     if (cursor === "demo-model-routing-page-2") {
       return json({ items: items.slice(2), nextCursor: null });

@@ -1641,6 +1641,44 @@ pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Opt
         .map(build_pool_routing_reservation_key)
 }
 
+pub(crate) async fn observe_proxy_cache_hit_if_success(
+    state: &AppState,
+    record: &ProxyCaptureRecord,
+) -> Result<bool> {
+    if record.status != "success" {
+        return Ok(false);
+    }
+    let metadata = terminal_payload_metadata(record.payload.as_deref());
+    let Some(account_id) = metadata.upstream_account_id else {
+        return Ok(false);
+    };
+    let model = metadata
+        .request_model
+        .as_deref()
+        .or(record.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(model) = model else {
+        return Ok(false);
+    };
+    let reservation_held = pool_routing_reservation_key_for_invoke_id(&record.invoke_id)
+        .is_some_and(|reservation_key| {
+            pool_routing_reservation_matches_model(state, &reservation_key, account_id, Some(model))
+        });
+    let active_concurrency = pool_routing_model_reservation_count(state, account_id, Some(model))
+        + if reservation_held { 0 } else { 1 };
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        record.usage.input_tokens,
+        record.usage.cache_input_tokens,
+        active_concurrency,
+    )
+    .await?;
+    Ok(true)
+}
+
 pub(crate) fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
     format!("pool request was interrupted before completion and recovered via {recovery_trigger}")
 }
@@ -3774,45 +3812,17 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         );
         return Ok(());
     }
-    if record.status == "success" {
-        let metadata = terminal_payload_metadata(record.payload.as_deref());
-        if let Some(account_id) = metadata.upstream_account_id {
-            let model = metadata
-                .request_model
-                .as_deref()
-                .or(record.model.as_deref());
-            let reservation_held = pool_routing_reservation_key_for_invoke_id(&record.invoke_id)
-                .is_some_and(|reservation_key| {
-                    pool_routing_reservation_matches_model(
-                        state,
-                        &reservation_key,
-                        account_id,
-                        model,
-                    )
-                });
-            let active_concurrency = pool_routing_model_reservation_count(state, account_id, model)
-                + if reservation_held { 0 } else { 1 };
-            if let Err(err) = observe_model_route_cache_hit(
-                &state.pool,
-                account_id,
-                model,
-                record.usage.input_tokens,
-                record.usage.cache_input_tokens,
-                active_concurrency,
-            )
-            .await
-            {
-                warn!(
-                    account_id,
-                    model = ?model,
-                    error = %err,
-                    "failed to observe model route cache hit"
-                );
-            } else {
-                state
-                    .subscription_hub
-                    .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-            }
+    match observe_proxy_cache_hit_if_success(state, &record).await {
+        Ok(true) => state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged),
+        Ok(false) => {}
+        Err(err) => {
+            warn!(
+                invoke_id = %invoke_id,
+                error = %err,
+                "failed to observe model route cache hit"
+            );
         }
     }
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;

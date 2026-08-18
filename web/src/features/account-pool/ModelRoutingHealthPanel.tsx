@@ -46,14 +46,28 @@ function routeStateLabel(state: string, t: (key: string) => string) {
   return translated === key ? state : translated;
 }
 
+function routeProtocolLabel(value: string | null | undefined, t: (key: string) => string) {
+  if (!value) return t("accountPool.upstreamAccounts.modelRouting.history.unknown");
+  const candidates = [
+    `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.states.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
+    `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+  ];
+  for (const key of candidates) {
+    const translated = t(key);
+    if (translated !== key) return translated;
+  }
+  return t("accountPool.upstreamAccounts.modelRouting.history.unknown");
+}
+
 function HistoryRecord({ record }: { record: ModelRoutingTimelineRecord }) {
   const { t } = useTranslation();
-  const summary =
-    record.reasonCode ||
-    record.action ||
-    record.failureKind ||
-    record.status ||
-    t("accountPool.upstreamAccounts.modelRouting.history.unknown");
+  const summary = routeProtocolLabel(
+    record.reasonCode || record.action || record.failureKind || record.status,
+    t,
+  );
   return (
     <div className="grid grid-cols-[8.25rem_minmax(0,1fr)_auto] gap-2 border-t border-base-300/60 px-3 py-2 text-xs">
       <span className="tabular-nums text-base-content/65">{formatBeijing(record.occurredAt)}</span>
@@ -232,9 +246,20 @@ export function ModelRoutingHealthPanel({
                 : route.cacheConcurrencyLimit != null
                   ? t("accountPool.upstreamAccounts.modelRouting.cacheLimitCompact", {
                       limit: route.cacheConcurrencyLimit,
+                      recoveryLimit: route.cacheRecoveryLimit ?? "-",
+                      streak: route.cacheLowHitStreak ?? 0,
+                      cooldown: route.cacheCooldownLevel ?? 0,
                       hitRate: route.cacheLastHitRatePercent ?? "-",
                     })
                   : t("accountPool.upstreamAccounts.modelRouting.cacheNormal");
+              const failureSummary =
+                route.lastFailureKind || route.failureCount > 0
+                  ? route.lastFailureKind
+                    ? routeProtocolLabel(route.lastFailureKind, t)
+                    : t("accountPool.upstreamAccounts.modelRouting.history.failureCount", {
+                        count: route.failureCount,
+                      })
+                  : null;
               return (
                 <div key={route.model} className="bg-base-100">
                   <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 px-3 py-2">
@@ -250,7 +275,9 @@ export function ModelRoutingHealthPanel({
                         textClassName="truncate font-mono text-sm font-semibold"
                       />
                       <span className="mt-0.5 block truncate text-xs text-base-content/65">
-                        {protection} · {formatBeijing(route.lastSeenAt)}
+                        {[protection, failureSummary, formatBeijing(route.lastSeenAt)]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </span>
                     </button>
                     <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>

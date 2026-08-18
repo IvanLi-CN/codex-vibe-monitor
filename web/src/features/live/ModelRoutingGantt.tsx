@@ -303,7 +303,6 @@ export function buildModelRoutingGanttData({
     if (!accountMap.has(record.accountId)) {
       accountMap.set(record.accountId, {
         accountId: record.accountId,
-        accountDisplayName: "",
         model,
         state: "unknown",
         priority: "unknown",
@@ -762,19 +761,31 @@ function ModelRoutingSvgChart({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [detailPortalTarget, setDetailPortalTarget] = useState<HTMLDivElement | null>(null);
+  const [hostWidth, setHostWidth] = useState(0);
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || timelines.length === 0 || !range) return;
+    if (!host) return;
+    const updateWidth = () => setHostWidth(host.clientWidth);
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || hostWidth <= 0 || timelines.length === 0 || !range) return;
     setDetailPortalTarget(null);
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
     const timelineIntervals = Math.max(1, spec.columns - 1);
     const labelIntervals = compact ? 2 : 1;
-    const fittedColumnWidth = Math.floor(host.clientWidth / (timelineIntervals + labelIntervals));
+    const fittedColumnWidth = Math.floor(hostWidth / (timelineIntervals + labelIntervals));
     const columnWidth = compact
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
@@ -913,6 +924,7 @@ function ModelRoutingSvgChart({
     totalAvailableCount,
     unknownLabel,
     window,
+    hostWidth,
   ]);
 
   return (

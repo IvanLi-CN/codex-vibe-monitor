@@ -114,11 +114,11 @@ describe("ModelRoutingRecordList", () => {
     if (!(toggle instanceof HTMLButtonElement)) throw new Error("missing record toggle");
     act(() => toggle.click());
 
-    expect(attempt?.textContent).toContain("lowest_effective_load");
+    expect(attempt?.textContent).toContain("有效负载最低");
     expect(attempt?.textContent).toContain("与 API Key #12 比较");
-    expect(attempt?.textContent).toContain("API Key #13 (cooling_down)");
-    expect(attempt?.textContent).toContain("cooling_down → available");
-    expect(attempt?.textContent).toContain("excluded → normal");
+    expect(attempt?.textContent).toContain("API Key #13 (冷却中)");
+    expect(attempt?.textContent).toContain("冷却中 → 可用");
+    expect(attempt?.textContent).toContain("排除 → 正常");
 
     const account = Array.from(attempt?.querySelectorAll("button") ?? []).find(
       (button) => button.textContent?.trim() === "API Key #11",

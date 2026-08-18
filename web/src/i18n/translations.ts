@@ -1355,7 +1355,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.collapse": "Hide model routing history",
     "accountPool.upstreamAccounts.modelRouting.cacheProbe": "Single recovery request",
     "accountPool.upstreamAccounts.modelRouting.cacheLimitCompact":
-      "Concurrency {{limit}} · cache hit {{hitRate}}%",
+      "Concurrency {{limit}}/{{recoveryLimit}} · low-hit streak {{streak}} · cooldown {{cooldown}} · cache hit {{hitRate}}%",
     "accountPool.upstreamAccounts.modelRouting.cacheNormal": "No cache restriction",
     "accountPool.upstreamAccounts.modelRouting.history.loading": "Loading 48-hour routing history…",
     "accountPool.upstreamAccounts.modelRouting.history.loadingMore": "Loading more…",
@@ -1368,6 +1368,23 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.history.event": "State event",
     "accountPool.upstreamAccounts.modelRouting.history.attempt": "Route attempt",
     "accountPool.upstreamAccounts.modelRouting.history.retry": "Retry {{index}}",
+    "accountPool.upstreamAccounts.modelRouting.history.failureCount": "{{count}} failures",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_cooldown":
+      "Route cooling down",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_degraded":
+      "Route degraded",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_recovery_succeeded":
+      "Route recovery succeeded",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.selected_eligible_route":
+      "Eligible route selected",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.probe_passed":
+      "Recovery probe passed",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.lowest_effective_load":
+      "Lowest effective load",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.recovery_after_cooldown":
+      "Recovery after cooldown",
+    "accountPool.upstreamAccounts.modelRouting.history.results.success": "Succeeded",
+    "accountPool.upstreamAccounts.modelRouting.history.results.failed": "Failed",
     "accountPool.upstreamAccounts.compactSupport.supportedBadge": "Compact OK",
     "accountPool.upstreamAccounts.compactSupport.unsupportedBadge": "Compact unsupported",
     "accountPool.upstreamAccounts.compactSupport.status.supported": "Supported",
@@ -2396,6 +2413,10 @@ const baseTranslations = {
     "live.routing.record.comparedId": "Compared with API Key #{{accountId}}",
     "live.routing.record.excluded": "{{count}} excluded",
     "live.routing.record.unknown": "Unknown",
+    "live.routing.record.sources.selection": "Fresh selection",
+    "live.routing.record.sources.retry": "Retry",
+    "live.routing.record.sources.pool": "Pool routing",
+    "live.routing.record.sources.sticky": "Sticky routing",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
     "live.conversations.table.upstreamAccounts": "Upstream accounts",
     "live.conversations.table.summary": "Total",
@@ -4464,7 +4485,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.collapse": "收起模型路由历史",
     "accountPool.upstreamAccounts.modelRouting.cacheProbe": "单个恢复请求",
     "accountPool.upstreamAccounts.modelRouting.cacheLimitCompact":
-      "并发 {{limit}} · 缓存命中 {{hitRate}}%",
+      "并发 {{limit}}/{{recoveryLimit}} · 低命中连续 {{streak}} · 冷却阶梯 {{cooldown}} · 缓存命中 {{hitRate}}%",
     "accountPool.upstreamAccounts.modelRouting.cacheNormal": "无缓存限制",
     "accountPool.upstreamAccounts.modelRouting.history.loading": "正在加载 48 小时路由历史…",
     "accountPool.upstreamAccounts.modelRouting.history.loadingMore": "正在加载更多…",
@@ -4475,6 +4496,21 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.history.event": "状态事件",
     "accountPool.upstreamAccounts.modelRouting.history.attempt": "路由尝试",
     "accountPool.upstreamAccounts.modelRouting.history.retry": "重试 {{index}}",
+    "accountPool.upstreamAccounts.modelRouting.history.failureCount": "失败 {{count}} 次",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_cooldown":
+      "路由进入冷却",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_degraded": "路由降权",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.model_route_recovery_succeeded":
+      "路由恢复成功",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.selected_eligible_route":
+      "选择可用路由",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.probe_passed": "恢复探针通过",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.lowest_effective_load":
+      "有效负载最低",
+    "accountPool.upstreamAccounts.modelRouting.history.reasons.recovery_after_cooldown":
+      "冷却后恢复",
+    "accountPool.upstreamAccounts.modelRouting.history.results.success": "成功",
+    "accountPool.upstreamAccounts.modelRouting.history.results.failed": "失败",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered": "路由恢复成功",
     "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure": "临时上游失败",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started": "进入冷却",
@@ -5431,6 +5467,10 @@ const baseTranslations = {
     "live.routing.record.comparedId": "与 API Key #{{accountId}} 比较",
     "live.routing.record.excluded": "排除 {{count}} 个候选",
     "live.routing.record.unknown": "未知",
+    "live.routing.record.sources.selection": "新选择",
+    "live.routing.record.sources.retry": "重试",
+    "live.routing.record.sources.pool": "池路由",
+    "live.routing.record.sources.sticky": "粘性路由",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
     "live.conversations.table.upstreamAccounts": "上游账号",
     "live.conversations.table.summary": "总计",

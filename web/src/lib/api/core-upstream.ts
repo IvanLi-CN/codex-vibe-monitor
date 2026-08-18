@@ -351,7 +351,8 @@ export type ModelRoutingLiveWindow = "15m" | "1h" | "6h" | "24h";
 
 export interface ModelRoutingLiveAccount extends ModelRoutingState {
   accountId: number;
-  accountDisplayName: string;
+  /** Legacy demo fixtures may carry this field; route API responses never expose it. */
+  accountDisplayName?: string;
 }
 
 export interface ModelRoutingLiveModelGroup {
@@ -364,7 +365,8 @@ export interface ModelRoutingTimelineRecord {
   kind: "attempt" | "event" | string;
   occurredAt: string;
   accountId: number;
-  accountDisplayName: string;
+  /** Legacy demo fixtures may carry this field; route API responses never expose it. */
+  accountDisplayName?: string;
   model: string;
   attemptId?: string | null;
   invokeId?: string | null;
@@ -1579,18 +1581,8 @@ function normalizeModelRoutingTimelineRecord(raw: unknown): ModelRoutingTimeline
   const kind = typeof payload.kind === "string" ? payload.kind.trim() : "";
   const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
   const accountId = normalizeFiniteNumber(payload.accountId);
-  const accountDisplayName =
-    typeof payload.accountDisplayName === "string" ? payload.accountDisplayName.trim() : "";
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
-  if (
-    !id ||
-    !kind ||
-    !occurredAt ||
-    accountId == null ||
-    accountId <= 0 ||
-    !accountDisplayName ||
-    !model
-  ) {
+  if (!id || !kind || !occurredAt || accountId == null || accountId <= 0 || !model) {
     return null;
   }
   return {
@@ -1598,7 +1590,6 @@ function normalizeModelRoutingTimelineRecord(raw: unknown): ModelRoutingTimeline
     kind,
     occurredAt,
     accountId: Math.trunc(accountId),
-    accountDisplayName,
     model,
     attemptId: typeof payload.attemptId === "string" ? payload.attemptId : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
@@ -1643,16 +1634,11 @@ function normalizeModelRoutingLiveResponse(raw: unknown): ModelRoutingLiveRespon
       const route = normalizeModelRoutingState(account);
       const accountPayload = (account ?? {}) as Record<string, unknown>;
       const accountId = normalizeFiniteNumber(accountPayload.accountId);
-      const accountDisplayName =
-        typeof accountPayload.accountDisplayName === "string"
-          ? accountPayload.accountDisplayName.trim()
-          : "";
-      if (!route || accountId == null || accountId <= 0 || !accountDisplayName) return [];
+      if (!route || accountId == null || accountId <= 0) return [];
       return [
         {
           ...route,
           accountId: Math.trunc(accountId),
-          accountDisplayName,
         },
       ];
     });
