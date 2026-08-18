@@ -1250,6 +1250,104 @@ async fn coverage_repair_defer_persists_the_historical_retry_deadline() {
     assert_eq!(progress.zero_update_streak, 1);
 }
 
+#[tokio::test]
+async fn coverage_repair_progress_resets_the_historical_retry_backoff() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::HistoricalRollups;
+    let deferred_until = format_utc_iso(Utc::now() + ChronoDuration::minutes(15));
+    save_startup_backfill_progress(
+        &state.pool,
+        task.name(),
+        StartupBackfillProgressUpdate {
+            cursor_id: 7,
+            scanned: 11,
+            updated: 0,
+            zero_update_streak: 4,
+            next_run_after: &deferred_until,
+            status: STARTUP_BACKFILL_STATUS_OK,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .expect("seed a deferred historical coverage repair");
+
+    record_startup_backfill_coverage_repair_progress(
+        state.as_ref(),
+        ActiveAccountActivityV2RepairOutcome {
+            priority_bucket_count: 2,
+            repaired_bucket_count: 2,
+            elapsed_ms: 1,
+        },
+    )
+    .await
+    .expect("record coverage repair progress");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load coverage repair progress");
+    let retry_at = progress
+        .next_run_after
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .expect("coverage follow-up deadline");
+    assert_eq!(progress.zero_update_streak, 0);
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert!(retry_at > Utc::now());
+    assert!(retry_at <= Utc::now() + ChronoDuration::seconds(30));
+}
+
+#[tokio::test]
+async fn coverage_repair_progress_keeps_source_unavailable_backfill_suspended() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::HistoricalRollups;
+    let suspended_until = format_utc_iso(Utc::now() + ChronoDuration::hours(24));
+    save_startup_backfill_progress(
+        &state.pool,
+        task.name(),
+        StartupBackfillProgressUpdate {
+            cursor_id: 7,
+            scanned: 11,
+            updated: 0,
+            zero_update_streak: 4,
+            next_run_after: &suspended_until,
+            status: STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+            suspension_reason: Some("source_unavailable"),
+        },
+    )
+    .await
+    .expect("seed a source-unavailable historical backfill");
+
+    record_startup_backfill_coverage_repair_progress(
+        state.as_ref(),
+        ActiveAccountActivityV2RepairOutcome {
+            priority_bucket_count: 2,
+            repaired_bucket_count: 2,
+            elapsed_ms: 1,
+        },
+    )
+    .await
+    .expect("retain the source-unavailable backfill suspension");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load source-unavailable historical backfill");
+    assert_eq!(progress.zero_update_streak, 4);
+    assert_eq!(
+        progress.last_status,
+        STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE
+    );
+    assert_eq!(
+        progress.next_run_after.as_deref(),
+        Some(suspended_until.as_str())
+    );
+}
+
 #[test]
 fn coverage_repair_retry_backoff_is_bounded_and_exponential() {
     assert_eq!(coverage_repair_retry_delay(1), Duration::from_secs(15));

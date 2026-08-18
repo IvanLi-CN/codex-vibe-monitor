@@ -931,6 +931,58 @@ pub(crate) async fn defer_startup_backfill_coverage_repair(state: &AppState) -> 
     Ok(())
 }
 
+pub(crate) async fn record_startup_backfill_coverage_repair_progress(
+    state: &AppState,
+    outcome: ActiveAccountActivityV2RepairOutcome,
+) -> Result<()> {
+    if outcome.repaired_bucket_count == 0 {
+        return Ok(());
+    }
+
+    let task = StartupBackfillTask::HistoricalRollups;
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    if progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE {
+        debug!(
+            task = task.log_label(),
+            coverage_priority_bucket_count = outcome.priority_bucket_count,
+            repaired_bucket_count = outcome.repaired_bucket_count,
+            "coverage repair made progress without waking a source-unavailable historical backfill"
+        );
+        return Ok(());
+    }
+    let retry_after = format_utc_iso(
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+    );
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: 0,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_OK,
+            suspension_reason: None,
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        coverage_priority_bucket_count = outcome.priority_bucket_count,
+        repaired_bucket_count = outcome.repaired_bucket_count,
+        next_retry_after = %retry_after,
+        retry_generation = 0_u32,
+        backoff_stage = "15s",
+        wake_reason = "coverage_repair_progress",
+        "startup backfill coverage repair progress reset its retry backoff"
+    );
+    Ok(())
+}
+
 pub(crate) async fn run_startup_backfill_maintenance_pass(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -1042,12 +1094,27 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
         match repair_outcome {
             ActiveAccountActivityV2RepairResult::Repaired(outcome) => {
                 ran_actionable_task |= outcome.repaired_bucket_count > 0;
-                STARTUP_BACKFILL_SCHEDULER.record_coverage_repair_success(
-                    StartupBackfillTask::HistoricalRollups,
-                    historical_rollup_task_completed,
-                    historical_rollup_task_failed,
-                    historical_rollup_task_deferred,
-                );
+                match record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
+                    .await
+                {
+                    Ok(()) => STARTUP_BACKFILL_SCHEDULER.record_coverage_repair_success(
+                        StartupBackfillTask::HistoricalRollups,
+                        historical_rollup_task_completed,
+                        historical_rollup_task_failed,
+                        historical_rollup_task_deferred,
+                    ),
+                    Err(err) => {
+                        had_failure = true;
+                        STARTUP_BACKFILL_SCHEDULER.record_task_result(
+                            StartupBackfillTask::HistoricalRollups,
+                            true,
+                            false,
+                        );
+                        crate::db_pressure::global_db_pressure_gate()
+                            .record_error("startup_backfill_coverage_progress", &err);
+                        warn!(error = %err, "failed to persist startup backfill coverage repair progress");
+                    }
+                }
             }
             outcome @ (ActiveAccountActivityV2RepairResult::Deferred
             | ActiveAccountActivityV2RepairResult::Failed) => {

@@ -1330,13 +1330,20 @@ pub(crate) fn spawn_long_term_projection_supervisor(
                     }
                 }
                 _ = repair_ticker.tick() => {
-                    if long_term_projection_repair_needed(&state).await {
-                        if let Err(error) = flush_long_term_projection(&state, "repair_deadline").await {
-                            mark_long_term_projection_failure(&state, &error).await;
-                            warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "long-term projection repair failed");
+                    match long_term_projection_repair_needed(&state).await {
+                        Ok(true) => {
+                            if let Err(error) = flush_long_term_projection(&state, "repair_deadline").await {
+                                mark_long_term_projection_failure(&state, &error).await;
+                                warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "long-term projection repair failed");
+                            }
                         }
-                    } else {
-                        debug!(projection = "long_term", trigger = "repair_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term repair");
+                        Ok(false) => {
+                            debug!(projection = "long_term", trigger = "repair_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term repair");
+                        }
+                        Err(error) => {
+                            mark_long_term_projection_failure(&state, &error).await;
+                            warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "failed to inspect long-term projection repair work");
+                        }
                     }
                 }
                 _ = daily_verify_ticker.tick() => {
@@ -1362,12 +1369,51 @@ async fn long_term_projection_terminal_flush_needed(state: &AppState) -> bool {
                 .is_none_or(|retry_at| retry_at <= Instant::now()))
 }
 
-async fn long_term_projection_repair_needed(state: &AppState) -> bool {
-    if state.terminal_projection_hub.has_persisted_work() {
-        return true;
+async fn long_term_projection_repair_needed(state: &AppState) -> Result<bool> {
+    let has_persisted_work = state.terminal_projection_hub.has_persisted_work();
+    let (runtime_state_is_empty, next_repair_at) = {
+        let runtime = state.long_term_projection_runtime.lock().await;
+        (runtime.state.is_empty(), runtime.next_repair_at)
+    };
+    let now = Instant::now();
+    if long_term_projection_repair_due(
+        has_persisted_work,
+        false,
+        runtime_state_is_empty,
+        next_repair_at,
+        now,
+    ) {
+        return Ok(true);
     }
-    let runtime = state.long_term_projection_runtime.lock().await;
-    runtime.state.is_empty() || runtime.dirty_bucket_count > 0
+
+    // Correction and archive triggers write durable dirty markers without touching the
+    // in-memory runtime state. Probe them only on the bounded repair cadence.
+    let has_due_dirty_bucket = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now'))",
+    )
+    .fetch_one(&state.pool)
+    .await?
+        != 0;
+    Ok(long_term_projection_repair_due(
+        has_persisted_work,
+        has_due_dirty_bucket,
+        runtime_state_is_empty,
+        next_repair_at,
+        now,
+    ))
+}
+
+fn long_term_projection_repair_due(
+    has_persisted_work: bool,
+    has_due_dirty_bucket: bool,
+    runtime_state_is_empty: bool,
+    next_repair_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    has_persisted_work
+        || has_due_dirty_bucket
+        || runtime_state_is_empty
+        || next_repair_at.is_some_and(|retry_at| retry_at <= now)
 }
 
 async fn defer_long_term_projection_terminal_repair(state: &AppState, defer_reason: &'static str) {
@@ -1398,6 +1444,7 @@ async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Err
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.state = "dirty_last_good".to_string();
     runtime.last_error_kind = Some(error_kind.to_string());
+    runtime.next_repair_at = Some(Instant::now() + LONG_TERM_PROJECTION_REPAIR_INTERVAL);
 }
 
 async fn queue_long_term_projection_daily_verify(pool: &Pool<Sqlite>) -> Result<()> {
@@ -6106,6 +6153,29 @@ mod tests {
             "repair_deadline"
         ));
         assert!(long_term_projection_runs_hourly_retention("daily_verify"));
+    }
+
+    #[test]
+    fn long_term_projection_repair_retries_deferred_and_persisted_dirty_work() {
+        let now = Instant::now();
+
+        assert!(long_term_projection_repair_due(
+            false, true, false, None, now,
+        ));
+        assert!(long_term_projection_repair_due(
+            false,
+            false,
+            false,
+            Some(now - Duration::from_millis(1)),
+            now,
+        ));
+        assert!(!long_term_projection_repair_due(
+            false,
+            false,
+            false,
+            Some(now + Duration::from_secs(1)),
+            now,
+        ));
     }
 
     async fn create_long_term_test_invocations(pool: &Pool<Sqlite>) {
