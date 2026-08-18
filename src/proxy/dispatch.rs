@@ -748,13 +748,11 @@ async fn prepare_capture_request_body(
     body_limit: usize,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     requester_ip: Option<&str>,
-    header_sticky_key_present: bool,
-    header_prompt_cache_key_present: bool,
+    header_sticky_key: Option<&str>,
+    header_prompt_cache_key: Option<&str>,
     req_read_started: Instant,
 ) -> PreparedCaptureRequestBody {
-    let live_eligible = capture_target == ProxyCaptureTarget::Responses
-        && !header_sticky_key_present
-        && !header_prompt_cache_key_present;
+    let live_eligible = capture_target == ProxyCaptureTarget::Responses;
 
     if !live_eligible {
         return PreparedCaptureRequestBody {
@@ -832,10 +830,20 @@ async fn prepare_capture_request_body(
     .await;
     let response_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &Method::POST);
+    let live_body_sticky_key = live_body_key_probe
+        .sticky_key
+        .clone()
+        .or_else(|| header_sticky_key.map(str::to_string));
+    let live_prompt_cache_key = live_body_key_probe
+        .prompt_cache_key
+        .clone()
+        .or_else(|| header_prompt_cache_key.map(str::to_string));
     let live_candidate = live_body_key_probe.model.is_some()
-        && live_body_key_probe.sticky_key.is_none()
-        && live_body_key_probe.prompt_cache_key.is_none()
-        && !live_body_key_probe.contains_encrypted_content;
+        && (codex_imagegen_protocol_from_headers(headers).is_some()
+            || live_first_image_intent_known(
+                Some(capture_target),
+                live_body_key_probe.image_intent,
+            ));
     let mut live_first_pool_response = None;
     let mut prepared_live_request_streaming_decision = None;
     let mut live_first_attempt_failed = false;
@@ -844,22 +852,72 @@ async fn prepare_capture_request_body(
 
     if live_candidate {
         let mut no_available_wait_deadline = None;
-        let resolution =
-            resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
-                state.as_ref(),
-                None,
-                live_body_key_probe.model.as_deref(),
-                &[],
-                &HashSet::new(),
-                None,
-                true,
-                &mut no_available_wait_deadline,
-                None,
-                capture_target.endpoint(),
-                live_body_key_probe.image_intent,
-                codex_imagegen_protocol_from_headers(headers).is_some(),
-            )
-            .await;
+        let resolution = match load_via_pool_effective_routing(
+            state.as_ref(),
+            live_prompt_cache_key.as_deref(),
+            live_body_key_probe.contains_encrypted_content,
+        )
+        .await
+        {
+            Ok((
+                prompt_cache_binding_constraint,
+                _owner_auto_guard_active,
+                conversation_override,
+            )) => {
+                if prompt_cache_binding_constraint.is_some() || conversation_override.is_some() {
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        live_body_key_probe.model.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        prompt_cache_binding_constraint.as_ref(),
+                        conversation_override.as_ref(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        None,
+                        capture_target.endpoint(),
+                        live_body_key_probe.image_intent,
+                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                    )
+                    .await
+                } else {
+                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        live_body_key_probe.model.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        true,
+                        &mut no_available_wait_deadline,
+                        None,
+                        capture_target.endpoint(),
+                        live_body_key_probe.image_intent,
+                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                    )
+                    .await
+                }
+            }
+            Err((status, message)) => {
+                warn!(
+                    proxy_request_id,
+                    ?status,
+                    %message,
+                    "live-first routing metadata could not be resolved; replaying buffered request"
+                );
+                drop(live_pipeline.take());
+                prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
+                    &live_settings,
+                    invoke_id,
+                    capture_target,
+                    false,
+                    false,
+                ));
+                Err(anyhow::anyhow!(message))
+            }
+        };
         if let Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
             initial_account,
         ))) = resolution
@@ -883,7 +941,7 @@ async fn prepare_capture_request_body(
                     invoke_id: invoke_id.to_string(),
                     occurred_at: occurred_at.to_string(),
                     endpoint: capture_target.endpoint().to_string(),
-                    sticky_key: None,
+                    sticky_key: live_body_sticky_key.clone(),
                     requester_ip: requester_ip.map(str::to_string),
                     upstream_base_url_host: None,
                     request_model: live_body_key_probe.model.clone(),
@@ -1011,8 +1069,8 @@ async fn prepare_capture_request_body(
                         original_uri,
                         &live_headers,
                         pipeline.body,
-                        None,
-                        None,
+                        live_prompt_cache_key.as_deref(),
+                        live_body_sticky_key.as_deref(),
                         live_body_key_probe.image_intent,
                         proxy_upstream_send_timeout_for_capture_target(
                             runtime_timeouts,
@@ -1052,6 +1110,13 @@ async fn prepare_capture_request_body(
             drop(live_pipeline.take());
         }
     } else {
+        prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
+            &live_settings,
+            invoke_id,
+            capture_target,
+            false,
+            false,
+        ));
         drop(live_pipeline.take());
     }
 
@@ -1198,8 +1263,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         body_limit,
         &runtime_timeouts,
         requester_ip.as_deref(),
-        header_sticky_key.is_some(),
-        header_prompt_cache_key.is_some(),
+        header_sticky_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
         req_read_started,
     ))
     .await;
@@ -1391,6 +1456,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let t_req_read_ms = elapsed_ms(req_read_started);
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
+    let live_first_eligible = prepared_live_request_streaming_decision
+        .as_ref()
+        .is_some_and(|decision| decision.eligible);
+    let live_first_reason = prepared_live_request_streaming_decision
+        .as_ref()
+        .map(|decision| decision.reason)
+        .unwrap_or("not_live_candidate");
     if capture_request_body_read_log_at_info(request_body_bytes_len, t_req_read_ms) {
         info!(
             proxy_request_id,
@@ -1399,8 +1471,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible = false,
-            live_first_reason = "capture_requires_full_request_semantics",
+            live_first_eligible,
+            live_first_reason,
             "openai proxy capture request body read completed"
         );
     } else {
@@ -1411,8 +1483,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible = false,
-            live_first_reason = "capture_requires_full_request_semantics",
+            live_first_eligible,
+            live_first_reason,
             "openai proxy capture request body read completed"
         );
     }

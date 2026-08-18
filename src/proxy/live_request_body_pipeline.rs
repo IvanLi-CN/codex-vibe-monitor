@@ -211,17 +211,19 @@ async fn run_live_responses_request_body_pipeline(
                     )
                     .await?;
             }
-            selected_writer.flush().await?;
-
-            if read_non_whitespace(&mut reader).await?.is_some() {
-                return Err(invalid_live_json("request body has trailing content"));
-            }
             selected_transformer.finish(&mut selected_writer).await?;
             if let Some(summary) = selected_transformer.oauth_rewrite_summary() {
                 let _ = oauth_rewrite_tx.send(Some(summary));
             }
             selected_writer.write_raw(b"}").await?;
             selected_writer.finish().await?;
+
+            // The complete root object is already valid and has been emitted to the
+            // upstream encoder. Keep the body stream open while validating that the
+            // downstream transport contains only permitted trailing whitespace.
+            if read_non_whitespace(&mut reader).await?.is_some() {
+                return Err(invalid_live_json("request body has trailing content"));
+            }
             logical_tx.take();
             return Ok(());
         }
@@ -1104,7 +1106,7 @@ mod tests {
             .expect("upstream prefix should be valid");
         assert_eq!(
             first,
-            Bytes::from_static(br#"{"model":"gpt-5.6","input":"delayed tail""#)
+            Bytes::from_static(br#"{"model":"gpt-5.6","input":"delayed tail"}"#)
         );
         assert!(pipeline.first_upstream_body_poll_at_rx.borrow().is_some());
 

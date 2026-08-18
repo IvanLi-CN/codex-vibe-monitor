@@ -139,6 +139,50 @@ export const CacheHitProtection: Story = {
   },
 };
 
+export const LiveRequestStreamingEnabled: Story = {
+  args: {
+    draft: {
+      requestCompressionAlgorithm: "zstd",
+      requestCompressionLevelPreset: "best",
+      codexImagegenRewriteMode: "keep_original",
+      availableModels: ["gpt-image-2", "gpt-5.4-mini"],
+      availableModelsMode: "allowlist",
+      responsesFirstByteTimeoutSecs: "120",
+      compactFirstByteTimeoutSecs: "300",
+      imageFirstByteTimeoutSecs: "300",
+      responsesStreamTimeoutSecs: "300",
+      compactStreamTimeoutSecs: "300",
+      cacheHitProtectionEnabled: false,
+      cacheHitRateThresholdPercent: "10",
+      cacheHitOverflowMode: "queue",
+      liveRequestStreamingEnabled: true,
+      liveRequestStreamingTreatmentPercent: "50",
+    },
+  },
+  tags: ["test"],
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1280",
+    },
+  },
+  decorators: [
+    (Story) => (
+      <div className="bg-base-300 p-12">
+        <div className="bg-base-200">
+          <Story />
+        </div>
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("switch", { name: /实时请求体流式转发|Live request streaming/ }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(canvas.getByDisplayValue("50")).toBeEnabled();
+  },
+};
+
 export const DesktopModeToggle: Story = {
   ...ModelPolicy,
   tags: ["test"],

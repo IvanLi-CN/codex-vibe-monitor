@@ -164,17 +164,17 @@ PR: include
 
 PR: include
 
-![Pool routing live request streaming without account group field](./assets/pool-routing-live-streaming-no-account-group-dark.png)
+![Pool routing live request streaming enabled without account group field](./assets/pool-routing-live-streaming-no-account-group-dark.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: Settings/Components/Pool Routing Settings Card/CacheHitProtection
+  story_id_or_title: Settings/Components/Pool Routing Settings Card/LiveRequestStreamingEnabled
   target_program: mock-only
-  capture_scope: page
+  capture_scope: element
   requested_viewport: desktop1280
   viewport_strategy: storybook-viewport
-  margin_policy: trim_only
-  evidence_surface: page
+  margin_policy: require_margin
+  evidence_surface: component
   sensitive_exclusion: N/A
   submission_gate: owner-confirmed
-  state: 已删除账号组输入；保留实时转发开关与实验组占比
-  evidence_note: 深色主题内外一致，实时请求体流式转发区域不再显示账号组字段，启用后按实验组占比对满足路由条件的 `/v1/responses` 请求分配 cohort。
+  state: 保存后实时转发保持开启；实验组占比为 50%
+  evidence_note: 深色主题内外一致，实时请求体流式转发区域没有账号组字段；保存响应归一化后保留已开启状态，并按实验组占比对满足路由条件的 `/v1/responses` 请求分配 cohort。

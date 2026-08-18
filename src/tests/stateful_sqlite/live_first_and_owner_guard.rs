@@ -358,7 +358,7 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_request_eof() {
+async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routing() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -389,7 +389,9 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
-    let first_chunk = "{\"model\":\"gpt-5\",\"input\":\"ready\"}\n".to_string();
+    let first_chunk =
+        "{\"model\":\"gpt-5\",\"promptCacheKey\":\"pck-live-treatment\",\"input\":\"ready\"}\n"
+            .to_string();
     let body_task = tokio::spawn(async move {
         tx.send(Ok(Bytes::from(first_chunk)))
             .await
@@ -413,6 +415,10 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
                 (
                     http_header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("sticky-live-treatment"),
                 ),
                 (
                     HeaderName::from_static("x-openai-internal-codex-responses-lite"),
