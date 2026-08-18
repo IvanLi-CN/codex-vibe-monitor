@@ -288,7 +288,7 @@ export const Operational24Hours: Story = {
     await expect(within(modelRecords).getByText("状态事件")).toBeVisible();
     await expect(within(modelRecords).queryByText("gpt-5.4-mini")).not.toBeInTheDocument();
     await userEvent.click(within(modelRecords).getAllByLabelText("展开决策详情")[0]);
-    await expect(within(modelRecords).getAllByText("upstream_http_5xx")[0]).toBeVisible();
+    await expect(within(modelRecords).getAllByText("上游服务异常")[0]).toBeVisible();
   },
 };
 
