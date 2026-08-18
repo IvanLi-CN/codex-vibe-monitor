@@ -16,6 +16,7 @@ import {
 } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import { ModelRoutingRecordList, modelRoutingRecordsId } from "./ModelRoutingRecordList";
+import { modelRoutingKey } from "./modelRoutingIds";
 
 type RoutingTimelineState = "available" | "degraded" | "cooling_down" | "unknown";
 type RoutingTimelinePriority = "normal" | "demoted" | "excluded" | "unknown";
@@ -270,15 +271,15 @@ function routingLaneLabel(accountId: number) {
 }
 
 function routingTaskId(model: string, accountId: number) {
-  return `route-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}-${accountId}`;
+  return `route-${modelRoutingKey(model)}-${accountId}`;
 }
 
 function routingModelTaskId(model: string) {
-  return `model-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  return `model-${modelRoutingKey(model)}`;
 }
 
 function routingDetailTaskId(model: string, index: number) {
-  return `detail-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}-${index}`;
+  return `detail-${modelRoutingKey(model)}-${index}`;
 }
 
 export function buildModelRoutingGanttData({
@@ -383,7 +384,7 @@ function formatBeijingRange(startMs: number, endMs: number, localeTag: string) {
 }
 
 function bandKey(model: string, accountId: number, band: RoutingGanttBand) {
-  return `${model}:${accountId}:${band.startMs}:${band.endMs}`;
+  return JSON.stringify([modelRoutingKey(model), accountId, band.startMs, band.endMs]);
 }
 
 function countAttemptsInBand(

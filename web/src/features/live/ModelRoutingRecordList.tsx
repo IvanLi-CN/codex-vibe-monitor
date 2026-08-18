@@ -4,6 +4,7 @@ import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
 import type { ModelRoutingTimelineRecord } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
+import { modelRoutingKey } from "./modelRoutingIds";
 
 function formatBeijing(value?: string | null) {
   if (!value) return "-";
@@ -86,7 +87,7 @@ function routeSourceLabel(
 }
 
 export function modelRoutingRecordsId(model: string) {
-  return `model-routing-records-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  return `model-routing-records-${modelRoutingKey(model)}`;
 }
 
 function DetailItem({ label, children }: { label: string; children: ReactNode }) {

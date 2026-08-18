@@ -167,9 +167,9 @@ describe("ModelRoutingLivePanel", () => {
       "gpt-5.5-codex",
     );
     const selectedLaneIndex = expandedTasks.findIndex(
-      (task) => task.id === "route-gpt-5-5-codex-11",
+      (task) => task.id === "route-gpt-5x2ex5-codex78x-11",
     );
-    const nextModelIndex = expandedTasks.findIndex((task) => task.id === "model-gpt-5-4-mini");
+    const nextModelIndex = expandedTasks.findIndex((task) => task.id === "model-gpt-5x2ex4-mini");
     const detailTasks = expandedTasks.slice(selectedLaneIndex + 1, nextModelIndex);
     expect(detailTasks.length).toBeGreaterThan(0);
     expect(detailTasks.every((task) => task.kind === "detail")).toBe(true);
@@ -212,7 +212,7 @@ describe("ModelRoutingLivePanel", () => {
     ]);
     expect(buildFrappeRoutingTasks(timeline)).toEqual([
       expect.objectContaining({
-        id: "route-gpt-5-5-codex-11",
+        id: "route-gpt-5x2ex5-codex78x-11",
         name: "API Key #11",
         accountId: 11,
         model: "gpt-5.5-codex",
@@ -304,5 +304,33 @@ describe("ModelRoutingLivePanel", () => {
         custom_class: "model-routing-model-task",
       }),
     ]);
+  });
+
+  it("keeps task IDs distinct for models whose punctuation would otherwise collide", () => {
+    const groups = ["foo/bar", "foo-bar"].map((model, index) => ({
+      model,
+      accountCount: 1,
+      recordCount: 0,
+      timeline: buildModelRoutingGanttData({
+        model,
+        accounts: [
+          {
+            accountId: index + 1,
+            accountDisplayName: `API Key #${index + 1}`,
+            model,
+            state: "available" as const,
+            priority: "normal" as const,
+            failureCount: 0,
+            lastSeenAt: snapshot.generatedAt,
+          },
+        ],
+        records: [],
+        generatedAt: snapshot.generatedAt,
+        window: "1h",
+      }),
+    }));
+
+    const tasks = buildFrappeSystemRoutingTasks(groups);
+    expect(new Set(tasks.map((task) => task.id)).size).toBe(tasks.length);
   });
 });

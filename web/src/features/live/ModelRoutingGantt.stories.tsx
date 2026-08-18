@@ -205,10 +205,10 @@ export const Operational24Hours: Story = {
     const ganttHost = canvas.getByTestId("model-routing-gantt-chart-system");
     const ganttContainer = ganttHost.querySelector<HTMLElement>(".gantt-container");
     const laneBar = ganttHost.querySelector<SVGRectElement>(
-      '.bar-wrapper[data-id="route-gpt-5-5-11"] .bar',
+      '.bar-wrapper[data-id="route-gpt-5x2ex5-11"] .bar',
     );
     const laneLabel = ganttHost.querySelector<SVGTextElement>(
-      '.bar-wrapper[data-id="route-gpt-5-5-11"] .bar-label',
+      '.bar-wrapper[data-id="route-gpt-5x2ex5-11"] .bar-label',
     );
     if (!ganttContainer || !laneBar || !laneLabel) {
       throw new Error("routing Gantt layout is incomplete");
@@ -272,13 +272,16 @@ export const Operational24Hours: Story = {
       name: "收起 gpt-5.5 路由记录",
     });
     await expect(collapseControl).toHaveAttribute("aria-expanded", "true");
-    await expect(collapseControl).toHaveAttribute("aria-controls", "model-routing-records-gpt-5-5");
+    await expect(collapseControl).toHaveAttribute(
+      "aria-controls",
+      "model-routing-records-gpt-5x2ex5",
+    );
     const modelRecords = await canvas.findByTestId("model-routing-model-records-gpt-5.5");
     const lastSelectedLane = ganttHost.querySelector<SVGRectElement>(
-      '.bar-wrapper[data-id="route-gpt-5-5-13"] .bar',
+      '.bar-wrapper[data-id="route-gpt-5x2ex5-13"] .bar',
     );
     const nextModel = ganttHost.querySelector<SVGRectElement>(
-      '.bar-wrapper[data-id="model-gpt-5-4-mini"] .bar',
+      '.bar-wrapper[data-id="model-gpt-5x2ex4-mini"] .bar',
     );
     if (!lastSelectedLane || !nextModel) {
       throw new Error("expanded model group boundaries are incomplete");
