@@ -865,6 +865,23 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
   });
 
+  it("does not present a negative TTFT as a measured duration", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = -1_500;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").not.toContain("TTFT -1.5 s");
+    expect(host?.textContent ?? "").toContain("TTFT —");
+  });
+
   it("lazy-fetches the selected non-final attempt response body by attempt identity", async () => {
     const response = createWorkflowDetailResponse();
     const firstAttemptEntry = response.timeline.find((entry) => entry.kind === "attempt");

@@ -654,7 +654,7 @@ fn merged_runtime_preview_progress(
     runtime_live_phase: Option<&str>,
 ) -> (Option<f64>, Option<String>) {
     let measured_runtime_first_token_ms =
-        runtime_first_token_ms.filter(|value| value.is_finite() && *value > 0.0);
+        runtime_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
     let runtime_is_responding = measured_runtime_first_token_ms.is_some()
         && runtime_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING);
 
@@ -950,11 +950,27 @@ mod runtime_preview_progress_tests {
         let (first_token_ms, live_phase) = merged_runtime_preview_progress(
             Some(720.0),
             Some(INVOCATION_LIVE_PHASE_RESPONDING),
-            Some(0.0),
+            None,
             Some(INVOCATION_LIVE_PHASE_REQUESTING),
         );
 
         assert_eq!(first_token_ms, Some(720.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn zero_millisecond_runtime_first_token_promotes_a_missing_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            Some(0.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+        );
+
+        assert_eq!(first_token_ms, Some(0.0));
         assert_eq!(
             live_phase.as_deref(),
             Some(INVOCATION_LIVE_PHASE_RESPONDING)

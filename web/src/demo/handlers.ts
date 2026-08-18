@@ -389,6 +389,16 @@ function json(payload: unknown, init?: ResponseInit) {
   return HttpResponse.json(payload as JsonBodyType, init);
 }
 
+export function demoAttemptPhase(
+  status: string | null | undefined,
+  firstTokenMs: number | null | undefined,
+) {
+  if (status !== "running") return "completed";
+  return typeof firstTokenMs === "number" && Number.isFinite(firstTokenMs) && firstTokenMs >= 0
+    ? "responding"
+    : "requesting";
+}
+
 function apiPathname(pathname: string) {
   const apiIndex = pathname.indexOf("/api/");
   return apiIndex === -1 ? pathname : pathname.slice(apiIndex);
@@ -2358,12 +2368,7 @@ function poolAttempts(invokeId: string) {
         ? null
         : `2026-07-10T09:25:00Z`,
     status: needsRetry ? "failed" : (record.status ?? "success"),
-    phase:
-      record.status === "running" && (record.firstTokenMs ?? 0) > 0
-        ? "responding"
-        : record.status === "running"
-          ? "requesting"
-          : "completed",
+    phase: demoAttemptPhase(record.status, record.firstTokenMs),
     httpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     downstreamHttpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     failureKind: needsRetry ? "rate_limited" : (record.failureKind ?? null),

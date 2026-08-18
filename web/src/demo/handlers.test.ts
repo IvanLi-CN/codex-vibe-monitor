@@ -1,6 +1,6 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { apiHandlers } from "./handlers";
+import { apiHandlers, demoAttemptPhase } from "./handlers";
 import { demoModel } from "./model";
 
 const server = setupServer(...apiHandlers);
@@ -13,6 +13,12 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it("treats zero-millisecond TTFT as responding in account attempts", () => {
+    expect(demoAttemptPhase("running", 0)).toBe("responding");
+    expect(demoAttemptPhase("running", null)).toBe("requesting");
+    expect(demoAttemptPhase("running", -1)).toBe("requesting");
+  });
+
   it("serves account request attempts with an in-flight TTFT and no completed response duration", async () => {
     const response = await fetch(
       "http://demo.invalid/api/pool/upstream-accounts/101/call-attempts?page=1&pageSize=50",

@@ -82,7 +82,7 @@ interface InvocationWorkflowDetailPanelProps {
 const FALLBACK_CELL = "—";
 
 function formatDurationMs(value: number | null | undefined, locale: string) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return FALLBACK_CELL;
   const seconds = value / 1000;
   const rounded = Math.round(seconds * 10) / 10;
   const precision = Math.abs(rounded) >= 100 ? 0 : 1;
