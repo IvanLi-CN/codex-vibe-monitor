@@ -21,7 +21,7 @@
 - `runtimePressureHealth.dashboardHotTopics` 按七条 topic 报告 class、state、subscriber、build、fallback、live DB read、serialization、cadence miss 与 reconnect churn。
 - System Status 以只读方式展示 healthy、deferred、hot-DB-read 与 cadence-miss；字段缺失时保持 unknown 兼容。
 - 完整 Dashboard topic bundle 的 10,000 mutation、双订阅共享 frame 与零 fallback/DB-read 门禁由 stateful topology test 覆盖。
-- Dashboard runtime 投影的延迟验证以 20 个更新样本的 `400ms` P95 为合同；单次传递和 parallel-work materialization 使用独立的有界观察窗口，只隔离测试调度抖动，不放宽该产品目标。
+- Dashboard runtime 投影的延迟验证以 20 个更新样本的 `400ms` P95 为合同；单次传递、parallel-work materialization 与成功代理后的 SQLite sticky-route 写入使用独立的有界观察窗口，只隔离测试调度抖动，不放宽该产品目标或路由断言。
 
 ## Remaining Gaps
 

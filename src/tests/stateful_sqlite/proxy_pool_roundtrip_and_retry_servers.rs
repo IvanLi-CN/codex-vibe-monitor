@@ -2043,7 +2043,10 @@ pub(crate) async fn wait_for_test_sticky_route_account_id(
     pool: &SqlitePool,
     sticky_key: &str,
 ) -> Option<i64> {
-    for _ in 0..10 {
+    // The successful proxy response returns before its background route write has
+    // committed. Stateful SQLite tests run concurrently, so retain a bounded
+    // observation window for that asynchronous persistence.
+    for _ in 0..50 {
         if let Some(account_id) = load_test_sticky_route_account_id(pool, sticky_key).await {
             return Some(account_id);
         }
