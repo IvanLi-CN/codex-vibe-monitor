@@ -102,15 +102,90 @@ write_state() {
   mv "$tmp_state" "$state_path"
 }
 
+bun_surface_is_present() {
+  local manifest_path="$1"
+  local modules_path="$2"
+
+  python3 - "$manifest_path" "$modules_path" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+manifest_path = Path(sys.argv[1])
+modules_path = Path(sys.argv[2])
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+packages = set()
+for field in ("dependencies", "devDependencies"):
+    values = manifest.get(field, {})
+    if not isinstance(values, dict):
+        raise SystemExit(1)
+    packages.update(name for name in values if isinstance(name, str) and name)
+
+if not packages:
+    raise SystemExit(1)
+
+for package in packages:
+    package_path = modules_path.joinpath(*package.split("/"))
+    if not (package_path / "package.json").is_file():
+        raise SystemExit(1)
+PY
+}
+
+cargo_registry_archives() {
+  awk '
+    function emit() {
+      if (registry && name != "" && version != "") {
+        print name "-" version ".crate"
+      }
+    }
+    /^\[\[package\]\]$/ {
+      emit()
+      name = ""
+      version = ""
+      registry = 0
+      next
+    }
+    /^name = "/ {
+      value = $0
+      sub(/^name = "/, "", value)
+      sub(/"$/, "", value)
+      name = value
+      next
+    }
+    /^version = "/ {
+      value = $0
+      sub(/^version = "/, "", value)
+      sub(/"$/, "", value)
+      version = value
+      next
+    }
+    /^source = "registry\+/ {
+      registry = 1
+    }
+    END { emit() }
+  ' "$repo_root/Cargo.lock"
+}
+
+cargo_surface_is_present() {
+  local cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+  local cache_path="$cargo_home/registry/cache"
+
+  [ -d "$cache_path" ] || return 1
+  awk 'NR == FNR { available[$0] = 1; next } !available[$0] { exit 1 }' \
+    <(find "$cache_path" -type f -name '*.crate' -exec basename {} \; 2>/dev/null) \
+    <(cargo_registry_archives)
+}
+
 surface_is_present() {
   case "$1" in
-    root-bun) [ -x "$repo_root/node_modules/.bin/biome" ] ;;
-    web-bun) [ -x "$repo_root/web/node_modules/.bin/vitest" ] ;;
-    docs-bun) [ -x "$repo_root/docs-site/node_modules/.bin/rspress" ] ;;
-    cargo)
-      cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-      find "$cargo_home/registry/cache" -type f -name '*.crate' -print -quit 2>/dev/null | grep -q .
-      ;;
+    root-bun) bun_surface_is_present "$repo_root/package.json" "$repo_root/node_modules" ;;
+    web-bun) bun_surface_is_present "$repo_root/web/package.json" "$repo_root/web/node_modules" ;;
+    docs-bun) bun_surface_is_present "$repo_root/docs-site/package.json" "$repo_root/docs-site/node_modules" ;;
+    cargo) cargo_surface_is_present ;;
   esac
 }
 

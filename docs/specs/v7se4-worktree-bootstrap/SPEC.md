@@ -40,7 +40,7 @@
 
 ### MUST
 
-- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；Cargo `ok` 状态还必须有 registry archive。四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
+- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；Bun `ok` 状态必须保留 manifest 的全部直接依赖包，Cargo `ok` 状态必须保留 `Cargo.lock` 的全部 registry archive。四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
 - `worktree:bootstrap` 必须继续遵守 copy-missing-only；目标文件已存在时不得覆盖。
 - `worktree:setup` 必须为 root Bun、web Bun、docs Bun、Cargo 各自保存无敏感状态和 input digest；手动 `bun run worktree:setup` 重试 stale 或 failed surface，`bun run worktree:setup -- --force` 强制执行四项。
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
@@ -70,7 +70,7 @@
 ### Edge cases / errors
 
 - 当前 worktree 已存在 `.env.local` 时，bootstrap 必须跳过且不覆盖。
-- 目标依赖目录不存在、输入 digest 改变或手动强制执行时，由对应 locked install 命令负责恢复。
+- manifest 直接 Bun package、`Cargo.lock` registry archive、依赖目录不存在、输入 digest 改变或手动强制执行时，由对应 locked install 命令负责恢复。
 - 自动失败记录只抑制相同 digest；输入变化后自动路径必须重新尝试。
 - 若当前 revision 缺少 bootstrap 脚本，Lefthook command 必须安全 no-op，不能让 checkout 失败。
 - staged formatter 必须拒绝任一路径组件中的 symlink，不能向 worktree 外的目标写入。
@@ -108,8 +108,8 @@
   Then 其余任务仍执行、输出失败摘要且 hook 返回 0；相同 digest 的后续自动路径不重试，手动 bootstrap 返回非零并重试。
 
 - Given CI 运行 worktree 与 hook smoke
-  When 锁定版本的 Lefthook 二进制复制到临时 repo 外路径，真实 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
-  Then 测试不联网且能证明主 worktree no-op、选择性恢复、Cargo cache 缺失恢复、失败抑制、手动重试、force、per-worktree advisory 锁、copy-missing-only、无敏感状态与外置 Lefthook 前置条件。
+  When tooling job 安装锁定的全局 Lefthook，真实 repo 外 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
+  Then 测试不联网且能证明主 worktree no-op、选择性恢复、单个 Bun package 与 Cargo archive 缺失恢复、失败抑制、手动重试、force、per-worktree advisory 锁、copy-missing-only、无敏感状态与外置 Lefthook 前置条件。
 
 ## 验收清单（Acceptance checklist）
 
@@ -145,7 +145,7 @@ None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：把依赖安装放进 linked checkout hook 会增加网络和耗时；本规范以 per-surface digest、Bun sentinel 与 Cargo registry archive 存在性检查限制恢复范围，失败不阻断 checkout。
+- 风险：把依赖安装放进 linked checkout hook 会增加网络和耗时；本规范以 per-surface digest、manifest 直接 Bun package 与 Cargo registry archive 集合检查限制恢复范围，失败不阻断 checkout。
 - 风险：新 linked worktree 在 hook 启动前没有本地 `node_modules`，因此依赖全局 `lefthook`；缺少该命令时安装入口必须尽早失败并给出补救提示。
 - 风险：贡献者可能已有自定义 Git hook；安装入口必须跳过 unmanaged hook，避免 Lefthook 将其移动为 `.old` 后停止执行。
 - 假设：Bun 是仓库唯一 JS package manager，且 root、`web/`、`docs-site/` 都由 Bun 管理。

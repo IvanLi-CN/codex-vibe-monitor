@@ -477,6 +477,11 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
     require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
+    lefthook_install = step_config(tooling_job, "Install Lefthook for hook smoke", "ci-pr.yml.jobs.repository-tooling-checks")
+    require(
+        lefthook_install.get("run") == "bun install --global lefthook@2.1.10",
+        "ci-pr.yml.jobs.repository-tooling-checks: Lefthook smoke must use the pinned external binary",
+    )
     checkout = checkout_step(tooling_job, "Checkout", "ci-pr.yml.jobs.repository-tooling-checks")
     require(checkout.get("fetch-depth") == 0, "ci-pr.yml.jobs.repository-tooling-checks Checkout must fetch full history for trusted source resolution")
     trusted_step = step_config(tooling_job, "Resolve trusted quality-gates sources", "ci-pr.yml.jobs.repository-tooling-checks")
@@ -679,6 +684,11 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
     require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
+    lefthook_install = step_config(tooling_job, "Install Lefthook for hook smoke", "ci-main.yml.jobs.repository-tooling-checks")
+    require(
+        lefthook_install.get("run") == "bun install --global lefthook@2.1.10",
+        "ci-main.yml.jobs.repository-tooling-checks: Lefthook smoke must use the pinned external binary",
+    )
     scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-main.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
     require(

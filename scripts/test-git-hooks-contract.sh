@@ -66,16 +66,11 @@ assert_not_contains "$formatter_log" 'deleted.rs'
 assert_not_contains "$formatter_log" 'removed.md'
 assert_not_contains "$formatter_log" 'docs/../README.md'
 
-lefthook_source="$(command -v lefthook 2>/dev/null || true)"
-if [ -z "$lefthook_source" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
-  lefthook_source="$repo_root/node_modules/.bin/lefthook"
-fi
-[ -n "$lefthook_source" ] || fail 'git hook contract smoke requires a Lefthook binary'
-external_lefthook_dir="$tmp_dir/external-lefthook-bin"
-mkdir -p "$external_lefthook_dir"
-cp -L "$(realpath "$lefthook_source")" "$external_lefthook_dir/lefthook"
-chmod +x "$external_lefthook_dir/lefthook"
-lefthook_bin="$external_lefthook_dir/lefthook"
+lefthook_bin="$(command -v lefthook 2>/dev/null || true)"
+[ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires an external Lefthook binary'
+case "$(cd "$(dirname "$lefthook_bin")" && pwd -P)" in
+  "$repo_root"|"$repo_root"/*) fail 'git hook contract smoke cannot use repo-local Lefthook' ;;
+esac
 
 partial_repo="$tmp_dir/partial-stage"
 mkdir -p "$partial_repo/scripts" "$partial_repo/src"

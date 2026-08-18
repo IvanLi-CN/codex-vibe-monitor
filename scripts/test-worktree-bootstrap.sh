@@ -79,18 +79,26 @@ case "$(basename "$(pwd)")" in
   web|docs-site) surface="$(basename "$(pwd)")" ;;
 esac
 mkdir -p node_modules
-mkdir -p node_modules/.bin
-  case "$surface" in
-    repo) executable=biome ;;
-    web) executable=vitest ;;
-    docs-site) executable=rspress ;;
-  esac
+python3 - package.json node_modules <<'PY'
+import json
+from pathlib import Path
+import sys
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+modules = Path(sys.argv[2])
+for field in ("dependencies", "devDependencies"):
+    values = manifest.get(field, {})
+    if not isinstance(values, dict):
+        raise SystemExit(1)
+    for package in values:
+        package_path = modules.joinpath(*package.split("/"))
+        package_path.mkdir(parents=True, exist_ok=True)
+        (package_path / "package.json").write_text("{}\\n", encoding="utf-8")
+PY
   if [ "${FAKE_BUN_BLOCK_SURFACE:-}" = "$surface" ]; then
     printf 'ready\n' > "${FAKE_BUN_BLOCK_READY:?}"
     sleep "${FAKE_BUN_BLOCK_SECONDS:-2}"
   fi
-  printf '#!/usr/bin/env bash\nexit 0\n' > "node_modules/.bin/$executable"
-chmod +x "node_modules/.bin/$executable"
 if [ "${FAKE_BUN_FAIL_SURFACE:-}" = "$surface" ]; then
   exit 11
 fi
@@ -107,8 +115,40 @@ printf '%s\t%s\n' "$(pwd)" "$*" >> "${CARGO_FETCH_LOG:?}"
 if [ "${FAKE_CARGO_FAIL:-}" = '1' ]; then
   exit 12
 fi
-mkdir -p "${CARGO_HOME:?}/registry/cache/codex-vibe-monitor-test"
-touch "${CARGO_HOME:?}/registry/cache/codex-vibe-monitor-test/fixture-1.0.0.crate"
+cache_path="${CARGO_HOME:?}/registry/cache/codex-vibe-monitor-test"
+mkdir -p "$cache_path"
+awk '
+  function emit() {
+    if (registry && name != "" && version != "") {
+      print name "-" version ".crate"
+    }
+  }
+  /^\[\[package\]\]$/ {
+    emit()
+    name = ""
+    version = ""
+    registry = 0
+    next
+  }
+  /^name = "/ {
+    value = $0
+    sub(/^name = "/, "", value)
+    sub(/"$/, "", value)
+    name = value
+    next
+  }
+  /^version = "/ {
+    value = $0
+    sub(/^version = "/, "", value)
+    sub(/"$/, "", value)
+    version = value
+    next
+  }
+  /^source = "registry\+/ { registry = 1 }
+  END { emit() }
+' Cargo.lock | while IFS= read -r archive; do
+  touch "$cache_path/$archive"
+done
 EOF_CARGO
   chmod +x "$1/cargo"
 }
@@ -140,14 +180,11 @@ release_advisory_lock() {
 
 bun_bin="$(command -v bun 2>/dev/null || true)"
 [ -n "$bun_bin" ] || fail 'worktree bootstrap smoke requires bun on PATH'
-lefthook_source="$(command -v lefthook 2>/dev/null || true)"
-[ -n "$lefthook_source" ] || lefthook_source="$repo_root/node_modules/.bin/lefthook"
-[ -x "$lefthook_source" ] || fail 'worktree bootstrap smoke requires a Lefthook binary'
-external_lefthook_dir="$tmp_dir/external-lefthook-bin"
-mkdir -p "$external_lefthook_dir"
-cp -L "$(realpath "$lefthook_source")" "$external_lefthook_dir/lefthook"
-chmod +x "$external_lefthook_dir/lefthook"
-global_lefthook="$external_lefthook_dir/lefthook"
+global_lefthook="$(command -v lefthook 2>/dev/null || true)"
+[ -n "$global_lefthook" ] || fail 'worktree bootstrap smoke requires an external Lefthook binary'
+case "$(cd "$(dirname "$global_lefthook")" && pwd -P)" in
+  "$repo_root"|"$repo_root"/*) fail 'worktree bootstrap smoke cannot use repo-local Lefthook' ;;
+esac
 
 fixture_repo="$tmp_dir/fixture"
 copy_repo "$repo_root" "$fixture_repo"
@@ -191,7 +228,7 @@ for directory in "$worktree_one" "$worktree_one/web" "$worktree_one/docs-site"; 
   assert_contains "$bun_install_log" "$directory"$'\t''install --frozen-lockfile'
 done
 assert_contains "$cargo_fetch_log" "$worktree_one"$'\t''fetch --locked'
-[ -x "$worktree_one/web/node_modules/.bin/vitest" ] || fail 'web dependency sentinel is missing'
+[ -f "$worktree_one/web/node_modules/react/package.json" ] || fail 'web dependency manifest package is missing'
 state_path="$(git -C "$worktree_one" rev-parse --git-path worktree-setup-state-v1)"
 case "$state_path" in
   /*) ;;
@@ -214,6 +251,18 @@ rm -rf "$fake_cargo_home/registry"
 )
 assert_log_only_surface none yes
 
+missing_cargo_archive="$(find "$fake_cargo_home/registry/cache" -type f -name '*.crate' -print -quit)"
+[ -n "$missing_cargo_archive" ] || fail 'fake Cargo cache did not contain a registry archive'
+rm -f "$missing_cargo_archive"
+touch "$fake_cargo_home/registry/cache/codex-vibe-monitor-test/unrelated-0.0.0.crate"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none yes
+
 rm -rf "$fake_cargo_home/registry"
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
@@ -222,6 +271,24 @@ rm -rf "$fake_cargo_home/registry"
   FAKE_CARGO_FAIL=1 bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
 )
 assert_log_only_surface none yes
+
+rm -rf "$worktree_one/node_modules/dprint"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface "$worktree_one" no
+
+rm -rf "$worktree_one/web/node_modules/react"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface "$worktree_one/web" no
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
 (
