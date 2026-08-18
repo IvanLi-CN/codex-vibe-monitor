@@ -940,6 +940,102 @@ pub(crate) struct UpstreamAccountActionEventListResponse {
     pub(crate) page_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingLiveResponse {
+    pub(crate) generated_at: String,
+    pub(crate) groups: Vec<ModelRoutingLiveModelGroup>,
+    pub(crate) records: Vec<ModelRoutingTimelineRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingLiveModelGroup {
+    pub(crate) model: String,
+    pub(crate) accounts: Vec<ModelRoutingLiveAccount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingLiveAccount {
+    pub(crate) account_id: i64,
+    #[serde(flatten)]
+    pub(crate) route: ModelRoutingState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingTimelineRecord {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) occurred_at: String,
+    pub(crate) account_id: i64,
+    pub(crate) model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invoke_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt_index: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) same_account_retry_index: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) http_status: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_state_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_state_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_priority_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_priority_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_failure_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_route_cooldown_until: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingHistoryResponse {
+    pub(crate) items: Vec<ModelRoutingTimelineRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_cursor: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingLiveQuery {
+    pub(crate) window: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) state: Option<String>,
+    pub(crate) limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingHistoryQuery {
+    pub(crate) model: String,
+    pub(crate) cursor: Option<String>,
+    pub(crate) page_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountAttemptStickyKeyOption {
@@ -1831,6 +1927,7 @@ pub(crate) struct ModelRoutingState {
     pub(crate) last_seen_at: String,
     pub(crate) last_failure_at: Option<String>,
     pub(crate) last_failure_kind: Option<String>,
+    #[serde(skip_serializing)]
     pub(crate) last_failure_message: Option<String>,
     pub(crate) cooldown_until: Option<String>,
     pub(crate) cache_concurrency_limit: Option<i64>,

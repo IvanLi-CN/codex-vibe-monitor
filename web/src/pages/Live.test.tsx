@@ -6,10 +6,12 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import LivePage from "./Live";
 
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
+const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
 const hookMocks = vi.hoisted(() => ({
   useForwardProxyLiveStats: vi.fn(),
   useInvocationStream: vi.fn(),
   usePromptCacheConversations: vi.fn(),
+  useModelRoutingLive: vi.fn(),
   useSummary: vi.fn(),
 }));
 const componentMocks = vi.hoisted(() => ({
@@ -29,6 +31,10 @@ vi.mock("../hooks/usePromptCacheConversations", () => ({
   usePromptCacheConversations: hookMocks.usePromptCacheConversations,
 }));
 
+vi.mock("../hooks/useModelRoutingLive", () => ({
+  useModelRoutingLive: hookMocks.useModelRoutingLive,
+}));
+
 vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
@@ -39,6 +45,10 @@ vi.mock("../features/stats/StatsCards", () => ({
 
 vi.mock("../features/forward-proxy/ForwardProxyLiveTable", () => ({
   ForwardProxyLiveTable: () => <div data-testid="forward-proxy-live-table" />,
+}));
+
+vi.mock("../features/live/ModelRoutingLivePanel", () => ({
+  ModelRoutingLivePanel: () => <div data-testid="model-routing-live-panel" />,
 }));
 
 vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
@@ -123,6 +133,16 @@ vi.mock("../i18n", () => ({
           return `${values?.count ?? 0} 条记录`;
         case "live.latest.title":
           return "最新记录";
+        case "live.tabs.label":
+          return "实况视图";
+        case "live.tabs.conversations":
+          return "对话";
+        case "live.tabs.records":
+          return "最新记录";
+        case "live.tabs.routing":
+          return "路由";
+        case "live.tabs.proxy":
+          return "代理";
         default:
           return key;
       }
@@ -227,7 +247,8 @@ function pressElement(element: HTMLElement) {
   });
 }
 
-function setupLivePageHooks() {
+function setupLivePageHooks(activeTab: string | null = "conversations") {
+  if (activeTab) storage.set(LIVE_TAB_STORAGE_KEY, activeTab);
   hookMocks.useForwardProxyLiveStats.mockReturnValue({
     stats: null,
     isLoading: false,
@@ -247,6 +268,12 @@ function setupLivePageHooks() {
     stats: null,
     isLoading: false,
     error: null,
+  });
+  hookMocks.useModelRoutingLive.mockReturnValue({
+    data: null,
+    isLoading: false,
+    error: null,
+    refresh: vi.fn(),
   });
 }
 
@@ -315,6 +342,87 @@ function getPromptCacheConversationTable() {
 }
 
 describe("LivePage", () => {
+  it("defaults to routing when no saved tab is present", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+    expect(host?.querySelector('[data-testid="live-prompt-cache-selection"]')).toBeNull();
+    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+      {
+        window: "1h",
+        limit: 100,
+      },
+      true,
+    );
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      false,
+    );
+  });
+
+  it("falls back to routing when the stored tab is invalid", () => {
+    setupLivePageHooks(null);
+    storage.set(LIVE_TAB_STORAGE_KEY, "removed-tab");
+
+    render(<LivePage />);
+
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+  });
+
+  it("uses the shared segmented control for four ordered content-width live workspace tabs", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
+    const tabs = tabList?.querySelectorAll('[role="tab"]');
+    const routingTab = host?.querySelector("#live-workspace-tab-routing");
+    const routingPanel = host?.querySelector("#live-workspace-panel-routing");
+
+    expect(tabList?.className).toContain("segmented-control");
+    expect(tabList?.className).toContain("w-fit");
+    expect(tabList?.classList.contains("w-full")).toBe(false);
+    expect(tabs).toHaveLength(4);
+    expect(Array.from(tabs ?? []).map((tab) => tab.textContent)).toEqual([
+      "对话",
+      "最新记录",
+      "路由",
+      "代理",
+    ]);
+    expect(routingTab?.getAttribute("data-active")).toBe("true");
+    expect(routingTab?.classList.contains("w-full")).toBe(false);
+    expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
+    expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
+  });
+
+  it("stops routing updates after switching tabs and persists the selected tab", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
+    if (!(conversationsTab instanceof HTMLElement)) {
+      throw new Error("missing conversations tab");
+    }
+    pressElement(conversationsTab);
+
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
+    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+      {
+        window: "1h",
+        limit: 100,
+      },
+      false,
+    );
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(LIVE_TAB_STORAGE_KEY, "conversations");
+  });
+
   it("defaults to 50 conversations when storage is empty", () => {
     setupLivePageHooks();
 
@@ -324,10 +432,13 @@ describe("LivePage", () => {
 
     expect(window.localStorage.getItem).toHaveBeenCalledWith(PROMPT_CACHE_SELECTION_STORAGE_KEY);
     expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 50,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      true,
+    );
   });
 
   it("falls back to 50 conversations when storage contains an invalid value", () => {
@@ -339,10 +450,13 @@ describe("LivePage", () => {
     const select = getPromptCacheSelectionTrigger();
 
     expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 50,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      true,
+    );
   });
 
   it("persists the selected count option and restores it after remount", () => {
@@ -368,19 +482,25 @@ describe("LivePage", () => {
       PROMPT_CACHE_SELECTION_STORAGE_KEY,
       "count:20",
     );
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 20,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 20,
+      },
+      true,
+    );
 
     remount(<LivePage />);
 
     const restoredSelect = getPromptCacheSelectionTrigger();
     expect(restoredSelect.textContent).toContain("20 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "count",
-      limit: 20,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 20,
+      },
+      true,
+    );
   });
 
   it("restores a stored activity-window selection on initial render", () => {
@@ -391,10 +511,13 @@ describe("LivePage", () => {
 
     const select = getPromptCacheSelectionTrigger();
     expect(select.textContent).toContain("近 6 小时活动");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "activityWindow",
-      activityHours: 6,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "activityWindow",
+        activityHours: 6,
+      },
+      true,
+    );
   });
 
   it("offers mutually exclusive count and activity-window prompt-cache filters", () => {
@@ -414,10 +537,13 @@ describe("LivePage", () => {
     }
     pressElement(option);
 
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
-      mode: "activityWindow",
-      activityHours: 6,
-    });
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "activityWindow",
+        activityHours: 6,
+      },
+      true,
+    );
     expect(window.localStorage.setItem).toHaveBeenCalledWith(
       PROMPT_CACHE_SELECTION_STORAGE_KEY,
       "activityWindow:6",

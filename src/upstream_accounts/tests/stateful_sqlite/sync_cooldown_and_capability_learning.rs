@@ -119,6 +119,215 @@ async fn insert_model_failure_attempt(
     .last_insert_rowid()
 }
 
+#[tokio::test]
+async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API account",
+        "routing-live-api-key",
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind("irrelevant-to-routing")
+        .execute(&state.pool)
+        .await
+        .expect("assign account group outside the routing read model");
+    let model = "gpt-routing-live-api";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed API Key model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET last_failure_kind = 'upstream_http_5xx', last_failure_message = ?3 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind("upstream response contained a sensitive diagnostic")
+    .execute(&state.pool)
+    .await
+    .expect("seed a sensitive failure message");
+    let first_attempt =
+        insert_model_failure_attempt(&state, account_id, "routing-live-api-first", Some(model))
+            .await;
+    let second_attempt =
+        insert_model_failure_attempt(&state, account_id, "routing-live-api-second", Some(model))
+            .await;
+
+    let Json(live) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: Some(MODEL_ROUTE_STATE_AVAILABLE.to_string()),
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("load live model routing snapshot");
+    assert_eq!(live.groups.len(), 1);
+    assert_eq!(live.groups[0].model, model);
+    assert_eq!(live.groups[0].accounts.len(), 1);
+    assert_eq!(live.groups[0].accounts[0].account_id, account_id);
+    assert_eq!(live.records.len(), 2);
+    assert!(live.records.iter().all(|record| record.kind == "attempt"));
+    assert!(live.records.iter().all(|record| record.model == model));
+    let live_json = serde_json::to_value(&live).expect("serialize routing live response");
+    assert!(
+        live_json
+            .pointer("/groups/0/accounts/0/accountGroupName")
+            .is_none()
+    );
+    assert!(
+        live_json
+            .pointer("/groups/0/accounts/0/lastFailureMessage")
+            .is_none()
+    );
+    assert!(live_json.pointer("/records/0/accountGroupName").is_none());
+
+    let available_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API available account",
+        "routing-live-api-available-key",
+        None,
+        None,
+    )
+    .await;
+    observe_model_route_seen(&state.pool, available_account_id, Some(model))
+        .await
+        .expect("seed available API Key model route");
+    insert_model_failure_attempt(
+        &state,
+        available_account_id,
+        "routing-live-api-available-attempt",
+        Some(model),
+    )
+    .await;
+    let deleted_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API deleted account",
+        "routing-live-api-deleted-key",
+        None,
+        None,
+    )
+    .await;
+    observe_model_route_seen(&state.pool, deleted_account_id, Some(model))
+        .await
+        .expect("seed deleted API Key model route");
+    insert_model_failure_attempt(
+        &state,
+        deleted_account_id,
+        "routing-live-api-deleted-attempt",
+        Some(model),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET deleted_at = datetime('now') WHERE id = ?1")
+        .bind(deleted_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("soft-delete API Key routing account");
+
+    let Json(with_deleted) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: None,
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("exclude soft-deleted API Key routing account");
+    assert!(
+        with_deleted
+            .groups
+            .iter()
+            .flat_map(|group| group.accounts.iter())
+            .all(|account| account.account_id != deleted_account_id)
+    );
+    assert!(
+        with_deleted
+            .records
+            .iter()
+            .all(|record| record.account_id != deleted_account_id)
+    );
+
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(MODEL_ROUTE_STATE_DEGRADED)
+    .bind(MODEL_ROUTE_PRIORITY_DEMOTED)
+    .execute(&state.pool)
+    .await
+    .expect("mark route degraded");
+
+    let Json(degraded) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: Some(MODEL_ROUTE_STATE_DEGRADED.to_string()),
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("filter live route decisions by current state");
+    assert_eq!(degraded.groups.len(), 1);
+    assert_eq!(degraded.groups[0].accounts.len(), 1);
+    assert_eq!(degraded.groups[0].accounts[0].account_id, account_id);
+    assert_eq!(degraded.records.len(), 2);
+    assert!(
+        degraded
+            .records
+            .iter()
+            .all(|record| record.account_id == account_id)
+    );
+
+    let Json(first_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: None,
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load first model routing history page");
+    assert_eq!(first_page.items.len(), 1);
+    let history_json =
+        serde_json::to_value(&first_page).expect("serialize routing history response");
+    assert!(history_json.pointer("/items/0/accountGroupName").is_none());
+    let cursor = first_page
+        .next_cursor
+        .expect("two attempts should yield a next page cursor");
+
+    let Json(second_page) = list_upstream_account_model_routing_events(
+        State(state),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load second model routing history page");
+    assert_eq!(second_page.items.len(), 1);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    assert!(second_page.next_cursor.is_none());
+    let identifiers = [
+        first_page.items[0].id.as_str(),
+        second_page.items[0].id.as_str(),
+    ];
+    assert!(identifiers.contains(&format!("attempt:{first_attempt}").as_str()));
+    assert!(identifiers.contains(&format!("attempt:{second_attempt}").as_str()));
+}
+
 async fn enable_cache_hit_protection(state: &AppState) {
     sqlx::query(
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_low_rate_threshold_percent = 10, cache_hit_overflow_mode = 'queue' WHERE id = 1",

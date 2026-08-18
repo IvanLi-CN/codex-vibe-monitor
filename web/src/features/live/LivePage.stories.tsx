@@ -5,6 +5,7 @@ import { I18nProvider } from "../../i18n";
 import type {
   ApiInvocation,
   ForwardProxyLiveStatsResponse,
+  ModelRoutingLiveResponse,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
@@ -278,6 +279,76 @@ function createPromptCacheConversationsResponse(): PromptCacheConversationsRespo
   };
 }
 
+function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
+  return {
+    generatedAt: "2026-04-06T12:00:00.000Z",
+    groups: [
+      {
+        model: "gpt-5.4",
+        accounts: [
+          {
+            accountId: 42,
+            accountDisplayName: "pool-alpha@example.com",
+            model: "gpt-5.4",
+            state: "available",
+            priority: "normal",
+            failureCount: 0,
+            lastSeenAt: "2026-04-06T12:00:00.000Z",
+            cacheConcurrencyLimit: null,
+          },
+          {
+            accountId: 64,
+            accountDisplayName: "pool-recovery@example.com",
+            model: "gpt-5.4",
+            state: "cooling_down",
+            priority: "excluded",
+            failureCount: 3,
+            lastSeenAt: "2026-04-06T11:58:00.000Z",
+            cooldownUntil: "2026-04-06T12:15:00.000Z",
+            cacheConcurrencyLimit: 1,
+            cacheLastHitRatePercent: 6,
+            probeRequired: true,
+          },
+        ],
+      },
+    ],
+    records: [
+      {
+        id: "attempt:7001",
+        kind: "attempt",
+        occurredAt: "2026-04-06T11:59:54.000Z",
+        accountId: 42,
+        accountDisplayName: "pool-alpha@example.com",
+        model: "gpt-5.4",
+        attemptId: "attempt-7001",
+        invokeId: "live-2",
+        attemptIndex: 2,
+        sameAccountRetryIndex: 1,
+        routingSource: "retry",
+        status: "success",
+        httpStatus: 200,
+        totalLatencyMs: 842,
+        reasonCode: "model_route_probe_passed",
+        modelRouteStateBefore: "cooling_down",
+        modelRouteStateAfter: "available",
+      },
+      {
+        id: "event:7002",
+        kind: "event",
+        occurredAt: "2026-04-06T11:57:32.000Z",
+        accountId: 64,
+        accountDisplayName: "pool-recovery@example.com",
+        model: "gpt-5.4",
+        status: "cooling_down",
+        action: "model_route_cooldown",
+        reasonCode: "cache_hit_rate",
+        modelRouteStateBefore: "degraded",
+        modelRouteStateAfter: "cooling_down",
+      },
+    ],
+  };
+}
+
 function createLiveRequestHandler(scenario: LiveScenario = "default") {
   const summaryByWindow: Record<string, StatsResponse> = {
     current: buildSummary({
@@ -390,6 +461,10 @@ function createLiveRequestHandler(scenario: LiveScenario = "default") {
       return jsonResponse(createPromptCacheConversationsResponse());
     }
 
+    if (url.pathname === "/api/pool/model-routing-live") {
+      return jsonResponse(createModelRoutingLiveResponse());
+    }
+
     return undefined;
   };
 }
@@ -431,10 +506,16 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("实时概览")).toBeVisible();
-    await expect(canvas.getByText("代理运行态")).toBeVisible();
-    await expect(canvas.getByText("对话")).toBeVisible();
+    await expect(canvas.getByRole("tab", { name: "路由" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(canvas.getByText("模型路由")).toBeVisible();
+    await expect(canvas.getByText("gpt-5.4")).toBeVisible();
+    await expect(canvas.queryByText("pool-alpha@example.com")).not.toBeInTheDocument();
 
-    const oneHourTab = canvas.getByRole("tab", { name: "1 小时" });
+    const controls = within(canvas.getByTestId("model-routing-live-controls"));
+    const oneHourTab = controls.getByRole("tab", { name: "1 小时" });
     await userEvent.click(oneHourTab);
     await expect(oneHourTab).toHaveAttribute("aria-selected", "true");
   },
@@ -448,6 +529,7 @@ export const ProxyError: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("实时概览")).toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "代理" }));
     await expect(canvas.getAllByRole("alert").at(0)).toBeVisible();
   },
 };
@@ -459,6 +541,7 @@ export const RealNodeHealthParity: Story = {
   render: () => <LivePage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: "代理" }));
     await expect(canvas.getByText("代理运行态")).toBeVisible();
     await expect(canvas.getByText("JP Edge 01")).toBeVisible();
     await expect(canvas.getByText("Direct")).toBeVisible();

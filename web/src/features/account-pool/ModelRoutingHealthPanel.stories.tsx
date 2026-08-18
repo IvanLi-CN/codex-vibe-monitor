@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { type ComponentType, useInsertionEffect } from "react";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingState } from "../../lib/api";
 import { ModelRoutingHealthPanel } from "./ModelRoutingHealthPanel";
@@ -40,10 +41,73 @@ const states: ModelRoutingState[] = [
   },
 ];
 
+function ModelRoutingHistoryFetchMock() {
+  useInsertionEffect(() => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/pool/upstream-accounts/55/model-routing-events")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "attempt:route-recovery",
+                kind: "attempt",
+                occurredAt: "2026-07-24T07:59:12.000Z",
+                accountId: 55,
+                accountDisplayName: "Ciii",
+                model: "gpt-5.5",
+                attemptId: "attempt-route-recovery",
+                invokeId: "invoke-route-recovery",
+                attemptIndex: 3,
+                sameAccountRetryIndex: 1,
+                status: "success",
+                httpStatus: 200,
+                totalLatencyMs: 821,
+                reasonCode: "probe_passed",
+                modelRouteStateBefore: "cooling_down",
+                modelRouteStateAfter: "available",
+              },
+              {
+                id: "event:route-cooling",
+                kind: "event",
+                occurredAt: "2026-07-24T07:57:01.000Z",
+                accountId: 55,
+                accountDisplayName: "Ciii",
+                model: "gpt-5.5",
+                action: "model_route_cooling_started",
+                reasonCode: "cache_hit_rate_low",
+                modelRouteStateBefore: "degraded",
+                modelRouteStateAfter: "cooling_down",
+              },
+            ],
+            nextCursor: "history-page-2",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return originalFetch(input, init);
+    };
+    return () => {
+      globalThis.fetch = originalFetch;
+    };
+  }, []);
+
+  return null;
+}
+
+const withModelRoutingHistoryFetchMock = (Story: ComponentType) => (
+  <>
+    <ModelRoutingHistoryFetchMock />
+    <Story />
+  </>
+);
+
 const meta = {
   title: "Account Pool/ModelRoutingHealthPanel",
   component: ModelRoutingHealthPanel,
-  tags: ["autodocs"],
+  tags: ["autodocs", "test"],
   parameters: {
     layout: "fullscreen",
     a11y: {
@@ -54,7 +118,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="bg-base-200 px-6 py-8 text-base-content">
+        <div className="bg-neutral p-8 text-neutral-content sm:p-12">
           <div className="mx-auto max-w-[1440px]">
             <Story />
           </div>
@@ -62,24 +126,38 @@ const meta = {
       </I18nProvider>
     ),
   ],
-  args: { states, writesEnabled: true, onReset: fn() },
+  args: { accountId: 55, states, writesEnabled: true, onReset: fn() },
 } satisfies Meta<typeof ModelRoutingHealthPanel>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const MixedStates: Story = {
+  globals: {
+    viewport: { value: "desktop1440", isRotated: false },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByText("失败摘要", { exact: true })).toHaveLength(2);
-    await expect(canvasElement.querySelectorAll("dt")).toHaveLength(17);
-    await expect(canvas.getAllByText("模型不可用", { exact: true })).toHaveLength(2);
-    await expect(canvas.getAllByText("模型额度已耗尽", { exact: true })).toHaveLength(2);
-    await expect(
-      canvas.queryByText("The requested model is temporarily unavailable upstream.", {
-        exact: true,
-      }),
-    ).not.toBeInTheDocument();
+    await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
+    await expect(canvas.queryByText("模型不可用", { exact: true })).not.toBeInTheDocument();
+    await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
+  },
+};
+
+export const MixedStatesMobile: Story = {
+  ...MixedStates,
+  globals: {
+    viewport: { value: "mobile393", isRotated: false },
+  },
+};
+
+export const ExpandedHistory: Story = {
+  args: { initialExpandedModel: "gpt-5.5" },
+  decorators: [withModelRoutingHistoryFetchMock],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTitle("恢复探针通过")).toBeVisible());
+    await expect(canvas.getByText("加载更早事件")).toBeVisible();
   },
 };
 

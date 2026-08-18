@@ -142,8 +142,13 @@ export default function UpstreamAccountsPage() {
   const location = useLocation();
   const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
-  const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
-    useUpstreamAccountDetailRoute();
+  const {
+    upstreamAccountId,
+    upstreamAccountTab,
+    upstreamAccountModel,
+    openUpstreamAccount,
+    closeUpstreamAccount,
+  } = useUpstreamAccountDetailRoute();
   const [initialFilters] = useState(() => readPersistedUpstreamAccountFilters());
   const initialGroupFilters = useMemo(
     () =>
@@ -1448,6 +1453,7 @@ export default function UpstreamAccountsPage() {
           presentation="page"
           accountId={upstreamAccountId}
           initialTab={upstreamAccountTab}
+          initialExpandedModel={upstreamAccountModel}
           initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
           onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
           onClose={closeUpstreamAccount}
@@ -2263,6 +2269,7 @@ export default function UpstreamAccountsPage() {
         open={upstreamAccountId != null}
         accountId={upstreamAccountId}
         initialTab={upstreamAccountTab}
+        initialExpandedModel={upstreamAccountModel}
         initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
         onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
         onClose={closeUpstreamAccount}

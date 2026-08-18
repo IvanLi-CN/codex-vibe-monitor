@@ -2415,6 +2415,7 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             "/api/pool/upstream-account-events",
             get(list_upstream_account_action_events),
         )
+        .route("/api/pool/model-routing-live", get(get_model_routing_live))
         .route(
             "/api/pool/upstream-accounts/:account_id/call-attempts/locate",
             get(locate_upstream_account_attempt),
@@ -2450,6 +2451,10 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
         .route(
             "/api/pool/upstream-accounts/:id/model-routing",
             get(get_upstream_account_model_routing),
+        )
+        .route(
+            "/api/pool/upstream-accounts/:id/model-routing-events",
+            get(list_upstream_account_model_routing_events),
         )
         .route(
             "/api/pool/upstream-accounts/:id/model-routing/reset",

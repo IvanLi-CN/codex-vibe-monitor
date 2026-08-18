@@ -69,6 +69,10 @@ export async function resolveDemoTopicPayload(
     }
     case "forward-proxy.live":
       return requestTopicPayload(requestUrl, "/api/stats/forward-proxy");
+    case "pool.model-routing-live": {
+      const search = topicSearchParams(descriptor);
+      return requestTopicPayload(requestUrl, `/api/pool/model-routing-live?${search.toString()}`);
+    }
     case "prompt-cache.window": {
       const search = topicSearchParams(descriptor);
       return requestTopicPayload(

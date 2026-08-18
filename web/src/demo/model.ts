@@ -18,8 +18,8 @@ type DemoState = {
 
 type DemoListener = () => void;
 
-// Keep active demo data visually current while preserving a stable timestamp per runtime session.
-const DEMO_NOW = new Date().toISOString();
+// Fixed reference time keeps every projection, filter, and visual capture reproducible.
+const DEMO_NOW = "2026-08-16T11:30:00.000Z";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -189,9 +189,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       102,
-      "backup-key",
+      "prod-api-key-a",
       null,
-      "standby",
+      "production",
       "api",
       "api_key_codex",
       "fallback",
@@ -237,9 +237,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       106,
-      "echo-key",
+      "prod-api-key-b",
       null,
-      "research",
+      "production",
       "api",
       "api_key_codex",
       "research",
@@ -261,9 +261,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       108,
-      "gamma-key",
+      "batch-api-key",
       null,
-      "production",
+      "batch",
       "api",
       "api_key_codex",
       "primary",
@@ -285,9 +285,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       110,
-      "unassigned-sandbox",
+      "recovery-api-key",
       null,
-      null,
+      "recovery",
       "api",
       "api_key_codex",
       "sandbox",
@@ -307,7 +307,18 @@ function createAccounts(scene: DemoScene = "operational") {
       29,
       18,
     ],
-    [112, "juliet-key", null, "edge", "api", "api_key_codex", "edge", "demo-virginia", 48, null],
+    [
+      112,
+      "analytics-api-key",
+      null,
+      "analytics",
+      "api",
+      "api_key_codex",
+      "edge",
+      "demo-virginia",
+      48,
+      null,
+    ],
     [
       113,
       "kilo@demo.invalid",
@@ -334,9 +345,9 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       115,
-      "mike-key",
+      "prod-api-key-c",
       null,
-      "standby",
+      "production",
       "api",
       "api_key_codex",
       "fallback",

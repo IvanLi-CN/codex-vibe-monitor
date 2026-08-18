@@ -173,6 +173,9 @@ pub(crate) async fn update_pool_routing_settings(
             clear_cache_hit_protection_state(&state.pool, reason)
                 .await
                 .map_err(internal_error_tuple)?;
+            state
+                .subscription_hub
+                .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
         }
         if api_key.is_some() {
             refresh_pool_routing_runtime_cache(state.as_ref())

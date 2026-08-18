@@ -391,6 +391,7 @@ describe("AppLayout", () => {
     const installDialog = document.body.querySelector('[data-testid="pwa-install-dialog"]');
 
     expect(navGroup).not.toBeNull();
+    expect(navGroup?.textContent).not.toContain("模型路由");
     expect(desktopNavigation?.className).toContain("hidden");
     expect(desktopNavigation?.className).toContain("desktop:block");
     expect(dashboardLink?.className).toContain("segmented-control-item");

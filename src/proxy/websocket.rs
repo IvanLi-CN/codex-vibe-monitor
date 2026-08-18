@@ -1168,6 +1168,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                 match apply_ws_downstream_payload_guard(
                     state.as_ref(),
                     &mut usage_tracker,
+                    &reservation_guard.reservation_key,
                     payload_bytes,
                 )
                 .await
@@ -1187,7 +1188,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                     Ok(false) => {}
                     Err(err) => {
                         let message = err.to_string();
-                        if message.starts_with("websocket model route is cooling down for ") {
+                        if message.starts_with("websocket model route is ") {
                             failure = Some(message);
                             let _ = downstream_tx
                                 .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
@@ -1249,6 +1250,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                             match apply_ws_downstream_payload_guard(
                                 state.as_ref(),
                                 &mut usage_tracker,
+                                &reservation_guard.reservation_key,
                                 payload_bytes,
                             )
                             .await
@@ -1273,7 +1275,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                                 Ok(false) => {}
                                 Err(err) => {
                                     let message = err.to_string();
-                                    if message.starts_with("websocket model route is cooling down for ") {
+                                    if message.starts_with("websocket model route is ") {
                                         failure = Some(message);
                                         let _ = downstream_tx
                                             .send(AxumWsMessage::Close(Some(
@@ -2452,10 +2454,56 @@ pub(crate) async fn inspect_ws_request_payload_guard(
 pub(crate) async fn apply_ws_downstream_payload_guard(
     state: &AppState,
     usage_tracker: &mut WsUsageTracker,
+    reservation_key: &str,
     payload_bytes: &[u8],
 ) -> Result<bool> {
     if let Some(inspection) = inspect_ws_request_payload(payload_bytes) {
-        if let Some(model) = inspection.requested_model.as_deref() {
+        if inspection.event_type.as_deref() == Some("response.create") {
+            let requested_model = inspection
+                .requested_model
+                .clone()
+                .or_else(|| usage_tracker.trace.request_model.clone());
+            if let Some(model) = requested_model.as_deref() {
+                if model_route_penalty(&state.pool, usage_tracker.account.account_id, Some(model))
+                    .await?
+                    == ModelRoutePenalty::Excluded
+                {
+                    return Err(anyhow!(
+                        "websocket model route is cooling down for {model}; retry after cooldown"
+                    ));
+                }
+                let concurrency_limit = model_route_concurrency_limit(
+                    &state.pool,
+                    usage_tracker.account.account_id,
+                    Some(model),
+                )
+                .await?;
+                if !try_reserve_pool_routing_account_for_model(
+                    state,
+                    reservation_key,
+                    &usage_tracker.account,
+                    Some(model),
+                    concurrency_limit,
+                ) {
+                    return Err(anyhow!(
+                        "websocket model route is at its concurrency limit for {model}; retry later"
+                    ));
+                }
+                usage_tracker.trace.request_model = Some(model.to_string());
+                update_pool_upstream_request_attempt_model(
+                    &state.pool,
+                    usage_tracker.attempt_id,
+                    Some(model),
+                )
+                .await?;
+                observe_model_route_seen(
+                    &state.pool,
+                    usage_tracker.account.account_id,
+                    Some(model),
+                )
+                .await?;
+            }
+        } else if let Some(model) = inspection.requested_model.as_deref() {
             usage_tracker.trace.request_model = Some(model.to_string());
             update_pool_upstream_request_attempt_model(
                 &state.pool,
@@ -2463,27 +2511,6 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
                 Some(model),
             )
             .await?;
-        }
-        if inspection.event_type.as_deref() == Some("response.create") {
-            let requested_model = inspection
-                .requested_model
-                .clone()
-                .or_else(|| usage_tracker.trace.request_model.clone());
-            observe_model_route_seen(
-                &state.pool,
-                usage_tracker.account.account_id,
-                requested_model.as_deref(),
-            )
-            .await?;
-            if let Some(model) = requested_model.as_deref()
-                && model_route_penalty(&state.pool, usage_tracker.account.account_id, Some(model))
-                    .await?
-                    == ModelRoutePenalty::Excluded
-            {
-                return Err(anyhow!(
-                    "websocket model route is cooling down for {model}; retry after cooldown"
-                ));
-            }
         }
     }
     let outcome = inspect_ws_request_payload_guard(

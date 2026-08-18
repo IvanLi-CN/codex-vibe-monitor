@@ -34,10 +34,13 @@ function buildPromptCacheTopic(selection: PromptCacheConversationSelection) {
   });
 }
 
-export function usePromptCacheConversations(selection: PromptCacheConversationSelection) {
+export function usePromptCacheConversations(
+  selection: PromptCacheConversationSelection,
+  enabled = true,
+) {
   const topic = buildPromptCacheTopic(selection);
   const { data, isLoading, error, refresh } =
-    useSubscriptionTopic<PromptCacheConversationsResponse>(topic);
+    useSubscriptionTopic<PromptCacheConversationsResponse>(enabled ? topic : null, enabled);
 
   return {
     stats: data,

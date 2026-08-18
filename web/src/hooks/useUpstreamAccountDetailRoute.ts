@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 
 const UPSTREAM_ACCOUNT_ID_PARAM = "upstreamAccountId";
 const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
+const UPSTREAM_ACCOUNT_MODEL_PARAM = "upstreamAccountModel";
 const PROMPT_CACHE_CONVERSATION_KEY_PARAM = "promptCacheConversationKey";
 const PROMPT_CACHE_CONVERSATION_TAB_PARAM = "promptCacheConversationTab";
 
@@ -39,6 +40,10 @@ export function useUpstreamAccountDetailRoute() {
     () => parseUpstreamAccountTab(searchParams.get(UPSTREAM_ACCOUNT_TAB_PARAM)),
     [searchParams],
   );
+  const upstreamAccountModel = useMemo(
+    () => searchParams.get(UPSTREAM_ACCOUNT_MODEL_PARAM)?.trim() || null,
+    [searchParams],
+  );
 
   const openUpstreamAccount = useCallback(
     (
@@ -46,6 +51,7 @@ export function useUpstreamAccountDetailRoute() {
       options?: {
         replace?: boolean;
         tab?: UpstreamAccountDetailRouteTab;
+        model?: string;
         clearPromptCacheConversation?: boolean;
       },
     ) => {
@@ -63,6 +69,12 @@ export function useUpstreamAccountDetailRoute() {
           } else {
             next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
           }
+          const model = options?.model?.trim();
+          if (model) {
+            next.set(UPSTREAM_ACCOUNT_MODEL_PARAM, model);
+          } else {
+            next.delete(UPSTREAM_ACCOUNT_MODEL_PARAM);
+          }
           return next;
         },
         { replace: options?.replace ?? false },
@@ -75,7 +87,8 @@ export function useUpstreamAccountDetailRoute() {
     (options?: { replace?: boolean }) => {
       if (
         !searchParams.has(UPSTREAM_ACCOUNT_ID_PARAM) &&
-        !searchParams.has(UPSTREAM_ACCOUNT_TAB_PARAM)
+        !searchParams.has(UPSTREAM_ACCOUNT_TAB_PARAM) &&
+        !searchParams.has(UPSTREAM_ACCOUNT_MODEL_PARAM)
       ) {
         return;
       }
@@ -84,6 +97,7 @@ export function useUpstreamAccountDetailRoute() {
           const next = new URLSearchParams(currentSearchParams);
           next.delete(UPSTREAM_ACCOUNT_ID_PARAM);
           next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
+          next.delete(UPSTREAM_ACCOUNT_MODEL_PARAM);
           return next;
         },
         { replace: options?.replace ?? false },
@@ -95,6 +109,7 @@ export function useUpstreamAccountDetailRoute() {
   return {
     upstreamAccountId,
     upstreamAccountTab,
+    upstreamAccountModel,
     openUpstreamAccount,
     closeUpstreamAccount,
   };

@@ -95,8 +95,9 @@ export const desktopNavItems = topLevelNavItems.map(({ to, labelKey, matchPrefix
   matchPrefixes,
 }));
 
-export const accountPoolNavItems = topLevelNavItems[4].items;
-export const systemNavItems = topLevelNavItems[5].items;
+export const accountPoolNavItems =
+  topLevelNavItems.find((item) => item.to === "/account-pool")?.items ?? [];
+export const systemNavItems = topLevelNavItems.find((item) => item.to === "/system")?.items ?? [];
 export const mobileNavigationGroups = topLevelNavItems;
 
 function normalizePrefix(prefix: string) {

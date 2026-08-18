@@ -41,6 +41,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushAsync();
     clickTab(/Health & events/i);
     await flushAsync();
+    expandLoginHealthDetails();
 
     expect(document.body.textContent).toContain("Latest account action");
     expect(document.body.textContent).toContain("Hard unavailable");

@@ -112,6 +112,8 @@ pub(crate) enum RuntimeMutation {
     AttemptChanged {
         invoke_id: String,
     },
+    /// A persisted API Key model-routing attempt or state event changed.
+    ModelRoutingChanged,
     PromptCacheBindingChanged {
         prompt_cache_key: String,
     },
@@ -151,6 +153,7 @@ impl RuntimeMutation {
         match self {
             Self::Invocation(mutation) => RuntimeMutationKey::Invocation(mutation.identity.clone()),
             Self::AttemptChanged { invoke_id } => RuntimeMutationKey::Attempt(invoke_id.clone()),
+            Self::ModelRoutingChanged => RuntimeMutationKey::ModelRouting,
             Self::PromptCacheBindingChanged { prompt_cache_key } => {
                 RuntimeMutationKey::Binding(prompt_cache_key.clone())
             }
@@ -178,6 +181,7 @@ impl RuntimeMutation {
 enum RuntimeMutationKey {
     Invocation(RuntimeInvocationIdentity),
     Attempt(String),
+    ModelRouting,
     Binding(String),
     StickyRoute(String, i64, i64),
 }

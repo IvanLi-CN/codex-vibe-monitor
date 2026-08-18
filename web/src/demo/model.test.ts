@@ -19,7 +19,15 @@ describe("demoModel", () => {
     expect(demoModel.snapshot.scene).toBe("attention");
     expect(demoModel.snapshot.accounts).toHaveLength(15);
     expect(demoModel.snapshot.accounts.map((account) => account.groupName)).toEqual(
-      expect.arrayContaining(["production", "research", "standby", "edge", null]),
+      expect.arrayContaining([
+        "production",
+        "research",
+        "standby",
+        "batch",
+        "recovery",
+        "edge",
+        "analytics",
+      ]),
     );
     expect(demoModel.snapshot.actions).toEqual([]);
   });

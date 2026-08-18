@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import {
@@ -10,16 +10,21 @@ import {
 } from "../../components/ui/card";
 import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
-import type { ModelRoutingState } from "../../lib/api";
+import {
+  fetchUpstreamAccountModelRoutingEvents,
+  type ModelRoutingHistoryResponse,
+  type ModelRoutingState,
+  type ModelRoutingTimelineRecord,
+} from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
 import { ModelIdentity } from "../shared/ModelIdentity";
 
-function formatDateTime(value?: string | null) {
+function formatBeijing(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
+    timeZone: "Asia/Shanghai",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -29,172 +34,308 @@ function formatDateTime(value?: string | null) {
   }).format(date);
 }
 
-function DetailValue({ label, children }: { label: string; children: ReactNode }) {
+function routeTone(state: string): "success" | "warning" | "secondary" {
+  if (state === "available") return "success";
+  if (state === "cooling_down") return "warning";
+  return "secondary";
+}
+
+function routeStateLabel(state: string, t: (key: string) => string) {
+  const key = `accountPool.upstreamAccounts.modelRouting.states.${state}`;
+  const translated = t(key);
+  return translated === key
+    ? t("accountPool.upstreamAccounts.modelRouting.history.unknown")
+    : translated;
+}
+
+function routeProtocolLabel(values: Array<string | null | undefined>, t: (key: string) => string) {
+  const keyFactories = [
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.states.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.latestAction.actions.${value}`,
+  ];
+  for (const value of values) {
+    if (!value) continue;
+    for (const keyFactory of keyFactories) {
+      const key = keyFactory(value);
+      const translated = t(key);
+      if (translated !== key) return translated;
+    }
+  }
+  return t("accountPool.upstreamAccounts.modelRouting.history.unknown");
+}
+
+function HistoryRecord({ record }: { record: ModelRoutingTimelineRecord }) {
+  const { t } = useTranslation();
+  const summary = routeProtocolLabel(
+    [record.reasonCode, record.action, record.failureKind, record.status],
+    t,
+  );
   return (
-    <div className="min-w-0">
-      <dt className="text-xs font-semibold uppercase tracking-[0.06em] text-base-content/75">
-        {label}
-      </dt>
-      <dd className="mt-0.5 text-sm leading-5 text-base-content/85">{children}</dd>
+    <div className="grid grid-cols-[8.25rem_minmax(0,1fr)_auto] gap-2 border-t border-base-300/60 px-3 py-2 text-xs">
+      <span className="tabular-nums text-base-content/65">{formatBeijing(record.occurredAt)}</span>
+      <span className="min-w-0 truncate text-base-content/80" title={summary}>
+        {record.kind === "event"
+          ? t("accountPool.upstreamAccounts.modelRouting.history.event")
+          : (record.sameAccountRetryIndex ?? 0) > 0
+            ? t("accountPool.upstreamAccounts.modelRouting.history.retry", {
+                index: record.sameAccountRetryIndex ?? 0,
+              })
+            : t("accountPool.upstreamAccounts.modelRouting.history.attempt")}
+        {" · "}
+        {summary}
+      </span>
+      <span className="tabular-nums text-base-content/65">
+        {record.httpStatus
+          ? `HTTP ${record.httpStatus}`
+          : record.totalLatencyMs
+            ? `${Math.round(record.totalLatencyMs)} ms`
+            : ""}
+      </span>
     </div>
   );
 }
 
-function failureKindLabel(kind: string | null | undefined, t: (key: string) => string) {
-  if (!kind) return "-";
-  const key = `accountPool.upstreamAccounts.modelRouting.failureKinds.${kind}`;
-  const translated = t(key);
-  if (translated !== key) return translated;
-  const reasonKey = `accountPool.upstreamAccounts.latestAction.reasons.${kind}`;
-  const reason = t(reasonKey);
-  return reason === reasonKey ? t("accountPool.upstreamAccounts.latestAction.unknown") : reason;
+function ModelRoutingHistory({ accountId, model }: { accountId?: number; model: string }) {
+  const { t } = useTranslation();
+  const [response, setResponse] = useState<ModelRoutingHistoryResponse | null>(null);
+  const [loading, setLoading] = useState(Boolean(accountId));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!accountId) {
+      setLoading(false);
+      setResponse(null);
+      return;
+    }
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setResponse(null);
+    void fetchUpstreamAccountModelRoutingEvents(accountId, {
+      model,
+      pageSize: 50,
+      signal: controller.signal,
+    })
+      .then((next) => {
+        if (!controller.signal.aborted) setResponse(next);
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [accountId, model]);
+
+  const loadMore = () => {
+    if (!accountId || !response?.nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    void fetchUpstreamAccountModelRoutingEvents(accountId, {
+      model,
+      cursor: response.nextCursor,
+      pageSize: 50,
+    })
+      .then((next) =>
+        setResponse((current) =>
+          current
+            ? { items: [...current.items, ...next.items], nextCursor: next.nextCursor }
+            : next,
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setLoadingMore(false));
+  };
+
+  if (!accountId) {
+    return (
+      <p className="px-3 py-2 text-xs text-base-content/65">
+        {t("accountPool.upstreamAccounts.modelRouting.history.unavailable")}
+      </p>
+    );
+  }
+  if (loading)
+    return (
+      <p className="px-3 py-2 text-xs text-base-content/65">
+        {t("accountPool.upstreamAccounts.modelRouting.history.loading")}
+      </p>
+    );
+  if (error) return <p className="px-3 py-2 text-xs tone-ink-warning">{error}</p>;
+  return (
+    <div className="border-t border-base-300/60 bg-base-200/40">
+      {response?.items.length ? (
+        response.items.map((record) => <HistoryRecord key={record.id} record={record} />)
+      ) : (
+        <p className="border-t border-base-300/60 px-3 py-2 text-xs text-base-content/65">
+          {t("accountPool.upstreamAccounts.modelRouting.history.empty")}
+        </p>
+      )}
+      {response?.nextCursor ? (
+        <div className="border-t border-base-300/60 px-3 py-2">
+          <Button type="button" size="sm" variant="ghost" disabled={loadingMore} onClick={loadMore}>
+            {loadingMore
+              ? t("accountPool.upstreamAccounts.modelRouting.history.loadingMore")
+              : t("accountPool.upstreamAccounts.modelRouting.history.loadMore")}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export interface ModelRoutingHealthPanelProps {
+  accountId?: number;
   states: ModelRoutingState[];
   error?: string | null;
   resettingModel?: string | null;
   writesEnabled: boolean;
+  initialExpandedModel?: string | null;
   onReset: (model: string) => void;
 }
 
 export function ModelRoutingHealthPanel({
+  accountId,
   states,
   error,
   resettingModel = null,
   writesEnabled,
+  initialExpandedModel = null,
   onReset,
 }: ModelRoutingHealthPanelProps) {
   const { t } = useTranslation();
+  const [expandedModel, setExpandedModel] = useState<string | null>(initialExpandedModel);
+
+  useEffect(() => {
+    if (initialExpandedModel && states.some((route) => route.model === initialExpandedModel)) {
+      setExpandedModel(initialExpandedModel);
+    }
+  }, [initialExpandedModel, states]);
+
   return (
     <Card data-testid="upstream-account-model-routing-panel">
-      <CardHeader>
-        <CardTitle>{t("accountPool.upstreamAccounts.modelRouting.title")}</CardTitle>
-        <CardDescription className="text-base-content/80">
+      <CardHeader className="gap-1 px-4 py-3">
+        <CardTitle className="text-base">
+          {t("accountPool.upstreamAccounts.modelRouting.title")}
+        </CardTitle>
+        <CardDescription className="text-xs leading-4 text-base-content/72">
           {t("accountPool.upstreamAccounts.modelRouting.description")}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="grid gap-2 px-4 pb-4">
         {error ? (
-          <Alert variant="warning" data-testid="model-routing-error">
+          <Alert
+            variant="default"
+            className="border-error/45 bg-error/10"
+            data-testid="model-routing-error"
+          >
             <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
             <span>{error}</span>
           </Alert>
         ) : null}
         {states.length === 0 ? (
-          <p className="text-sm leading-6 text-base-content/80">
+          <p className="text-sm text-base-content/70">
             {t("accountPool.upstreamAccounts.modelRouting.empty")}
           </p>
         ) : (
-          states.map((route) => {
-            const isAvailable = route.state === "available";
-            const isCooling = route.state === "cooling_down";
-            return (
-              <div
-                key={route.model}
-                className="surface-subtle grid gap-2 rounded-lg px-3 py-2.5 lg:grid-cols-[minmax(0,1.4fr)_minmax(7rem,.8fr)_minmax(7rem,.8fr)_minmax(11rem,1fr)_minmax(13rem,1.1fr)] lg:items-center"
-              >
-                <div className="min-w-0">
-                  <ModelIdentity
-                    model={route.model}
-                    className="max-w-full justify-start"
-                    textClassName="truncate font-mono text-sm font-semibold leading-5 text-base-content"
-                  />
-                  <p className="mt-0.5 text-xs leading-4 text-base-content/72">
-                    {t("accountPool.upstreamAccounts.modelRouting.lastSeen")}:{" "}
-                    {formatDateTime(route.lastSeenAt)}
-                  </p>
-                  {route.cacheConcurrencyLimit != null || route.probeRequired ? (
-                    <p className="mt-1 text-xs leading-4 text-base-content/72">
-                      {route.probeRequired
-                        ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
-                        : t("accountPool.upstreamAccounts.modelRouting.cacheLimit", {
-                            limit: route.cacheConcurrencyLimit ?? 1,
-                            recovery: route.cacheRecoveryLimit ?? route.cacheConcurrencyLimit ?? 1,
-                            hitRate: route.cacheLastHitRatePercent ?? "-",
-                            streak: route.cacheLowHitStreak ?? 0,
-                            cooldownLevel: route.cacheCooldownLevel ?? 0,
-                          })}
-                    </p>
-                  ) : null}
-                </div>
-                <dl className="contents">
-                  <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.state")}>
-                    <Chip tone={isAvailable ? "success" : isCooling ? "warning" : "secondary"}>
-                      {t(`accountPool.upstreamAccounts.modelRouting.states.${route.state}`)}
-                    </Chip>
-                  </DetailValue>
-                  <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.priority")}>
-                    {t(`accountPool.upstreamAccounts.modelRouting.priorities.${route.priority}`)}
-                  </DetailValue>
-                  <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.changedAt")}>
-                    {formatDateTime(route.changedAt)}
-                  </DetailValue>
-                </dl>
-                <div className="flex min-w-0 flex-wrap items-center justify-start gap-1.5 lg:justify-end">
-                  {route.cooldownUntil ? (
-                    <span className="text-xs leading-4 tabular-nums tone-ink-warning">
-                      {t("accountPool.upstreamAccounts.modelRouting.recoveryAt")}:{" "}
-                      {formatDateTime(route.cooldownUntil)}
-                    </span>
-                  ) : null}
-                  {!isAvailable ? (
+          <div className="overflow-hidden rounded-lg border border-base-300/70">
+            {states.map((route) => {
+              const expanded = expandedModel === route.model;
+              const protection = route.probeRequired
+                ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
+                : route.cacheConcurrencyLimit != null
+                  ? t("accountPool.upstreamAccounts.modelRouting.cacheLimitCompact", {
+                      limit: route.cacheConcurrencyLimit,
+                      recoveryLimit: route.cacheRecoveryLimit ?? "-",
+                      streak: route.cacheLowHitStreak ?? 0,
+                      cooldown: route.cacheCooldownLevel ?? 0,
+                      hitRate: route.cacheLastHitRatePercent ?? "-",
+                    })
+                  : t("accountPool.upstreamAccounts.modelRouting.cacheNormal");
+              const failureSummary =
+                route.lastFailureKind || route.failureCount > 0
+                  ? route.lastFailureKind
+                    ? routeProtocolLabel([route.lastFailureKind], t)
+                    : t("accountPool.upstreamAccounts.modelRouting.history.failureCount", {
+                        count: route.failureCount,
+                      })
+                  : null;
+              return (
+                <div key={route.model} className="bg-base-100">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 px-3 py-2">
+                    <button
+                      type="button"
+                      className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      onClick={() => setExpandedModel(expanded ? null : route.model)}
+                      aria-expanded={expanded}
+                    >
+                      <ModelIdentity
+                        model={route.model}
+                        className="max-w-full justify-start"
+                        textClassName="truncate font-mono text-sm font-semibold"
+                      />
+                      <span className="mt-0.5 block truncate text-xs text-base-content/65">
+                        {[
+                          protection,
+                          failureSummary,
+                          formatBeijing(route.changedAt ?? route.lastSeenAt),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </button>
+                    <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
+                    {route.cooldownUntil ? (
+                      <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
+                        {formatBeijing(route.cooldownUntil)}
+                      </span>
+                    ) : null}
+                    {route.state !== "available" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={!writesEnabled || resettingModel === route.model}
+                        onClick={() => onReset(route.model)}
+                        data-testid={`model-routing-reset-${route.model}`}
+                      >
+                        {resettingModel === route.model
+                          ? t("accountPool.upstreamAccounts.modelRouting.resetting")
+                          : t("accountPool.upstreamAccounts.modelRouting.reset")}
+                      </Button>
+                    ) : null}
                     <Button
                       type="button"
-                      size="sm"
-                      variant="outline"
-                      className="min-h-11 lg:min-h-0"
-                      disabled={!writesEnabled || resettingModel === route.model}
-                      onClick={() => onReset(route.model)}
-                      data-testid={`model-routing-reset-${route.model}`}
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      aria-label={
+                        expanded
+                          ? t("accountPool.upstreamAccounts.modelRouting.collapse")
+                          : t("accountPool.upstreamAccounts.modelRouting.expand")
+                      }
+                      onClick={() => setExpandedModel(expanded ? null : route.model)}
                     >
-                      {resettingModel === route.model
-                        ? t("accountPool.upstreamAccounts.modelRouting.resetting")
-                        : t("accountPool.upstreamAccounts.modelRouting.reset")}
+                      <AppIcon
+                        name={expanded ? "chevron-up" : "chevron-down"}
+                        className="h-4 w-4"
+                        aria-hidden
+                      />
                     </Button>
+                  </div>
+                  {expanded ? (
+                    <ModelRoutingHistory accountId={accountId} model={route.model} />
                   ) : null}
                 </div>
-                {!isAvailable && (route.failureCount > 0 || route.lastFailureMessage) ? (
-                  <div className="mt-1 grid gap-x-3 gap-y-2 border-t border-base-300/60 pt-2.5 sm:grid-cols-2 lg:col-span-full lg:grid-cols-[minmax(0,1.4fr)_minmax(7rem,.8fr)_minmax(7rem,.8fr)_minmax(11rem,1fr)_minmax(13rem,1.1fr)]">
-                    <dl className="contents">
-                      <div className="min-w-0 sm:col-span-2 lg:col-span-2">
-                        <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failure")}>
-                          <p className="break-words text-sm leading-5 text-base-content/85">
-                            {failureKindLabel(route.lastFailureKind, t)}
-                          </p>
-                        </DetailValue>
-                      </div>
-                      <div className="min-w-0 lg:col-start-3">
-                        <DetailValue
-                          label={t("accountPool.upstreamAccounts.modelRouting.failures")}
-                        >
-                          <span className="font-mono tabular-nums">{route.failureCount}</span>
-                        </DetailValue>
-                      </div>
-                      <div className="min-w-0 lg:col-start-4">
-                        <DetailValue
-                          label={t("accountPool.upstreamAccounts.modelRouting.failureKind")}
-                        >
-                          <span className="break-all font-mono text-xs">
-                            {failureKindLabel(route.lastFailureKind, t)}
-                          </span>
-                        </DetailValue>
-                      </div>
-                      <div className="min-w-0 lg:col-start-5">
-                        <DetailValue
-                          label={t("accountPool.upstreamAccounts.modelRouting.lastFailureAt")}
-                        >
-                          <span className="tabular-nums">
-                            {formatDateTime(route.lastFailureAt)}
-                          </span>
-                        </DetailValue>
-                      </div>
-                    </dl>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
       </CardContent>
     </Card>

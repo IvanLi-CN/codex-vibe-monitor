@@ -1,6 +1,15 @@
 import { HttpResponse, http, type JsonBodyType } from "msw";
-import type { ApiInvocationWorkflowDetailResponse, LongTermMetrics } from "../lib/api";
+import type {
+  ApiInvocationWorkflowDetailResponse,
+  LongTermMetrics,
+  ModelRoutingTimelineRecord,
+} from "../lib/api";
 import { demoModel, demoNow } from "./model";
+import {
+  DEMO_MODEL_ROUTE_FIXTURES,
+  DEMO_ROUTE_COMBINATIONS,
+  type DemoModelRouteFixture,
+} from "./model-routing-workload";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
@@ -71,35 +80,305 @@ type DemoProxyNode = {
   stats: Record<string, unknown>;
 };
 
+type DemoModelRoutingLiveQuery = {
+  window?: string | null;
+  model?: string | null;
+  state?: string | null;
+  limit?: string | null;
+};
+
+type DemoModelRoutingLiveState = ReturnType<typeof demoModelRoutingStates>[number] & {
+  accountId: number;
+  accountDisplayName: string;
+};
+
 function demoAccounts(): DemoAccount[] {
   return demoModel.snapshot.accounts as DemoAccount[];
 }
 
+function demoModelRouteTimestamp(minutesAgo: number) {
+  return new Date(Date.parse(demoNow()) - minutesAgo * 60_000).toISOString();
+}
+
+function latestDemoRouteFixture(accountId: number, model: string) {
+  return DEMO_MODEL_ROUTE_FIXTURES.filter(
+    (fixture) => fixture.accountId === accountId && fixture.model === model,
+  ).sort((left, right) => left.minutesAgo - right.minutesAgo)[0];
+}
+
 function demoModelRoutingStates(accountId: number) {
-  const reset = demoResetModelRoutes.has(`${accountId}:gpt-5.4-mini`);
+  return DEMO_ROUTE_COMBINATIONS.filter((route) => route.accountId === accountId)
+    .map((route) => latestDemoRouteFixture(accountId, route.model))
+    .filter((fixture): fixture is DemoModelRouteFixture => fixture != null)
+    .map((fixture) => {
+      const reset = demoResetModelRoutes.has(`${accountId}:${fixture.model}`);
+      const state = reset ? "available" : fixture.flow === "recovered" ? "available" : fixture.flow;
+      const coolingDown = state === "cooling_down";
+      const degraded = state === "degraded";
+
+      return {
+        model: fixture.model,
+        state,
+        priority: coolingDown ? "excluded" : degraded ? "demoted" : "normal",
+        failureCount: coolingDown ? 2 : degraded ? 1 : 0,
+        changedAt: demoModelRouteTimestamp(fixture.minutesAgo),
+        lastSeenAt: demoModelRouteTimestamp(fixture.minutesAgo),
+        lastFailureAt: coolingDown || degraded ? demoModelRouteTimestamp(fixture.minutesAgo) : null,
+        lastFailureKind: coolingDown || degraded ? "upstream_http_5xx" : null,
+        lastFailureMessage: coolingDown || degraded ? "Demo request ended with HTTP 502." : null,
+        cooldownUntil: coolingDown ? demoModelRouteTimestamp(fixture.minutesAgo - 60) : null,
+        probeRequired: coolingDown,
+      };
+    });
+}
+
+function demoModelRouteFixtureTimeline(
+  fixture: DemoModelRouteFixture,
+): ModelRoutingTimelineRecord[] {
+  const { accountId, model } = fixture;
+  const accountDisplayName = `API Key #${accountId}`;
+  const occurredAt = (offsetMinutes = 0) =>
+    demoModelRouteTimestamp(fixture.minutesAgo + offsetMinutes);
+  const invocation = invocations().find((record) => record.id === fixture.invocationId);
+  const terminalLatencyMs = invocation?.tTotalMs ?? null;
+  const retryLatencyMs =
+    terminalLatencyMs == null ? null : Math.max(1, Math.floor(terminalLatencyMs * 0.75));
+  const invokeId = `demo-invocation-${fixture.invocationId}`;
+  const cooldownUntil = demoModelRouteTimestamp(fixture.minutesAgo - 60);
+  const selectionAudit = {
+    selectedAccountId: accountId,
+    selectedAccountName: accountDisplayName,
+    eligibleCandidateCount: DEMO_ROUTE_COMBINATIONS.filter((candidate) => candidate.model === model)
+      .length,
+    winnerReasonCode: "selected_eligible_route",
+    excludedCandidates: [],
+  };
+  const firstFailure = {
+    id: `attempt:${fixture.invocationId}:1`,
+    kind: "attempt",
+    occurredAt: occurredAt(4),
+    accountId,
+    accountDisplayName,
+    model,
+    attemptId: `demo-route-${fixture.invocationId}-1`,
+    invokeId,
+    attemptIndex: 1,
+    sameAccountRetryIndex: 0,
+    routingSource: "selection",
+    status: "http_502",
+    httpStatus: 502,
+    totalLatencyMs: retryLatencyMs,
+    failureKind: "upstream_http_5xx",
+    reasonCode: "upstream_http_5xx",
+    modelRouteStateBefore: "available",
+    modelRouteStateAfter: "degraded",
+    modelRoutePriorityBefore: "normal",
+    modelRoutePriorityAfter: "demoted",
+    modelRouteFailureCount: 1,
+    routingSelectionAudit: selectionAudit,
+  };
+  const cooldownEvent = {
+    id: `event:${fixture.invocationId}:cooldown`,
+    kind: "event",
+    occurredAt: occurredAt(),
+    accountId,
+    accountDisplayName,
+    model,
+    status: "cooling_down",
+    action: "model_route_cooldown",
+    source: "call",
+    reasonCode: "upstream_http_5xx",
+    modelRouteStateBefore: "degraded",
+    modelRouteStateAfter: "cooling_down",
+    modelRoutePriorityBefore: "demoted",
+    modelRoutePriorityAfter: "excluded",
+    modelRouteFailureCount: 2,
+    modelRouteCooldownUntil: cooldownUntil,
+  };
+
+  if (fixture.flow === "available") {
+    return [
+      {
+        id: `attempt:${fixture.invocationId}:1`,
+        kind: "attempt",
+        occurredAt: occurredAt(),
+        accountId,
+        accountDisplayName,
+        model,
+        attemptId: `demo-route-${fixture.invocationId}-1`,
+        invokeId,
+        attemptIndex: 1,
+        sameAccountRetryIndex: 0,
+        routingSource: "selection",
+        status: "success",
+        httpStatus: 200,
+        totalLatencyMs: terminalLatencyMs,
+        reasonCode: "selected_eligible_route",
+        modelRouteStateBefore: "available",
+        modelRouteStateAfter: "available",
+        modelRoutePriorityBefore: "normal",
+        modelRoutePriorityAfter: "normal",
+        routingSelectionAudit: selectionAudit,
+      },
+    ];
+  }
+
+  if (fixture.flow === "recovered") {
+    return [
+      {
+        id: `attempt:${fixture.invocationId}:2`,
+        kind: "attempt",
+        occurredAt: occurredAt(),
+        accountId,
+        accountDisplayName,
+        model,
+        attemptId: `demo-route-${fixture.invocationId}-2`,
+        invokeId,
+        attemptIndex: 2,
+        sameAccountRetryIndex: 1,
+        routingSource: "retry",
+        status: "success",
+        httpStatus: 200,
+        totalLatencyMs: terminalLatencyMs,
+        reasonCode: "model_route_recovery_succeeded",
+        modelRouteStateBefore: "cooling_down",
+        modelRouteStateAfter: "available",
+        modelRoutePriorityBefore: "excluded",
+        modelRoutePriorityAfter: "normal",
+        routingSelectionAudit: selectionAudit,
+      },
+      {
+        ...cooldownEvent,
+        occurredAt: occurredAt(1),
+        modelRouteCooldownUntil: occurredAt(0.5),
+      },
+      firstFailure,
+    ];
+  }
+
+  if (fixture.flow === "degraded") {
+    return [
+      {
+        id: `event:${fixture.invocationId}:degraded`,
+        kind: "event",
+        occurredAt: occurredAt(),
+        accountId,
+        accountDisplayName,
+        model,
+        status: "degraded",
+        action: "model_route_degraded",
+        source: "call",
+        reasonCode: "upstream_http_5xx",
+        modelRouteStateBefore: "available",
+        modelRouteStateAfter: "degraded",
+        modelRoutePriorityBefore: "normal",
+        modelRoutePriorityAfter: "demoted",
+        modelRouteFailureCount: 1,
+      },
+      firstFailure,
+    ];
+  }
+
   return [
     {
-      model: "gpt-5.5",
-      state: "available",
-      priority: "normal",
-      failureCount: 0,
-      changedAt: demoNow(),
-      lastSeenAt: demoNow(),
-      cooldownUntil: null,
+      id: `attempt:${fixture.invocationId}:2`,
+      kind: "attempt",
+      occurredAt: occurredAt(0.1),
+      accountId,
+      accountDisplayName,
+      model,
+      attemptId: `demo-route-${fixture.invocationId}-2`,
+      invokeId,
+      attemptIndex: 2,
+      sameAccountRetryIndex: 1,
+      routingSource: "retry",
+      status: "http_502",
+      httpStatus: 502,
+      totalLatencyMs: terminalLatencyMs,
+      failureKind: "upstream_http_5xx",
+      reasonCode: "upstream_http_5xx",
+      modelRouteStateBefore: "degraded",
+      modelRouteStateAfter: "cooling_down",
+      modelRoutePriorityBefore: "demoted",
+      modelRoutePriorityAfter: "excluded",
+      modelRouteFailureCount: 2,
+      modelRouteCooldownUntil: cooldownUntil,
+      routingSelectionAudit: selectionAudit,
     },
-    {
-      model: "gpt-5.4-mini",
-      state: reset ? "available" : "cooling_down",
-      priority: reset ? "normal" : "excluded",
-      failureCount: reset ? 0 : 5,
-      changedAt: demoNow(),
-      lastSeenAt: demoNow(),
-      lastFailureAt: reset ? null : new Date(Date.parse(demoNow()) - 75_000).toISOString(),
-      lastFailureKind: reset ? null : "model_unavailable",
-      lastFailureMessage: reset ? null : "Model-specific quota exhausted in the demo fixture.",
-      cooldownUntil: reset ? null : new Date(Date.parse(demoNow()) + 45_000).toISOString(),
-    },
+    cooldownEvent,
+    firstFailure,
   ];
+}
+
+function demoModelRoutingTimeline(accountId: number, model: string): ModelRoutingTimelineRecord[] {
+  return DEMO_MODEL_ROUTE_FIXTURES.filter(
+    (fixture) => fixture.accountId === accountId && fixture.model === model,
+  )
+    .flatMap(demoModelRouteFixtureTimeline)
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt));
+}
+
+function demoModelRoutingLiveTimeline(): ModelRoutingTimelineRecord[] {
+  return DEMO_MODEL_ROUTE_FIXTURES.flatMap(demoModelRouteFixtureTimeline).sort(
+    (left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt),
+  );
+}
+
+function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
+  const { accountDisplayName: _accountDisplayName, ...publicRecord } = record;
+  return publicRecord;
+}
+
+function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
+  const model = query.model?.trim() || null;
+  const state = query.state?.trim() || null;
+  const windowMinutes =
+    query.window === "15m" ? 15 : query.window === "6h" ? 360 : query.window === "24h" ? 1_440 : 60;
+  const parsedLimit = Number.parseInt(query.limit ?? "100", 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(100, Math.max(1, parsedLimit)) : 100;
+  const cutoff = Date.parse(demoNow()) - windowMinutes * 60_000;
+  const accounts = new Map(demoAccounts().map((account) => [account.id, account]));
+  const groupsByModel = new Map<string, DemoModelRoutingLiveState[]>();
+
+  for (const route of DEMO_ROUTE_COMBINATIONS) {
+    if (model && route.model !== model) continue;
+    const account = accounts.get(route.accountId);
+    const routeState = demoModelRoutingStates(route.accountId).find(
+      (candidate) => candidate.model === route.model,
+    );
+    if (!account || !routeState || (state && routeState.state !== state)) continue;
+    const group = groupsByModel.get(route.model) ?? [];
+    group.push({
+      accountId: account.id,
+      accountDisplayName: `API Key #${account.id}`,
+      ...routeState,
+    });
+    groupsByModel.set(route.model, group);
+  }
+  const visibleRouteKeys = state
+    ? new Set(
+        Array.from(groupsByModel.values())
+          .flat()
+          .map((route) => `${route.accountId}:${route.model}`),
+      )
+    : null;
+
+  return {
+    generatedAt: demoNow(),
+    groups: Array.from(groupsByModel, ([groupModel, groupAccounts]) => ({
+      model: groupModel,
+      accounts: groupAccounts.map(({ accountDisplayName: _accountDisplayName, ...route }) => route),
+    })),
+    records: demoModelRoutingLiveTimeline()
+      .filter(
+        (record) =>
+          (!model || record.model === model) &&
+          Date.parse(record.occurredAt) >= cutoff &&
+          (!visibleRouteKeys || visibleRouteKeys.has(`${record.accountId}:${record.model}`)),
+      )
+      .slice(0, limit)
+      .map(publicModelRoutingRecord),
+  };
 }
 
 function demoForwardProxyNodes(): DemoProxyNode[] {
@@ -173,14 +452,6 @@ const DEMO_USAGE_BREAKDOWN = {
       costs: { input: 10, cacheWrite: 20, cacheRead: 5, output: 40, reasoning: 8.24, unknown: 0 },
     },
   ],
-};
-
-const EMPTY_USAGE_BREAKDOWN = {
-  cacheWriteTokens: 0,
-  cacheReadTokens: 0,
-  outputTokens: 0,
-  costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
-  models: [],
 };
 
 const DEMO_MODEL_PERFORMANCE_MODELS = [
@@ -309,10 +580,6 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
   };
 }
 
-function demoUsageBreakdown() {
-  return demoModel.snapshot.scene === "empty" ? EMPTY_USAGE_BREAKDOWN : DEMO_USAGE_BREAKDOWN;
-}
-
 function demoUsageBreakdownForModels(modelIndexes: number[]) {
   const models = modelIndexes
     .map((index) => DEMO_USAGE_BREAKDOWN.models[index])
@@ -334,48 +601,6 @@ function demoUsageBreakdownForModels(modelIndexes: number[]) {
     outputTokens: models.reduce((total, model) => total + model.outputTokens, 0),
     costs,
     models,
-  };
-}
-
-export function demoSummary() {
-  const empty = demoModel.snapshot.scene === "empty";
-  const attention = demoModel.snapshot.scene === "attention";
-  const totalCount = empty ? 0 : 12846;
-  const failureCount = empty ? 0 : attention ? 1174 : 428;
-  return {
-    rangeStart: "2026-07-10T00:00:00.000Z",
-    rangeEnd: demoNow(),
-    totalCount,
-    successCount: totalCount - failureCount,
-    failureCount,
-    totalCost: empty ? 0 : 582.34,
-    totalTokens: empty ? 0 : 1_381_240_000,
-    usageBreakdown: demoUsageBreakdown(),
-    inProgressConversationCount: empty ? 0 : attention ? 9 : 4,
-    token: {
-      requestCount: totalCount,
-      totalTokens: empty ? 0 : 1_381_240_000,
-      avgTokensPerRequest: empty ? 0 : 107_521,
-      cacheInputTokens: empty ? 0 : 982_000_000,
-      totalCost: empty ? 0 : 582.34,
-    },
-    network: {
-      avgTtfbMs: empty ? 0 : 214,
-      p95TtfbMs: empty ? 0 : 628,
-      avgFirstTokenMs: empty ? null : 788,
-      p95FirstTokenMs: empty ? null : 1_070,
-      avgResponseDurationMs: empty ? null : 1_841,
-      p95ResponseDurationMs: empty ? null : 3_690,
-      avgTotalMs: empty ? 0 : 2801,
-      p95TotalMs: empty ? 0 : 9010,
-    },
-    exception: {
-      failureCount,
-      serviceFailureCount: attention ? 924 : 284,
-      clientFailureCount: attention ? 152 : 104,
-      clientAbortCount: attention ? 98 : 40,
-      actionableFailureCount: attention ? 1076 : 388,
-    },
   };
 }
 
@@ -470,6 +695,87 @@ function demoInvocationSummary(records: ReturnType<typeof invocations>) {
   };
 }
 
+function demoUsageBreakdownFromInvocations(records: ReturnType<typeof invocations>) {
+  const grouped = new Map<
+    string,
+    {
+      model: string;
+      reasoningEffort: string | null;
+      cacheWriteTokens: number;
+      cacheReadTokens: number;
+      outputTokens: number;
+      costs: {
+        input: number;
+        cacheWrite: number;
+        cacheRead: number;
+        output: number;
+        reasoning: number;
+        unknown: number;
+      };
+    }
+  >();
+  for (const record of records) {
+    const reasoningEffort = record.reasoningEffort ?? null;
+    const key = `${record.model}:${reasoningEffort ?? "none"}`;
+    const entry = grouped.get(key) ?? {
+      model: record.model,
+      reasoningEffort,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      costs: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+    };
+    entry.cacheWriteTokens += record.cacheWriteTokens ?? 0;
+    entry.cacheReadTokens += record.cacheInputTokens ?? 0;
+    entry.outputTokens += record.outputTokens ?? 0;
+    entry.costs.input += record.costInput ?? 0;
+    entry.costs.cacheWrite += record.costCacheWrite ?? 0;
+    entry.costs.cacheRead += record.costCacheRead ?? 0;
+    entry.costs.output += record.costOutput ?? 0;
+    entry.costs.reasoning += record.costReasoning ?? 0;
+    grouped.set(key, entry);
+  }
+  const models = Array.from(grouped.values())
+    .sort((left, right) => left.model.localeCompare(right.model))
+    .map((entry) => ({
+      ...entry,
+      costs: Object.fromEntries(
+        Object.entries(entry.costs).map(([key, value]) => [key, Number(value.toFixed(4))]),
+      ) as typeof entry.costs,
+    }));
+  return {
+    cacheWriteTokens: models.reduce((total, model) => total + model.cacheWriteTokens, 0),
+    cacheReadTokens: models.reduce((total, model) => total + model.cacheReadTokens, 0),
+    outputTokens: models.reduce((total, model) => total + model.outputTokens, 0),
+    costs: models.reduce(
+      (total, model) => ({
+        input: Number((total.input + model.costs.input).toFixed(4)),
+        cacheWrite: Number((total.cacheWrite + model.costs.cacheWrite).toFixed(4)),
+        cacheRead: Number((total.cacheRead + model.costs.cacheRead).toFixed(4)),
+        output: Number((total.output + model.costs.output).toFixed(4)),
+        reasoning: Number((total.reasoning + model.costs.reasoning).toFixed(4)),
+        unknown: 0,
+      }),
+      { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, reasoning: 0, unknown: 0 },
+    ),
+    models,
+  };
+}
+
+export function demoSummary() {
+  const records = demoModel.snapshot.scene === "empty" ? [] : invocations();
+  const summary = demoInvocationSummary(records);
+  const usageBreakdown = demoUsageBreakdownFromInvocations(records);
+  return {
+    ...summary,
+    usageBreakdown,
+    token: {
+      ...summary.token,
+      cacheInputTokens: usageBreakdown.cacheReadTokens,
+    },
+  };
+}
+
 function invocations() {
   if (demoModel.snapshot.scene === "empty") return [];
   const attention = demoModel.snapshot.scene === "attention";
@@ -484,6 +790,47 @@ function invocations() {
           : key === "demo-virginia"
             ? "Virginia batch relay"
             : "Singapore warm standby";
+  const routingRows = DEMO_MODEL_ROUTE_FIXTURES.map((fixture, index) => {
+    const proxyKey =
+      fixture.accountId === 108
+        ? "demo-tokyo"
+        : fixture.accountId === 112
+          ? "demo-virginia"
+          : fixture.accountId === 115
+            ? "demo-singapore"
+            : "demo-frankfurt";
+    const modelBaseInput =
+      fixture.model === "gpt-5.5" ? 6_400 : fixture.model === "gpt-5.4-mini" ? 4_100 : 5_250;
+    const inputTokens = modelBaseInput + (index % 7) * 280;
+    const outputTokens = 280 + (index % 5) * 95;
+    const cacheInputTokens = Math.round(inputTokens * (0.58 + (index % 4) * 0.06));
+    const cacheWriteTokens = Math.max(0, inputTokens - cacheInputTokens);
+    const ttfb = 150 + (index % 6) * 23 + (fixture.terminalStatus === "http_502" ? 110 : 0);
+    const total = ttfb + 620 + (index % 5) * 115;
+    const cost = Number(
+      (
+        (inputTokens * 0.0000009 + outputTokens * 0.0000042) *
+        (fixture.model === "gpt-5.5" ? 1.2 : 1)
+      ).toFixed(4),
+    );
+    return [
+      fixture.invocationId,
+      fixture.accountId,
+      "routing-workload",
+      proxyKey,
+      fixture.model === "gpt-5.4-mini" ? "/v1/chat/completions" : "/v1/responses",
+      fixture.model,
+      fixture.terminalStatus,
+      inputTokens,
+      outputTokens,
+      cacheInputTokens,
+      cacheWriteTokens,
+      cost,
+      ttfb,
+      total,
+      `routing-session-${(index % 12) + 1}`,
+    ] as const;
+  });
   const rows = [
     [
       9001,
@@ -995,135 +1342,146 @@ function invocations() {
       3669,
       "demo-image-workflow",
     ],
+    ...routingRows,
   ] as const;
 
-  return rows.map(
-    ([
-      id,
-      accountId,
-      ,
-      proxyKey,
-      endpoint,
-      model,
-      status,
-      inputTokens,
-      outputTokens,
-      cacheInputTokens,
-      cacheWriteTokens,
-      cost,
-      ttfb,
-      total,
-      promptCacheKey,
-    ]) => {
-      const account = accounts.get(accountId);
-      const isFailure =
-        status === "http_502" ||
-        status === "http_401" ||
-        status === "http_429" ||
-        status === "client_cancelled";
-      const failureClass =
-        status === "client_cancelled" ? "client_abort" : isFailure ? "service_failure" : "none";
-      const failureKind =
-        status === "http_429"
-          ? "rate_limited"
-          : status === "client_cancelled"
-            ? "downstream_cancelled"
-            : status === "http_401"
-              ? "upstream_auth_rejected"
-              : status === "http_502"
-                ? "upstream_timeout"
-                : null;
-      const occurredAt = new Date(Date.parse(demoNow()) - (id - 9001) * 8_000).toISOString();
-      return {
+  return rows
+    .map(
+      ([
         id,
-        invokeId: `demo-invocation-${id}`,
-        occurredAt,
-        createdAt: occurredAt,
-        source: "proxy",
-        proxyDisplayName: proxyName(proxyKey),
-        upstreamAccountId: accountId,
-        upstreamAccountName: account?.displayName ?? null,
-        upstreamAccountPlanType: account?.planType ?? null,
+        rowAccountId,
+        ,
+        proxyKey,
         endpoint,
-        model,
-        requestModel: model,
-        responseModel: status === "success" ? model : null,
-        status,
-        livePhase: status === "running" ? "responding" : null,
-        requestedServiceTier: accountId === 101 ? "priority" : "auto",
-        serviceTier: accountId === 101 ? "priority" : "auto",
-        billingServiceTier: accountId === 101 ? "priority" : "standard",
+        rowModel,
+        rowStatus,
         inputTokens,
         outputTokens,
         cacheInputTokens,
         cacheWriteTokens,
-        reasoningTokens: model === "gpt-5.6-sol" ? Math.round(inputTokens * 0.05) : 0,
-        reasoningEffort: model === "gpt-5.6-sol" ? "high" : null,
-        totalTokens: inputTokens + outputTokens,
         cost,
-        costInput: Number((cost * 0.31).toFixed(4)),
-        costCacheWrite: Number((cost * 0.19).toFixed(4)),
-        costCacheRead: Number((cost * 0.08).toFixed(4)),
-        costOutput: Number((cost * 0.34).toFixed(4)),
-        costReasoning: Number((cost * 0.08).toFixed(4)),
-        failureClass,
-        failureKind,
-        isActionable: isFailure && status !== "client_cancelled",
-        errorMessage:
-          failureKind === "upstream_timeout"
-            ? "Simulated upstream timeout after 1.8 seconds."
-            : failureKind === "upstream_auth_rejected"
-              ? "Simulated upstream authorization rejection."
-              : failureKind === "rate_limited"
-                ? "Simulated upstream rate limit."
-                : failureKind === "downstream_cancelled"
-                  ? "Simulated client cancellation."
-                  : null,
-        downstreamStatusCode:
-          status === "http_502"
-            ? 502
-            : status === "http_401"
-              ? 401
-              : status === "http_429"
-                ? 429
-                : null,
-        requesterIp: id % 2 === 0 ? "203.0.113.24" : "198.51.100.86",
+        ttfb,
+        total,
         promptCacheKey,
-        stickyKey: promptCacheKey,
-        routeMode: account?.groupName === "standby" ? "fallback" : "pool",
-        poolAttemptCount: status === "http_429" ? 2 : status === "http_502" ? 3 : 1,
-        poolDistinctAccountCount: status === "http_502" ? 2 : 1,
-        poolAttemptTerminalReason: isFailure ? failureKind : "completed",
-        transport: status === "running" ? "websocket" : "http",
-        tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
-        tUpstreamTtfbMs: ttfb,
-        firstTokenMs:
-          ttfb == null ||
-          total == null ||
-          !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
-            ? null
-            : Math.min(total, ttfb + 420 + (id % 5) * 75),
-        tUpstreamStreamMs: total == null ? null : Math.max(0, total - (ttfb ?? 0)),
-        tTotalMs: total,
-        timings:
-          total == null
-            ? undefined
-            : {
-                upstreamConnectMs: Math.max(24, Math.round((ttfb ?? 120) * 0.24)),
-                upstreamFirstByteMs: ttfb,
-                upstreamStreamMs: Math.max(0, total - (ttfb ?? 0)),
-                totalMs: total,
-              },
-        rawMetadata: {
-          request: {
-            demo: true,
-            routeMode: account?.groupName === "standby" ? "fallback" : "pool",
+      ]) => {
+        const routingRequest = DEMO_MODEL_ROUTE_FIXTURES.find(
+          (fixture) => fixture.invocationId === id,
+        );
+        const accountId = routingRequest?.accountId ?? rowAccountId;
+        const model = routingRequest?.model ?? rowModel;
+        const status = routingRequest?.terminalStatus ?? rowStatus;
+        const account = accounts.get(accountId);
+        const isFailure =
+          status === "http_502" ||
+          status === "http_401" ||
+          status === "http_429" ||
+          status === "client_cancelled";
+        const failureClass =
+          status === "client_cancelled" ? "client_abort" : isFailure ? "service_failure" : "none";
+        const failureKind =
+          status === "http_429"
+            ? "rate_limited"
+            : status === "client_cancelled"
+              ? "downstream_cancelled"
+              : status === "http_401"
+                ? "upstream_auth_rejected"
+                : status === "http_502"
+                  ? "upstream_timeout"
+                  : null;
+        const occurredAt = routingRequest
+          ? demoModelRouteTimestamp(routingRequest.minutesAgo)
+          : new Date(Date.parse(demoNow()) - (id - 9001) * 8_000).toISOString();
+        return {
+          id,
+          invokeId: `demo-invocation-${id}`,
+          occurredAt,
+          createdAt: occurredAt,
+          source: "proxy",
+          proxyDisplayName: proxyName(proxyKey),
+          upstreamAccountId: accountId,
+          upstreamAccountName: account?.displayName ?? null,
+          upstreamAccountPlanType: account?.planType ?? null,
+          endpoint,
+          model,
+          requestModel: model,
+          responseModel: status === "success" ? model : null,
+          status,
+          livePhase: status === "running" ? "responding" : null,
+          requestedServiceTier: accountId === 101 ? "priority" : "auto",
+          serviceTier: accountId === 101 ? "priority" : "auto",
+          billingServiceTier: accountId === 101 ? "priority" : "standard",
+          inputTokens,
+          outputTokens,
+          cacheInputTokens,
+          cacheWriteTokens,
+          reasoningTokens: model === "gpt-5.6-sol" ? Math.round(inputTokens * 0.05) : 0,
+          reasoningEffort: model === "gpt-5.6-sol" ? (id % 2 === 0 ? "medium" : "high") : null,
+          totalTokens: inputTokens + outputTokens,
+          cost,
+          costInput: Number((cost * 0.31).toFixed(4)),
+          costCacheWrite: Number((cost * 0.19).toFixed(4)),
+          costCacheRead: Number((cost * 0.08).toFixed(4)),
+          costOutput: Number((cost * 0.34).toFixed(4)),
+          costReasoning: Number((cost * 0.08).toFixed(4)),
+          failureClass,
+          failureKind,
+          isActionable: isFailure && status !== "client_cancelled",
+          errorMessage:
+            failureKind === "upstream_timeout"
+              ? "Simulated upstream timeout after 1.8 seconds."
+              : failureKind === "upstream_auth_rejected"
+                ? "Simulated upstream authorization rejection."
+                : failureKind === "rate_limited"
+                  ? "Simulated upstream rate limit."
+                  : failureKind === "downstream_cancelled"
+                    ? "Simulated client cancellation."
+                    : null,
+          downstreamStatusCode:
+            status === "http_502"
+              ? 502
+              : status === "http_401"
+                ? 401
+                : status === "http_429"
+                  ? 429
+                  : null,
+          requesterIp: id % 2 === 0 ? "203.0.113.24" : "198.51.100.86",
+          promptCacheKey,
+          stickyKey: promptCacheKey,
+          routeMode: account?.groupName === "standby" ? "fallback" : "pool",
+          poolAttemptCount: status === "http_429" ? 2 : status === "http_502" ? 3 : 1,
+          poolDistinctAccountCount: status === "http_502" ? 2 : 1,
+          poolAttemptTerminalReason: isFailure ? failureKind : "completed",
+          transport: status === "running" ? "websocket" : "http",
+          tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
+          tUpstreamTtfbMs: ttfb,
+          firstTokenMs:
+            ttfb == null ||
+            total == null ||
+            !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
+              ? null
+              : Math.min(total, ttfb + 420 + (id % 5) * 75),
+          tUpstreamStreamMs: total == null ? null : Math.max(0, total - (ttfb ?? 0)),
+          tTotalMs: total,
+          timings:
+            total == null
+              ? undefined
+              : {
+                  upstreamConnectMs: Math.max(24, Math.round((ttfb ?? 120) * 0.24)),
+                  upstreamFirstByteMs: ttfb,
+                  upstreamStreamMs: Math.max(0, total - (ttfb ?? 0)),
+                  totalMs: total,
+                },
+          rawMetadata: {
+            request: {
+              demo: true,
+              routeMode: account?.groupName === "standby" ? "fallback" : "pool",
+            },
+            response: { model, requestId: `req_demo_${id}` },
           },
-          response: { model, requestId: `req_demo_${id}` },
-        },
-      };
-    },
-  );
+        };
+      },
+    )
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt));
 }
 
 function demoDashboardActivityAccounts() {
@@ -1735,62 +2093,80 @@ function forwardProxyBindingNodes() {
 function accountEvents() {
   if (demoModel.snapshot.scene === "empty") return [];
   const accounts = demoAccounts();
-  const templates: Array<readonly [string, string, string | null, string | null, number | null]> = [
-    ["sync_succeeded", "success", null, null, null],
-    ["usage_snapshot_updated", "success", null, null, null],
-    ["forward_proxy_assigned", "success", null, null, null],
-    [
-      "rate_limit_recovered",
-      "success",
-      "upstream_http_429_rate_limit",
-      "Recovered after the simulated cooldown.",
-      null,
-    ],
-    [
-      "sync_deferred",
-      "deferred",
-      "transport_failure",
-      "Deferred until the next maintenance pass.",
-      null,
-    ],
-    [
-      "route_cooldown_started",
-      "failed",
-      "transport_failure",
-      "Simulated timeout while checking upstream health.",
-      504,
-    ],
-    [
-      "reauth_required",
-      "failed",
-      "reauth_required",
-      "Simulated authorization renewal is required.",
-      401,
-    ],
-    ["sync_succeeded", "success", null, null, null],
-    ["routing_rule_updated", "success", null, null, null],
-    ["usage_snapshot_updated", "success", null, null, null],
-    ["forward_proxy_health_checked", "success", null, null, null],
-    ["quota_window_reset_observed", "success", null, null, null],
-    [
-      "sync_deferred",
-      "deferred",
-      "upstream_http_429_rate_limit",
-      "Deferred until the simulated upstream rate limit resets.",
-      429,
-    ],
-    ["sync_succeeded", "success", null, null, null],
-    ["routing_rule_updated", "success", null, null, null],
+  const routingEvents = demoModelRoutingLiveTimeline()
+    .filter((event) => event.kind === "event")
+    .flatMap((event, index) => {
+      const account = accounts.find((candidate) => candidate.id === event.accountId);
+      if (!account) return [];
+      const proxyKey = account.boundProxyKeys?.[0] ?? null;
+      const stateAfter = event.modelRouteStateAfter ?? null;
+      return [
+        {
+          id: 7100 + index,
+          action: event.action ?? "model_route_state_changed",
+          source: event.source ?? "call",
+          result: stateAfter === "available" ? "success" : "failed",
+          upstreamAccountId: account.id,
+          accountDisplayName: account.displayName,
+          accountGroupName: account.groupName,
+          forwardProxyKey: proxyKey,
+          forwardProxyDisplayName: account.currentForwardProxyDisplayName ?? null,
+          forwardProxyEgressIp:
+            proxyKey === "demo-tokyo"
+              ? "198.51.100.31"
+              : proxyKey === "demo-frankfurt"
+                ? "198.51.100.32"
+                : "198.51.100.33",
+          reasonCode: event.reasonCode ?? null,
+          reasonMessage: event.reasonCode
+            ? "Route state changed after an upstream HTTP 502."
+            : null,
+          httpStatus: event.reasonCode === "upstream_http_5xx" ? 502 : null,
+          model: event.model,
+          modelRouteStateBefore: event.modelRouteStateBefore ?? null,
+          modelRouteStateAfter: stateAfter,
+          modelRoutePriorityBefore:
+            event.modelRouteStateBefore === "available" ? "normal" : "demoted",
+          modelRoutePriorityAfter:
+            stateAfter === "cooling_down"
+              ? "excluded"
+              : stateAfter === "degraded"
+                ? "demoted"
+                : "normal",
+          modelRouteFailureCount: event.modelRouteFailureCount ?? null,
+          modelRouteCooldownUntil: event.modelRouteCooldownUntil ?? null,
+          failureKind: stateAfter === "available" ? null : "model",
+          invokeId: event.invokeId ?? null,
+          stickyKey: null,
+          occurredAt: event.occurredAt,
+          createdAt: event.occurredAt,
+        },
+      ];
+    });
+  const maintenanceActions: Array<readonly [string, string, number]> = [
+    ["sync_succeeded", "success", 30],
+    ["usage_snapshot_updated", "success", 60],
+    ["forward_proxy_assigned", "success", 120],
+    ["routing_rule_updated", "success", 180],
+    ["forward_proxy_health_checked", "success", 240],
+    ["quota_window_reset_observed", "success", 300],
+    ["sync_succeeded", "success", 360],
+    ["usage_snapshot_updated", "success", 420],
+    ["sync_succeeded", "success", 480],
+    ["routing_rule_updated", "success", 540],
+    ["forward_proxy_health_checked", "success", 600],
+    ["usage_snapshot_updated", "success", 660],
   ];
-  const events = templates.map(([action, result, reasonCode, reasonMessage, httpStatus], index) => {
-    const account = accounts[index] ?? accounts[0];
-    const modelRouteEvent = account.kind === "api_key_codex" && index % 3 === 1;
+  const maintenanceEvents = maintenanceActions.map(([action, result, minutesAgo], index) => {
+    const account = accounts[(index + 1) % accounts.length] ?? accounts[0];
     const proxyKey = account.boundProxyKeys?.[0] ?? null;
+    const occurredAt = demoModelRouteTimestamp(minutesAgo);
     return {
-      id: 7100 + index,
-      action: modelRouteEvent ? "model_route_cooldown" : action,
-      source: index % 2 === 0 ? "sync_maintenance" : "call",
-      result: modelRouteEvent ? "failed" : result,
+      id: 7200 + index,
+      action,
+      source: "sync_maintenance",
+      result,
+      upstreamAccountId: account.id,
       accountDisplayName: account.displayName,
       accountGroupName: account.groupName,
       forwardProxyKey: proxyKey,
@@ -1801,65 +2177,26 @@ function accountEvents() {
           : proxyKey === "demo-frankfurt"
             ? "198.51.100.32"
             : "198.51.100.33",
-      reasonCode: modelRouteEvent ? "upstream_http_429_quota_exhausted" : reasonCode,
-      reasonMessage: modelRouteEvent
-        ? "The requested model is temporarily unavailable upstream."
-        : reasonMessage,
-      httpStatus: modelRouteEvent ? 429 : httpStatus,
-      model:
-        account.kind === "api_key_codex"
-          ? modelRouteEvent
-            ? "gpt-5.4-mini"
-            : "gpt-5.6-terra"
-          : null,
-      modelRouteStateBefore: modelRouteEvent ? "degraded" : null,
-      modelRouteStateAfter: modelRouteEvent ? "cooling_down" : null,
-      modelRoutePriorityBefore: modelRouteEvent ? "demoted" : null,
-      modelRoutePriorityAfter: modelRouteEvent ? "excluded" : null,
-      modelRouteFailureCount: modelRouteEvent ? 5 : null,
-      modelRouteCooldownUntil: modelRouteEvent
-        ? new Date(Date.parse(demoNow()) + 45_000).toISOString()
-        : null,
-      failureKind: modelRouteEvent
-        ? "model"
-        : reasonCode === "transport_failure"
-          ? "upstream_timeout"
-          : reasonCode === "reauth_required"
-            ? "upstream_auth_rejected"
-            : null,
-      invokeId: index < 6 ? `demo-invocation-${9001 + index}` : null,
-      stickyKey:
-        index % 3 === 0 ? `demo-conversation-${String.fromCharCode(97 + (index % 4))}` : null,
-      occurredAt: new Date(Date.parse(demoNow()) - (index + 1) * 4 * 60_000).toISOString(),
-      createdAt: new Date(Date.parse(demoNow()) - (index + 1) * 4 * 60_000).toISOString(),
+      reasonCode: null,
+      reasonMessage: null,
+      httpStatus: null,
+      model: null,
+      modelRouteStateBefore: null,
+      modelRouteStateAfter: null,
+      modelRoutePriorityBefore: null,
+      modelRoutePriorityAfter: null,
+      modelRouteFailureCount: null,
+      modelRouteCooldownUntil: null,
+      failureKind: null,
+      invokeId: null,
+      stickyKey: null,
+      occurredAt,
+      createdAt: occurredAt,
     };
   });
-  events.pop();
-  const apiKeyModelEvent = events.find(
-    (event) => event.accountDisplayName === "backup-key" && event.model === "gpt-5.4-mini",
+  return [...routingEvents, ...maintenanceEvents].sort(
+    (left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt),
   );
-  if (apiKeyModelEvent) {
-    events.unshift({
-      ...apiKeyModelEvent,
-      id: 7199,
-      action: "model_route_degraded",
-      reasonCode: "upstream_http_5xx",
-      reasonMessage: "The selected upstream model returned HTTP 502.",
-      httpStatus: 502,
-      model: "gpt-5.6-terra",
-      modelRouteStateBefore: "available",
-      modelRouteStateAfter: "degraded",
-      modelRoutePriorityBefore: "normal",
-      modelRoutePriorityAfter: "demoted",
-      modelRouteFailureCount: 1,
-      modelRouteCooldownUntil: null,
-      failureKind: "upstream_http_5xx",
-      invokeId: "demo-model-scope-502",
-      occurredAt: new Date(Date.parse(demoNow()) - 2 * 60_000).toISOString(),
-      createdAt: new Date(Date.parse(demoNow()) - 2 * 60_000).toISOString(),
-    });
-  }
-  return events;
 }
 
 function systemTasks() {
@@ -3147,6 +3484,16 @@ export async function handleDemoRequest(request: Request) {
         compactStreamTimeoutSecs: 420,
       },
     });
+  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
+    return json(
+      demoModelRoutingLive({
+        window: url.searchParams.get("window"),
+        model: url.searchParams.get("model"),
+        state: url.searchParams.get("state"),
+        limit: url.searchParams.get("limit"),
+      }),
+    );
+  }
   if (pathname.includes("/sticky-keys"))
     return json({
       rangeStart: "2026-07-10T00:00:00Z",
@@ -3167,6 +3514,30 @@ export async function handleDemoRequest(request: Request) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
     return json(account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : []);
+  }
+  if (
+    /^\/api\/pool\/upstream-accounts\/\d+\/model-routing-events$/.test(pathname) &&
+    request.method === "GET"
+  ) {
+    const accountId = Number(pathname.split("/").at(-2));
+    const account = demoAccounts().find((item) => item.id === accountId);
+    const model = url.searchParams.get("model")?.trim();
+    if (account?.kind !== "api_key_codex" || !model) {
+      return json(
+        { error: "Model routing history is unavailable for this account." },
+        { status: 404 },
+      );
+    }
+
+    const items = demoModelRoutingTimeline(accountId, model).map(publicModelRoutingRecord);
+    const cursor = url.searchParams.get("cursor");
+    if (cursor === "demo-model-routing-page-2") {
+      return json({ items: items.slice(2), nextCursor: null });
+    }
+    return json({
+      items: items.slice(0, 2),
+      nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
+    });
   }
   if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
     const accountId = Number(pathname.split("/").at(-1));
