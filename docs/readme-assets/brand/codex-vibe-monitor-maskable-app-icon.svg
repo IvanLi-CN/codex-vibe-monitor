@@ -1,8 +1,9 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
 <!-- Generated from the approved product mark without platform chrome. -->
-  <title>Codex Vibe Monitor regular application icon</title>
+  <title>Codex Vibe Monitor maskable application icon</title>
   <desc>Product mark prepared for platform-owned application framing.</desc>
-  <g transform="translate(58 67) scale(0.065)">
+  <rect width="512" height="512" fill="#FBFDFF" />
+  <g transform="translate(80.3 93.3) scale(0.05865)">
     <defs>
       <linearGradient id="signal-gradient" x1="400" y1="2540" x2="5620" y2="2540" gradientUnits="userSpaceOnUse">
         <stop offset="0%" stop-color="#1CD3E6" />

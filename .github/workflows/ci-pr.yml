@@ -278,6 +278,12 @@ jobs:
         working-directory: web
         run: bun run test
 
+      - name: Build and verify PWA icon contract
+        working-directory: web
+        run: |
+          bun run build:pwa-test
+          bun run test:pwa-assets
+
   storybook-accessibility-tests:
     name: Storybook Accessibility Tests
     runs-on: ubuntu-24.04

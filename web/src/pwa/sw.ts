@@ -18,7 +18,9 @@ const manifestEntries = self.__WB_MANIFEST.filter((entry) =>
 );
 
 cleanupOutdatedCaches();
-precacheAndRoute(manifestEntries);
+precacheAndRoute(manifestEntries, {
+  ignoreURLParametersMatching: [/^v$/],
+});
 
 const navigationHandler = createHandlerBoundToURL(`${import.meta.env.BASE_URL}index.html`);
 

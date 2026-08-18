@@ -1,16 +1,7 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-<!-- Generated from traced product mark + approved rounded-square app-icon container -->
-  <title>Codex Vibe Monitor app icon</title>
-  <desc>Rounded-square application icon using the traced product mark.</desc>
-  <defs>
-    <filter id="icon-shadow" x="0" y="0" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#CCD7EA" flood-opacity="0.75" />
-    </filter>
-  </defs>
-  <g filter="url(#icon-shadow)">
-    <rect x="32" y="40" width="448" height="432" rx="72" fill="#FBFDFF" />
-    <rect x="34" y="42" width="444" height="428" rx="70" stroke="#DDE7F5" stroke-width="4" />
-  </g>
+<!-- Generated from the approved product mark without platform chrome. -->
+  <title>Codex Vibe Monitor regular application icon</title>
+  <desc>Product mark prepared for platform-owned application framing.</desc>
   <g transform="translate(58 67) scale(0.065)">
     <defs>
       <linearGradient id="signal-gradient" x1="400" y1="2540" x2="5620" y2="2540" gradientUnits="userSpaceOnUse">

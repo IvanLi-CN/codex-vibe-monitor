@@ -1,4 +1,7 @@
 import "vitest/config";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type UserConfig } from "vite";
@@ -10,6 +13,23 @@ function normalizeBase(base: string | undefined): string {
   return `${raw.startsWith("/") ? raw : `/${raw}`}${raw.endsWith("/") ? "" : "/"}`;
 }
 
+const installIconAssets = [
+  "apple-touch-icon.png",
+  "favicon.svg",
+  "icon-192.png",
+  "icon-512.png",
+  "maskable-192.png",
+  "maskable-512.png",
+];
+
+function installIconVersion(): string {
+  const hash = createHash("sha256");
+  for (const asset of installIconAssets) {
+    hash.update(readFileSync(resolve("public", asset)));
+  }
+  return hash.digest("hex").slice(0, 12);
+}
+
 export function createAppViteConfig(mode: string): UserConfig {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   const backend = env.VITE_BACKEND_PROXY ?? "http://localhost:8080";
@@ -17,6 +37,8 @@ export function createAppViteConfig(mode: string): UserConfig {
   const demo = runtime === "demo";
   const base = normalizeBase(env.VITE_DEPLOY_BASE);
   const isStorybook = mode === "storybook";
+  const iconVersion = installIconVersion();
+  const versionedIcon = (asset: string) => `${asset}?v=${iconVersion}`;
 
   if (runtime !== "live" && runtime !== "demo") {
     throw new Error(`Unsupported VITE_APP_RUNTIME: ${runtime}`);
@@ -30,6 +52,12 @@ export function createAppViteConfig(mode: string): UserConfig {
   return {
     base,
     plugins: [
+      {
+        name: "codex-vibe-monitor-install-icon-version",
+        transformIndexHtml(html) {
+          return html.replaceAll("%INSTALL_ICON_VERSION%", iconVersion);
+        },
+      },
       react(),
       !isStorybook &&
         VitePWA({
@@ -45,6 +73,8 @@ export function createAppViteConfig(mode: string): UserConfig {
             "favicon.svg",
             "icon-192.png",
             "icon-512.png",
+            "maskable-192.png",
+            "maskable-512.png",
             "social-preview.png",
           ],
           manifest: {
@@ -66,19 +96,25 @@ export function createAppViteConfig(mode: string): UserConfig {
                 name: "Dashboard",
                 short_name: "Dashboard",
                 url: "./#/dashboard",
-                icons: [{ src: "icon-192.png", sizes: "192x192", type: "image/png" }],
+                icons: [
+                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
+                ],
               },
               {
                 name: "Live",
                 short_name: "Live",
                 url: "./#/live",
-                icons: [{ src: "icon-192.png", sizes: "192x192", type: "image/png" }],
+                icons: [
+                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
+                ],
               },
               {
                 name: "Records",
                 short_name: "Records",
                 url: "./#/records",
-                icons: [{ src: "icon-192.png", sizes: "192x192", type: "image/png" }],
+                icons: [
+                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
+                ],
               },
             ],
             screenshots: [
@@ -92,22 +128,34 @@ export function createAppViteConfig(mode: string): UserConfig {
             ],
             icons: [
               {
-                src: "icon-192.png",
+                src: versionedIcon("icon-192.png"),
                 sizes: "192x192",
                 type: "image/png",
                 purpose: "any",
               },
               {
-                src: "icon-512.png",
+                src: versionedIcon("icon-512.png"),
                 sizes: "512x512",
                 type: "image/png",
                 purpose: "any",
               },
               {
-                src: "favicon.svg",
+                src: versionedIcon("favicon.svg"),
                 sizes: "any",
                 type: "image/svg+xml",
                 purpose: "any",
+              },
+              {
+                src: versionedIcon("maskable-192.png"),
+                sizes: "192x192",
+                type: "image/png",
+                purpose: "maskable",
+              },
+              {
+                src: versionedIcon("maskable-512.png"),
+                sizes: "512x512",
+                type: "image/png",
+                purpose: "maskable",
               },
             ],
           },
