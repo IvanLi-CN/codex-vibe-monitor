@@ -7,7 +7,6 @@ import UpstreamAccountCreatePage from "./pages/account-pool/UpstreamAccountCreat
 import UpstreamAccountsPage from "./pages/account-pool/UpstreamAccounts";
 import DashboardPage from "./pages/Dashboard";
 import LivePage from "./pages/Live";
-import ModelRoutingPage from "./pages/ModelRouting";
 import RecordsPage from "./pages/Records";
 import SettingsPage from "./pages/Settings";
 import StatsPage from "./pages/Stats";
@@ -26,7 +25,6 @@ function App() {
         <Route path="dashboard/invocations/:invokeId" element={<DashboardPage />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="live" element={<LivePage />} />
-        <Route path="model-routing" element={<ModelRoutingPage />} />
         <Route path="records" element={<RecordsPage />} />
         <Route path="account-pool" element={<AccountPoolLayout />}>
           <Route index element={<Navigate to="/account-pool/upstream-accounts" replace />} />

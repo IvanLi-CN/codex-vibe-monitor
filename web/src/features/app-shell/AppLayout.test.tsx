@@ -107,8 +107,6 @@ vi.mock("../../i18n", () => ({
           return "统计";
         case "app.nav.live":
           return "实况";
-        case "app.nav.modelRouting":
-          return "模型路由";
         case "app.nav.records":
           return "记录";
         case "app.nav.accountPool":
@@ -328,7 +326,6 @@ function render(initialEntry = "/dashboard") {
             <Route path="dashboard" element={<div>dashboard page</div>} />
             <Route path="stats" element={<div>stats page</div>} />
             <Route path="live" element={<div>live page</div>} />
-            <Route path="model-routing" element={<div>model routing page</div>} />
             <Route path="records" element={<div>records page</div>} />
             <Route path="account-pool" element={<div>account pool page</div>} />
             <Route path="system/*" element={<div>system page</div>} />
@@ -394,6 +391,7 @@ describe("AppLayout", () => {
     const installDialog = document.body.querySelector('[data-testid="pwa-install-dialog"]');
 
     expect(navGroup).not.toBeNull();
+    expect(navGroup?.textContent).not.toContain("模型路由");
     expect(desktopNavigation?.className).toContain("hidden");
     expect(desktopNavigation?.className).toContain("desktop:block");
     expect(dashboardLink?.className).toContain("segmented-control-item");

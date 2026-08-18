@@ -125,10 +125,9 @@ function MockPage({ title, description }: { title: string; description: string }
           </div>
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">Navigation</p>
-            <p className="mt-2 text-3xl font-semibold text-primary">7 tabs</p>
+            <p className="mt-2 text-3xl font-semibold text-primary">6 tabs</p>
             <p className="mt-1 text-sm text-base-content/70">
-              Dashboard, stats, live, model routing, records, account pool, and system share one
-              shell.
+              Dashboard, stats, live, records, account pool, and system share one shell.
             </p>
           </div>
         </div>
@@ -298,15 +297,6 @@ const meta = {
                         <MockPage
                           title="Live monitor"
                           description="Realtime stream tables render inside the same site-wide shell."
-                        />
-                      }
-                    />
-                    <Route
-                      path="model-routing"
-                      element={
-                        <MockPage
-                          title="Model routing"
-                          description="Model routing stays a top-level operational surface, separate from conversations."
                         />
                       }
                     />

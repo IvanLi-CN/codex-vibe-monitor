@@ -506,10 +506,16 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("实时概览")).toBeVisible();
+    await expect(canvas.getByRole("tab", { name: "路由" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     await expect(canvas.getByText("模型路由")).toBeVisible();
-    await expect(canvas.getByText("pool-alpha@example.com")).toBeVisible();
+    await expect(canvas.getByText("gpt-5.4")).toBeVisible();
+    await expect(canvas.queryByText("pool-alpha@example.com")).not.toBeInTheDocument();
 
-    const oneHourTab = canvas.getByRole("tab", { name: "1 小时" });
+    const controls = within(canvas.getByTestId("model-routing-live-controls"));
+    const oneHourTab = controls.getByRole("tab", { name: "1 小时" });
     await userEvent.click(oneHourTab);
     await expect(oneHourTab).toHaveAttribute("aria-selected", "true");
   },

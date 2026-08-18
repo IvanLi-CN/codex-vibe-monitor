@@ -1,29 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
-import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
 import type { ModelRoutingLiveResponse, ModelRoutingLiveWindow } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
 import { ModelRoutingGantt } from "./ModelRoutingGantt";
-
-function statusLabel(state: string, t: (key: string) => string) {
-  const key = `live.routing.states.${state}`;
-  const translated = t(key);
-  return translated === key ? state : translated;
-}
 
 export interface ModelRoutingLivePanelProps {
   data?: ModelRoutingLiveResponse | null;
   isLoading: boolean;
   error?: string | null;
   window: ModelRoutingLiveWindow;
-  model?: string;
-  state?: string;
   onWindowChange: (value: ModelRoutingLiveWindow) => void;
-  onModelChange: (value: string) => void;
-  onStateChange: (value: string) => void;
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
   onRefresh: () => void;
@@ -34,23 +23,12 @@ export function ModelRoutingLivePanel({
   isLoading,
   error,
   window,
-  model = "",
-  state = "",
   onWindowChange,
-  onModelChange,
-  onStateChange,
   onOpenAccount,
   onOpenInvocation,
   onRefresh,
 }: ModelRoutingLivePanelProps) {
   const { t } = useTranslation();
-  const [knownModels, setKnownModels] = useState<string[]>([]);
-  useEffect(() => {
-    const nextModels = data?.groups.map((group) => group.model) ?? [];
-    if (nextModels.length === 0) return;
-    setKnownModels((current) => Array.from(new Set([...current, ...nextModels])).sort());
-  }, [data]);
-  const models = useMemo(() => knownModels, [knownModels]);
   const records = data?.records ?? [];
   const groups = useMemo(() => {
     const currentGroups = data?.groups ?? [];
@@ -85,32 +63,6 @@ export function ModelRoutingLivePanel({
               <AppIcon name="refresh" className="mr-1.5 h-4 w-4" aria-hidden />
               {t("live.routing.refresh")}
             </Button>
-            <SelectField
-              label={t("live.routing.stateLabel")}
-              name="modelRoutingState"
-              size="sm"
-              className="w-40"
-              value={state}
-              options={[
-                { value: "", label: t("live.routing.allStates") },
-                { value: "available", label: statusLabel("available", t) },
-                { value: "degraded", label: statusLabel("degraded", t) },
-                { value: "cooling_down", label: statusLabel("cooling_down", t) },
-              ]}
-              onValueChange={onStateChange}
-            />
-            <SelectField
-              label={t("live.routing.modelLabel")}
-              name="modelRoutingModel"
-              size="sm"
-              className="w-44"
-              value={model}
-              options={[
-                { value: "", label: t("live.routing.allModels") },
-                ...models.map((value) => ({ value, label: value })),
-              ]}
-              onValueChange={onModelChange}
-            />
             <SegmentedControl role="group" aria-label={t("live.routing.windowLabel")}>
               {(["15m", "1h", "6h", "24h"] as ModelRoutingLiveWindow[]).map((value) => (
                 <SegmentedControlItem

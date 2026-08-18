@@ -34,11 +34,6 @@ export const topLevelNavItems: AppNavigationGroup[] = [
     items: [],
   },
   {
-    to: "/model-routing",
-    labelKey: "app.nav.modelRouting",
-    items: [],
-  },
-  {
     to: "/records",
     labelKey: "app.nav.records",
     items: [],

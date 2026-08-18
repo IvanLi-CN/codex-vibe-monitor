@@ -133,6 +133,16 @@ vi.mock("../i18n", () => ({
           return `${values?.count ?? 0} 条记录`;
         case "live.latest.title":
           return "最新记录";
+        case "live.tabs.label":
+          return "实况视图";
+        case "live.tabs.conversations":
+          return "对话";
+        case "live.tabs.records":
+          return "最新记录";
+        case "live.tabs.routing":
+          return "路由";
+        case "live.tabs.proxy":
+          return "代理";
         default:
           return key;
       }
@@ -332,47 +342,85 @@ function getPromptCacheConversationTable() {
 }
 
 describe("LivePage", () => {
-  it("defaults to conversations when no saved tab is present", () => {
+  it("defaults to routing when no saved tab is present", () => {
     setupLivePageHooks(null);
 
     render(<LivePage />);
 
-    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+    expect(host?.querySelector('[data-testid="live-prompt-cache-selection"]')).toBeNull();
+    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+      {
+        window: "1h",
+        limit: 100,
+      },
+      true,
+    );
+    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+      {
+        mode: "count",
+        limit: 50,
+      },
+      false,
+    );
   });
 
-  it("migrates the removed routing tab selection to conversations", () => {
+  it("falls back to routing when the stored tab is invalid", () => {
     setupLivePageHooks(null);
-    storage.set(LIVE_TAB_STORAGE_KEY, "routing");
+    storage.set(LIVE_TAB_STORAGE_KEY, "removed-tab");
 
     render(<LivePage />);
 
-    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
   });
 
-  it("uses the shared segmented control for three content-width live workspace tabs", () => {
+  it("uses the shared segmented control for four ordered content-width live workspace tabs", () => {
     setupLivePageHooks(null);
 
     render(<LivePage />);
 
     const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
     const tabs = tabList?.querySelectorAll('[role="tab"]');
-    const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
-    const conversationsPanel = host?.querySelector("#live-workspace-panel-conversations");
+    const routingTab = host?.querySelector("#live-workspace-tab-routing");
+    const routingPanel = host?.querySelector("#live-workspace-panel-routing");
 
     expect(tabList?.className).toContain("segmented-control");
     expect(tabList?.className).toContain("w-fit");
     expect(tabList?.classList.contains("w-full")).toBe(false);
-    expect(tabs).toHaveLength(3);
-    expect(conversationsTab?.getAttribute("data-active")).toBe("true");
-    expect(conversationsTab?.classList.contains("w-full")).toBe(false);
-    expect(conversationsTab?.getAttribute("aria-controls")).toBe(
-      "live-workspace-panel-conversations",
+    expect(tabs).toHaveLength(4);
+    expect(Array.from(tabs ?? []).map((tab) => tab.textContent)).toEqual([
+      "对话",
+      "最新记录",
+      "路由",
+      "代理",
+    ]);
+    expect(routingTab?.getAttribute("data-active")).toBe("true");
+    expect(routingTab?.classList.contains("w-full")).toBe(false);
+    expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
+    expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
+  });
+
+  it("stops routing updates after switching tabs and persists the selected tab", () => {
+    setupLivePageHooks(null);
+
+    render(<LivePage />);
+
+    const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
+    if (!(conversationsTab instanceof HTMLElement)) {
+      throw new Error("missing conversations tab");
+    }
+    pressElement(conversationsTab);
+
+    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
+    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+      {
+        window: "1h",
+        limit: 100,
+      },
+      false,
     );
-    expect(conversationsPanel?.getAttribute("aria-labelledby")).toBe(
-      "live-workspace-tab-conversations",
-    );
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(LIVE_TAB_STORAGE_KEY, "conversations");
   });
 
   it("defaults to 50 conversations when storage is empty", () => {

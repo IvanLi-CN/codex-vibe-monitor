@@ -36,6 +36,19 @@
     min-width: 100%;
   }
 
+  .model-routing-frappe-gantt .bar-wrapper.model-routing-detail-task {
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .model-routing-frappe-gantt .model-routing-records-slot {
+    position: absolute;
+    inset-inline: 0;
+    z-index: 2;
+    overflow: hidden;
+    background: oklch(var(--color-base-100));
+  }
+
   .model-routing-frappe-gantt .grid-header {
     border-radius: 0;
   }

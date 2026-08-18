@@ -32,7 +32,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - API Key 模型错误分类、真实调用成功/失败观察和并发时序保护。
 - 全局缓存命中保护设置、组合级动态并行限制、缓存冷却与队列/改路溢出处理。
 - 模型状态读取、单模型 reset API，以及账号详情健康与事件 UI。
-- API Key 模型路由全局快照、账号模型 48 小时历史、受限实时订阅和独立模型路由页面。
+- API Key 模型路由全局快照、账号模型 48 小时历史、受限实时订阅和实况页“路由”页签。
 - Storybook 状态/交互覆盖和 mock-only `ui_demo` 视觉证据。
 
 ### Out of scope
@@ -77,10 +77,11 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。实时快照和路由历史不返回账号分组字段；账号分组是账号池管理元数据，不是组合路由维度。
-- 独立模型路由页面默认显示最近 24 小时。页面以模型为唯一分组；模型标题必须始终以文本显示模型名，图标只能补充、不得替代文字。页面只渲染一张标准二维甘特表：全局唯一的图例与连续北京时间轴，左侧固定模型/API Key 泳道列，右侧所有模型分组共用同一时间网格；模型仅是表内分组行，不得渲染独立图表、独立图例或重复时间标尺。每条泳道精确对应一个 `(upstream_account_id, model)` 组合，标识固定为 `API Key #<id>`，不得使用账号池显示名、所属分组或账号列表作为分类或第二层信息。状态区间按真实起止时间显示为 `available/degraded/cooling_down` 色带；`available` 区间颜色深浅按该时间窗内全部真实调用次数相对最繁忙可用区间的比例变化，并可在无障碍标签中读取实际调用数和占比；无法重建的间隔必须显示为透明虚线 `unknown` 区间，不得声称为正常或伪装为状态实条。菱形仅表示受控恢复状态下由真实业务流量触发的恢复尝试，不显示可用期间的普通请求；成功恢复标记位于恢复前状态与 `available` 的跃迁边界，不得落入可用区段内部。不得以堆叠柱状图、分类柱图或脱离时间比例的色块代替甘特图。色带下钻账号模型详情，菱形下钻关联调用。全部真实选择与重试仍保留在路由决策记录中；手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
+- 实况页“路由”页签默认显示最近 1 小时，并可切换 15 分钟、6 小时或 24 小时。页面以模型为唯一分组；模型标题必须始终以文本显示模型名，图标只能补充、不得替代文字。页面只渲染一张标准二维甘特表：全局唯一的图例与连续北京时间轴，左侧固定模型/API Key 泳道列，右侧所有模型分组共用同一时间网格；模型仅是表内分组行，不得渲染独立图表、独立图例或重复时间标尺。每条泳道精确对应一个 `(upstream_account_id, model)` 组合，标识固定为 `API Key #<id>`，不得使用账号池显示名、所属分组或账号列表作为分类或第二层信息。Task 必须按 `modelRoutePriorityBefore/After` 重建随时间变化的 `normal/demoted/excluded` 优先级区段，并只通过区段颜色表达优先级；时间轴最右端的颜色表示当前等级，同一最高等级可包含多个下一请求候选。不得把账号、标签或账号组的静态配置优先级写入账号标签、模型标题或回填整段历史。`available` 区间颜色深浅按该时间窗内全部真实调用次数相对最繁忙可用区间的比例变化，并可在无障碍标签中读取实际调用数和占比；无法重建的状态或优先级间隔必须显示为透明虚线 `unknown` 区间，不得拿当前值反向填充没有证据的历史。菱形仅表示受控恢复状态下由真实业务流量触发的恢复尝试，不显示可用期间的普通请求；成功恢复标记位于恢复前状态与 `available` 的跃迁边界，不得落入可用区段内部。不得以堆叠柱状图、分类柱图或脱离时间比例的色块代替甘特图。色带下钻账号模型详情，菱形下钻关联调用。全部真实选择与重试仍保留在路由决策记录中；手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
+- 每个模型分组行同时显示该模型在当前快照中的记录数和明确的展开/收起动作。展开后列出当前筛选时间窗内该模型返回的全部路由尝试、重试和状态事件；每条记录可继续展开候选比较、选择原因、状态与优先级迁移、HTTP 终态、延迟和调用关联。
 - `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容，不返回账号分组字段。
-- `pool.model-routing-live` 实时主题只在独立“模型路由”页面处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
-- “实况”与“模型路由”是并列主导航，不存在包含关系。实况页在共享摘要带下使用“对话 / 最新记录 / 代理”三个内容宽度页签，默认并持久化“对话”；历史遗留的 `routing` 页签选择回退到“对话”。模型路由独立为 `/model-routing` 页面，只承载 API Key 模型路由状态、筛选、决策记录与账号/调用下钻，不渲染对话页签或对话内容。
+- `pool.model-routing-live` 实时主题只在实况页“路由”页签处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
+- 实况页在共享摘要带下使用“对话 / 最新记录 / 路由 / 代理”四个内容宽度页签，默认选择“路由”并持久化用户选择；非激活页签不保留对应实时订阅，重新激活时重新获取快照。模型路由不得注册独立路由或主导航项，“路由”页签只渲染 API Key 模型路由状态、刷新与时间窗控制、甘特图及账号/调用下钻，不提供模型或路由状态筛选，也不渲染对话内容。
 - 账号详情登录健康默认显示紧凑状态摘要；异常保持显式可见，低频诊断按需展开。模型健康默认显示一行摘要和操作，展开后显示模型 48 小时历史。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
 - 健康事件不展示独立的请求模型标签。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：API Key 模型路由事件只展示“影响范围=模型、受影响模型=<模型名>”；OAuth 临时失败与认证/付费等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
@@ -95,9 +96,9 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 | `POST /api/pool/upstream-accounts/:account_id/model-routing/reset` | HTTP         | external      | New            | None                     | backend         | health tab          | Body contains exact `model`                                                             |
 | `GET/PUT /api/pool/routing-settings`                               | HTTP         | external      | Modify         | None                     | backend/web     | settings/routing    | Adds `cacheHitProtection`; PUT remains partial and backward-compatible                  |
 | `UpstreamAccountActionEvent` model-routing fields                  | JSON         | external      | Modify         | None                     | backend/web     | event list          | Model falls back through event, attempt, invocation; routing fields define impact scope |
-| `GET /api/pool/model-routing-live`                                 | HTTP         | external      | New            | None                     | backend/web     | model routing page  | API Key only; model-first state groups plus bounded real attempts and unlinked events   |
+| `GET /api/pool/model-routing-live`                                 | HTTP         | external      | New            | None                     | backend/web     | live routing tab    | API Key only; model-first state groups plus bounded real attempts and unlinked events   |
 | `GET /api/pool/upstream-accounts/:account_id/model-routing-events` | HTTP         | external      | New            | None                     | backend/web     | account health      | API Key only; exact model, fixed 48-hour window and cursor pagination                   |
-| `pool.model-routing-live`                                          | SSE          | external      | New            | None                     | backend/web     | model routing page  | Versioned snapshot/delta topic; active only while the model-routing page is visible     |
+| `pool.model-routing-live`                                          | SSE          | external      | New            | None                     | backend/web     | live routing tab    | Versioned snapshot/delta topic; active only while the routing tab is visible            |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -120,11 +121,11 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given a successful API Key request has 3839 input tokens, exactly the configured hit rate, or incomplete usage, When it completes, Then it does not trigger a low-hit transition; a 3840-token request strictly below the threshold does.
 - Given repeated low-hit samples for one account/model combination, When its future concurrency reaches one, Then the third consecutive low-hit sample enters 15/30/60-second cache cooldown and an expired cooldown admits exactly one controlled real business request.
 - Given a limited combination has a legal alternative and `overflowMode=reroute`, When its limit is full, Then routing can select the alternative; with `queue`, forced binding, no-switch, or no alternative, it waits only within existing bounded request deadlines.
-- Given the standalone model-routing page is opened, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model Gantt updates its corresponding state band, available-period allocation intensity, or controlled-recovery marker on the affected combination lane through the bounded `pool.model-routing-live` view without creating new upstream traffic.
+- Given the live routing tab is active, When a route selection, retry, terminal result or model-state transition occurs, Then the API Key model Gantt updates its corresponding state band, available-period allocation intensity, or controlled-recovery marker on the affected combination lane through the bounded `pool.model-routing-live` view without creating new upstream traffic.
 - Given a route attempt has retries, When the global or account model history renders, Then every retry remains a separate time-ordered record with its routing selection audit and normalized terminal evidence.
 - Given an operator opens an API Key account's model details, When the model row expands, Then the first page contains only that model's last 48 hours of history and older records load by cursor without duplication.
-- Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 代理”, with “对话” selected; inactive tabs do not retain their real-time subscription. Given `/model-routing` renders, Then it is a separate top-level page with no conversation tab or conversation content.
-- Given the model-routing page renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group, proportional `available/degraded/cooling_down` state bars, `available` color intensity proportional to real call allocation, transparent dashed `unknown` intervals and small separate real-request markers; account display names, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
+- Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription, and no standalone model-routing route or main-navigation item exists.
+- Given the live routing tab renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group; Task color changes over time with recorded `normal/demoted/excluded` model-route priority, the right edge exposes the current candidate level, `available` color intensity remains proportional to real call allocation, unknown intervals are transparent and dashed, and controlled-recovery markers remain separate. Static priority text, account display names, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 
 ## 验收清单（Acceptance checklist）
@@ -135,7 +136,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - [x] 健康与事件 UI、Storybook 和视觉证据已覆盖。
 - [x] 缓存低命中限流、缓存冷却与单探针恢复已覆盖。
 - [x] API Key 模型路由全局视图、48 小时历史和实时主题已覆盖。
-- [x] 独立模型路由页、实况三页签、紧凑登录健康与可展开模型历史已覆盖。
+- [x] 实况四页签、路由页签甘特图、紧凑登录健康与可展开模型历史已覆盖。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -147,7 +148,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 ### UI / Storybook (if applicable)
 
 - Add a docs-first model-routing state gallery with available, degraded, cooling, controlled-recovery, empty, reset-error and expanded-history states.
-- Add `play` coverage for successful and failed reset interactions, history expansion, route filters and route-record drill-down.
+- Add `play` coverage for successful and failed reset interactions, history expansion, route time-window switching and route-record drill-down.
 
 ### Quality checks
 
@@ -155,39 +156,26 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过（`ModelRoutingGantt` 与 `ModelRoutingLivePanel` 的 6 个交互用例）
+Storybook覆盖=通过
 视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=无需裁剪（桌面边缘背景不均匀而保留原图；移动端没有可安全移除的空白）
+视觉比较=一致（无可读历史基线；owner 已确认当前候选）
 聊天回图=已展示
 证据落盘=已落盘
-代码来源sha=864d9d85c81b45e3cbe86995347d3174e4fe0250
-证据绑定sha=864d9d85c81b45e3cbe86995347d3174e4fe0250
-submission_gate=local-pending
+submission_gate=owner-approved
 target_program=mock-only
+capture_scope=element-first live routing tab and model routing panel
+viewport_strategy=devtools-emulate
 sensitive_exclusion=N/A
 
-页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取，页面证据在同一 mock-only 演示路由中以受控 1440×900 和 393×852 CSS 视口采集，不访问真实后端。`operational-routing-v2` 固定在 `2026-08-16T11:30:00.000Z`，用 126 条精确账号模型调用作为单一台账，再投影出调用、重试、状态事件、摘要与筛选结果；实现准则见 `docs/solutions/workflow/coherent-observability-mock-data.md`。
+页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取。页面证据从 `/#/live?demoScene=operational&demoTheme=light&demoEmbed=1` 的“路由”页签，以 `devtools-emulate` 受控 `1440×900` 和 `393×852` CSS 视口、元素优先范围采集，不访问真实后端。候选图已通过 `trim_only` 页面规范化，并经 owner 确认后落盘。
 
-source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=1440x900; rendered_viewport=1440x900 CSS px; viewport_strategy=chrome-viewport-override; margin_policy=trim_only; evidence_surface=page; evidence_note=展示一张模型唯一分组的标准二维甘特表：固定“模型 / API Key”组合泳道列、全局唯一的连续北京时间轴、按真实时间比例重建的实心状态区间、按可用期间全部真实调用分配调整的颜色强度、透明虚线未知区间和仅位于受控恢复阶段的恢复尝试菱形。页面不含对话内容、账号池显示名、账号分组、账号列表、独立模型图表或堆叠柱图。
-
-PR: include
-![桌面模型路由甘特图](./assets/model-routing-standard-gantt-desktop.png)
-
-source_type=ui_demo; route=`/#/model-routing?demoScene=operational&demoTheme=light&demoEmbed=1`; state=独立模型路由主导航、24 小时、全部模型、全部状态；capture_scope=browser-viewport; requested_viewport=393x852; rendered_viewport=393x852 CSS px; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端同一甘特表的模型分组行、精确组合泳道、北京时间刻度、按可用期全部真实调用分配变化的颜色强度、透明虚线未知区间与仅在受控恢复阶段显示的恢复尝试菱形在同一可见图面内；表格网格 `scrollWidth` 与 `clientWidth` 相等，无横向溢出。页面不含对话内容、账号池显示名、账号列表或账号分组字段。
-
-PR: include
-![移动模型路由甘特图](./assets/model-routing-standard-gantt-mobile.png)
-
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=1440x900; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=展示 `prod-api-key-a` 的压缩登录健康摘要、精确模型当前冷却状态、恢复时间、状态事件、同账号重试和 HTTP 502。展开区直接呈现事件，不重复时间窗说明。
-
-PR: include
-![桌面账号路由健康](./assets/model-routing-account-health-page-desktop.png)
-
-source_type=ui_demo; route=`/#/account-pool/upstream-accounts?upstreamAccountId=102&upstreamAccountTab=healthEvents&upstreamAccountModel=gpt-5.4-mini&demoScene=operational&demoTheme=light`; state=登录健康诊断折叠、`gpt-5.4-mini` 48 小时历史展开；capture_scope=browser-viewport; requested_viewport=393x852; viewport_strategy=devtools-emulate; margin_policy=trim_only; evidence_surface=page; evidence_note=验证移动端紧凑登录摘要、可见冷却状态、恢复操作和逐次真实历史可读且无横向溢出；展开区无冗余说明。
-
-PR: include
-![移动账号路由健康](./assets/model-routing-account-health-page-mobile.png)
+- source_type: `ui_demo`; capture_scope: `element-first`; requested_viewport: `1440x900`; viewport_strategy: `devtools-emulate`; margin_policy: `trim_only`; evidence_surface: `page`; target_program: `mock-only`; sensitive_exclusion: `N/A`; submission_gate: `owner-approved`
+  PR: none
+  ![Live routing tab desktop](./assets/model-routing-live-route-tab-desktop.png)
+- source_type: `ui_demo`; capture_scope: `element-first`; requested_viewport: `393x852`; viewport_strategy: `devtools-emulate`; margin_policy: `trim_only`; evidence_surface: `page`; target_program: `mock-only`; sensitive_exclusion: `N/A`; submission_gate: `owner-approved`
+  PR: none
+  ![Live routing tab mobile](./assets/model-routing-live-route-tab-mobile.png)
 
 ## Related PRs
 

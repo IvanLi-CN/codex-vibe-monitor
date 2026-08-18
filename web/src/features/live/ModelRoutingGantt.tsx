@@ -1,5 +1,6 @@
 import Gantt, { type GanttTask, type GanttViewMode } from "frappe-gantt";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "../../i18n";
 import type {
   ModelRoutingLiveAccount,
@@ -14,11 +15,14 @@ import {
   withOpacity,
 } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
+import { ModelRoutingRecordList, modelRoutingRecordsId } from "./ModelRoutingRecordList";
 
 type RoutingTimelineState = "available" | "degraded" | "cooling_down" | "unknown";
+type RoutingTimelinePriority = "normal" | "demoted" | "excluded" | "unknown";
 
 interface RoutingGanttBand {
   state: RoutingTimelineState;
+  priority: RoutingTimelinePriority;
   startMs: number;
   endMs: number;
 }
@@ -42,6 +46,7 @@ interface RoutingGanttLane {
   label: string;
   model: string;
   state: RoutingTimelineState;
+  priority: RoutingTimelinePriority;
   bands: RoutingGanttBand[];
 }
 
@@ -54,17 +59,14 @@ interface RoutingGanttData {
 }
 
 interface RoutingGanttColors {
-  available: string;
-  degraded: string;
-  cooling_down: string;
-  unknown: string;
+  priority: Record<RoutingTimelinePriority, string>;
   attemptSuccess: string;
   attemptFailure: string;
   attemptUnknown: string;
 }
 
 interface RoutingFrappeTask extends GanttTask {
-  kind: "model" | "lane";
+  kind: "model" | "lane" | "detail";
   accountId?: number;
   model: string;
 }
@@ -78,6 +80,7 @@ interface RoutingTimelineGroup {
 
 interface RoutingViewSpec {
   step: string;
+  normalizedStepMs: number;
   minimumColumnWidth: number;
   columns: number;
 }
@@ -90,16 +93,21 @@ const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
 };
 
 const VIEW_SPECS: Record<ModelRoutingLiveWindow, RoutingViewSpec> = {
-  "15m": { step: "5min", minimumColumnWidth: 96, columns: 4 },
-  "1h": { step: "15min", minimumColumnWidth: 80, columns: 5 },
-  "6h": { step: "1h", minimumColumnWidth: 96, columns: 7 },
-  "24h": { step: "4h", minimumColumnWidth: 112, columns: 7 },
+  "15m": { step: "6h", normalizedStepMs: 6 * 60 * 60_000, minimumColumnWidth: 96, columns: 5 },
+  "1h": { step: "6h", normalizedStepMs: 6 * 60 * 60_000, minimumColumnWidth: 80, columns: 5 },
+  "6h": { step: "4h", normalizedStepMs: 4 * 60 * 60_000, minimumColumnWidth: 96, columns: 7 },
+  "24h": { step: "4h", normalizedStepMs: 4 * 60 * 60_000, minimumColumnWidth: 112, columns: 7 },
 };
 
 const ROUTING_STATES = new Set<RoutingTimelineState>(["available", "degraded", "cooling_down"]);
+const ROUTING_PRIORITIES = new Set<RoutingTimelinePriority>(["normal", "demoted", "excluded"]);
 const SVG_NS = "http://www.w3.org/2000/svg";
+const GANTT_HEADER_HEIGHT = 54;
+const GANTT_ROW_HEIGHT = 32;
+const MODEL_RECORD_DETAIL_ROWS = 8;
 // A one-second offset avoids Frappe treating a midnight end as an all-day task.
 const NORMALIZED_START_MS = new Date(2000, 0, 1, 0, 0, 1, 0).getTime();
+const NORMALIZED_TIMELINE_DURATION_MS = 24 * 60 * 60_000;
 
 export function availableBandOpacity(callCount: number, maxCallCount: number) {
   if (maxCallCount <= 0) return 0.56;
@@ -119,6 +127,13 @@ function routingState(value?: string | null): RoutingTimelineState | null {
     : null;
 }
 
+function routingPriority(value?: string | null): RoutingTimelinePriority | null {
+  if (value === "deprioritized") return "demoted";
+  return value && ROUTING_PRIORITIES.has(value as RoutingTimelinePriority)
+    ? (value as RoutingTimelinePriority)
+    : null;
+}
+
 export function isControlledRecoveryAttempt(record: ModelRoutingTimelineRecord) {
   if (record.kind !== "attempt") return false;
   if (record.modelRouteStateBefore === "cooling_down") return true;
@@ -135,72 +150,129 @@ function clampToRange(value: number, start: number, end: number) {
 function appendBand(
   bands: RoutingGanttBand[],
   state: RoutingTimelineState,
+  priority: RoutingTimelinePriority,
   startMs: number,
   endMs: number,
 ) {
   if (!(endMs > startMs)) return;
   const previous = bands.at(-1);
-  if (previous && previous.state === state && previous.endMs === startMs) {
+  if (
+    previous &&
+    previous.state === state &&
+    previous.priority === priority &&
+    previous.endMs === startMs
+  ) {
     previous.endMs = endMs;
     return;
   }
-  bands.push({ state, startMs, endMs });
+  bands.push({ state, priority, startMs, endMs });
 }
 
-interface StatePoint {
+interface RoutingPoint {
   atMs: number;
-  state: RoutingTimelineState;
+  state?: RoutingTimelineState;
+  priority?: RoutingTimelinePriority;
   rank: number;
 }
 
 function buildLaneBands(
-  account: Pick<ModelRoutingLiveAccount, "state" | "changedAt">,
+  account: Pick<ModelRoutingLiveAccount, "state" | "priority" | "changedAt">,
   records: ModelRoutingTimelineRecord[],
   rangeStartMs: number,
   rangeEndMs: number,
 ) {
-  const points: StatePoint[] = [];
+  const points: RoutingPoint[] = [];
+  const transitions: Array<{
+    atMs: number;
+    stateBefore: RoutingTimelineState | null;
+    stateAfter: RoutingTimelineState | null;
+    priorityBefore: RoutingTimelinePriority | null;
+    priorityAfter: RoutingTimelinePriority | null;
+    cooldownUntilMs: number | null;
+  }> = [];
   for (const record of records) {
     const atMs = parseTimestamp(record.occurredAt);
-    const state = routingState(record.modelRouteStateAfter);
-    if (atMs == null || state == null || atMs < rangeStartMs || atMs > rangeEndMs) continue;
-    points.push({ atMs, state, rank: 1 });
-
-    const cooldownUntilMs = parseTimestamp(record.modelRouteCooldownUntil);
-    if (state === "cooling_down" && cooldownUntilMs != null && cooldownUntilMs > atMs) {
+    if (atMs == null || atMs < rangeStartMs || atMs > rangeEndMs) continue;
+    const stateAfter = routingState(record.modelRouteStateAfter);
+    const priorityAfter = routingPriority(record.modelRoutePriorityAfter);
+    if (stateAfter == null && priorityAfter == null) continue;
+    transitions.push({
+      atMs,
+      stateBefore: routingState(record.modelRouteStateBefore),
+      stateAfter,
+      priorityBefore: routingPriority(record.modelRoutePriorityBefore),
+      priorityAfter,
+      cooldownUntilMs: parseTimestamp(record.modelRouteCooldownUntil),
+    });
+  }
+  transitions.sort((left, right) => left.atMs - right.atMs);
+  const first = transitions[0];
+  if (first && (first.stateBefore != null || first.priorityBefore != null)) {
+    points.push({
+      atMs: rangeStartMs,
+      ...(first.stateBefore == null ? {} : { state: first.stateBefore }),
+      ...(first.priorityBefore == null ? {} : { priority: first.priorityBefore }),
+      rank: 0,
+    });
+  }
+  for (const transition of transitions) {
+    points.push({
+      atMs: transition.atMs,
+      ...(transition.stateAfter == null ? {} : { state: transition.stateAfter }),
+      ...(transition.priorityAfter == null ? {} : { priority: transition.priorityAfter }),
+      rank: 1,
+    });
+    if (
+      transition.stateAfter === "cooling_down" &&
+      transition.cooldownUntilMs != null &&
+      transition.cooldownUntilMs > transition.atMs
+    ) {
       points.push({
-        atMs: clampToRange(cooldownUntilMs, rangeStartMs, rangeEndMs),
+        atMs: clampToRange(transition.cooldownUntilMs, rangeStartMs, rangeEndMs),
         state: "unknown",
-        rank: 0,
+        priority: "unknown",
+        rank: 2,
       });
     }
   }
 
   const changedAtMs = parseTimestamp(account.changedAt);
   const currentState = routingState(account.state);
-  if (changedAtMs != null && currentState != null && changedAtMs >= rangeStartMs) {
+  const currentPriority = routingPriority(account.priority);
+  if (changedAtMs != null && (currentState != null || currentPriority != null)) {
     points.push({
       atMs: clampToRange(changedAtMs, rangeStartMs, rangeEndMs),
-      state: currentState,
-      rank: 2,
+      ...(currentState == null ? {} : { state: currentState }),
+      ...(currentPriority == null ? {} : { priority: currentPriority }),
+      rank: 3,
     });
   }
 
   points.sort((left, right) => left.atMs - right.atMs || left.rank - right.rank);
   const bands: RoutingGanttBand[] = [];
   let cursor = rangeStartMs;
-  let active: RoutingTimelineState = "unknown";
+  let activeState: RoutingTimelineState = "unknown";
+  let activePriority: RoutingTimelinePriority = "unknown";
   for (const point of points) {
-    if (point.atMs > cursor) appendBand(bands, active, cursor, point.atMs);
-    active = point.state;
+    if (point.atMs > cursor) {
+      appendBand(bands, activeState, activePriority, cursor, point.atMs);
+    }
+    if (point.state != null) activeState = point.state;
+    if (point.priority != null) activePriority = point.priority;
     cursor = Math.max(cursor, point.atMs);
   }
-  appendBand(bands, active, cursor, rangeEndMs);
+  appendBand(bands, activeState, activePriority, cursor, rangeEndMs);
   return bands;
 }
 
 function routingLaneLabel(accountId: number) {
   return `API Key #${accountId}`;
+}
+
+function modelRoutePriorityRank(priority: string) {
+  if (priority === "excluded") return 2;
+  if (priority === "demoted" || priority === "deprioritized") return 1;
+  return 0;
 }
 
 function routingTaskId(model: string, accountId: number) {
@@ -209,6 +281,10 @@ function routingTaskId(model: string, accountId: number) {
 
 function routingModelTaskId(model: string) {
   return `model-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function routingDetailTaskId(model: string, index: number) {
+  return `detail-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}-${index}`;
 }
 
 export function buildModelRoutingGanttData({
@@ -244,7 +320,11 @@ export function buildModelRoutingGanttData({
   }
 
   const lanes = Array.from(accountMap.values())
-    .sort((left, right) => left.accountId - right.accountId)
+    .sort(
+      (left, right) =>
+        modelRoutePriorityRank(left.priority) - modelRoutePriorityRank(right.priority) ||
+        left.accountId - right.accountId,
+    )
     .map((account) => {
       const laneRecords = modelRecords.filter((record) => record.accountId === account.accountId);
       return {
@@ -252,6 +332,7 @@ export function buildModelRoutingGanttData({
         label: routingLaneLabel(account.accountId),
         model,
         state: routingState(account.state) ?? "unknown",
+        priority: routingPriority(account.priority) ?? "unknown",
         bands: buildLaneBands(account, laneRecords, rangeStartMs, rangeEndMs),
       };
     });
@@ -330,7 +411,7 @@ export function buildFrappeRoutingTasks(
   timeline: RoutingGanttData,
   normalizedStartMs = NORMALIZED_START_MS,
 ): RoutingFrappeTask[] {
-  const normalizedEndMs = normalizedStartMs + (timeline.rangeEndMs - timeline.rangeStartMs);
+  const normalizedEndMs = normalizedStartMs + NORMALIZED_TIMELINE_DURATION_MS;
   return timeline.lanes.map((lane) => ({
     id: routingTaskId(lane.model, lane.accountId),
     name: lane.label,
@@ -347,10 +428,10 @@ export function buildFrappeRoutingTasks(
 export function buildFrappeSystemRoutingTasks(
   timelines: RoutingTimelineGroup[],
   normalizedStartMs = NORMALIZED_START_MS,
+  expandedModel: string | null = null,
 ): RoutingFrappeTask[] {
   return timelines.flatMap((group) => {
-    const normalizedEndMs =
-      normalizedStartMs + (group.timeline.rangeEndMs - group.timeline.rangeStartMs);
+    const normalizedEndMs = normalizedStartMs + NORMALIZED_TIMELINE_DURATION_MS;
     const modelTask: RoutingFrappeTask = {
       id: routingModelTaskId(group.model),
       name: group.model,
@@ -361,8 +442,37 @@ export function buildFrappeSystemRoutingTasks(
       kind: "model",
       model: group.model,
     };
-    return [modelTask, ...buildFrappeRoutingTasks(group.timeline, normalizedStartMs)];
+    const laneTasks = buildFrappeRoutingTasks(group.timeline, normalizedStartMs);
+    const detailTasks =
+      group.model === expandedModel
+        ? Array.from(
+            { length: MODEL_RECORD_DETAIL_ROWS },
+            (_, index): RoutingFrappeTask => ({
+              id: routingDetailTaskId(group.model, index),
+              name: "\u00a0",
+              start: new Date(normalizedStartMs),
+              end: new Date(normalizedEndMs),
+              progress: 0,
+              custom_class: "model-routing-detail-task",
+              kind: "detail",
+              model: group.model,
+            }),
+          )
+        : [];
+    return [modelTask, ...laneTasks, ...detailTasks];
   });
+}
+
+function modelRecordDetailTop(timelines: RoutingTimelineGroup[], expandedModel: string | null) {
+  if (!expandedModel) return null;
+  let completedRows = 0;
+  for (const group of timelines) {
+    completedRows += 1 + group.timeline.lanes.length;
+    if (group.model === expandedModel) {
+      return GANTT_HEADER_HEIGHT + completedRows * GANTT_ROW_HEIGHT;
+    }
+  }
+  return null;
 }
 
 function svgElement<K extends keyof SVGElementTagNameMap>(
@@ -409,6 +519,7 @@ function decorateTimelineSvg({
   retryLabel,
   unknownLabel,
   allocationLabel,
+  priorityLabels,
   onOpenAccount,
   onOpenInvocation,
 }: {
@@ -424,6 +535,7 @@ function decorateTimelineSvg({
   retryLabel: (index: number) => string;
   unknownLabel: string;
   allocationLabel: (count: number, percent: number) => string;
+  priorityLabels: Record<RoutingTimelinePriority, string>;
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
 }) {
@@ -465,11 +577,9 @@ function decorateTimelineSvg({
           : 0;
       const allocationPercent =
         totalAvailableCount > 0 ? Math.round((callCount / totalAvailableCount) * 100) : 0;
-      const baseText = `${lane.label} · ${stateLabels[band.state]} · ${formatBeijingRange(
-        band.startMs,
-        band.endMs,
-        localeTag,
-      )}`;
+      const baseText = `${lane.label} · ${priorityLabels[band.priority]} · ${
+        stateLabels[band.state]
+      } · ${formatBeijingRange(band.startMs, band.endMs, localeTag)}`;
       const accessibleText =
         band.state === "available"
           ? `${baseText} · ${allocationLabel(callCount, allocationPercent)}`
@@ -480,10 +590,13 @@ function decorateTimelineSvg({
         width: String(bandWidth),
         height: String(height),
         rx: "2",
-        class: `model-routing-band model-routing-band--${band.state}`,
-        fill: colors[band.state],
+        class: `model-routing-band model-routing-band--${
+          band.state === "unknown" || band.priority === "unknown" ? "unknown" : band.state
+        }`,
+        fill: colors.priority[band.priority],
         "aria-label": accessibleText,
         "data-routing-state": band.state,
+        "data-routing-priority": band.priority,
       });
       if (band.state === "available") {
         rect.setAttribute(
@@ -491,7 +604,9 @@ function decorateTimelineSvg({
           String(availableBandOpacity(callCount, maxAvailableCount)),
         );
       }
-      if (band.state === "unknown") rect.setAttribute("stroke-dasharray", "3 2");
+      if (band.state === "unknown" || band.priority === "unknown") {
+        rect.setAttribute("stroke-dasharray", "3 2");
+      }
       appendSvgTitle(rect, accessibleText);
       bindSvgAction(rect, () => onOpenAccount(lane.accountId, lane.model));
       segmentGroup.appendChild(rect);
@@ -545,12 +660,18 @@ function decorateSystemRoutingSvg({
   host,
   timelines,
   modelSummaryLabel,
+  modelToggleLabel,
+  expandedModel,
   laneHeaderLabel,
+  onToggleModelRecords,
   ...options
 }: Omit<Parameters<typeof decorateTimelineSvg>[0], "timeline"> & {
   timelines: RoutingTimelineGroup[];
-  modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+  modelSummaryLabel: (model: string, accountCount: number, recordCount: number) => string;
+  modelToggleLabel: (model: string) => string;
+  expandedModel: string | null;
   laneHeaderLabel: string;
+  onToggleModelRecords: (model: string) => void;
 }) {
   const svg = host.querySelector<SVGSVGElement>("svg.gantt");
   if (!svg) return;
@@ -574,13 +695,19 @@ function decorateSystemRoutingSvg({
     baseBar.setAttribute("width", String(x + width));
     label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
+    const toggleLabel = modelToggleLabel(group.model);
+    wrapper.setAttribute("aria-label", toggleLabel);
+    wrapper.setAttribute("aria-expanded", String(expandedModel === group.model));
+    wrapper.setAttribute("aria-controls", modelRoutingRecordsId(group.model));
+    appendSvgTitle(wrapper, toggleLabel);
+    bindSvgAction(wrapper, () => onToggleModelRecords(group.model));
     const countLabel = svgElement("text", {
-      x: String(x + width - 8),
+      x: String(x + width - 24),
       y: String(y + height / 2),
       class: "model-routing-model-count",
       "text-anchor": "end",
     });
-    countLabel.textContent = modelSummaryLabel(group.accountCount, group.recordCount);
+    countLabel.textContent = modelSummaryLabel(group.model, group.accountCount, group.recordCount);
     barGroup.appendChild(countLabel);
   }
 
@@ -598,6 +725,7 @@ function decorateSystemRoutingSvg({
 
 function ModelRoutingSvgChart({
   timelines,
+  records,
   window,
   localeTag,
   stateLabels,
@@ -609,12 +737,17 @@ function ModelRoutingSvgChart({
   retryLabel,
   unknownLabel,
   allocationLabel,
+  priorityLabels,
   modelSummaryLabel,
+  modelToggleLabel,
+  expandedModel,
   laneHeaderLabel,
   onOpenAccount,
   onOpenInvocation,
+  onToggleModelRecords,
 }: {
   timelines: RoutingTimelineGroup[];
+  records: ModelRoutingTimelineRecord[];
   window: ModelRoutingLiveWindow;
   localeTag: string;
   stateLabels: Record<RoutingTimelineState, string>;
@@ -626,17 +759,24 @@ function ModelRoutingSvgChart({
   retryLabel: (index: number) => string;
   unknownLabel: string;
   allocationLabel: (count: number, percent: number) => string;
-  modelSummaryLabel: (accountCount: number, recordCount: number) => string;
+  modelSummaryLabel: (model: string, accountCount: number, recordCount: number) => string;
+  modelToggleLabel: (model: string) => string;
+  expandedModel: string | null;
   laneHeaderLabel: string;
+  priorityLabels: Record<RoutingTimelinePriority, string>;
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
+  onToggleModelRecords: (model: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const [detailPortalTarget, setDetailPortalTarget] = useState<HTMLDivElement | null>(null);
   const range = timelines[0]?.timeline;
+  const detailTop = modelRecordDetailTop(timelines, expandedModel);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host || timelines.length === 0 || !range) return;
+    setDetailPortalTarget(null);
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
@@ -646,12 +786,17 @@ function ModelRoutingSvgChart({
     const columnWidth = compact
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
-    const stepDurationMs = WINDOW_DURATION_MS[window] / timelineIntervals;
-    const normalizedTimelineStartMs = NORMALIZED_START_MS + stepDurationMs * labelIntervals;
-    const tasks = buildFrappeSystemRoutingTasks(timelines, normalizedTimelineStartMs);
+    const normalizedTimelineStartMs = NORMALIZED_START_MS + spec.normalizedStepMs * labelIntervals;
+    const tasks = buildFrappeSystemRoutingTasks(
+      timelines,
+      normalizedTimelineStartMs,
+      expandedModel,
+    );
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
-      range.rangeStartMs + (normalizedDate.getTime() - normalizedTimelineStartMs);
+      range.rangeStartMs +
+      ((normalizedDate.getTime() - normalizedTimelineStartMs) / NORMALIZED_TIMELINE_DURATION_MS) *
+        WINDOW_DURATION_MS[window];
     const viewMode: GanttViewMode = {
       name: `routing-${window}`,
       padding: ["0h", "0h"],
@@ -661,7 +806,7 @@ function ModelRoutingSvgChart({
         if (date.getTime() < normalizedTimelineStartMs) return "";
         const normalizedIndex = Math.round(
           (date.getTime() - normalizedTimelineStartMs) /
-            (WINDOW_DURATION_MS[window] / (spec.columns - 1)),
+            (NORMALIZED_TIMELINE_DURATION_MS / (spec.columns - 1)),
         );
         if (compact && normalizedIndex % compactLabelStride !== 0) return "";
         return formatBeijing(toObservedMs(date), localeTag, {
@@ -712,6 +857,18 @@ function ModelRoutingSvgChart({
         }
       },
     });
+    let portalTarget: HTMLDivElement | null = null;
+    if (expandedModel && detailTop != null) {
+      const container = host.querySelector<HTMLElement>(".gantt-container");
+      if (container) {
+        portalTarget = document.createElement("div");
+        portalTarget.className = "model-routing-records-slot";
+        portalTarget.style.top = `${detailTop}px`;
+        portalTarget.style.height = `${MODEL_RECORD_DETAIL_ROWS * GANTT_ROW_HEIGHT}px`;
+        container.appendChild(portalTarget);
+        setDetailPortalTarget(portalTarget);
+      }
+    }
     const frame = requestAnimationFrame(() =>
       decorateSystemRoutingSvg({
         host,
@@ -726,14 +883,19 @@ function ModelRoutingSvgChart({
         retryLabel,
         unknownLabel,
         allocationLabel,
+        priorityLabels,
         modelSummaryLabel,
+        modelToggleLabel,
+        expandedModel,
         laneHeaderLabel,
         onOpenAccount,
         onOpenInvocation,
+        onToggleModelRecords,
       }),
     );
     return () => {
       cancelAnimationFrame(frame);
+      portalTarget?.remove();
       host.replaceChildren();
     };
   }, [
@@ -741,12 +903,17 @@ function ModelRoutingSvgChart({
     attemptLabel,
     availableCounts,
     colors,
+    detailTop,
+    expandedModel,
     laneHeaderLabel,
     localeTag,
     maxAvailableCount,
+    modelToggleLabel,
     modelSummaryLabel,
     onOpenAccount,
     onOpenInvocation,
+    onToggleModelRecords,
+    priorityLabels,
     range,
     retryLabel,
     stateLabels,
@@ -757,11 +924,24 @@ function ModelRoutingSvgChart({
   ]);
 
   return (
-    <div
-      ref={hostRef}
-      className="model-routing-frappe-gantt"
-      data-testid="model-routing-gantt-chart-system"
-    />
+    <>
+      <div
+        ref={hostRef}
+        className="model-routing-frappe-gantt"
+        data-testid="model-routing-gantt-chart-system"
+      />
+      {detailPortalTarget && expandedModel
+        ? createPortal(
+            <ModelRoutingRecordList
+              model={expandedModel}
+              records={records}
+              onOpenAccount={onOpenAccount}
+              onOpenInvocation={onOpenInvocation}
+            />,
+            detailPortalTarget,
+          )
+        : null}
+    </>
   );
 }
 
@@ -782,6 +962,7 @@ export function ModelRoutingGantt({
 }) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const timelines = useMemo(
     () =>
@@ -803,10 +984,12 @@ export function ModelRoutingGantt({
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
     return {
-      available: status.success,
-      degraded: withOpacity(metricAccent("totalCost", themeMode), 0.82),
-      cooling_down: withOpacity(status.failure, 0.7),
-      unknown: withOpacity(base.axisText, 0.25),
+      priority: {
+        normal: status.success,
+        demoted: metricAccent("totalCost", themeMode),
+        excluded: status.failure,
+        unknown: withOpacity(base.axisText, 0.25),
+      },
       attemptSuccess: status.success,
       attemptFailure: status.failure,
       attemptUnknown: base.axisText,
@@ -841,6 +1024,15 @@ export function ModelRoutingGantt({
     }
     return { counts, max, total };
   }, [timelines]);
+  const toggleModelRecords = useCallback((model: string) => {
+    setExpandedModel((current) => (current === model ? null : model));
+  }, []);
+
+  useEffect(() => {
+    if (expandedModel && !timelines.some((timeline) => timeline.model === expandedModel)) {
+      setExpandedModel(null);
+    }
+  }, [expandedModel, timelines]);
 
   if (timelines.length === 0) {
     return (
@@ -856,19 +1048,19 @@ export function ModelRoutingGantt({
         className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-base-300/60 px-3 py-2 text-xs text-base-content/70"
         data-testid="model-routing-gantt-legend"
       >
-        {(["available", "degraded", "cooling_down", "unknown"] as RoutingTimelineState[]).map(
-          (state) => (
-            <span key={state} className="inline-flex items-center gap-1.5">
+        {(["normal", "demoted", "excluded", "unknown"] as RoutingTimelinePriority[]).map(
+          (priority) => (
+            <span key={priority} className="inline-flex items-center gap-1.5">
               <span
-                className={`h-2.5 w-2.5 rounded-sm ${state === "unknown" ? "border border-dashed" : ""}`}
+                className={`h-2.5 w-2.5 rounded-sm ${priority === "unknown" ? "border border-dashed" : ""}`}
                 style={
-                  state === "unknown"
+                  priority === "unknown"
                     ? { borderColor: colors.attemptUnknown }
-                    : { backgroundColor: colors[state] }
+                    : { backgroundColor: colors.priority[priority] }
                 }
                 aria-hidden
               />
-              {stateLabels[state]}
+              {t(`live.routing.modelPriority.${priority}`)}
             </span>
           ),
         )}
@@ -883,6 +1075,7 @@ export function ModelRoutingGantt({
       </div>
       <ModelRoutingSvgChart
         timelines={timelines}
+        records={records}
         window={window}
         localeTag={localeTag}
         stateLabels={stateLabels}
@@ -896,15 +1089,35 @@ export function ModelRoutingGantt({
         allocationLabel={(count, percent) =>
           t("live.routing.timeline.availableAllocation", { count, percent })
         }
-        modelSummaryLabel={(accountCount, recordCount) =>
+        priorityLabels={{
+          normal: t("live.routing.modelPriority.normal"),
+          demoted: t("live.routing.modelPriority.demoted"),
+          excluded: t("live.routing.modelPriority.excluded"),
+          unknown: t("live.routing.modelPriority.unknown"),
+        }}
+        modelSummaryLabel={(selectedModel, accountCount, recordCount) =>
           `${t("live.routing.accountsCount", { count: accountCount })} · ${t(
             "live.routing.modelRecordsCount",
             { count: recordCount },
+          )} · ${t(
+            expandedModel === selectedModel
+              ? "live.routing.model.collapse"
+              : "live.routing.model.expand",
           )}`
         }
+        modelToggleLabel={(selectedModel) =>
+          t(
+            expandedModel === selectedModel
+              ? "live.routing.model.collapseLabel"
+              : "live.routing.model.expandLabel",
+            { model: selectedModel },
+          )
+        }
+        expandedModel={expandedModel}
         laneHeaderLabel={t("live.routing.timeline.lane")}
         onOpenAccount={onOpenAccount}
         onOpenInvocation={onOpenInvocation}
+        onToggleModelRecords={toggleModelRecords}
       />
     </div>
   );

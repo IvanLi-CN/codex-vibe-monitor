@@ -44,6 +44,29 @@ const accounts: ModelRoutingLiveAccount[] = [
   },
 ];
 
+const miniAccounts: ModelRoutingLiveAccount[] = [
+  {
+    accountId: 21,
+    accountDisplayName: "API Key #21",
+    model: "gpt-5.4-mini",
+    state: "degraded",
+    priority: "demoted",
+    failureCount: 1,
+    changedAt: "2026-08-16T03:18:00.000Z",
+    lastSeenAt: "2026-08-16T03:57:10.000Z",
+  },
+  {
+    accountId: 22,
+    accountDisplayName: "API Key #22",
+    model: "gpt-5.4-mini",
+    state: "available",
+    priority: "normal",
+    failureCount: 0,
+    changedAt: "2026-08-16T02:54:00.000Z",
+    lastSeenAt: "2026-08-16T03:59:40.000Z",
+  },
+];
+
 const records: ModelRoutingTimelineRecord[] = [
   {
     id: "attempt:11-recovery",
@@ -62,6 +85,8 @@ const records: ModelRoutingTimelineRecord[] = [
     reasonCode: "probe_passed",
     modelRouteStateBefore: "cooling_down",
     modelRouteStateAfter: "available",
+    modelRoutePriorityBefore: "excluded",
+    modelRoutePriorityAfter: "normal",
   },
   {
     id: "attempt:12-degraded",
@@ -80,6 +105,8 @@ const records: ModelRoutingTimelineRecord[] = [
     reasonCode: "upstream_http_5xx",
     modelRouteStateBefore: "available",
     modelRouteStateAfter: "degraded",
+    modelRoutePriorityBefore: "normal",
+    modelRoutePriorityAfter: "demoted",
   },
   {
     id: "event:13-cooling",
@@ -93,11 +120,31 @@ const records: ModelRoutingTimelineRecord[] = [
     reasonCode: "upstream_http_5xx",
     modelRouteStateBefore: "degraded",
     modelRouteStateAfter: "cooling_down",
+    modelRoutePriorityBefore: "demoted",
+    modelRoutePriorityAfter: "excluded",
     modelRouteCooldownUntil: "2026-08-16T04:12:00.000Z",
+  },
+  {
+    id: "event:21-demoted",
+    kind: "event",
+    occurredAt: "2026-08-16T03:18:00.000Z",
+    accountId: 21,
+    accountDisplayName: "API Key #21",
+    model: "gpt-5.4-mini",
+    status: "degraded",
+    action: "model_route_degraded",
+    reasonCode: "upstream_http_5xx",
+    modelRouteStateBefore: "available",
+    modelRouteStateAfter: "degraded",
+    modelRoutePriorityBefore: "normal",
+    modelRoutePriorityAfter: "demoted",
   },
 ];
 
-const groups: ModelRoutingLiveModelGroup[] = [{ model: "gpt-5.5", accounts }];
+const groups: ModelRoutingLiveModelGroup[] = [
+  { model: "gpt-5.5", accounts },
+  { model: "gpt-5.4-mini", accounts: miniAccounts },
+];
 
 const meta = {
   title: "Live/ModelRoutingGantt",
@@ -136,13 +183,25 @@ export const Operational24Hours: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("model-routing-gantt")).toBeVisible();
     const legend = within(canvas.getByTestId("model-routing-gantt-legend"));
-    await expect(legend.getByText("可用")).toBeVisible();
-    await expect(legend.getByText("降权")).toBeVisible();
-    await expect(legend.getByText("冷却中")).toBeVisible();
+    await expect(legend.getByText("正常候选")).toBeVisible();
+    await expect(legend.getByText("降权候选")).toBeVisible();
+    await expect(legend.getByText("已排除")).toBeVisible();
     await expect(legend.getByText("未知")).toBeVisible();
     await expect(legend.getByText("恢复尝试")).toBeVisible();
     await expect(canvas.findByTestId("model-routing-svg-system")).resolves.toBeVisible();
     await expect(canvas.findByTestId("model-routing-model-group-gpt-5.5")).resolves.toBeVisible();
+    await expect(
+      canvas.findByTestId("model-routing-model-group-gpt-5.4-mini"),
+    ).resolves.toBeVisible();
+    for (const account of [
+      "API Key #11",
+      "API Key #12",
+      "API Key #13",
+      "API Key #21",
+      "API Key #22",
+    ]) {
+      await expect(canvas.findAllByText(account)).resolves.not.toHaveLength(0);
+    }
     const ganttHost = canvas.getByTestId("model-routing-gantt-chart-system");
     const ganttContainer = ganttHost.querySelector<HTMLElement>(".gantt-container");
     const laneBar = ganttHost.querySelector<SVGRectElement>(
@@ -161,10 +220,19 @@ export const Operational24Hours: Story = {
     await expect(laneRect.left - containerRect.left).toBeGreaterThanOrEqual(80);
     await expect(labelRect.right).toBeLessThan(laneRect.left);
     await expect(
+      ganttHost.querySelectorAll('[data-routing-priority="normal"]').length,
+    ).toBeGreaterThan(0);
+    await expect(
+      ganttHost.querySelectorAll('[data-routing-priority="demoted"]').length,
+    ).toBeGreaterThan(0);
+    await expect(
+      ganttHost.querySelectorAll('[data-routing-priority="excluded"]').length,
+    ).toBeGreaterThan(0);
+    await expect(
       canvas.queryByRole("button", { name: /^API Key #12 · 恢复尝试/ }),
     ).not.toBeInTheDocument();
     await expect(
-      canvas.findByRole("button", { name: /^API Key #11 · 可用 ·/ }),
+      canvas.findByRole("button", { name: /^API Key #11 · 正常候选 · 可用 ·/ }),
     ).resolves.toBeVisible();
 
     const attempt = await canvas.findByRole("button", {
@@ -188,6 +256,39 @@ export const Operational24Hours: Story = {
     ).toBe(false);
     await userEvent.click(attempt);
     await expect(args.onOpenInvocation).toHaveBeenCalledWith("invoke-11-recovery");
+
+    const modelToggle = await canvas.findByRole("button", {
+      name: "展开 gpt-5.5 路由记录",
+    });
+    await userEvent.click(modelToggle);
+    const collapseControl = await canvas.findByRole("button", {
+      name: "收起 gpt-5.5 路由记录",
+    });
+    await expect(collapseControl).toHaveAttribute("aria-expanded", "true");
+    await expect(collapseControl).toHaveAttribute("aria-controls", "model-routing-records-gpt-5-5");
+    const modelRecords = await canvas.findByTestId("model-routing-model-records-gpt-5.5");
+    const lastSelectedLane = ganttHost.querySelector<SVGRectElement>(
+      '.bar-wrapper[data-id="route-gpt-5-5-13"] .bar',
+    );
+    const nextModel = ganttHost.querySelector<SVGRectElement>(
+      '.bar-wrapper[data-id="model-gpt-5-4-mini"] .bar',
+    );
+    if (!lastSelectedLane || !nextModel) {
+      throw new Error("expanded model group boundaries are incomplete");
+    }
+    const modelRecordsRect = modelRecords.getBoundingClientRect();
+    await expect(modelRecordsRect.top).toBeGreaterThanOrEqual(
+      lastSelectedLane.getBoundingClientRect().bottom,
+    );
+    await expect(modelRecordsRect.bottom).toBeLessThanOrEqual(
+      nextModel.getBoundingClientRect().top,
+    );
+    await expect(canvas.getAllByText("gpt-5.5")).toHaveLength(1);
+    await expect(within(modelRecords).getByText("重试 1")).toBeVisible();
+    await expect(within(modelRecords).getByText("状态事件")).toBeVisible();
+    await expect(within(modelRecords).queryByText("gpt-5.4-mini")).not.toBeInTheDocument();
+    await userEvent.click(within(modelRecords).getAllByLabelText("展开决策详情")[0]);
+    await expect(within(modelRecords).getAllByText("upstream_http_5xx")[0]).toBeVisible();
   },
 };
 

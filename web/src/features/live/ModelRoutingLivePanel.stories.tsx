@@ -55,6 +55,8 @@ const data: ModelRoutingLiveResponse = {
       reasonCode: "probe_passed",
       modelRouteStateBefore: "cooling_down",
       modelRouteStateAfter: "available",
+      modelRoutePriorityBefore: "excluded",
+      modelRoutePriorityAfter: "normal",
       routingSelectionAudit: {
         selectedAccountId: 11,
         selectedAccountName: "API Key #11",
@@ -85,10 +87,8 @@ const meta = {
   args: {
     data,
     isLoading: false,
-    window: "24h",
+    window: "1h",
     onWindowChange: () => undefined,
-    onModelChange: () => undefined,
-    onStateChange: () => undefined,
     onOpenAccount: () => undefined,
     onOpenInvocation: () => undefined,
     onRefresh: () => undefined,
@@ -108,24 +108,16 @@ export const RecoveryAttempt: Story = {
     const controls = canvas.getByTestId("model-routing-live-controls");
     await expect(controls).toBeVisible();
     const refresh = within(controls).getByRole("button", { name: "刷新" });
-    const state = within(controls).getByLabelText("路由状态");
-    const model = within(controls).getByLabelText("模型");
     const timeWindow = within(controls).getByText("15m");
     await expect(refresh).toBeVisible();
-    await expect(state).toBeVisible();
-    await expect(model).toBeVisible();
     await expect(timeWindow).toBeVisible();
     await expect(
-      refresh.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING,
+      refresh.compareDocumentPosition(timeWindow) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
-    await expect(state.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
-      0,
-    );
-    await expect(
-      model.compareDocumentPosition(timeWindow) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    await expect(within(controls).queryByLabelText("路由状态")).not.toBeInTheDocument();
+    await expect(within(controls).queryByLabelText("模型")).not.toBeInTheDocument();
     await expect(canvas.getByText("未知")).toBeVisible();
-    await expect(canvas.getByText("请求尝试")).toBeVisible();
+    await expect(canvas.getByText("恢复尝试")).toBeVisible();
   },
 };
 

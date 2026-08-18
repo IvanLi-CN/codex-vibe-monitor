@@ -172,6 +172,8 @@ function demoModelRouteFixtureTimeline(
     reasonCode: "upstream_http_5xx",
     modelRouteStateBefore: "available",
     modelRouteStateAfter: "degraded",
+    modelRoutePriorityBefore: "normal",
+    modelRoutePriorityAfter: "demoted",
     modelRouteFailureCount: 1,
     routingSelectionAudit: selectionAudit,
   };
@@ -189,6 +191,8 @@ function demoModelRouteFixtureTimeline(
     reasonCode: "upstream_http_5xx",
     modelRouteStateBefore: "degraded",
     modelRouteStateAfter: "cooling_down",
+    modelRoutePriorityBefore: "demoted",
+    modelRoutePriorityAfter: "excluded",
     modelRouteFailureCount: 2,
     modelRouteCooldownUntil: cooldownUntil,
   };
@@ -213,6 +217,8 @@ function demoModelRouteFixtureTimeline(
         reasonCode: "selected_eligible_route",
         modelRouteStateBefore: "available",
         modelRouteStateAfter: "available",
+        modelRoutePriorityBefore: "normal",
+        modelRoutePriorityAfter: "normal",
         routingSelectionAudit: selectionAudit,
       },
     ];
@@ -238,6 +244,8 @@ function demoModelRouteFixtureTimeline(
         reasonCode: "model_route_recovery_succeeded",
         modelRouteStateBefore: "cooling_down",
         modelRouteStateAfter: "available",
+        modelRoutePriorityBefore: "excluded",
+        modelRoutePriorityAfter: "normal",
         routingSelectionAudit: selectionAudit,
       },
       {
@@ -265,6 +273,8 @@ function demoModelRouteFixtureTimeline(
         reasonCode: "upstream_http_5xx",
         modelRouteStateBefore: "available",
         modelRouteStateAfter: "degraded",
+        modelRoutePriorityBefore: "normal",
+        modelRoutePriorityAfter: "demoted",
         modelRouteFailureCount: 1,
       },
       firstFailure,
@@ -291,6 +301,8 @@ function demoModelRouteFixtureTimeline(
       reasonCode: "upstream_http_5xx",
       modelRouteStateBefore: "degraded",
       modelRouteStateAfter: "cooling_down",
+      modelRoutePriorityBefore: "demoted",
+      modelRoutePriorityAfter: "excluded",
       modelRouteFailureCount: 2,
       modelRouteCooldownUntil: cooldownUntil,
       routingSelectionAudit: selectionAudit,

@@ -65,6 +65,8 @@ const snapshot: ModelRoutingLiveResponse = {
       reasonCode: "recovery_after_cooldown",
       modelRouteStateBefore: "cooling_down",
       modelRouteStateAfter: "available",
+      modelRoutePriorityBefore: "excluded",
+      modelRoutePriorityAfter: "normal",
     },
     {
       id: "event:32",
@@ -92,8 +94,6 @@ function renderPanel(data: ModelRoutingLiveResponse | null = snapshot) {
           error={null}
           window="1h"
           onWindowChange={vi.fn()}
-          onModelChange={vi.fn()}
-          onStateChange={vi.fn()}
           onOpenAccount={vi.fn()}
           onOpenInvocation={vi.fn()}
           onRefresh={vi.fn()}
@@ -126,13 +126,9 @@ describe("ModelRoutingLivePanel", () => {
     expect(html).not.toContain('data-testid="model-routing-record-');
     expect(html).toContain('data-testid="model-routing-live-controls"');
     expect(html).toContain("desktop:justify-end");
-    expect(html.indexOf(">刷新</button>")).toBeLessThan(html.indexOf('name="modelRoutingState"'));
-    expect(html.indexOf('name="modelRoutingState"')).toBeLessThan(
-      html.indexOf('name="modelRoutingModel"'),
-    );
-    expect(html.indexOf('name="modelRoutingModel"')).toBeLessThan(
-      html.indexOf('aria-label="路由时间窗"'),
-    );
+    expect(html).not.toContain('name="modelRoutingState"');
+    expect(html).not.toContain('name="modelRoutingModel"');
+    expect(html.indexOf(">刷新</button>")).toBeLessThan(html.indexOf('aria-label="路由时间窗"'));
     const tasks = buildFrappeSystemRoutingTasks(
       snapshot.groups.map((group) => ({
         model: group.model,
@@ -153,6 +149,30 @@ describe("ModelRoutingLivePanel", () => {
       "gpt-5.4-mini",
       "API Key #12",
     ]);
+
+    const expandedTasks = buildFrappeSystemRoutingTasks(
+      snapshot.groups.map((group) => ({
+        model: group.model,
+        accountCount: group.accounts.length,
+        recordCount: snapshot.records.filter((record) => record.model === group.model).length,
+        timeline: buildModelRoutingGanttData({
+          model: group.model,
+          accounts: group.accounts,
+          records: snapshot.records,
+          generatedAt: snapshot.generatedAt,
+          window: "1h",
+        }),
+      })),
+      undefined,
+      "gpt-5.5-codex",
+    );
+    const selectedLaneIndex = expandedTasks.findIndex(
+      (task) => task.id === "route-gpt-5-5-codex-11",
+    );
+    const nextModelIndex = expandedTasks.findIndex((task) => task.id === "model-gpt-5-4-mini");
+    const detailTasks = expandedTasks.slice(selectedLaneIndex + 1, nextModelIndex);
+    expect(detailTasks.length).toBeGreaterThan(0);
+    expect(detailTasks.every((task) => task.kind === "detail")).toBe(true);
   });
 
   it("preserves all calls for allocation but marks only controlled recovery attempts", () => {
@@ -174,7 +194,11 @@ describe("ModelRoutingLivePanel", () => {
     });
 
     expect(timeline.lanes).toHaveLength(1);
-    expect(timeline.lanes[0].bands.map((band) => band.state)).toEqual(["unknown", "available"]);
+    expect(timeline.lanes[0].bands.map((band) => band.state)).toEqual([
+      "cooling_down",
+      "available",
+    ]);
+    expect(timeline.lanes[0].bands.map((band) => band.priority)).toEqual(["excluded", "normal"]);
     expect(timeline.attempts).toEqual([
       expect.objectContaining({ id: "attempt:31" }),
       expect.objectContaining({ id: "attempt:ordinary" }),
@@ -194,6 +218,54 @@ describe("ModelRoutingLivePanel", () => {
         model: "gpt-5.5-codex",
         custom_class: "model-routing-task",
       }),
+    ]);
+  });
+
+  it("reconstructs model-route priority as time-based task segments", () => {
+    const base = snapshot.groups[0].accounts[0];
+    const timeline = buildModelRoutingGanttData({
+      model: base.model,
+      accounts: [
+        {
+          ...base,
+          state: "cooling_down",
+          priority: "excluded",
+          changedAt: "2026-08-16T00:40:00Z",
+        },
+      ],
+      records: [
+        {
+          ...snapshot.records[0],
+          id: "event:demoted",
+          occurredAt: "2026-08-16T00:20:00Z",
+          modelRouteStateBefore: "available",
+          modelRouteStateAfter: "degraded",
+          modelRoutePriorityBefore: "normal",
+          modelRoutePriorityAfter: "demoted",
+        },
+        {
+          ...snapshot.records[0],
+          id: "event:excluded",
+          occurredAt: "2026-08-16T00:40:00Z",
+          modelRouteStateBefore: "degraded",
+          modelRouteStateAfter: "cooling_down",
+          modelRoutePriorityBefore: "demoted",
+          modelRoutePriorityAfter: "excluded",
+        },
+      ],
+      generatedAt: snapshot.generatedAt,
+      window: "1h",
+    });
+
+    expect(timeline.lanes[0].bands.map((band) => band.priority)).toEqual([
+      "normal",
+      "demoted",
+      "excluded",
+    ]);
+    expect(timeline.lanes[0].bands.map((band) => band.startMs)).toEqual([
+      Date.parse("2026-08-16T00:00:00Z"),
+      Date.parse("2026-08-16T00:20:00Z"),
+      Date.parse("2026-08-16T00:40:00Z"),
     ]);
   });
 
