@@ -104,10 +104,38 @@ EOF_CARGO
   chmod +x "$1/cargo"
 }
 
+hold_advisory_lock() {
+  lock_path="$1"
+  ready_path="$2"
+  rm -f "$ready_path"
+  perl -MFcntl=:flock -e '
+    my ($path, $ready) = @ARGV;
+    open my $lock, ">>", $path or die "open lock: $!";
+    flock($lock, LOCK_EX) or die "flock: $!";
+    open my $signal, ">", $ready or die "open ready: $!";
+    print {$signal} "ready\n";
+    sleep 2;
+  ' "$lock_path" "$ready_path" &
+  lock_holder_pid=$!
+  for attempt in {1..50}; do
+    [ -f "$ready_path" ] && return 0
+    sleep 0.05
+  done
+  fail 'advisory lock holder did not become ready'
+}
+
+release_advisory_lock() {
+  wait "${lock_holder_pid:?missing advisory lock holder}"
+  unset lock_holder_pid
+}
+
 bun_bin="$(command -v bun 2>/dev/null || true)"
 global_lefthook="$(command -v lefthook 2>/dev/null || true)"
 [ -n "$bun_bin" ] || fail 'worktree bootstrap smoke requires bun on PATH'
-[ -n "$global_lefthook" ] || fail 'worktree bootstrap smoke requires global lefthook on PATH'
+if [ -z "$global_lefthook" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
+  global_lefthook="$repo_root/node_modules/.bin/lefthook"
+fi
+[ -n "$global_lefthook" ] || fail 'worktree bootstrap smoke requires a Lefthook binary'
 
 fixture_repo="$tmp_dir/fixture"
 copy_repo "$repo_root" "$fixture_repo"
@@ -133,6 +161,14 @@ hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
 for hook_name in pre-commit commit-msg post-checkout; do
   [ -f "$hooks_dir/$hook_name" ] || fail "missing installed $hook_name hook"
 done
+
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$fixture_repo"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none no
 
 worktree_one="$tmp_dir/linked-one"
 git -C "$fixture_repo" worktree add --detach "$worktree_one" HEAD >/dev/null
@@ -243,12 +279,11 @@ first_git_dir="$(git -C "$worktree_one" rev-parse --git-dir)"
 second_git_dir="$(git -C "$worktree_two" rev-parse --git-dir)"
 case "$first_git_dir" in /*) ;; *) first_git_dir="$worktree_one/$first_git_dir" ;; esac
 case "$second_git_dir" in /*) ;; *) second_git_dir="$worktree_two/$second_git_dir" ;; esac
-first_lock="$first_git_dir/worktree-bootstrap-sync.lock"
-second_lock="$second_git_dir/worktree-bootstrap-sync.lock"
+first_lock="$first_git_dir/worktree-bootstrap-sync.flock"
+second_lock="$second_git_dir/worktree-bootstrap-sync.flock"
 [ "$first_lock" != "$second_lock" ] || fail 'resource locks must be per-worktree'
-lock_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-ln -s "$$|$lock_start" "$first_lock"
 rm -f "$worktree_one/.env.local" "$worktree_two/.env.local"
+hold_advisory_lock "$first_lock" "$tmp_dir/first-sync-lock.ready"
 (
   cd "$worktree_one"
   bash scripts/sync-worktree-resources.sh > "$tmp_dir/first-lock.log"
@@ -259,14 +294,30 @@ assert_contains "$tmp_dir/first-lock.log" 'sync lock is busy; skipping resource 
   bash scripts/sync-worktree-resources.sh >/dev/null
 )
 assert_contains "$worktree_two/.env.local" 'PRIMARY_SECRET=from-primary'
-rm -f "$first_lock"
-ln -s '999999999|stale-process' "$first_lock"
+release_advisory_lock
 (
   cd "$worktree_one"
   bash scripts/sync-worktree-resources.sh >/dev/null
 )
 assert_contains "$worktree_one/.env.local" 'PRIMARY_SECRET=from-primary'
-[ ! -e "$first_lock" ] && [ ! -L "$first_lock" ] || fail 'stale resource lock was not recovered'
+[ -f "$first_lock" ] || fail 'advisory resource lock file was not retained'
+
+setup_lock="$(dirname "$state_path")/worktree-setup.flock"
+rm -rf "$worktree_one/docs-site/node_modules"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+hold_advisory_lock "$setup_lock" "$tmp_dir/setup-lock.ready"
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none no
+release_advisory_lock
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface "$worktree_one/docs-site" no
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_one/.env.local"
 (
   cd "$worktree_one"

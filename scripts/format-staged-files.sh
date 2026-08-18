@@ -14,7 +14,10 @@ for file in "$@"; do
   case "$file" in
     /*|..|../*|*/..|*/../*) continue ;;
   esac
-  [ -f "$repo_root/$file" ] || continue
+  path="$repo_root/$file"
+  # Formatters follow symlinks, so staged links must never escape the worktree.
+  [ -L "$path" ] && continue
+  [ -f "$path" ] || continue
 
   case "$surface" in
     web)

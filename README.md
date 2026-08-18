@@ -247,7 +247,7 @@ bun run worktree:bootstrap
 
 该 bootstrap 会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源，并使用锁定文件恢复 repo root、`web/`、`docs-site/` 的 Bun 依赖以及 Rust crate 缓存。它不会覆盖已有本地文件，也不会复制 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
 
-安装分为 repo root、`web`、`docs-site` 三项 `bun install --frozen-lockfile` 和一项 `cargo fetch --locked`，每项有独立的 Git-metadata digest。自动 `post-checkout` 对同一 failed digest 只记录一次并不阻断 checkout；手动 bootstrap 会重试并在存在失败时返回非零。若需只执行依赖安装，或强制恢复四项，可使用：
+安装分为 repo root、`web`、`docs-site` 三项 `bun install --frozen-lockfile` 和一项 `cargo fetch --locked`，每项有独立的 Git-metadata digest。资源同步与自动 setup 都使用 per-worktree 非阻塞 advisory lock；持锁进程退出后锁自动释放，手动 setup 会串行等待。自动 `post-checkout` 对同一 failed digest 只记录一次并不阻断 checkout；手动 bootstrap 会重试并在存在失败时返回非零。若需只执行依赖安装，或强制恢复四项，可使用：
 
 ```bash
 bun run worktree:setup

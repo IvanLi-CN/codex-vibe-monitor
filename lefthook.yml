@@ -22,4 +22,4 @@ commit-msg:
 post-checkout:
   commands:
     worktree-bootstrap:
-      run: '[ -x ./scripts/run-lefthook-hook.sh ] && ./scripts/run-lefthook-hook.sh post-checkout'
+      run: 'if [ -x ./scripts/run-lefthook-hook.sh ]; then ./scripts/run-lefthook-hook.sh post-checkout; fi'

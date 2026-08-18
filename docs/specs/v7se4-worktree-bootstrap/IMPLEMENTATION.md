@@ -11,11 +11,11 @@
 ## Coverage / rollout summary
 
 - `bun run hooks:install` 通过 Lefthook 安装标准 shared hooks；`scripts/worktree-bootstrap.sh` 复用该入口、同步缺失本地资源并调用依赖 setup。
-- `scripts/install-lefthook-hooks.sh` 拒绝 repo-local Lefthook 伪装全局前置条件，并保留 `core.hooksPath` 与 unmanaged hook 的本地状态。
-- `scripts/worktree-setup.sh` 为 root Bun、web Bun、docs Bun、Cargo 保存 per-worktree digest 状态；仅恢复首次、缺失或失效 surface，failed digest 自动抑制，手动入口重试，`--force` 全量执行。
-- `scripts/sync-worktree-resources.sh` 使用 per-worktree Git metadata 的非阻塞锁；同步只复制缺失资源，busy 跳过且 stale lock 可恢复。
-- `lefthook.yml` 的 `post-checkout` command 调用 `scripts/run-lefthook-hook.sh`；runner 仅在 linked worktree 调用自动 setup。installer 仅删除严格匹配当前 Lefthook 标准模板的遗留 `prepare-commit-msg` 包装器。
-- `scripts/test-worktree-bootstrap.sh` 使用真实 Lefthook、真实 linked worktree smoke、fake `bun`/`cargo` 验证首次/重复/选择性恢复、失败抑制、手动重试、force、隔离锁与 copy-missing-only。
+- `scripts/install-lefthook-hooks.sh` 拒绝 repo-local Lefthook 伪装全局前置条件，并仅更新逐字匹配当前模板和 marker 的 managed hook，保留 `core.hooksPath` 与任意非精确匹配的本地 hook。
+- `scripts/worktree-setup.sh` 为 root Bun、web Bun、docs Bun、Cargo 保存 per-worktree digest 状态；仅恢复首次、缺失或失效 surface，failed digest 自动抑制，自动入口遇锁跳过，手动入口串行重试，`--force` 全量执行。
+- `scripts/sync-worktree-resources.sh` 使用 per-worktree Git metadata 的非阻塞 advisory lock；持锁进程退出后锁自动释放，同步只复制缺失资源。
+- `lefthook.yml` 的 `post-checkout` command 在 runner 缺失时安全 no-op；runner 仅在 linked worktree 调用自动 setup。installer 仅删除严格匹配当前 Lefthook 标准模板的遗留 `prepare-commit-msg` 包装器。
+- `scripts/test-worktree-bootstrap.sh` 使用真实 Lefthook、真实 linked worktree smoke、fake `bun`/`cargo` 验证主 worktree no-op、首次/重复/选择性恢复、失败抑制、手动重试、force、隔离 advisory 锁与 copy-missing-only。
 - README 与 AGENTS 已说明按指纹自动恢复、手动失败码、force 和 locked 参数。
 
 ## Remaining Gaps

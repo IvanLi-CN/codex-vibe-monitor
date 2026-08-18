@@ -141,7 +141,8 @@ cleanup_legacy_prepare_commit_msg
 
 install_hooks=()
 is_managed_hook() {
-  hook_path="$1"
+  hook_name="$1"
+  hook_path="$2"
   if [ ! -e "$hook_path" ] && [ ! -L "$hook_path" ]; then
     return 0
   fi
@@ -149,33 +150,28 @@ is_managed_hook() {
     return 1
   fi
 
-  if grep -Fq '# managed by codex-vibe-monitor hooks:install' "$hook_path" 2>/dev/null; then
-    last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' "$hook_path")"
-    if [ "$last_nonempty_line" = '# managed by codex-vibe-monitor hooks:install' ] \
-      && grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
-      && grep -Eq '^[[:space:]]*call_lefthook run ' "$hook_path" 2>/dev/null; then
-      return 0
-    fi
-    if grep -Fq 'runner="$repo_root/scripts/run-lefthook-hook.sh"' "$hook_path" 2>/dev/null \
-      && grep -Fq 'exec "$runner"' "$hook_path" 2>/dev/null; then
-      return 0
-    fi
+  template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")" || return 1
+  if ! git -C "$template_dir" init -q || ! (
+    cd "$template_dir" &&
+    "$lefthook_path" install "$hook_name" >/dev/null 2>&1
+  ); then
+    rm -rf "$template_dir"
+    return 1
   fi
 
-  if grep -Eq '^call_lefthook\(\)$' "$hook_path" 2>/dev/null \
-    && grep -Eq '^[[:space:]]*call_lefthook run ' "$hook_path" 2>/dev/null; then
-    last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' "$hook_path")"
-    case "$last_nonempty_line" in
-      call_lefthook\ run\ *) return 0 ;;
-    esac
+  template_path="$template_dir/.git/hooks/$hook_name"
+  printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
+  if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
+    rm -rf "$template_dir"
+    return 0
   fi
-
+  rm -rf "$template_dir"
   return 1
 }
 
 for hook_name in pre-commit commit-msg post-checkout; do
   hook_path="$hooks_dir/$hook_name"
-  if ! is_managed_hook "$hook_path"; then
+  if ! is_managed_hook "$hook_name" "$hook_path"; then
     printf '[worktree-bootstrap] %s already exists and is unmanaged; leaving it untouched\n' "$hook_name" >&2
     continue
   fi

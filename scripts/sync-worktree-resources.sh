@@ -31,52 +31,26 @@ case "$git_dir" in
   *) git_dir="$repo_root/$git_dir" ;;
 esac
 git_dir="$(cd "$git_dir" && pwd)"
-sync_lock_path="${WORKTREE_BOOTSTRAP_SYNC_LOCK_PATH:-$git_dir/worktree-bootstrap-sync.lock}"
-lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-lock_owner_token="$$|$lock_owner_start"
-
-acquire_lock() {
-  if [ ! -e "$sync_lock_path" ] && [ ! -L "$sync_lock_path" ] \
-    && ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
-    return 0
+sync_lock_path="${WORKTREE_BOOTSTRAP_SYNC_LOCK_PATH:-$git_dir/worktree-bootstrap-sync.flock}"
+if [ "${WORKTREE_BOOTSTRAP_SYNC_LOCK_HELD:-}" != '1' ]; then
+  if perl -MFcntl=:flock -e '
+    my ($lock_path, $script, @args) = @ARGV;
+    open my $lock, ">>", $lock_path or exit 1;
+    exit 75 unless flock($lock, LOCK_EX | LOCK_NB);
+    $ENV{WORKTREE_BOOTSTRAP_SYNC_LOCK_HELD} = 1;
+    my $status = system { $script } $script, @args;
+    exit($status == -1 ? 1 : $status >> 8);
+  ' "$sync_lock_path" "$script_dir/sync-worktree-resources.sh" "$@"; then
+    exit 0
+  else
+    lock_status=$?
   fi
-
-  existing_token="$(readlink "$sync_lock_path" 2>/dev/null || true)"
-  existing_pid="${existing_token%%|*}"
-  existing_start="${existing_token#*|}"
-  if [ -n "$existing_pid" ] && [ "$existing_pid" != "$existing_token" ] \
-    && ! kill -0 "$existing_pid" 2>/dev/null; then
-    if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$existing_token" ]; then
-      rm -f "$sync_lock_path"
-    fi
-    if [ ! -e "$sync_lock_path" ] && [ ! -L "$sync_lock_path" ] \
-      && ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
-      return 0
-    fi
-  elif [ -n "$existing_pid" ] && [ "$existing_pid" != "$existing_token" ] && [ -n "$existing_start" ]; then
-    current_start="$(ps -p "$existing_pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-    if [ -n "$current_start" ] && [ "$current_start" != "$existing_start" ] \
-      && [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$existing_token" ]; then
-      rm -f "$sync_lock_path"
-      if ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
-        return 0
-      fi
-    fi
+  if [ "$lock_status" -eq 75 ]; then
+    log 'sync lock is busy; skipping resource sync'
+    exit 0
   fi
-  return 1
-}
-
-if ! acquire_lock; then
-  log 'sync lock is busy; skipping resource sync'
-  exit 0
+  exit "$lock_status"
 fi
-
-release_sync_lock() {
-  if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_owner_token" ]; then
-    rm -f "$sync_lock_path"
-  fi
-}
-trap release_sync_lock EXIT
 
 copied_count=0
 missing_count=0

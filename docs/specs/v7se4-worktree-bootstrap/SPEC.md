@@ -45,8 +45,8 @@
 - `worktree:setup` 必须为 root Bun、web Bun、docs Bun、Cargo 各自保存无敏感状态和 input digest；手动 `bun run worktree:setup` 重试 stale 或 failed surface，`bun run worktree:setup -- --force` 强制执行四项。
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
 - 未配置 `core.hooksPath` 时，`lefthook` 2.1.7 或更高版本必须在 `PATH` 中可执行；`bun run hooks:install` 缺少或版本过低时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
-- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当 `prepare-commit-msg` 与当前 Lefthook 生成的标准模板逐字相等、未配置且不是 symlink 时，才可删除该遗留包装器。
-- 资源同步锁必须位于当前 worktree 的 Git metadata；已被同一 worktree 占用时必须非阻塞跳过，stale lock 可恢复，不同 linked worktree 不得互相等待。
+- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前 Lefthook 生成模板及本仓库 marker 逐字相等时才能更新。`prepare-commit-msg` 仅在与当前 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
+- 资源同步锁必须位于当前 worktree 的 Git metadata；采用随持锁进程退出自动释放的 advisory lock，同一 worktree busy 时必须非阻塞跳过，不同 linked worktree 不得互相等待。setup 对同一 worktree 自动路径同样非阻塞，手动入口串行等待。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。
 
 ### SHOULD
@@ -73,6 +73,7 @@
 - 目标依赖目录不存在、输入 digest 改变或手动强制执行时，由对应 locked install 命令负责恢复。
 - 自动失败记录只抑制相同 digest；输入变化后自动路径必须重新尝试。
 - 若当前 revision 缺少 bootstrap 脚本，Lefthook command 必须安全 no-op，不能让 checkout 失败。
+- staged formatter 必须拒绝 symlink，不能向 worktree 外的目标写入。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -108,7 +109,7 @@
 
 - Given CI 运行 `scripts/test-worktree-bootstrap.sh`
   When 真实 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
-  Then 测试不联网且能证明选择性恢复、失败抑制、手动重试、force、per-worktree 锁、copy-missing-only 和无敏感状态。
+  Then 测试不联网且能证明主 worktree no-op、选择性恢复、失败抑制、手动重试、force、per-worktree advisory 锁、copy-missing-only 和无敏感状态。
 
 ## 验收清单（Acceptance checklist）
 

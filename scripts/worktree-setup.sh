@@ -24,6 +24,27 @@ case "$state_path" in
 esac
 state_dir="$(dirname "$state_path")"
 mkdir -p "$state_dir"
+setup_lock_path="${WORKTREE_SETUP_LOCK_PATH:-$state_dir/worktree-setup.flock}"
+if [ "${WORKTREE_SETUP_LOCK_HELD:-}" != '1' ]; then
+  if perl -MFcntl=:flock -e '
+    my ($automatic, $lock_path, $script, @args) = @ARGV;
+    open my $lock, ">>", $lock_path or exit 1;
+    my $mode = LOCK_EX | ($automatic ? LOCK_NB : 0);
+    exit 75 unless flock($lock, $mode);
+    $ENV{WORKTREE_SETUP_LOCK_HELD} = 1;
+    my $status = system { $script } $script, @args;
+    exit($status == -1 ? 1 : $status >> 8);
+  ' "$automatic" "$setup_lock_path" "$script_dir/worktree-setup.sh" "$@"; then
+    exit 0
+  else
+    lock_status=$?
+  fi
+  if [ "$lock_status" -eq 75 ] && [ "$automatic" -eq 1 ]; then
+    printf '[worktree-setup] setup lock is busy; skipping automatic recovery\n'
+    exit 0
+  fi
+  exit "$lock_status"
+fi
 
 surface_names=(root-bun web-bun docs-bun cargo)
 

@@ -66,7 +66,10 @@ assert_not_contains "$formatter_log" 'removed.md'
 assert_not_contains "$formatter_log" 'docs/../README.md'
 
 lefthook_bin="$(command -v lefthook 2>/dev/null || true)"
-[ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires a global lefthook binary'
+if [ -z "$lefthook_bin" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
+  lefthook_bin="$repo_root/node_modules/.bin/lefthook"
+fi
+[ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires a Lefthook binary'
 
 partial_repo="$tmp_dir/partial-stage"
 mkdir -p "$partial_repo/scripts" "$partial_repo/src"
@@ -112,6 +115,13 @@ git -C "$partial_repo" diff -- src/sample.rs > "$tmp_dir/worktree.diff"
 assert_contains "$tmp_dir/index.diff" '// formatter result'
 assert_not_contains "$tmp_dir/index.diff" 'unstaged hunk must survive'
 assert_contains "$tmp_dir/worktree.diff" 'unstaged hunk must survive'
+printf 'outside target\n' > "$tmp_dir/outside.rs"
+ln -s "$tmp_dir/outside.rs" "$partial_repo/src/escape.rs"
+(
+  cd "$partial_repo"
+  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/rustfmt" bash scripts/format-staged-files.sh rust src/escape.rs
+)
+assert_not_contains "$formatter_log" 'src/escape.rs'
 
 legacy_repo="$tmp_dir/legacy-wrapper"
 mkdir -p "$legacy_repo/scripts"
@@ -144,6 +154,22 @@ ln -s ../custom-prepare-hook "$legacy_hook"
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 [ -L "$legacy_hook" ] || fail 'prepare-commit-msg symlink was modified'
+pre_commit_hook="$legacy_repo/.git/hooks/pre-commit"
+printf '\necho custom-pre-commit\n' >> "$pre_commit_hook"
+(
+  cd "$legacy_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+assert_contains "$pre_commit_hook" 'echo custom-pre-commit'
+
+historical_repo="$tmp_dir/historical-checkout"
+mkdir -p "$historical_repo"
+cp "$repo_root/lefthook.yml" "$historical_repo/lefthook.yml"
+git -C "$historical_repo" init -q
+(
+  cd "$historical_repo"
+  "$lefthook_bin" run post-checkout --no-auto-install
+)
 
 old_lefthook_repo="$tmp_dir/old-lefthook"
 mkdir -p "$old_lefthook_repo/scripts"
@@ -163,5 +189,24 @@ if (
   fail 'hooks:install must reject Lefthook versions older than 2.1.7'
 fi
 assert_contains "$old_lefthook_output" 'Lefthook 2.1.7 or newer is required'
+
+local_only_repo="$tmp_dir/local-only-lefthook"
+mkdir -p "$local_only_repo/scripts" "$local_only_repo/node_modules/.bin"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$local_only_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$local_only_repo/scripts/install-lefthook-hooks.sh"
+git -C "$local_only_repo" init -q
+cat > "$local_only_repo/node_modules/.bin/lefthook" <<'EOF_LOCAL_ONLY_LEFTHOOK'
+#!/usr/bin/env bash
+printf '2.1.10\n'
+EOF_LOCAL_ONLY_LEFTHOOK
+chmod +x "$local_only_repo/node_modules/.bin/lefthook"
+local_only_output="$tmp_dir/local-only-lefthook-output.log"
+if (
+  cd "$local_only_repo"
+  PATH="$local_only_repo/node_modules/.bin:/usr/bin:/bin" bash scripts/install-lefthook-hooks.sh > "$local_only_output" 2>&1
+); then
+  fail 'hooks:install must reject a repo-local Lefthook binary'
+fi
+assert_contains "$local_only_output" 'repo-local binary is not sufficient'
 
 printf 'git hook contract smoke passed\n'
