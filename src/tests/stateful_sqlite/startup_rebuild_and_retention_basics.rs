@@ -1232,14 +1232,9 @@ async fn coverage_repair_defer_persists_the_historical_retry_deadline() {
     .await;
     let task = StartupBackfillTask::HistoricalRollups;
 
-    defer_startup_backfill_task(
-        state.as_ref(),
-        task,
-        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS),
-        "test_coverage_repair_retry",
-    )
-    .await
-    .expect("schedule the coverage repair retry");
+    defer_startup_backfill_coverage_repair(state.as_ref())
+        .await
+        .expect("schedule the coverage repair retry");
 
     let progress = load_startup_backfill_progress(&state.pool, task.name())
         .await
@@ -1252,6 +1247,19 @@ async fn coverage_repair_defer_persists_the_historical_retry_deadline() {
     assert!(retry_at > Utc::now());
     assert!(retry_at <= Utc::now() + ChronoDuration::seconds(30));
     assert!(!progress.is_due(Utc::now()));
+    assert_eq!(progress.zero_update_streak, 1);
+}
+
+#[test]
+fn coverage_repair_retry_backoff_is_bounded_and_exponential() {
+    assert_eq!(coverage_repair_retry_delay(1), Duration::from_secs(15));
+    assert_eq!(coverage_repair_retry_delay(2), Duration::from_secs(60));
+    assert_eq!(coverage_repair_retry_delay(3), Duration::from_secs(5 * 60));
+    assert_eq!(coverage_repair_retry_delay(4), Duration::from_secs(15 * 60));
+    assert_eq!(
+        coverage_repair_retry_delay(20),
+        Duration::from_secs(15 * 60)
+    );
 }
 
 #[tokio::test]

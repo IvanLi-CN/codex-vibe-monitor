@@ -2,6 +2,7 @@ use super::*;
 
 const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT: u64 = 2;
 const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BUDGET_SECS: u64 = 6;
+const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
@@ -882,6 +883,54 @@ pub(crate) async fn defer_startup_backfill_task(
     Ok(())
 }
 
+pub(crate) fn coverage_repair_retry_delay(retry_generation: u32) -> Duration {
+    let index = retry_generation.saturating_sub(1) as usize;
+    Duration::from_secs(
+        COVERAGE_REPAIR_RETRY_DELAYS_SECS[index.min(COVERAGE_REPAIR_RETRY_DELAYS_SECS.len() - 1)],
+    )
+}
+
+pub(crate) async fn defer_startup_backfill_coverage_repair(state: &AppState) -> Result<()> {
+    let task = StartupBackfillTask::HistoricalRollups;
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let retry_generation = progress.zero_update_streak.saturating_add(1);
+    let delay = coverage_repair_retry_delay(retry_generation);
+    let retry_after = Utc::now() + ChronoDuration::from_std(delay).unwrap_or_default();
+    let retry_after = format_utc_iso(retry_after);
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: retry_generation,
+            next_run_after: &retry_after,
+            status: &progress.last_status,
+            suspension_reason: progress.suspension_reason.as_deref(),
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    let backoff_stage = match delay.as_secs() {
+        0..=15 => "15s",
+        16..=60 => "1m",
+        61..=300 => "5m",
+        _ => "15m",
+    };
+    info!(
+        task = task.log_label(),
+        next_retry_after = %retry_after,
+        retry_generation,
+        backoff_stage,
+        wake_reason = "coverage_repair_retry",
+        "startup backfill coverage repair retry scheduled"
+    );
+    Ok(())
+}
+
 pub(crate) async fn run_startup_backfill_maintenance_pass(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -1004,14 +1053,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             | ActiveAccountActivityV2RepairResult::Failed) => {
                 let failed = matches!(outcome, ActiveAccountActivityV2RepairResult::Failed);
                 had_failure |= failed;
-                if let Err(err) = defer_startup_backfill_task(
-                    state.as_ref(),
-                    StartupBackfillTask::HistoricalRollups,
-                    Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS),
-                    "coverage_repair_retry",
-                )
-                .await
-                {
+                if let Err(err) = defer_startup_backfill_coverage_repair(state.as_ref()).await {
                     had_failure = true;
                     STARTUP_BACKFILL_SCHEDULER.record_task_result(
                         StartupBackfillTask::HistoricalRollups,
