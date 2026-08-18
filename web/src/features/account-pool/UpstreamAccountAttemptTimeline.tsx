@@ -469,13 +469,6 @@ export function UpstreamAccountAttemptTimeline({
   );
 
   useEffect(() => {
-    if (focusedAttemptId != null) return;
-    setPage((current) => (current === 1 ? current : 1));
-    setLocateFallback(null);
-    setLocateError(null);
-  }, [focusedAttemptId]);
-
-  useEffect(() => {
     if (previousAccountIdRef.current === accountId) return;
     previousAccountIdRef.current = accountId;
     setPage(1);

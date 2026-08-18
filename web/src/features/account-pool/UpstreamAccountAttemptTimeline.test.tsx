@@ -1015,19 +1015,19 @@ describe("UpstreamAccountAttemptTimeline", () => {
       errorMessage: "focused failure details",
       createdAt: "2026-07-11T12:00:00.000Z",
     };
-    fetchAttemptsMock.mockResolvedValue(
+    fetchAttemptsMock.mockImplementation(async (_accountId, options) =>
       attemptListResponse({
         items: [focusedAttempt],
-        total: 1,
-        page: 1,
+        total: 100,
+        page: options?.page ?? 1,
         pageSize: 50,
       }),
     );
     vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
       attemptListResponse({
         items: [focusedAttempt],
-        total: 1,
-        page: 1,
+        total: 100,
+        page: 2,
         pageSize: 50,
       }),
     );
@@ -1067,6 +1067,8 @@ describe("UpstreamAccountAttemptTimeline", () => {
     );
     expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
     expect(host?.textContent).toMatch(/All types|全部类型/);
+    const topicAfterLocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterLocate?.params?.page).toBe("2");
     const fetchCallsAfterLocate = fetchAttemptsMock.mock.calls.length;
     renderTimeline({
       boundary: interactionBoundary,
@@ -1074,6 +1076,8 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
     expect(fetchAttemptsMock).toHaveBeenCalledTimes(fetchCallsAfterLocate);
+    const topicAfterFocusAcknowledged = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterFocusAcknowledged?.params?.page).toBe("2");
     expect(
       host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
     ).not.toBeNull();
