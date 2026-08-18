@@ -2815,6 +2815,12 @@ async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_se
         .as_deref()
         .and_then(parse_rfc3339_utc)
         .expect("cooldown should be set");
+    assert!(
+        row.cooldown_until
+            .as_deref()
+            .is_some_and(|value| value.contains('.')),
+        "new account cooldowns should retain millisecond precision"
+    );
     let route_failure_at = row
         .last_route_failure_at
         .as_deref()
@@ -2824,6 +2830,35 @@ async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_se
         cooldown_until - route_failure_at,
         ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS)
     );
+    assert!(account_has_active_cooldown(
+        row.cooldown_until.as_deref(),
+        cooldown_until - ChronoDuration::milliseconds(1)
+    ));
+    assert!(!account_has_active_cooldown(
+        row.cooldown_until.as_deref(),
+        cooldown_until
+    ));
+
+    let legacy_cooldown_until = format_utc_iso(cooldown_until + ChronoDuration::seconds(60));
+    sqlx::query("UPDATE pool_upstream_accounts SET cooldown_until = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(&legacy_cooldown_until)
+        .execute(&pool)
+        .await
+        .expect("replace cooldown with a legacy second-precision value");
+    let legacy_row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("reload legacy cooldown row")
+        .expect("legacy cooldown row exists");
+    let legacy_until = parse_rfc3339_utc(&legacy_cooldown_until).expect("parse legacy cooldown");
+    assert!(account_has_active_cooldown(
+        legacy_row.cooldown_until.as_deref(),
+        legacy_until - ChronoDuration::milliseconds(1)
+    ));
+    assert!(!account_has_active_cooldown(
+        legacy_row.cooldown_until.as_deref(),
+        legacy_until
+    ));
 }
 
 #[test]

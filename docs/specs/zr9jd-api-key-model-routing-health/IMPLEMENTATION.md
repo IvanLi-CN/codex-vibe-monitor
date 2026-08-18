@@ -56,6 +56,7 @@
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.
 - Cache-hit protection state-machine, settings-contract and atomic reservation regression tests: passed. The reservation test races two candidate selections for a cap of one and admits exactly one request.
 - Account recovery fence regressions cover a failure transaction committed after the request starts in the same second, legacy same-second ambiguity, millisecond failure persistence, healthy-success no-op broadcasting, and HTTP/WebSocket cache recovery that must not wake waiters while the account failure fence remains active.
+- Account cooldown persistence coverage verifies the millisecond writer and exact runtime expiry boundary after reload, then replaces the value with a legacy second-precision RFC3339 timestamp and verifies the same parsed `DateTime` behavior.
 - `PoolRoutingSettingsCard/CacheHitProtection` Storybook play coverage and the Settings/API Vitest coverage: passed. A local-only component capture confirmed the enabled control, 10% threshold and reroute selector without including it as a PR image asset.
 
 ## Delivery Status
