@@ -82,7 +82,7 @@ if [ "$hook_name" = "post-checkout" ]; then
   fi
 
   if is_linked_worktree && [ -x "$setup_script" ]; then
-    if ! "$setup_script"; then
+    if ! "$setup_script" --automatic; then
       printf '[worktree-bootstrap] dependency setup failed; checkout continues. Run `bun run worktree:bootstrap` to retry.\n' >&2
     fi
   fi
