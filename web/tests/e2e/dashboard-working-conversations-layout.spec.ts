@@ -673,9 +673,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
     const invalidSlot = invalidPage.locator(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
-    await expect(invalidSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
-      "--",
-    );
+    const invalidFirstToken = invalidSlot.getByTestId("dashboard-compact-latency-first-byte");
+    await expect(invalidFirstToken).toContainText("--");
+    expect(await invalidFirstToken.getAttribute("class")).not.toContain("text-success");
     await expect(invalidSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
       "--",
     );

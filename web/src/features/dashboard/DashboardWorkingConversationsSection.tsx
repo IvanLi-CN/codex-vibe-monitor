@@ -459,11 +459,13 @@ function formatStatusLabel(status: string) {
 }
 
 function CompactLatencyPills({
+  firstTokenMeasured,
   firstTokenValue,
   responseTimeValue,
   t,
   className,
 }: {
+  firstTokenMeasured: boolean;
   firstTokenValue: string;
   responseTimeValue: string;
   t: ReturnType<typeof useTranslation>["t"];
@@ -485,7 +487,10 @@ function CompactLatencyPills({
     >
       <span
         data-testid="dashboard-compact-latency-first-byte"
-        className="inline-flex min-w-0 items-center gap-0.5 text-success"
+        className={cn(
+          "inline-flex min-w-0 items-center gap-0.5",
+          firstTokenMeasured ? "text-success" : "text-base-content/58",
+        )}
       >
         <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
@@ -869,8 +874,12 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
 }
 
+function hasMeasuredLatencyMs(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  if (value == null || !Number.isFinite(value) || value < 0) return "--";
+  if (!hasMeasuredLatencyMs(value)) return "--";
 
   const seconds = value / 1000;
   const roundedTenths = Math.round(seconds * 10) / 10;
@@ -2078,6 +2087,7 @@ function AccountRecentInvocationRow({
   const responseModelValue = viewModel.responseModelValue;
   const compactLatencyValues = useMemo(() => {
     return {
+      firstTokenMeasured: hasMeasuredLatencyMs(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue: formatCompactResponseTimeValue(
         invocation.record.tUpstreamStreamMs,
@@ -2234,6 +2244,7 @@ function AccountRecentInvocationRow({
           />
           {!shouldGroupModelContext ? fastIndicator : null}
           <CompactLatencyPills
+            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
@@ -2487,6 +2498,7 @@ function InvocationSlot({
   );
   const compactLatencyValues = useMemo(() => {
     return {
+      firstTokenMeasured: hasMeasuredLatencyMs(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue: formatCompactResponseTimeValue(
         invocation.record.tUpstreamStreamMs,
@@ -2636,6 +2648,7 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
+            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}

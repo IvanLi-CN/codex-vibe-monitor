@@ -2477,6 +2477,55 @@ async fn fetch_invocation_summary_keeps_zero_ms_ttft_and_excludes_negative_sampl
 }
 
 #[tokio::test]
+async fn list_invocations_keeps_negative_ttft_in_requesting_phase() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            t_upstream_connect_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("running-negative-first-token")
+    .bind("2026-03-10 09:12:00")
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(-1.0_f64)
+    .bind(120.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invalid TTFT row");
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            invoke_id: Some("running-negative-first-token".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with invalid running TTFT should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(
+        response.records[0].live_phase.as_deref(),
+        Some("requesting")
+    );
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

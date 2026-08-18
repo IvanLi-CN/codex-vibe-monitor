@@ -2112,9 +2112,48 @@ describe("InvocationTable", () => {
     expect(
       document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
     ).toContain("--");
-    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.className).toContain(
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.className).not.toContain(
       "text-success",
     );
+  });
+
+  it("keeps invalid timing neutral and excludes it from summary averages", async () => {
+    await renderInteractiveTable([
+      {
+        id: -94,
+        invokeId: "invocation-invalid-timing",
+        occurredAt: "2026-03-16T09:10:31Z",
+        createdAt: "2026-03-16T09:10:31Z",
+        source: "proxy",
+        proxyDisplayName: "relay-invalid",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "success",
+        firstTokenMs: -100,
+        tUpstreamStreamMs: -100,
+      },
+      {
+        id: -95,
+        invokeId: "invocation-measured-timing",
+        occurredAt: "2026-03-16T09:10:30Z",
+        createdAt: "2026-03-16T09:10:30Z",
+        source: "proxy",
+        proxyDisplayName: "relay-measured",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "success",
+        firstTokenMs: 700,
+        tUpstreamStreamMs: 1_000,
+      },
+    ]);
+
+    const invalidFirstToken = document.querySelector('[data-testid="invocation-card-ttft"]');
+    expect(invalidFirstToken?.textContent).toContain("--");
+    expect(invalidFirstToken?.className).not.toContain("text-success");
+    const summary = document.querySelector('[data-testid="invocation-card-summary-ttft"]');
+    expect(summary?.textContent).toContain("0.7 s");
+    expect(summary?.textContent).toContain("1 s");
+    expect(summary?.textContent).not.toContain("0.3 s");
   });
 
   it("keeps TTFT measured while a responding invocation has no completed response duration", async () => {

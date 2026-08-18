@@ -97,7 +97,7 @@ function formatDurationMs(value: number | null | undefined, locale: string) {
 }
 
 function formatMilliseconds(value: number | null | undefined, locale: string) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (!hasMeasuredDurationMs(value)) return FALLBACK_CELL;
   return `${value.toLocaleString(locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: 1,
@@ -776,12 +776,11 @@ function buildTimelineFacts(
     const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
     const phase = formatOptionalText(attempt.phase);
     const upstreamStatus = formatHttpStatus(attempt.httpStatus, localeTag);
-    const latencyValue =
-      typeof attempt.streamLatencyMs === "number"
-        ? `${isZh ? "流式" : "Stream"} ${formatDurationMs(attempt.streamLatencyMs, localeTag)}`
-        : typeof attempt.firstTokenMs === "number"
-          ? `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`
-          : null;
+    const latencyValue = hasMeasuredDurationMs(attempt.streamLatencyMs)
+      ? `${isZh ? "流式" : "Stream"} ${formatDurationMs(attempt.streamLatencyMs, localeTag)}`
+      : hasMeasuredDurationMs(attempt.firstTokenMs)
+        ? `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`
+        : null;
 
     if (attempt.upstreamAccountName?.trim()) {
       facts.push({

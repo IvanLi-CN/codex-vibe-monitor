@@ -865,6 +865,24 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
   });
 
+  it("keeps a measured TTFT visible when stream timing is invalid", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = 800;
+    attemptEntry.attempt.streamLatencyMs = -1;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").toContain("TTFT 0.8 s");
+    expect(host?.textContent ?? "").not.toContain("Stream -1 ms");
+  });
+
   it("does not present a negative TTFT as a measured duration", async () => {
     const workflowDetail = createWorkflowDetailResponse();
     const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");

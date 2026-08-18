@@ -69,12 +69,16 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
 const INVOCATION_CARD_GAP_PX = 12;
 
+function hasMeasuredDurationMs(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function formatCompactLatencySeconds(
   value: number | null | undefined,
   localeTag: string,
   fallback: string,
 ) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
+  if (!hasMeasuredDurationMs(value)) return fallback;
   const roundedSeconds = Math.round((value / 1000) * 10) / 10;
   const maximumFractionDigits = roundedSeconds >= 100 ? 0 : 1;
   return `${roundedSeconds.toLocaleString(localeTag, {
@@ -431,10 +435,10 @@ export function InvocationCardList({
     const running = rows.filter((row) => row.livePhase != null).length;
     const firstTokenSamples = rows
       .map((row) => row.record.firstTokenMs)
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+      .filter(hasMeasuredDurationMs);
     const responseSamples = rows
       .map((row) => row.record.tUpstreamStreamMs)
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+      .filter(hasMeasuredDurationMs);
     const totalCost = rows.reduce(
       (sum, row) => sum + (typeof row.record.cost === "number" ? row.record.cost : 0),
       0,
@@ -740,6 +744,7 @@ export function InvocationCardList({
       localeTag,
       "--",
     );
+    const hasMeasuredFirstToken = hasMeasuredDurationMs(row.record.firstTokenMs);
     const cacheReadTokens = Math.max(0, row.record.cacheInputTokens ?? 0);
     const cacheWriteTokens = Math.max(
       0,
@@ -846,7 +851,10 @@ export function InvocationCardList({
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-x-3 font-mono text-[11px] tabular-nums">
             <span
-              className="inline-flex items-center gap-1 text-success"
+              className={cn(
+                "inline-flex items-center gap-1",
+                hasMeasuredFirstToken ? "text-success" : "text-base-content/58",
+              )}
               data-testid="invocation-card-ttft"
               title={`${t("table.column.firstTokenShort")}: ${firstTokenValue}`}
             >

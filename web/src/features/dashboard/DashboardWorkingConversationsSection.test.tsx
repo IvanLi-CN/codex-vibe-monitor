@@ -6408,7 +6408,31 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
     );
     expect(firstToken?.textContent).toBe("--");
-    expect(firstToken?.className).toContain("text-success");
+    expect(firstToken?.className).not.toContain("text-success");
+  });
+
+  it("keeps invalid upstream account recent TTFT neutral", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = -1;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const firstToken = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
+    );
+    expect(firstToken?.textContent).toBe("--");
+    expect(firstToken?.className).not.toContain("text-success");
   });
 
   it("toggles selection mode on conversation cards and restores navigation after exit", async () => {
