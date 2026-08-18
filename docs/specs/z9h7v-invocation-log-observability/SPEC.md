@@ -160,6 +160,9 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - `model` 筛选必须按 `requestModel`、`responseModel`、legacy `model` 任一精确命中，不得只看主显示模型。
 - 账号 attempts API 返回的每个 item 可选携带 `invocationRecord` 与 `workflowEntry`：当同一主库 `(invokeId, occurredAt)` 能加载 invocation 与真实 attempt 行时，`workflowEntry` 使用 `GET /api/invocations/:id/workflow-detail` 的 attempt 构造规则生成；缺失关联数据时仍返回基本 attempt 行并允许前端最小 fallback。该接口不读取 archive，仍只覆盖最近 7 天主库窗口。
 - 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
+- 统一 `/events` 通道新增 `upstream-account-attempts.window` topic，参数固定为 `accountId`、`page`、`pageSize`、`type`、`model`、`stickyKey`；规范化规则与账号 attempts REST 列表一致，默认 `page=1`、`pageSize=20`，`accountId` 必须为正整数，响应 payload 复用 `items`、`stickyKeyOptions`、`total`、`page`、`pageSize`，schema epoch 固定为 `upstream-account-attempts.window/v1`。
+- `PoolAttempts` 广播只有在包含目标 `upstreamAccountId` 时才会触发对应活跃 topic；同一账号 topic 使用不可续延的 250ms 合并窗口，构建期间到达的新事件只补发一次最新快照。刷新失败保留最近一次成功 payload，不清空或倒退列表。
+- 请求 tab 仅在可见时订阅上述 topic；第一页接纳新记录，非第一页不自动跳页或滚动，同一 `attemptId` 以稳定 key 原位更新并保留展开卡片与深链 focus。`locate` REST 只负责深链定位目标页，定位完成后由对应 topic 接管当前页；断线不在页面私有轮询或补拉。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 - Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。
@@ -208,6 +211,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；两个字段从关联 invocation 的 `payload.requestModel` / `payload.responseModel` 投影，请求模型缺失时回退 `model`，缺少匹配 invocation 时保持空值。该查询不得依赖新增 SQLite 列。
 - 尝试对象额外返回 `compactionRequestKind?: "compact" | "remote_v2" | null`、`compactionResponseKind?: "compact" | "remote_v2" | null`、`imageIntent?: "yes" | "direct_image" | "no" | "unknown" | null`；这些字段从关联 invocation payload 投影，不依赖 raw body logging。
 - 尝试对象可选返回 `invocationRecord?: ApiInvocation | null` 与 `workflowEntry?: ApiInvocationWorkflowTimelineEntry | null`。`workflowEntry.attempt.requestSummary` / `responseSummary` 必须与调用详情 attempt 卡同源，覆盖 request headers/body capture、compression、response headers/body capture、latency 与 usage 审计；usage 仅允许出现在最终成功 attempt。
+- `upstream-account-attempts.window` 的 descriptor canonical form 必须稳定排序参数并保留账号范围与分页/筛选值；`type` 仅接受 `normal`、`remote_v2`、`image`、`compact`，`model` 与 `stickyKey` 去除首尾空白后作为可选精确筛选。topic snapshot/replay/live 的 payload 与上述 REST response 同形，不引入第二套列表读模型。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
 
@@ -283,6 +287,10 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - Given 账号 attempts API 使用 `model` 筛选，When 筛选值命中 `requestModel`、`responseModel` 或 legacy `model` 任一字段，Then 返回的 `total/items` 均基于筛选后结果。
 - Given 账号 attempts API 返回 `stickyKeyOptions`，When 前端渲染对话筛选，Then 选项按最近 attempt `createdAt` 倒序显示，`__unbound__` 以未绑定对话文案展示。
 - Given 用户在请求 tab 手动选择了类型、模型或对话筛选，When 外部事件传入 `focusedAttemptId`，Then 前端清空筛选、调用 locate 接口并滚动聚焦目标 attempt。
+- Given 账号详情请求 tab 可见且同账号 `PoolAttempts` 广播包含新增或状态变化，When 250ms 合并窗口结束，Then `upstream-account-attempts.window` 发布最新列表快照；不匹配账号的广播不刷新该 topic。
+- Given 同一 `attemptId` 在 topic 快照中从 `pending` 变为终态，When 请求卡已展开或处于深链 focus，Then 卡片原位更新且不重复、展开状态与 focus 保留；第一页新增记录立即出现，非第一页不自动跳页或滚动。
+- Given topic 构建期间再次收到同账号事件，When 当前构建完成，Then 只再补发一次最新快照；Given 单次构建失败，Then 客户端继续看到最后一次成功 payload，不出现全表 loading 闪烁或空列表降级。
+- Given 用户离开请求 tab、关闭账号抽屉或重新订阅，When topic owner 生命周期变化，Then 对应 SSE listener 释放并在重新订阅时从 snapshot/replay/live 读模型恢复，不启动页面私有 HTTP 轮询。
 - Given 新记录同时携带 `requestModel=gpt-5.4` 与 `responseModel=gpt-5.5`，When Records、InvocationTable 或 Dashboard working conversations 渲染，Then 主模型文本显示 `gpt-5.5`，并在模型 badge 前显示上游路由差异图标。
 - Given `requestModel` 与 `responseModel` 仅大小写不同，或仅 dated alias/base-model 归并后等价，When 列表渲染，Then 不显示模型路由差异图标。
 - Given Records 展开摘要与详情首屏模型卡存在 `reasoningEffort`、`imageIntent` 或重路由信号，When 记录渲染，Then 这些值与 badge 会稳定显示；缺值显示 `—`，不伪造默认值。

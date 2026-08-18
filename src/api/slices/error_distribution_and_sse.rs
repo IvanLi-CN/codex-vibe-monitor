@@ -4841,7 +4841,6 @@ pub(crate) enum BroadcastPayload {
         #[serde(skip)]
         slice: Box<DashboardTerminalProjectionSlice>,
     },
-    #[cfg(test)]
     #[serde(rename = "pool_attempts")]
     PoolAttempts {
         invoke_id: String,

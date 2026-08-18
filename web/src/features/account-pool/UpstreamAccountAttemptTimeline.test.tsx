@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import { I18nProvider } from "../../i18n";
 import {
   type ApiPoolUpstreamRequestAttempt,
@@ -14,6 +15,11 @@ import {
   locateUpstreamAccountAttempt,
   type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
+import {
+  buildTopicDescriptor,
+  getTopicDescriptorKey,
+  type SubscriptionTopicDescriptor,
+} from "../../lib/sse";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
 
 vi.mock("../../lib/api", async (importOriginal) => ({
@@ -26,12 +32,87 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   locateUpstreamAccountAttempt: vi.fn(),
 }));
 
+vi.mock("../../hooks/useSubscriptionTopic", () => ({
+  useSubscriptionTopic: vi.fn(),
+}));
+
 const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 const fetchRequestBodyMock = vi.mocked(fetchInvocationRequestBody);
 const fetchAttemptResponseBodyMock = vi.mocked(fetchInvocationAttemptResponseBody);
 const fetchResponseBodyMock = vi.mocked(fetchInvocationResponseBody);
+const subscriptionTopicMock = vi.mocked(useSubscriptionTopic);
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
+const topicSnapshotCache = new Map<string, UpstreamAccountAttemptListResponse>();
+const topicListeners = new Map<
+  string,
+  Set<(response: UpstreamAccountAttemptListResponse) => void>
+>();
+
+function useMockSubscriptionTopic(descriptor: SubscriptionTopicDescriptor | null, enabled = true) {
+  const descriptorKey = descriptor ? getTopicDescriptorKey(descriptor) : null;
+  const [data, setData] = useState<UpstreamAccountAttemptListResponse | null>(() =>
+    descriptor && enabled ? (topicSnapshotCache.get(descriptorKey ?? "") ?? null) : null,
+  );
+  const [isLoading, setIsLoading] = useState(
+    Boolean(descriptor && enabled && !topicSnapshotCache.has(descriptorKey ?? "")),
+  );
+
+  useEffect(() => {
+    if (!descriptor || !enabled || !descriptorKey) {
+      setData(null);
+      setIsLoading(false);
+      return;
+    }
+    const cached = topicSnapshotCache.get(descriptorKey);
+    setData(cached ?? null);
+    setIsLoading(!cached);
+    const listeners = topicListeners.get(descriptorKey) ?? new Set();
+    const listener = (next: UpstreamAccountAttemptListResponse) => {
+      topicSnapshotCache.set(descriptorKey, next);
+      setData(next);
+      setIsLoading(false);
+    };
+    listeners.add(listener);
+    topicListeners.set(descriptorKey, listeners);
+    if (!cached) {
+      const params = descriptor.params ?? {};
+      void fetchAttemptsMock(Number(params.accountId), {
+        type: params.type as "normal" | "remote_v2" | "compact" | "image" | undefined,
+        model: typeof params.model === "string" ? params.model : undefined,
+        stickyKey: typeof params.stickyKey === "string" ? params.stickyKey : undefined,
+        page: Number(params.page ?? 1),
+        pageSize: Number(params.pageSize ?? 50),
+      }).then((next) => listener(next));
+    }
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) topicListeners.delete(descriptorKey);
+    };
+  }, [descriptor, descriptorKey, enabled]);
+
+  return {
+    data: enabled ? data : null,
+    descriptorKey: enabled ? descriptorKey : null,
+    lastReceivedAt: null,
+    lastKind: null,
+    isLoading: enabled ? isLoading : false,
+    error: null,
+    refresh: vi.fn(),
+  };
+}
+
+function emitTopicSnapshot(
+  descriptor: SubscriptionTopicDescriptor,
+  response: UpstreamAccountAttemptListResponse,
+) {
+  const key = getTopicDescriptorKey(descriptor);
+  topicSnapshotCache.set(key, response);
+  topicListeners.get(key)?.forEach((listener) => {
+    listener(response);
+  });
+}
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -163,6 +244,9 @@ async function selectModelOption(label: RegExp) {
 describe("UpstreamAccountAttemptTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    topicSnapshotCache.clear();
+    topicListeners.clear();
+    subscriptionTopicMock.mockImplementation(useMockSubscriptionTopic);
     vi.useRealTimers();
     scrollIntoViewMock = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -1040,5 +1124,69 @@ describe("UpstreamAccountAttemptTimeline", () => {
     await flushAsync();
 
     expect(host?.textContent).toMatch(/7-day retention window|7 天保留范围|7 天窗口/i);
+  });
+
+  it("reconciles a pending attempt in place without duplicating the expanded card", async () => {
+    const pending = makeAttempt({
+      attemptId: "LIVE0001",
+      status: "pending",
+      phase: "waiting_first_byte",
+      httpStatus: null,
+    });
+    fetchAttemptsMock.mockResolvedValue(attemptListResponse({ items: [pending] }));
+
+    renderTimeline();
+    await flushAsync();
+
+    const pendingCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-LIVE0001"]',
+    );
+    expect(pendingCard).not.toBeNull();
+    const timingButton = Array.from(pendingCard?.querySelectorAll("button") ?? []).find((button) =>
+      /时间|timing/i.test(button.textContent ?? ""),
+    );
+    act(() => {
+      timingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const terminal = makeAttempt({
+      ...pending,
+      status: "success",
+      phase: "completed",
+      httpStatus: 200,
+      downstreamHttpStatus: 200,
+      finishedAt: "2026-07-11T12:00:03.000Z",
+    });
+    emitTopicSnapshot(
+      buildTopicDescriptor("upstream-account-attempts.window", {
+        accountId: 101,
+        page: 1,
+        pageSize: 50,
+      }),
+      attemptListResponse({ items: [terminal] }),
+    );
+    await flushAsync();
+
+    const updatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-LIVE0001"]',
+    );
+    expect(updatedCard).toBe(pendingCard);
+    expect(host?.querySelectorAll('[data-testid="account-attempt-record-LIVE0001"]')).toHaveLength(
+      1,
+    );
+    expect(updatedCard?.textContent).toMatch(/HTTP 200|上游 HTTP 200|success/i);
+  });
+
+  it("releases the account attempt topic listener when the timeline unmounts", async () => {
+    fetchAttemptsMock.mockResolvedValue(attemptListResponse({ items: [] }));
+    renderTimeline();
+    await flushAsync();
+    expect(topicListeners.size).toBe(1);
+
+    act(() => {
+      root?.unmount();
+    });
+    root = null;
+    expect(topicListeners.size).toBe(0);
   });
 });

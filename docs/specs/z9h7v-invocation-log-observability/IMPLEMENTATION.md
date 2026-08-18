@@ -35,6 +35,8 @@
 - 账号详情与调用详情的 Token/成本规则已统一：只有最终成功 attempt 获得 `responseSummary.usage`，失败重试与非最终 attempt 保持 usage 为空，不再复制 invocation 级 usage。
 - 账号详情 workflow hydration 对非最终真实 attempt 增加 response body 归属保护：缺少 per-attempt `responseSummary` 时只暴露 attempt 行响应字节指标，并禁止前端通过 invocation id lazy-load 最终响应体。
 - 账号详情请求 tab 现将共享 attempt 卡收口为唯一 focus 真相源：事件定位时通过 `call-attempts/locate` 只加载目标页，`focusedAttemptId + focusVersion` 触发目标卡片滚动入视区、展开诊断并显示 focused 高亮；只有在账号详情抽屉内发生下一次 pointer/keyboard 交互后，才会延迟 1.5 秒清除高亮。
+- 账号详情请求 tab 现订阅 `upstream-account-attempts.window/v1`：descriptor 固定携带账号、分页、类型、模型与 sticky key，payload 复用 REST attempts response。服务端只为匹配账号的 `PoolAttempts` 广播调度刷新，以固定 250ms 窗口合并事件，构建期间补发一次最新快照，构建失败保留 last-good；前端仅在请求 tab 可见时订阅，第一页接纳新增、非第一页不自动跳页，同一 `attemptId` 通过稳定 key 原位更新。
+- `GET .../call-attempts` 与 `locate` 仍是唯一 REST 合同；`locate` 完成深链页定位后由 topic 接管当前页，页面不添加轮询或私有重连补拉。`UpstreamAccountAttemptTimeline` 的 Vitest 覆盖 pending 到 terminal、展开/focus 保留、listener 释放；Storybook `RealtimeLifecycle` docs/play 使用确定性 SSE 快照覆盖终态替换与第一页新增。
 - 账号详情 records tab 中曾被 `hidden` 包裹的 `InvocationTable` / anchored locate dead path 已删除，不再保留 `invokeId` 锚点定位状态、隐藏 fallback alert 或同路径局部状态；健康与事件入口只保留“请求 tab -> target attempt focus”的单一路径。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、墙钟时长、累计时长和并行数；TTFT 独立按 `#6qe6u` 的 `first_token_ms` 样本资格聚合，首 Token 后失败或中断仍可保留 TTFT 样本。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。
 - `modelPerformance` 继续服务 Dashboard 完整范围性能明细入口，不再回流为顶部实时 KPI 当前值；顶部 `TPM / 消费速率 / TTFT / 响应时间` 已改由 `z6ysw` 的后端滚动窗口合同驱动，其中 TTFT 只读取 `currentFirstTokenAvgMs`。
@@ -83,6 +85,8 @@
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
 - `cd web && bun run test -- --run StructuredPayloadViewer.test.tsx InvocationRecordsTable.test.tsx`
 - `cd web && bun run test -- UpstreamAccountAttemptTimeline.test.tsx`
+- `cargo test subscription`
+- `cd web && bun run test-storybook -- src/features/account-pool/UpstreamAccountAttemptTimeline.stories.tsx`
 - `cd web && bun run test -- UpstreamAccountAttemptTimeline.test.tsx InvocationWorkflowDetailPanel.test.tsx`
 - `cargo test account_attempt_list_returns_workflow_entries_and_final_success_usage_only`
 - `cd web && bun run test`
@@ -113,4 +117,5 @@
 - [x] M17: 为账号详情补齐请求 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。
 - [x] M18: 为 Records 与 workflow detail 补齐记录侧成本审计、最终成功 attempt Token/成本面板、reasoning `null` vs `0` 合同与共享 warning 语义。
 - [x] M19: 为 Codex Full/Lite imagegen 改写补齐 invocation 与 workflow attempt 审计展示，包含协议、策略、hosted 清理与有界 schema 冲突证据。
+- [x] M20: 为账号详情请求 tab 增加账号范围 `upstream-account-attempts.window/v1` SSE 读模型，复用 REST 列表查询，补齐 250ms 合并、匹配账号刷新、last-good 降级、纯订阅渲染与 Storybook 生命周期覆盖。
 - `codexImagegenRewrite.reason` now distinguishes the `keep_original` policy decision as `policy_keep_original`; it no longer claims that an opaque request body already matched the injected schema.

@@ -26,6 +26,7 @@ const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
 const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
+const UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(test)]
@@ -750,6 +751,9 @@ struct CachedSubscriptionTopic {
     conversation_overview_refresh_scheduled: bool,
     conversation_overview_refresh_in_flight: bool,
     conversation_overview_refresh_pending: bool,
+    upstream_account_attempt_refresh_scheduled: bool,
+    upstream_account_attempt_refresh_in_flight: bool,
+    upstream_account_attempt_refresh_pending: bool,
     dirty: bool,
     runtime_topic_recovery_generation: u64,
     runtime_topic_recovery_retry_at: Option<Instant>,
@@ -2749,6 +2753,14 @@ enum SubscriptionTopic {
         state: Option<String>,
         limit: i64,
     },
+    UpstreamAccountAttemptsWindow {
+        account_id: i64,
+        page: usize,
+        page_size: usize,
+        attempt_type: Option<String>,
+        model: Option<String>,
+        sticky_key: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3437,6 +3449,9 @@ impl SubscriptionHub {
                         cached.runtime_topic_recovery_generation = recovery_generation;
                         cached.runtime_topic_recovery_retry_at = None;
                         cached.refresh_scheduled = false;
+                        cached.upstream_account_attempt_refresh_scheduled = false;
+                        cached.upstream_account_attempt_refresh_in_flight = false;
+                        cached.upstream_account_attempt_refresh_pending = false;
                         cached.latest_live_snapshot = None;
                         if matches!(
                             cached.topic,
@@ -4354,6 +4369,18 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .is_some_and(|entry| entry.conversation_overview_refresh_pending),
+                upstream_account_attempt_refresh_scheduled: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.upstream_account_attempt_refresh_scheduled),
+                upstream_account_attempt_refresh_in_flight: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.upstream_account_attempt_refresh_in_flight),
+                upstream_account_attempt_refresh_pending: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.upstream_account_attempt_refresh_pending),
                 dirty: deferred_working_reconcile,
                 runtime_topic_recovery_generation: guard
                     .topics
@@ -4863,6 +4890,9 @@ impl SubscriptionHub {
                 };
                 cached.dirty = true;
                 cached.refresh_scheduled = false;
+                cached.upstream_account_attempt_refresh_scheduled = false;
+                cached.upstream_account_attempt_refresh_in_flight = false;
+                cached.upstream_account_attempt_refresh_pending = false;
                 cached.latest_live_snapshot = None;
                 cached.continuity_reset_cursor = Some(cached.cursor);
                 cached.runtime_topic_recovery_generation = recovery_generation;
@@ -5227,6 +5257,25 @@ impl SubscriptionHub {
                 continue;
             }
 
+            if cached.topic.uses_upstream_account_attempt_refresh()
+                && matches!(payload, BroadcastPayload::PoolAttempts { .. })
+            {
+                if let Err(err) = self
+                    .schedule_upstream_account_attempt_topic_refresh(
+                        state.clone(),
+                        cached.topic.clone(),
+                    )
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to schedule upstream account attempt topic refresh"
+                    );
+                }
+                continue;
+            }
+
             if let Err(err) = self
                 .refresh_topic_if_active(state.clone(), cached.topic.clone(), true)
                 .await
@@ -5454,6 +5503,9 @@ impl SubscriptionHub {
             cached.conversation_overview_refresh_scheduled = false;
             cached.conversation_overview_refresh_in_flight = false;
             cached.conversation_overview_refresh_pending = false;
+            cached.upstream_account_attempt_refresh_scheduled = false;
+            cached.upstream_account_attempt_refresh_in_flight = false;
+            cached.upstream_account_attempt_refresh_pending = false;
             cached.latest_live_snapshot = None;
         }
     }
@@ -5654,6 +5706,139 @@ impl SubscriptionHub {
                     return;
                 }
                 delay = CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE;
+            }
+        });
+        Ok(())
+    }
+
+    async fn begin_upstream_account_attempt_topic_refresh(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if !cached.upstream_account_attempt_refresh_scheduled {
+            return false;
+        }
+        cached.upstream_account_attempt_refresh_in_flight = true;
+        true
+    }
+
+    async fn finish_upstream_account_attempt_topic_refresh(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        let rerun = cached.upstream_account_attempt_refresh_pending;
+        cached.upstream_account_attempt_refresh_in_flight = false;
+        cached.upstream_account_attempt_refresh_pending = false;
+        if !rerun {
+            cached.upstream_account_attempt_refresh_scheduled = false;
+        }
+        rerun
+    }
+
+    async fn rearm_upstream_account_attempt_topic_refresh(
+        &self,
+        topic: &SubscriptionTopic,
+    ) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let active = guard
+            .active_subscribers
+            .get(&topic_key)
+            .copied()
+            .unwrap_or_default();
+        let Some(cached) = guard.topics.get_mut(&topic_key) else {
+            return false;
+        };
+        if active == 0 {
+            cached.dirty = true;
+            cached.upstream_account_attempt_refresh_scheduled = false;
+            return false;
+        }
+        true
+    }
+
+    async fn schedule_upstream_account_attempt_topic_refresh(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            if active == 0 {
+                cached.dirty = true;
+                return Ok(());
+            }
+            if cached.upstream_account_attempt_refresh_scheduled {
+                if cached.upstream_account_attempt_refresh_in_flight {
+                    cached.upstream_account_attempt_refresh_pending = true;
+                }
+                return Ok(());
+            }
+            cached.upstream_account_attempt_refresh_scheduled = true;
+        }
+
+        let hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE).await;
+                if !hub
+                    .begin_upstream_account_attempt_topic_refresh(&topic)
+                    .await
+                {
+                    return;
+                }
+                if !hub.has_active_topic_key(&topic_key).await {
+                    hub.finish_upstream_account_attempt_topic_refresh(&topic)
+                        .await;
+                    hub.mark_topic_dirty(&topic).await;
+                    return;
+                }
+                let result = hub
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await;
+                let rerun = hub
+                    .finish_upstream_account_attempt_topic_refresh(&topic)
+                    .await;
+                if let Err(err) = result {
+                    warn!(
+                        ?err,
+                        topic = %topic.name(),
+                        refresh_outcome = "retained_last_good",
+                        "upstream account attempt topic refresh failed"
+                    );
+                }
+                if !rerun
+                    || !hub
+                        .rearm_upstream_account_attempt_topic_refresh(&topic)
+                        .await
+                {
+                    return;
+                }
             }
         });
         Ok(())
@@ -7160,6 +7345,9 @@ impl SubscriptionHub {
         if let Some(cached) = guard.topics.get_mut(&topic_key) {
             cached.dirty = true;
             cached.refresh_scheduled = false;
+            cached.upstream_account_attempt_refresh_scheduled = false;
+            cached.upstream_account_attempt_refresh_in_flight = false;
+            cached.upstream_account_attempt_refresh_pending = false;
             cached.latest_live_snapshot = None;
         }
     }
@@ -9115,7 +9303,8 @@ impl SubscriptionTopic {
             | Self::PromptCacheStickyWindow { .. }
             | Self::ForwardProxyLive
             | Self::InvocationPoolAttempts { .. }
-            | Self::ModelRoutingLive { .. } => SubscriptionTopicClass::BoundedColdHydrate,
+            | Self::ModelRoutingLive { .. }
+            | Self::UpstreamAccountAttemptsWindow { .. } => SubscriptionTopicClass::BoundedColdHydrate,
         }
     }
 
@@ -9156,6 +9345,10 @@ impl SubscriptionTopic {
 
     fn uses_conversation_overview_refresh(&self) -> bool {
         matches!(self, Self::InvocationHistoryOverview { .. })
+    }
+
+    fn uses_upstream_account_attempt_refresh(&self) -> bool {
+        matches!(self, Self::UpstreamAccountAttemptsWindow { .. })
     }
 
     fn is_unmigrated_dashboard_hot_projection(&self) -> bool {
@@ -9212,6 +9405,7 @@ impl SubscriptionTopic {
                 vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
             }
             Self::ModelRoutingLive { .. } => vec![RuntimeTopicDependency::ModelRouting],
+            Self::UpstreamAccountAttemptsWindow { .. } => Vec::new(),
             Self::InvocationHistoryWindow { scope } | Self::InvocationHistoryOverview { scope } => {
                 match scope {
                     ConversationSubscriptionScope::PromptCacheKey(prompt_cache_key) => vec![
@@ -9379,6 +9573,19 @@ impl SubscriptionTopic {
                     model: parse_optional_text_param(params, "model"),
                     state,
                     limit,
+                })
+            }
+            "upstream-account-attempts.window" => {
+                let account_id = parse_required_positive_i64_param(params, "accountId")?;
+                let page = parse_upstream_account_attempt_page_param(params, "page", 1)?;
+                let page_size = parse_upstream_account_attempt_page_param(params, "pageSize", 20)?;
+                Ok(Self::UpstreamAccountAttemptsWindow {
+                    account_id,
+                    page,
+                    page_size,
+                    attempt_type: normalize_upstream_account_attempt_type_param(params),
+                    model: parse_optional_text_param(params, "model"),
+                    sticky_key: parse_optional_text_param(params, "stickyKey"),
                 })
             }
             _ => Err(ApiError::bad_request(anyhow!(
@@ -9631,6 +9838,27 @@ impl SubscriptionTopic {
                     params,
                 }
             }
+            Self::UpstreamAccountAttemptsWindow {
+                account_id,
+                page,
+                page_size,
+                attempt_type,
+                model,
+                sticky_key,
+            } => {
+                let mut params = btree_map_from_pairs([
+                    ("accountId", account_id.to_string()),
+                    ("page", page.to_string()),
+                    ("pageSize", page_size.to_string()),
+                ]);
+                insert_optional_param(&mut params, "type", attempt_type.clone());
+                insert_optional_param(&mut params, "model", model.clone());
+                insert_optional_param(&mut params, "stickyKey", sticky_key.clone());
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params,
+                }
+            }
         }
     }
 
@@ -9661,6 +9889,7 @@ impl SubscriptionTopic {
             Self::ForwardProxyLive => "forward-proxy.live",
             Self::InvocationPoolAttempts { .. } => "invocation.pool-attempts",
             Self::ModelRoutingLive { .. } => "pool.model-routing-live",
+            Self::UpstreamAccountAttemptsWindow { .. } => "upstream-account-attempts.window",
         }
     }
 
@@ -9695,6 +9924,9 @@ impl SubscriptionTopic {
             Self::ForwardProxyLive => "forward-proxy.live/v1".to_string(),
             Self::InvocationPoolAttempts { .. } => "invocation.pool-attempts/v1".to_string(),
             Self::ModelRoutingLive { .. } => "pool.model-routing-live/v1".to_string(),
+            Self::UpstreamAccountAttemptsWindow { .. } => {
+                "upstream-account-attempts.window/v1".to_string()
+            }
         }
     }
 
@@ -9737,7 +9969,8 @@ impl SubscriptionTopic {
                     | Self::PromptCacheWindow { .. }
                     | Self::PromptCacheStickyWindow { .. }
                     | Self::InvocationPoolAttempts { .. }
-                    | Self::ModelRoutingLive { .. } => false,
+                    | Self::ModelRoutingLive { .. }
+                    | Self::UpstreamAccountAttemptsWindow { .. } => false,
                 }
             }
             RuntimeMutation::AttemptChanged { invoke_id } => matches!(
@@ -9792,9 +10025,14 @@ impl SubscriptionTopic {
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
             #[cfg(test)]
             BroadcastPayload::Records { .. }
-            | BroadcastPayload::PoolAttempts { .. }
             | BroadcastPayload::PromptCacheConversationChanged { .. }
             | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => false,
+            BroadcastPayload::PoolAttempts { attempts, .. } => match self {
+                Self::UpstreamAccountAttemptsWindow { account_id, .. } => attempts
+                    .iter()
+                    .any(|attempt| attempt.upstream_account_id == Some(*account_id)),
+                _ => false,
+            },
         }
     }
 
@@ -10310,6 +10548,28 @@ impl SubscriptionTopic {
                 .map_err(|(_status, message)| ApiError::bad_request(anyhow!(message)))?;
                 Ok(serde_json::to_value(response)?)
             }
+            Self::UpstreamAccountAttemptsWindow {
+                account_id,
+                page,
+                page_size,
+                attempt_type,
+                model,
+                sticky_key,
+            } => {
+                let response = load_upstream_account_attempt_page_from_query(
+                    state.as_ref(),
+                    *account_id,
+                    &ListUpstreamAccountAttemptsQuery {
+                        attempt_type: attempt_type.clone(),
+                        model: model.clone(),
+                        sticky_key: sticky_key.clone(),
+                        page: Some(*page),
+                        page_size: Some(*page_size),
+                    },
+                )
+                .await?;
+                Ok(serde_json::to_value(response)?)
+            }
         }
     }
 }
@@ -10512,6 +10772,53 @@ fn parse_required_i64_param(params: &BTreeMap<String, String>, key: &str) -> Res
     parse_optional_i64_param(params, key)?.ok_or_else(|| {
         ApiError::bad_request(anyhow!("subscription topic param `{key}` is required"))
     })
+}
+
+fn parse_required_positive_i64_param(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<i64, ApiError> {
+    let value = parse_required_i64_param(params, key)?;
+    if value > 0 {
+        return Ok(value);
+    }
+    Err(ApiError::bad_request(anyhow!(
+        "subscription topic param `{key}` must be a positive integer"
+    )))
+}
+
+fn parse_upstream_account_attempt_page_param(
+    params: &BTreeMap<String, String>,
+    key: &str,
+    default: usize,
+) -> Result<usize, ApiError> {
+    let value = parse_optional_i64_param(params, key)?;
+    let value = match value {
+        Some(value) if value >= 0 => Some(
+            usize::try_from(value)
+                .map_err(|_| ApiError::bad_request(anyhow!("invalid integer for `{key}`")))?,
+        ),
+        Some(_) => {
+            return Err(ApiError::bad_request(anyhow!(
+                "subscription topic param `{key}` must not be negative"
+            )));
+        }
+        None => None,
+    };
+    let value = value.unwrap_or(default);
+    Ok(if key == "page" {
+        normalize_upstream_account_list_page(Some(value))
+    } else {
+        normalize_upstream_account_list_page_size(Some(value))
+    })
+}
+
+fn normalize_upstream_account_attempt_type_param(
+    params: &BTreeMap<String, String>,
+) -> Option<String> {
+    parse_optional_text_param(params, "type")
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "normal" | "remote_v2" | "image" | "compact"))
 }
 
 fn parse_i64_param(
@@ -15376,6 +15683,9 @@ mod tests {
             conversation_overview_refresh_scheduled: false,
             conversation_overview_refresh_in_flight: false,
             conversation_overview_refresh_pending: false,
+            upstream_account_attempt_refresh_scheduled: false,
+            upstream_account_attempt_refresh_in_flight: false,
+            upstream_account_attempt_refresh_pending: false,
             dirty: false,
             runtime_topic_recovery_generation: 0,
             runtime_topic_recovery_retry_at: None,
@@ -15462,6 +15772,52 @@ mod tests {
         assert_eq!(
             canonical.params.get("limit").map(String::as_str),
             Some("20")
+        );
+    }
+
+    #[test]
+    fn upstream_account_attempt_topic_descriptor_matches_rest_pagination_and_filters() {
+        let descriptor = SubscriptionTopicDescriptor {
+            topic: "upstream-account-attempts.window".to_string(),
+            params: BTreeMap::from([
+                ("accountId".to_string(), " 42 ".to_string()),
+                ("page".to_string(), "0".to_string()),
+                ("pageSize".to_string(), "17".to_string()),
+                ("type".to_string(), "REMOTE_V2".to_string()),
+                ("model".to_string(), " gpt-5.6-sol ".to_string()),
+                ("stickyKey".to_string(), " sticky-a ".to_string()),
+            ]),
+        };
+        let topic = SubscriptionTopic::from_descriptor(&descriptor)
+            .expect("account attempt topic should parse");
+        assert_eq!(
+            topic.descriptor(),
+            SubscriptionTopicDescriptor {
+                topic: "upstream-account-attempts.window".to_string(),
+                params: BTreeMap::from([
+                    ("accountId".to_string(), "42".to_string()),
+                    ("page".to_string(), "1".to_string()),
+                    ("pageSize".to_string(), "20".to_string()),
+                    ("type".to_string(), "remote_v2".to_string()),
+                    ("model".to_string(), "gpt-5.6-sol".to_string()),
+                    ("stickyKey".to_string(), "sticky-a".to_string()),
+                ]),
+            }
+        );
+        assert_eq!(topic.schema_epoch(), "upstream-account-attempts.window/v1");
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "upstream-account-attempts.window".to_string(),
+                params: BTreeMap::from([(String::from("accountId"), String::from("0"))]),
+            })
+            .is_err()
+        );
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "upstream-account-attempts.window".to_string(),
+                params: BTreeMap::from([(String::from("accountId"), String::from("-1"))]),
+            })
+            .is_err()
         );
     }
 
@@ -16910,6 +17266,49 @@ mod tests {
                 .topics
                 .get(&topic_key)
                 .is_some_and(|cached| cached.conversation_overview_refresh_pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_account_attempt_refresh_coalesces_events_during_rebuild() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 42,
+            page: 1,
+            page_size: 50,
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+        };
+        let topic_key = topic.cache_key().expect("account attempt topic key");
+
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
+            cached.upstream_account_attempt_refresh_scheduled = true;
+            cached.upstream_account_attempt_refresh_in_flight = true;
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        hub.schedule_upstream_account_attempt_topic_refresh(state, topic)
+            .await
+            .expect("in-flight account attempt refresh should accept a pending event");
+
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.upstream_account_attempt_refresh_pending)
+        );
+        assert_eq!(
+            UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE,
+            Duration::from_millis(250)
         );
     }
 

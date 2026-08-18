@@ -2334,7 +2334,7 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
     if state.broadcaster.receiver_count() > 0 {
         let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
             .await
-            .map_err(|err| anyhow!("failed to load test pool attempt snapshot: {err:?}"))?;
+            .map_err(|err| anyhow!("failed to load pool attempt snapshot: {err:?}"))?;
         let _ = state.broadcaster.send(BroadcastPayload::PoolAttempts {
             invoke_id: invoke_id.to_string(),
             attempts,

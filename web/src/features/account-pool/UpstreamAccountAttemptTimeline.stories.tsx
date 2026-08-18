@@ -3,8 +3,20 @@ import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ApiPoolUpstreamRequestAttempt } from "../../lib/api";
-import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
+import type {
+  ApiPoolUpstreamRequestAttempt,
+  UpstreamAccountAttemptListResponse,
+} from "../../lib/api";
+import {
+  buildTopicDescriptor,
+  getTopicDescriptorKey,
+  type SubscriptionTopicEnvelope,
+} from "../../lib/sse";
+import {
+  FullPageStorySurface,
+  StorybookPageEnvironment,
+} from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
 
 const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
@@ -523,22 +535,159 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
   return null;
 }
 
+function AttemptTimelineSseMock({ accountId }: { accountId: number }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    const timer = window.setTimeout(() => {
+      // The docs page mounts every story in one SSE scope. Keep the lifecycle
+      // story deterministic instead of letting the gallery fixtures overwrite it.
+      if (document.querySelector('[data-name="Realtime Lifecycle"]')) return;
+      const variants = [
+        {},
+        { type: "normal" },
+        { type: "remote_v2" },
+        { type: "compact" },
+        { type: "image" },
+        { model: "gpt-image-1" },
+        { model: "missing-model" },
+        { stickyKey: "sticky-image" },
+      ];
+      variants.forEach((variant, index) => {
+        const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId,
+          page: 1,
+          pageSize: 50,
+          ...variant,
+        });
+        const search = new URLSearchParams(descriptor.params as Record<string, string>);
+        const filteredItems = filterAttemptItems(search).map((item) =>
+          withAccountId(item, accountId),
+        );
+        controller.emit({
+          type: "snapshot",
+          topic: descriptor,
+          topicKey: getTopicDescriptorKey(descriptor),
+          schemaEpoch: "upstream-account-attempts.window/v1",
+          cursor: index + 1,
+          payload: {
+            items: filteredItems,
+            stickyKeyOptions: buildStickyKeyOptions(filteredItems),
+            total: filteredItems.length,
+            page: 1,
+            pageSize: 50,
+          },
+        });
+      });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [accountId]);
+
+  return null;
+}
+
+const realtimePendingAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "ALIVE0001",
+  invokeId: "LIVE0001",
+  occurredAt: "2026-07-11T12:04:00.000Z",
+  createdAt: "2026-07-11T12:04:00.000Z",
+  status: "pending",
+  phase: "waiting_first_byte",
+  httpStatus: null,
+  downstreamHttpStatus: null,
+  finishedAt: null,
+  upstreamRequestId: null,
+  invocationRecord: undefined,
+  workflowEntry: undefined,
+};
+
+const realtimeTerminalAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...realtimePendingAttempt,
+  status: "success",
+  phase: "completed",
+  httpStatus: 200,
+  downstreamHttpStatus: 200,
+  finishedAt: "2026-07-11T12:04:03.200Z",
+};
+
+const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...realtimeTerminalAttempt,
+  attemptId: "ALIVE0002",
+  invokeId: "LIVE0002",
+  occurredAt: "2026-07-11T12:04:04.000Z",
+  createdAt: "2026-07-11T12:04:04.000Z",
+  finishedAt: "2026-07-11T12:04:05.000Z",
+};
+
+function buildAttemptTimelineSnapshot(
+  items: ApiPoolUpstreamRequestAttempt[],
+): SubscriptionTopicEnvelope<UpstreamAccountAttemptListResponse> {
+  const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+    accountId: 101,
+    page: 1,
+    pageSize: 50,
+  });
+  return {
+    type: "live",
+    topic: descriptor,
+    topicKey: getTopicDescriptorKey(descriptor),
+    schemaEpoch: "upstream-account-attempts.window/v1",
+    cursor: 1,
+    payload: {
+      items,
+      stickyKeyOptions: buildStickyKeyOptions(items),
+      total: items.length,
+      page: 1,
+      pageSize: 50,
+    },
+  };
+}
+
+function AttemptTimelineRealtimeLifecycleMock() {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    let terminalTimer: number | null = null;
+    const initialTimer = window.setTimeout(() => {
+      controller.emit(buildAttemptTimelineSnapshot([withAccountId(realtimePendingAttempt, 101)]));
+      terminalTimer = window.setTimeout(() => {
+        controller.emit(
+          buildAttemptTimelineSnapshot([
+            withAccountId(realtimeNewAttempt, 101),
+            withAccountId(realtimeTerminalAttempt, 101),
+          ]),
+        );
+      }, 160);
+    }, 50);
+    return () => {
+      window.clearTimeout(initialTimer);
+      if (terminalTimer != null) window.clearTimeout(terminalTimer);
+    };
+  }, []);
+
+  return null;
+}
+
 const meta = {
   title: "Account Pool/Components/Upstream Account Attempt Timeline",
   component: UpstreamAccountAttemptTimeline,
+  tags: ["autodocs"],
   decorators: [
     (Story, context) => (
-      <I18nProvider>
-        <MemoryRouter>
-          {context.parameters.pageSurface ? (
-            <Story />
-          ) : (
-            <StorySurface>
+      <StorybookPageEnvironment>
+        <I18nProvider>
+          <MemoryRouter>
+            {context.parameters.pageSurface ? (
               <Story />
-            </StorySurface>
-          )}
-        </MemoryRouter>
-      </I18nProvider>
+            ) : (
+              <StorySurface>
+                <Story />
+              </StorySurface>
+            )}
+          </MemoryRouter>
+        </I18nProvider>
+      </StorybookPageEnvironment>
     ),
   ],
   parameters: {
@@ -558,16 +707,17 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
     expect(canvasElement.textContent ?? "").toContain("输入写 2,090");
     expect(canvasElement.textContent ?? "").toContain("upstream_response_failed");
   });
-  const requestBodyButton = (
-    await canvas.findAllByRole("button", { name: /请求体|request body/i })
-  )[0];
+  const workflowCard = await canvas.findByTestId("account-attempt-record-ASUCC002");
+  const requestBodyButton = within(workflowCard).getByRole("button", {
+    name: /请求体|request body/i,
+  });
   await userEvent.click(requestBodyButton);
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large request");
   });
-  const responseBodyButton = (
-    await canvas.findAllByRole("button", { name: /响应体|response body/i })
-  )[0];
+  const responseBodyButton = within(workflowCard).getByRole("button", {
+    name: /响应体|response body/i,
+  });
   await userEvent.click(responseBodyButton);
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large response");
@@ -578,6 +728,17 @@ function withAttemptTimelineFetchMock(Story: () => ReactNode) {
   return (
     <>
       <AttemptTimelineFetchMock accountId={101} />
+      <AttemptTimelineSseMock accountId={101} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineRealtimeLifecycleMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineFetchMock accountId={101} />
+      <AttemptTimelineRealtimeLifecycleMock />
       <Story />
     </>
   );
@@ -661,6 +822,27 @@ export const EmptyFilteredAttempts: Story = {
       expect(
         canvasElement.querySelector('[data-testid="upstream-account-attempt-filter-bar"]'),
       ).not.toBeNull();
+    });
+  },
+};
+
+export const RealtimeLifecycle: Story = {
+  tags: ["test"],
+  args: {
+    accountId: 101,
+    focusedAttemptId: null,
+  },
+  decorators: [withAttemptTimelineRealtimeLifecycleMock],
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
+      ).toHaveLength(1);
+      expect(
+        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0002"]'),
+      ).toHaveLength(1);
+      expect(canvasElement.textContent ?? "").toContain("HTTP 200");
+      expect(canvasElement.textContent ?? "").not.toContain("waiting_first_byte");
     });
   },
 };

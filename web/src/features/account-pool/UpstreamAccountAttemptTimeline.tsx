@@ -8,6 +8,7 @@ import {
 import { SelectField, type SelectFieldOption } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
+import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
@@ -16,8 +17,9 @@ import type {
   ForwardProxyBindingNode,
   UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
-import { fetchUpstreamAccountAttempts, locateUpstreamAccountAttempt } from "../../lib/api";
+import { locateUpstreamAccountAttempt } from "../../lib/api";
 import { normalizeModelComparisonKey } from "../../lib/invocation";
+import { buildTopicDescriptor, getTopicDescriptorKey } from "../../lib/sse";
 import { InvocationWorkflowAttemptRecord } from "../invocations/InvocationWorkflowDetailPanel";
 
 const PAGE_SIZE = 50;
@@ -39,6 +41,17 @@ const DEFAULT_FILTERS: AttemptFilterState = {
   model: "",
   stickyKey: "",
 };
+
+function buildAttemptTopicDescriptor(accountId: number, page: number, filters: AttemptFilterState) {
+  return buildTopicDescriptor("upstream-account-attempts.window", {
+    accountId,
+    page,
+    pageSize: PAGE_SIZE,
+    type: filters.type || undefined,
+    model: filters.model || undefined,
+    stickyKey: filters.stickyKey || undefined,
+  });
+}
 
 function createDefaultFilters(): AttemptFilterState {
   return { ...DEFAULT_FILTERS };
@@ -344,19 +357,35 @@ export function UpstreamAccountAttemptTimeline({
   onFocusRequestHandled?: (version: number) => void;
 }) {
   const { t, locale } = useTranslation();
-  const [response, setResponse] = useState<UpstreamAccountAttemptListResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<AttemptFilterState>(() => createDefaultFilters());
+  const [locateFallback, setLocateFallback] = useState<{
+    descriptorKey: string;
+    response: UpstreamAccountAttemptListResponse;
+  } | null>(null);
+  const [locateLoading, setLocateLoading] = useState(focusedAttemptId != null);
+  const [locateError, setLocateError] = useState<string | null>(null);
   const [activeFocus, setActiveFocus] = useState<{
     attemptId: string;
     version: number;
   } | null>(null);
-  const requestSeqRef = useRef(0);
-  const resolvedAccountIdRef = useRef<number | null>(null);
-  const resolvedFilterKeyRef = useRef<string | null>(null);
   const focusDismissTimerRef = useRef<number | null>(null);
   const attemptElementMapRef = useRef(new Map<string, HTMLDivElement>());
+  const previousAccountIdRef = useRef(accountId);
+  const attemptTopicDescriptor = useMemo(
+    () => buildAttemptTopicDescriptor(accountId, page, filters),
+    [accountId, filters, page],
+  );
+  const topicEnabled = focusedAttemptId == null || locateFallback != null;
+  const attemptTopic = useSubscriptionTopic<UpstreamAccountAttemptListResponse>(
+    attemptTopicDescriptor,
+    topicEnabled,
+  );
+  const response =
+    attemptTopic.data ??
+    (locateFallback?.descriptorKey === attemptTopic.descriptorKey ? locateFallback.response : null);
+  const loading = locateLoading || (topicEnabled && attemptTopic.isLoading);
+  const error = locateError;
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const isZh = locale === "zh";
   const proxyDirectLabel = t("accountPool.upstreamAttempts.proxyDirect");
@@ -412,83 +441,62 @@ export function UpstreamAccountAttemptTimeline({
     };
   }, [clearFocusDismissTimer]);
 
-  const loadAttemptsPage = useCallback(
-    (page: number, nextFilters: AttemptFilterState, signal?: AbortSignal) => {
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      clearFocusDismissTimer();
-      setLoading(true);
-      setError(null);
-      setResponse(null);
-      setActiveFocus(null);
-      void fetchUpstreamAccountAttempts(accountId, {
-        type: nextFilters.type || undefined,
-        model: nextFilters.model || undefined,
-        stickyKey: nextFilters.stickyKey || undefined,
-        page,
-        pageSize: PAGE_SIZE,
-        signal,
-      })
-        .then((next) => {
-          if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
-          resolvedAccountIdRef.current = accountId;
-          resolvedFilterKeyRef.current = buildAttemptFilterKey(nextFilters);
-          setResponse(next);
-        })
-        .catch((requestError) => {
-          if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
-          resolvedAccountIdRef.current = accountId;
-          resolvedFilterKeyRef.current = buildAttemptFilterKey(nextFilters);
-          setResponse(null);
-          setError(requestError instanceof Error ? requestError.message : String(requestError));
-        })
-        .finally(() => {
-          if (!signal?.aborted && requestSeq === requestSeqRef.current) setLoading(false);
-        });
+  const updateFilters = useCallback(
+    (patch: Partial<AttemptFilterState>) => {
+      setFilters((current) => {
+        const next = {
+          ...current,
+          ...patch,
+        };
+        next.model = normalizeFilterValue(next.model);
+        next.stickyKey = normalizeFilterValue(next.stickyKey);
+        if (
+          next.type === current.type &&
+          next.model === current.model &&
+          next.stickyKey === current.stickyKey
+        ) {
+          return current;
+        }
+        clearFocusDismissTimer();
+        setPage(1);
+        setLocateFallback(null);
+        setLocateError(null);
+        setActiveFocus(null);
+        return next;
+      });
     },
-    [accountId, clearFocusDismissTimer],
+    [clearFocusDismissTimer],
   );
-
-  const updateFilters = useCallback((patch: Partial<AttemptFilterState>) => {
-    setFilters((current) => {
-      const next = {
-        ...current,
-        ...patch,
-      };
-      next.model = normalizeFilterValue(next.model);
-      next.stickyKey = normalizeFilterValue(next.stickyKey);
-      return next.type === current.type &&
-        next.model === current.model &&
-        next.stickyKey === current.stickyKey
-        ? current
-        : next;
-    });
-  }, []);
 
   useEffect(() => {
     if (focusedAttemptId != null) return;
-    const filterKey = buildAttemptFilterKey(filters);
-    if (resolvedAccountIdRef.current === accountId && resolvedFilterKeyRef.current === filterKey) {
-      return;
-    }
-    const controller = new AbortController();
-    loadAttemptsPage(1, filters, controller.signal);
-    return () => controller.abort();
-  }, [accountId, filters, focusedAttemptId, loadAttemptsPage]);
+    setPage((current) => (current === 1 ? current : 1));
+    setLocateFallback(null);
+    setLocateError(null);
+  }, [focusedAttemptId]);
+
+  useEffect(() => {
+    if (previousAccountIdRef.current === accountId) return;
+    previousAccountIdRef.current = accountId;
+    setPage(1);
+    setLocateFallback(null);
+    setLocateError(null);
+    setActiveFocus(null);
+  }, [accountId]);
 
   useEffect(() => {
     if (focusedAttemptId == null) return;
     const controller = new AbortController();
     const defaultFilters = createDefaultFilters();
-    const defaultFilterKey = buildAttemptFilterKey(defaultFilters);
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
     setFilters((current) =>
-      buildAttemptFilterKey(current) === defaultFilterKey ? current : defaultFilters,
+      buildAttemptFilterKey(current) === buildAttemptFilterKey(defaultFilters)
+        ? current
+        : defaultFilters,
     );
-    setLoading(true);
-    setError(null);
-    setResponse(null);
+    setPage(1);
+    setLocateLoading(true);
+    setLocateError(null);
+    setLocateFallback(null);
     setActiveFocus(null);
     clearFocusDismissTimer();
     void locateUpstreamAccountAttempt(accountId, focusedAttemptId, {
@@ -496,21 +504,23 @@ export function UpstreamAccountAttemptTimeline({
       signal: controller.signal,
     })
       .then((next) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
-        resolvedAccountIdRef.current = accountId;
-        resolvedFilterKeyRef.current = defaultFilterKey;
-        setResponse(next);
+        if (controller.signal.aborted) return;
+        const descriptor = buildAttemptTopicDescriptor(accountId, next.page, defaultFilters);
+        setPage(next.page);
+        setLocateFallback({
+          descriptorKey: getTopicDescriptorKey(descriptor),
+          response: next,
+        });
         setActiveFocus({
           attemptId: focusedAttemptId,
           version: focusVersion,
         });
       })
       .catch((requestError) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
-        resolvedAccountIdRef.current = accountId;
-        setResponse(null);
+        if (controller.signal.aborted) return;
         setActiveFocus(null);
-        setError(
+        setLocateFallback(null);
+        setLocateError(
           requestError instanceof Error && requestError.message.includes("404")
             ? t("accountPool.upstreamAttempts.locateUnavailable")
             : requestError instanceof Error
@@ -519,9 +529,9 @@ export function UpstreamAccountAttemptTimeline({
         );
       })
       .finally(() => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        if (controller.signal.aborted) return;
         onFocusRequestHandled?.(focusVersion);
-        setLoading(false);
+        setLocateLoading(false);
       });
     return () => controller.abort();
   }, [accountId, clearFocusDismissTimer, focusVersion, focusedAttemptId, onFocusRequestHandled, t]);
@@ -564,7 +574,13 @@ export function UpstreamAccountAttemptTimeline({
     };
   }, [activeFocus, clearFocusDismissTimer, interactionBoundary]);
 
-  const loadPage = (page: number) => loadAttemptsPage(page, filters);
+  const loadPage = (nextPage: number) => {
+    clearFocusDismissTimer();
+    setPage(nextPage);
+    setLocateFallback(null);
+    setLocateError(null);
+    setActiveFocus(null);
+  };
   const showListLoading = loading && !response;
   const showListError = !loading && error != null;
   const showListEmpty = !loading && !error && (!response || response.items.length === 0);
