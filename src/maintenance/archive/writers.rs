@@ -1057,6 +1057,14 @@ pub(crate) async fn write_archive_batch_upstream_activity(
 mod tests {
     use super::*;
 
+    struct TempArchiveTestDirectory(std::path::PathBuf);
+
+    impl Drop for TempArchiveTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn segment_part_key_is_stable_for_one_prepared_identity() {
         let forward = archive_segment_part_key_for_ids(&[7, 3, 5]).expect("part key");
@@ -1124,6 +1132,7 @@ mod tests {
             "codex-vibe-monitor-archive-finalization-{}",
             retention_temp_suffix()
         ));
+        let _root_cleanup = TempArchiveTestDirectory(root.clone());
         fs::create_dir_all(&root).expect("create archive root");
         let path = root.join("periodic-maintenance.sqlite");
 
@@ -1169,7 +1178,6 @@ mod tests {
             .await
             .expect("close inspected archive sqlite file");
         let preserved_reclaimable_pages = free_pages_after > 0;
-        let _ = fs::remove_dir_all(&root);
 
         assert!(
             preserved_reclaimable_pages,
