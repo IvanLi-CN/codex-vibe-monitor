@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ModelRoutingLiveAccount,
@@ -213,10 +213,17 @@ export const Operational24Hours: Story = {
     if (!ganttContainer || !laneBar || !laneLabel) {
       throw new Error("routing Gantt layout is incomplete");
     }
+    await waitFor(
+      () => {
+        const containerRect = ganttContainer.getBoundingClientRect();
+        const laneRect = laneBar.getBoundingClientRect();
+        expect(Math.abs(containerRect.right - laneRect.right)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 2_000, interval: 50 },
+    );
     const containerRect = ganttContainer.getBoundingClientRect();
     const laneRect = laneBar.getBoundingClientRect();
     const labelRect = laneLabel.getBoundingClientRect();
-    await expect(Math.abs(containerRect.right - laneRect.right)).toBeLessThanOrEqual(4);
     await expect(laneRect.left - containerRect.left).toBeGreaterThanOrEqual(80);
     await expect(labelRect.right).toBeLessThan(laneRect.left);
     await expect(
