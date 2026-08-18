@@ -4131,6 +4131,26 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_started_at_id
+        ON system_task_runs (started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_started_at_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_task_status_time
+        ON system_task_runs (task_kind, status, started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_task_status_time")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS system_raw_payload_metrics (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             inventory_state TEXT NOT NULL DEFAULT 'preparing',

@@ -27,6 +27,7 @@
 - Note: startup persistent preparation does not hold a global background permit around nested retention writers. Each writer acquires its own maintenance admission, and a deferred pass remains eligible for the prompt retry schedule instead of being recorded as complete.
 - Note: raw-metrics inventory reset is resumable. The inventory worker checks for an interrupted `resetting` state and advances one pressure-gated reset batch before resuming normal inventory, so a restart or defer cannot strand the snapshot indefinitely.
 - Note: archive publication paths include a process-local monotonic suffix in addition to PID and timestamp, preventing parallel test or worker collisions when timestamp resolution is coarse.
+- Note: `system_task_runs` retention is part of the existing retention pass. It preserves running rows and the latest 200 rows per `(task_kind, status)`, deletes terminal history in 500-row transactions with a 5000-row pass ceiling, and uses a dedicated five-minute SQLite-pressure backoff without changing startup backfill scheduling.
 
 ## Verification
 

@@ -10,6 +10,7 @@
 - 新增 `system` 顶层工作区与四个子页：`状态 / 任务 / 设置 / 代理`。
 - 顶层导航由 `设置` 改为 `系统`，旧 `#/settings` 改为兼容跳转。
 - 新增系统状态接口与系统后台任务记录接口。
+- 系统任务列表保持既有 page/pageSize 语义，并增加以 `(startedAt, id)` 为锚点的 additive cursor 翻页；查询直接比较 UTC ISO 时间文本，schema 同时提供默认时间排序和 task/status 组合筛选排序索引。
 - 原 settings 页按职责拆分为通用设置页与 forward-proxy 页，同时继续复用现有设置数据模型与写接口。
 - 系统状态页 raw 统计已切换为真实磁盘文件口径，并拆分为 `raw / request / response` 三组指标。
 - raw 指标已改为持久化增量快照：legacy path 由有界 cursor 补齐，启动时一次性回填旧 invocation/attempt owner link，新写入通过 response/request blob link 增量发现；状态页请求只读快照，不再枚举全部 raw 路径或逐文件读取元数据。pressure defer 或后台失败状态保留在内存 health override，避免诊断写抢占 SQLite。

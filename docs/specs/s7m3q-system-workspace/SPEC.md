@@ -107,6 +107,7 @@
   - `forward_proxy_subscription_refresh`
 - retention 任务摘要必须包含 raw compression / archive / prune 等关键计数，避免再拆单独任务调度器。
 - 列表至少支持任务类型、结果状态与时间范围的基础筛选。
+- 默认按 `startedAt DESC, id DESC` 排序。`GET /api/system/tasks` 保持 page/pageSize 响应和总数语义，additive 提供 `nextCursor`；cursor 是 base64url 编码的 `{startedAt,id}`，用于稳定的 keyset 翻页。cursor 不能与 `page > 1` 同时使用。
 
 ### `系统/设置`
 
@@ -139,6 +140,7 @@
 - Given 用户访问 `#/settings`，When 路由解析，Then 重定向到 `#/system/settings`。
 - Given `系统/状态` 页面加载，When 数据返回，Then 页面展示顶部项目磁盘总览、数据库记录概况、归档与逻辑体量三个结构，并包含刷新时间反馈。
 - Given `系统/任务` 页面加载，When 查询返回，Then 页面展示系统后台任务记录且不混入账号池维护事件。
+- Given 任务记录通过 page 或 cursor 连续翻页，When 记录开始时间相同，Then 以 `id` 打破顺序并且不重复、不漏项。
 - Given 用户进入 `系统/设置`，When 调整原有常规设置，Then 保存行为与旧设置页一致。
 - Given 用户进入 `系统/代理`，When 操作 forward proxy，Then 现有校验、测速、刷新订阅能力保持可用。
 

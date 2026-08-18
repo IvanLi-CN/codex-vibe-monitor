@@ -496,8 +496,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22 08:45:00")
-        .bind("2026-06-22 08:45:01")
+        .bind("2026-06-22T08:45:00Z")
+        .bind("2026-06-22T08:45:01Z")
         .bind(startup_handle.id)
         .execute(&state.pool)
         .await
@@ -520,8 +520,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22 09:15:00")
-        .bind("2026-06-22 09:15:02")
+        .bind("2026-06-22T09:15:00Z")
+        .bind("2026-06-22T09:15:02Z")
         .bind(retention_handle.id)
         .execute(&state.pool)
         .await
@@ -537,6 +537,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
@@ -566,6 +567,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
@@ -589,6 +591,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: None,
             page: Some(2),
             page_size: Some(1),
+            cursor: None,
         }),
     )
     .await
@@ -611,6 +614,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
@@ -620,6 +624,49 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert_eq!(ranged.total, 1);
     assert_eq!(ranged.items.len(), 1);
     assert_eq!(ranged.items[0].task_kind, "retention_archive");
+
+    let first_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: None,
+        }),
+    )
+    .await
+    .expect("list first cursor page")
+    .0;
+    let cursor = first_cursor_page
+        .next_cursor
+        .clone()
+        .expect("first cursor page should expose a continuation");
+    let second_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: Some(cursor),
+        }),
+    )
+    .await
+    .expect("list second cursor page")
+    .0;
+    assert_eq!(first_cursor_page.total, paged.total);
+    assert_eq!(second_cursor_page.items[0].id, paged.items[0].id);
+    assert_ne!(
+        first_cursor_page.items[0].id,
+        second_cursor_page.items[0].id
+    );
 
     let app = build_app_router(state.clone());
     let response = app
@@ -644,6 +691,18 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         payload["items"][0]["taskKind"].as_str(),
         Some("retention_archive")
     );
+
+    let cursor_with_page_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/tasks?cursor=eyJzdGFydGVkQXQiOiIyMDI2LTA2LTIyVDA5OjE1OjAwWiIsImlkIjoyfQ&page=2")
+                .body(Body::empty())
+                .expect("build invalid cursor and page request"),
+        )
+        .await
+        .expect("serve invalid cursor and page request");
+    assert_eq!(cursor_with_page_response.status(), StatusCode::BAD_REQUEST);
 
     let invalid_range_response = app
         .clone()
@@ -677,6 +736,150 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert!(payload.get("completedArchiveBatchesCount").is_some());
     assert!(payload.get("databaseBytes").is_some());
     assert!(payload.get("refreshedAt").is_some());
+}
+
+#[tokio::test]
+async fn system_task_runs_schema_indexes_support_time_queries() {
+    let pool = test_current_schema_pool().await;
+    ensure_schema(&pool)
+        .await
+        .expect("apply current system task run schema");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 999
+            ),
+            blocks(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM blocks WHERE value < 399
+            )
+        INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at)
+        SELECT
+            CASE WHEN (hundreds.value + blocks.value) % 2 = 0
+                THEN 'retention_archive' ELSE 'startup_backfill' END,
+            'fixture',
+            CASE WHEN hundreds.value % 3 = 0 THEN 'success' ELSE 'failed' END,
+            printf(
+                '2026-06-%02dT%02d:%02d:%02dZ',
+                1 + ((hundreds.value * 400 + blocks.value) / 86400),
+                ((hundreds.value * 400 + blocks.value) / 3600) % 24,
+                ((hundreds.value * 400 + blocks.value) / 60) % 60,
+                (hundreds.value * 400 + blocks.value) % 60
+            )
+        FROM hundreds CROSS JOIN blocks
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed 400k system task runs");
+
+    let default_plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id FROM system_task_runs ORDER BY started_at DESC, id DESC LIMIT 100",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain default system task query")
+    .into_iter()
+    .map(|row| row.get("detail"))
+    .collect();
+    assert!(
+        default_plan
+            .iter()
+            .any(|detail| detail.contains("idx_system_task_runs_started_at_id")),
+        "default time query must use its ordering index: {default_plan:?}"
+    );
+
+    let filtered_plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success' AND started_at >= '2026-06-02T00:00:00Z' ORDER BY started_at DESC, id DESC LIMIT 100",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain combined system task query")
+    .into_iter()
+    .map(|row| row.get("detail"))
+    .collect();
+    assert!(
+        filtered_plan
+            .iter()
+            .any(|detail| detail.contains("idx_system_task_runs_task_status_time")),
+        "combined filter and sort query must use its index: {filtered_plan:?}"
+    );
+}
+
+#[tokio::test]
+async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
+    reset_system_task_run_retention_schedule();
+    let pool = test_current_schema_pool().await;
+    ensure_schema(&pool)
+        .await
+        .expect("apply current system task run schema");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 999
+            ),
+            blocks(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM blocks WHERE value < 5
+            )
+        INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at)
+        SELECT 'retention_archive', 'fixture', 'success', '2020-01-01T00:00:00Z'
+        FROM hundreds CROSS JOIN blocks
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed expired terminal task runs");
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'running', '2019-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed running task run");
+
+    let pruned = prune_system_task_runs(&pool, false)
+        .await
+        .expect("prune expired task runs");
+    assert_eq!(pruned, 5_000, "one retention pass has a hard delete cap");
+    let terminal_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining terminal task runs");
+    assert_eq!(terminal_remaining, 1_000);
+    let oldest_retained_id: i64 = sqlx::query_scalar(
+        "SELECT MIN(id) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("find oldest retained terminal task run");
+    assert_eq!(
+        oldest_retained_id, 5_001,
+        "the pass deletes the oldest records before newer equal-timestamp ties"
+    );
+    let running_remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM system_task_runs WHERE status = 'running'")
+            .fetch_one(&pool)
+            .await
+            .expect("count running task runs");
+    assert_eq!(running_remaining, 1, "running task runs are never pruned");
+    assert_eq!(
+        prune_system_task_runs(&pool, false)
+            .await
+            .expect("immediate retention pass should be throttled"),
+        0,
+        "retention passes are spaced by at least 15 seconds"
+    );
+    reset_system_task_run_retention_schedule();
 }
 
 pub(crate) fn write_backfill_response_payload_with_terminal_service_tier(
