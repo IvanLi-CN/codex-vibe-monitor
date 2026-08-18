@@ -1429,7 +1429,20 @@ async fn defer_long_term_projection_terminal_repair(state: &AppState, defer_reas
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.state = "dirty_last_good".to_string();
     runtime.last_defer_reason = Some(defer_reason.to_string());
-    runtime.next_repair_at = Some(Instant::now() + LONG_TERM_PROJECTION_REPAIR_INTERVAL);
+    runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+        runtime.next_repair_at,
+        Instant::now(),
+    ));
+}
+
+fn long_term_projection_repair_deadline(
+    existing_deadline: Option<Instant>,
+    now: Instant,
+) -> Instant {
+    // Repeated terminal flushes and pressure deferrals may arrive while a
+    // targeted repair is pending. Keep the first deadline so they cannot
+    // postpone recovery indefinitely.
+    existing_deadline.unwrap_or(now + LONG_TERM_PROJECTION_REPAIR_INTERVAL)
 }
 
 fn long_term_projection_allows_expensive_repair(trigger: &str) -> bool {
@@ -1453,7 +1466,10 @@ async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Err
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.state = "dirty_last_good".to_string();
     runtime.last_error_kind = Some(error_kind.to_string());
-    runtime.next_repair_at = Some(Instant::now() + LONG_TERM_PROJECTION_REPAIR_INTERVAL);
+    runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+        runtime.next_repair_at,
+        Instant::now(),
+    ));
 }
 
 async fn queue_long_term_projection_daily_verify(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1684,7 +1700,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             let mut runtime = state.long_term_projection_runtime.lock().await;
             runtime.state = "deferred".to_string();
             runtime.last_defer_reason = Some("writer_pressure".to_string());
-            runtime.next_repair_at = Some(Instant::now() + LONG_TERM_PROJECTION_REPAIR_INTERVAL);
+            runtime.next_repair_at = Some(long_term_projection_repair_deadline(
+                runtime.next_repair_at,
+                Instant::now(),
+            ));
             debug!(projection = "long_term", trigger, gate_outcome = "deferred", defer_reason = "writer_pressure", reason = %reason, "long-term projection flush deferred by database pressure gate");
             return Ok(0);
         }
@@ -1974,7 +1993,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     runtime.last_error_kind = (!terminal_hot_path_deferred && deferred_repair_count > 0)
         .then(|| "targeted_repair".to_string());
     runtime.next_repair_at = if deferred_repair_count > 0 {
-        Some(Instant::now() + LONG_TERM_PROJECTION_REPAIR_INTERVAL)
+        Some(long_term_projection_repair_deadline(
+            runtime.next_repair_at,
+            Instant::now(),
+        ))
     } else {
         None
     };
@@ -6185,6 +6207,11 @@ mod tests {
             Some(now + Duration::from_secs(1)),
             now,
         ));
+    }
+
+    #[test]
+    fn long_term_projection_repair_respects_a_future_deadline_with_pending_work() {
+        let now = Instant::now();
         assert!(!long_term_projection_repair_due(
             true,
             true,
@@ -6192,6 +6219,21 @@ mod tests {
             Some(now + Duration::from_secs(1)),
             now,
         ));
+    }
+
+    #[test]
+    fn repeated_terminal_defers_preserve_the_original_repair_deadline() {
+        let now = Instant::now();
+        let original = now + Duration::from_secs(30);
+        assert_eq!(
+            long_term_projection_repair_deadline(Some(original), now),
+            original
+        );
+        let overdue = now - Duration::from_secs(1);
+        assert_eq!(
+            long_term_projection_repair_deadline(Some(overdue), now),
+            overdue
+        );
     }
 
     #[test]

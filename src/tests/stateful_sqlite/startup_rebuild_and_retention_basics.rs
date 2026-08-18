@@ -1443,6 +1443,42 @@ async fn live_activity_v2_coverage_wake_preserves_an_active_retry_backoff() {
 }
 
 #[tokio::test]
+async fn live_activity_v2_coverage_wake_preserves_a_success_follow_up_deadline() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+
+    record_startup_backfill_coverage_repair_progress(
+        state.as_ref(),
+        ActiveAccountActivityV2RepairOutcome {
+            priority_bucket_count: 1,
+            repaired_bucket_count: 1,
+            elapsed_ms: 1,
+        },
+    )
+    .await
+    .expect("record successful coverage repair progress");
+    let before = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load scheduled coverage follow-up");
+
+    wake_account_activity_v2_coverage_repair(&state.pool, 1)
+        .await
+        .expect("keep the successful coverage follow-up deadline");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load preserved coverage follow-up");
+    assert_eq!(progress.zero_update_streak, 0);
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert_eq!(progress.next_run_after, before.next_run_after);
+    assert_eq!(progress.wake_generation, before.wake_generation);
+    assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
 async fn idle_coverage_repair_persists_its_next_probe_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
