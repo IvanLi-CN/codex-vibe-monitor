@@ -82,19 +82,23 @@ write_state() {
   local updated_surface="$1"
   local updated_status="$2"
   local updated_digest="$3"
+  local updated_presence="$4"
   local tmp_state="$state_path.tmp.$$"
-  local retained_surface previous_status previous_digest
+  local retained_surface previous_status previous_digest previous_presence
 
   {
-    printf 'version\t1\n'
+    printf 'version\t2\n'
     for retained_surface in "${surface_names[@]}"; do
       if [ "$retained_surface" = "$updated_surface" ]; then
-        printf '%s\t%s\t%s\n' "$retained_surface" "$updated_status" "$updated_digest"
+        printf '%s\t%s\t%s\t%s\n' \
+          "$retained_surface" "$updated_status" "$updated_digest" "$updated_presence"
       else
         previous_status="$(state_value "$retained_surface" 2)"
         previous_digest="$(state_value "$retained_surface" 3)"
         if [ -n "$previous_status" ] && [ -n "$previous_digest" ]; then
-          printf '%s\t%s\t%s\n' "$retained_surface" "$previous_status" "$previous_digest"
+          previous_presence="$(state_value "$retained_surface" 4)"
+          printf '%s\t%s\t%s\t%s\n' \
+            "$retained_surface" "$previous_status" "$previous_digest" "${previous_presence:--}"
         fi
       fi
     done
@@ -180,6 +184,33 @@ cargo_surface_is_present() {
     <(cargo_registry_archives)
 }
 
+cargo_cache_layout_fingerprint() {
+  local cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+  local cache_path="$cargo_home/registry/cache"
+
+  [ -d "$cache_path" ] || return 1
+  awk '
+    NR == FNR { required[$0] = 1; next }
+    {
+      count = split($0, parts, "/")
+      archive = parts[count]
+      if (archive in required) {
+        print parts[count - 1] "/" archive
+      }
+    }
+  ' <(cargo_registry_archives) <(find "$cache_path" -type f -name '*.crate' -print 2>/dev/null) \
+    | LC_ALL=C sort \
+    | shasum -a 256 \
+    | awk '{print $1}'
+}
+
+surface_presence_fingerprint() {
+  case "$1" in
+    cargo) cargo_cache_layout_fingerprint ;;
+    *) printf '%s\n' '-' ;;
+  esac
+}
+
 surface_is_present() {
   case "$1" in
     root-bun) bun_surface_is_present "$repo_root/package.json" "$repo_root/node_modules" ;;
@@ -191,7 +222,7 @@ surface_is_present() {
 
 run_surface() {
   local surface="$1"
-  local label directory current_digest previous_status previous_digest
+  local label directory current_digest previous_status previous_digest previous_presence current_presence
   local -a command
   case "$surface" in
     root-bun)
@@ -219,6 +250,11 @@ run_surface() {
   current_digest="$(surface_digest "$surface")"
   previous_status="$(state_value "$surface" 2)"
   previous_digest="$(state_value "$surface" 3)"
+  previous_presence="$(state_value "$surface" 4)"
+  current_presence="$(surface_presence_fingerprint "$surface" || true)"
+  if [ "$surface" != 'cargo' ] && [ -z "$previous_presence" ]; then
+    previous_presence='-'
+  fi
 
   if [ "$force" -ne 1 ] && [ "$automatic" -eq 1 ] \
     && [ "$previous_status" = 'failed' ] && [ "$previous_digest" = "$current_digest" ]; then
@@ -227,7 +263,10 @@ run_surface() {
   fi
 
   if [ "$force" -ne 1 ] && [ "$previous_status" = 'ok' ] \
-    && [ "$previous_digest" = "$current_digest" ] && surface_is_present "$surface"; then
+    && [ "$previous_digest" = "$current_digest" ] \
+    && [ -n "$previous_presence" ] \
+    && [ "$previous_presence" = "$current_presence" ] \
+    && surface_is_present "$surface"; then
     printf '[worktree-setup] %s is up to date\n' "$label"
     return 0
   fi
@@ -237,12 +276,18 @@ run_surface() {
     cd "$directory" &&
     "${command[@]}"
   ); then
-    write_state "$surface" ok "$current_digest"
+    current_presence="$(surface_presence_fingerprint "$surface" || true)"
+    if [ -z "$current_presence" ]; then
+      printf '[worktree-setup] could not verify %s after installation\n' "$label" >&2
+      write_state "$surface" failed "$current_digest" '-'
+      return 1
+    fi
+    write_state "$surface" ok "$current_digest" "$current_presence"
     printf '[worktree-setup] installed %s\n' "$label"
     return 0
   fi
 
-  write_state "$surface" failed "$current_digest"
+  write_state "$surface" failed "$current_digest" '-'
   printf '[worktree-setup] failed %s\n' "$label" >&2
   return 1
 }

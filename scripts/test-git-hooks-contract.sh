@@ -103,19 +103,49 @@ for path in "$@"; do
   [ "$path" = '--edition' ] && shift && continue
   [ "$path" = '2024' ] && continue
   [ -f "$path" ] || continue
-  printf '// formatter result\n' >> "$path"
+  perl -0pi -e 's/fn main\(\)\{ println!\("staged"\); \}/fn main() {\n    println!("staged");\n}/' "$path"
 done
 EOF_PARTIAL_RUSTFMT
 chmod +x "$fake_bin/partial-rustfmt"
+if (
+  cd "$partial_repo"
+  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$lefthook_bin" run pre-commit --no-auto-install \
+    > "$tmp_dir/partial-stage.log" 2>&1
+); then
+  fail 'partially staged formatter rewrite must fail before modifying the worktree'
+fi
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/index.contents"
+cp "$partial_repo/src/sample.rs" "$tmp_dir/worktree.contents"
+cat > "$tmp_dir/expected-index.contents" <<'EOF_PARTIAL_INDEX'
+fn main(){ println!("staged"); }
+EOF_PARTIAL_INDEX
+cat > "$tmp_dir/expected-worktree.contents" <<'EOF_PARTIAL_WORKTREE'
+fn main(){ println!("staged"); }
+// unstaged hunk must survive
+EOF_PARTIAL_WORKTREE
+assert_contains "$tmp_dir/partial-stage.log" 'refusing to auto-format partially staged file: src/sample.rs'
+cmp -s "$tmp_dir/expected-index.contents" "$tmp_dir/index.contents" \
+  || fail 'partial-stage guard modified the index'
+cmp -s "$tmp_dir/expected-worktree.contents" "$tmp_dir/worktree.contents" \
+  || fail 'partial-stage guard modified the worktree'
+cat > "$partial_repo/src/sample.rs" <<'EOF_FULL_STAGE'
+fn main(){ println!("staged"); }
+EOF_FULL_STAGE
 (
   cd "$partial_repo"
   CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$lefthook_bin" run pre-commit --no-auto-install
 )
-git -C "$partial_repo" diff --cached -- src/sample.rs > "$tmp_dir/index.diff"
-git -C "$partial_repo" diff -- src/sample.rs > "$tmp_dir/worktree.diff"
-assert_contains "$tmp_dir/index.diff" '// formatter result'
-assert_not_contains "$tmp_dir/index.diff" 'unstaged hunk must survive'
-assert_contains "$tmp_dir/worktree.diff" 'unstaged hunk must survive'
+git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/formatted-index.contents"
+cp "$partial_repo/src/sample.rs" "$tmp_dir/formatted-worktree.contents"
+cat > "$tmp_dir/expected-formatted.contents" <<'EOF_FORMATTED'
+fn main() {
+    println!("staged");
+}
+EOF_FORMATTED
+cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-index.contents" \
+  || fail 'formatter rewrite was not staged exactly'
+cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-worktree.contents" \
+  || fail 'formatter rewrite was not applied exactly'
 printf 'outside target\n' > "$tmp_dir/outside.rs"
 ln -s "$tmp_dir/outside.rs" "$partial_repo/src/escape.rs"
 (

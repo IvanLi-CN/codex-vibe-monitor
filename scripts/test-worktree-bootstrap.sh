@@ -253,8 +253,9 @@ assert_log_only_surface none yes
 
 missing_cargo_archive="$(find "$fake_cargo_home/registry/cache" -type f -name '*.crate' -print -quit)"
 [ -n "$missing_cargo_archive" ] || fail 'fake Cargo cache did not contain a registry archive'
+mkdir -p "$fake_cargo_home/registry/cache/legacy-registry"
+cp "$missing_cargo_archive" "$fake_cargo_home/registry/cache/legacy-registry/$(basename "$missing_cargo_archive")"
 rm -f "$missing_cargo_archive"
-touch "$fake_cargo_home/registry/cache/codex-vibe-monitor-test/unrelated-0.0.0.crate"
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
 (

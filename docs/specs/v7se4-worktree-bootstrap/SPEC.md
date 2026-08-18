@@ -40,12 +40,13 @@
 
 ### MUST
 
-- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；Bun `ok` 状态必须保留 manifest 的全部直接依赖包，Cargo `ok` 状态必须保留 `Cargo.lock` 的全部 registry archive。四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
+- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；Bun `ok` 状态必须保留 manifest 的全部直接依赖包，Cargo `ok` 状态必须保留 `Cargo.lock` 的全部 registry archive 及其成功恢复后的 cache 相对布局指纹。四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
 - `worktree:bootstrap` 必须继续遵守 copy-missing-only；目标文件已存在时不得覆盖。
 - `worktree:setup` 必须为 root Bun、web Bun、docs Bun、Cargo 各自保存无敏感状态和 input digest；手动 `bun run worktree:setup` 重试 stale 或 failed surface，`bun run worktree:setup -- --force` 强制执行四项。
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
 - 未配置 `core.hooksPath` 时，`lefthook` 2.1.7 或更高版本必须在 `PATH` 中可执行；`bun run hooks:install` 缺少或版本过低时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
 - `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前配置生成的 Lefthook 模板及本仓库 marker 逐字相等时才能更新。`prepare-commit-msg` 仅在与带该 hook 配置生成的 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
+- staged formatter 只能处理无未暂存 hunk 的文件；同一目标文件同时存在 staged 与 unstaged 修改时，pre-commit 必须在 formatter 运行前失败，并保持 index 与工作树不变。
 - 资源同步锁必须位于当前 worktree 的 Git metadata；采用随持锁进程退出自动释放的 advisory lock，同一 worktree busy 时必须非阻塞跳过，不同 linked worktree 不得互相等待。setup 对同一 worktree 自动路径同样非阻塞，手动入口串行等待。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。
 

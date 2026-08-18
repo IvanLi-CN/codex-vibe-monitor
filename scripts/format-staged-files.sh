@@ -44,18 +44,33 @@ done
 
 [ "${#files[@]}" -gt 0 ] || exit 0
 
+lefthook_unstaged_patch="$(git rev-parse --git-path info/lefthook-unstaged.patch)"
+for file in "${files[@]}"; do
+  if [ -f "$lefthook_unstaged_patch" ] \
+    && grep -Fq -- "diff --git a/$file b/$file" "$lefthook_unstaged_patch"; then
+    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+    printf 'stage or unstage all changes in this file before committing\n' >&2
+    exit 1
+  fi
+  if [ ! -f "$lefthook_unstaged_patch" ] && ! git diff --quiet -- "$file"; then
+    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+    printf 'stage or unstage all changes in this file before committing\n' >&2
+    exit 1
+  fi
+done
+
 case "$surface" in
   web)
     biome_bin="${CODEX_HOOK_BIOME_BIN:-$repo_root/node_modules/.bin/biome}"
-    exec "$biome_bin" check --write "${files[@]}"
+    "$biome_bin" check --write "${files[@]}"
     ;;
   rust)
     rustfmt_bin="${CODEX_HOOK_RUSTFMT_BIN:-rustfmt}"
-    exec "$rustfmt_bin" --edition 2024 "${files[@]}"
+    "$rustfmt_bin" --edition 2024 "${files[@]}"
     ;;
   markdown)
     dprint_bin="${CODEX_HOOK_DPRINT_BIN:-$repo_root/node_modules/.bin/dprint}"
-    exec "$dprint_bin" fmt "${files[@]}"
+    "$dprint_bin" fmt "${files[@]}"
     ;;
   *)
     printf 'unknown formatter surface: %s\n' "$surface" >&2
