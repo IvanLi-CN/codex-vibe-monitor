@@ -620,11 +620,13 @@ const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
   finishedAt: "2026-07-11T12:04:05.000Z",
 };
 
+const REALTIME_LIFECYCLE_ACCOUNT_ID = 919;
+
 function buildAttemptTimelineSnapshot(
   items: ApiPoolUpstreamRequestAttempt[],
 ): SubscriptionTopicEnvelope<UpstreamAccountAttemptListResponse> {
   const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
-    accountId: 101,
+    accountId: REALTIME_LIFECYCLE_ACCOUNT_ID,
     page: 1,
     pageSize: 50,
   });
@@ -650,12 +652,16 @@ function AttemptTimelineRealtimeLifecycleMock() {
     if (!controller) return;
     let terminalTimer: number | null = null;
     const initialTimer = window.setTimeout(() => {
-      controller.emit(buildAttemptTimelineSnapshot([withAccountId(realtimePendingAttempt, 101)]));
+      controller.emit(
+        buildAttemptTimelineSnapshot([
+          withAccountId(realtimePendingAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
+        ]),
+      );
       terminalTimer = window.setTimeout(() => {
         controller.emit(
           buildAttemptTimelineSnapshot([
-            withAccountId(realtimeNewAttempt, 101),
-            withAccountId(realtimeTerminalAttempt, 101),
+            withAccountId(realtimeNewAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
+            withAccountId(realtimeTerminalAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
           ]),
         );
       }, 160);
@@ -737,7 +743,7 @@ function withAttemptTimelineFetchMock(Story: () => ReactNode) {
 function withAttemptTimelineRealtimeLifecycleMock(Story: () => ReactNode) {
   return (
     <>
-      <AttemptTimelineFetchMock accountId={101} />
+      <AttemptTimelineFetchMock accountId={REALTIME_LIFECYCLE_ACCOUNT_ID} />
       <AttemptTimelineRealtimeLifecycleMock />
       <Story />
     </>
@@ -829,7 +835,7 @@ export const EmptyFilteredAttempts: Story = {
 export const RealtimeLifecycle: Story = {
   tags: ["test"],
   args: {
-    accountId: 101,
+    accountId: REALTIME_LIFECYCLE_ACCOUNT_ID,
     focusedAttemptId: null,
   },
   decorators: [withAttemptTimelineRealtimeLifecycleMock],
