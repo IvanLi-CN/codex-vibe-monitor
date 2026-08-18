@@ -1927,6 +1927,7 @@ pub(crate) struct ModelRoutingState {
     pub(crate) last_seen_at: String,
     pub(crate) last_failure_at: Option<String>,
     pub(crate) last_failure_kind: Option<String>,
+    #[serde(skip_serializing)]
     pub(crate) last_failure_message: Option<String>,
     pub(crate) cooldown_until: Option<String>,
     pub(crate) cache_concurrency_limit: Option<i64>,

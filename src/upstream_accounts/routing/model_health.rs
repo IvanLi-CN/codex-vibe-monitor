@@ -310,6 +310,7 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
           FROM pool_upstream_account_model_routes AS routes
           JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
          WHERE accounts.kind = ?1
+           AND COALESCE(accounts.deleted_at, '') = ''
            AND routes.last_seen_at >= ?2
            AND (?3 IS NULL OR routes.model = ?3)
          ORDER BY routes.model COLLATE NOCASE ASC, routes.account_id ASC

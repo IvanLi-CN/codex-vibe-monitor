@@ -140,6 +140,15 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     observe_model_route_seen(&state.pool, account_id, Some(model))
         .await
         .expect("seed API Key model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET last_failure_kind = 'upstream_http_5xx', last_failure_message = ?3 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind("upstream response contained a sensitive diagnostic")
+    .execute(&state.pool)
+    .await
+    .expect("seed a sensitive failure message");
     let first_attempt =
         insert_model_failure_attempt(&state, account_id, "routing-live-api-first", Some(model))
             .await;
@@ -169,6 +178,11 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert!(
         live_json
             .pointer("/groups/0/accounts/0/accountGroupName")
+            .is_none()
+    );
+    assert!(
+        live_json
+            .pointer("/groups/0/accounts/0/lastFailureMessage")
             .is_none()
     );
     assert!(live_json.pointer("/records/0/accountGroupName").is_none());

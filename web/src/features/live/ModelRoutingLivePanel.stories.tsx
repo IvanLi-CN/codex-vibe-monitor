@@ -31,7 +31,7 @@ const data: ModelRoutingLiveResponse = {
           lastSeenAt: "2026-08-16T03:57:11.000Z",
           cooldownUntil: "2026-08-16T04:15:00.000Z",
           cacheConcurrencyLimit: 1,
-          cacheLastHitRatePercent: 4.2,
+          cacheLastHitRatePercent: 4,
           probeRequired: true,
         },
       ],

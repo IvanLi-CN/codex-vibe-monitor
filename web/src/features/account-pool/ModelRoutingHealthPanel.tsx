@@ -43,7 +43,9 @@ function routeTone(state: string): "success" | "warning" | "secondary" {
 function routeStateLabel(state: string, t: (key: string) => string) {
   const key = `accountPool.upstreamAccounts.modelRouting.states.${state}`;
   const translated = t(key);
-  return translated === key ? state : translated;
+  return translated === key
+    ? t("accountPool.upstreamAccounts.modelRouting.history.unknown")
+    : translated;
 }
 
 function routeProtocolLabel(value: string | null | undefined, t: (key: string) => string) {
@@ -275,7 +277,11 @@ export function ModelRoutingHealthPanel({
                         textClassName="truncate font-mono text-sm font-semibold"
                       />
                       <span className="mt-0.5 block truncate text-xs text-base-content/65">
-                        {[protection, failureSummary, formatBeijing(route.lastSeenAt)]
+                        {[
+                          protection,
+                          failureSummary,
+                          formatBeijing(route.changedAt ?? route.lastSeenAt),
+                        ]
                           .filter(Boolean)
                           .join(" · ")}
                       </span>

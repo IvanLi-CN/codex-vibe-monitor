@@ -306,7 +306,7 @@ function createModelRoutingLiveResponse(): ModelRoutingLiveResponse {
             lastSeenAt: "2026-04-06T11:58:00.000Z",
             cooldownUntil: "2026-04-06T12:15:00.000Z",
             cacheConcurrencyLimit: 1,
-            cacheLastHitRatePercent: 6.2,
+            cacheLastHitRatePercent: 6,
             probeRequired: true,
           },
         ],
