@@ -49,19 +49,21 @@ export FORMATTER_LOG="$formatter_log"
 (
   cd "$repo_root"
   CODEX_HOOK_BIOME_BIN="$fake_bin/biome" \
-    bash scripts/format-staged-files.sh web web/src/test-setup.ts missing.ts web/../../package.json
+    bash scripts/format-staged-files.sh web web/src/test-setup.ts missing.ts web/../../package.json web/../package.json
   CODEX_HOOK_RUSTFMT_BIN="$fake_bin/rustfmt" \
     bash scripts/format-staged-files.sh rust src/main.rs deleted.rs
   CODEX_HOOK_DPRINT_BIN="$fake_bin/dprint" \
-    bash scripts/format-staged-files.sh markdown README.md removed.md
+    bash scripts/format-staged-files.sh markdown README.md removed.md docs/../README.md
 )
 assert_contains "$formatter_log" $'biome\tcheck --write web/src/test-setup.ts'
 assert_contains "$formatter_log" $'rustfmt\t--edition 2024 src/main.rs'
 assert_contains "$formatter_log" $'dprint\tfmt README.md'
 assert_not_contains "$formatter_log" 'missing.ts'
 assert_not_contains "$formatter_log" '../../package.json'
+assert_not_contains "$formatter_log" 'web/../package.json'
 assert_not_contains "$formatter_log" 'deleted.rs'
 assert_not_contains "$formatter_log" 'removed.md'
+assert_not_contains "$formatter_log" 'docs/../README.md'
 
 lefthook_bin="$(command -v lefthook 2>/dev/null || true)"
 [ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires a global lefthook binary'
