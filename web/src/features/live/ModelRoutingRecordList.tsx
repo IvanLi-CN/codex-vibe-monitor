@@ -49,17 +49,28 @@ function routeProtocolLabel(
   value: string | null | undefined,
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
-  if (!value) return t("live.routing.record.unknown");
+  return routeProtocolLabelCandidates([value], t);
+}
+
+function routeProtocolLabelCandidates(
+  values: Array<string | null | undefined>,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
   const candidates = [
-    `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.states.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.states.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.latestAction.actions.${value}`,
   ];
-  for (const key of candidates) {
-    const translated = t(key);
-    if (translated !== key) return translated;
+  for (const value of values) {
+    if (!value) continue;
+    for (const keyForValue of candidates) {
+      const key = keyForValue(value);
+      const translated = t(key);
+      if (translated !== key) return translated;
+    }
   }
   return t("live.routing.record.unknown");
 }
@@ -102,7 +113,10 @@ function RecordRow({
 }) {
   const { t } = useTranslation();
   const audit = record.routingSelectionAudit;
-  const reason = routeProtocolLabel(record.reasonCode || record.action || record.failureKind, t);
+  const reason = routeProtocolLabelCandidates(
+    [record.reasonCode, record.action, record.failureKind],
+    t,
+  );
   const result = record.httpStatus
     ? `HTTP ${record.httpStatus}`
     : routeProtocolLabel(record.status, t);

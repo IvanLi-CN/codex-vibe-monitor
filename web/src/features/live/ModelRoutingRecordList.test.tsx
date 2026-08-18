@@ -50,6 +50,15 @@ const records: ModelRoutingTimelineRecord[] = [
     modelRouteStateAfter: "cooling_down",
   },
   {
+    id: "reset:gpt-5.5",
+    kind: "event",
+    occurredAt: "2026-08-16T04:00:05.000Z",
+    accountId: 12,
+    model: "gpt-5.5",
+    action: "model_route_reset",
+    reasonCode: "model_route",
+  },
+  {
     id: "attempt:other-model",
     kind: "attempt",
     occurredAt: "2026-08-16T04:00:10.000Z",
@@ -101,9 +110,10 @@ describe("ModelRoutingRecordList", () => {
       </I18nProvider>,
     );
 
-    expect(host?.querySelectorAll('[data-testid^="model-routing-record-"]')).toHaveLength(2);
+    expect(host?.querySelectorAll('[data-testid^="model-routing-record-"]')).toHaveLength(3);
     expect(host?.textContent).toContain("重试 1");
     expect(host?.textContent).toContain("状态事件");
+    expect(host?.textContent).toContain("模型路由已重置");
     expect(host?.querySelector("h3")?.textContent).toBe("路由记录");
     expect(host?.textContent).not.toContain("gpt-5.5 路由决策");
     expect(host?.textContent).not.toContain("gpt-5.4-mini");
