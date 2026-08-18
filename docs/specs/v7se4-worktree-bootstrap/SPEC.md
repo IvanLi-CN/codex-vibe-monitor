@@ -45,7 +45,7 @@
 - `worktree:setup` 必须为 root Bun、web Bun、docs Bun、Cargo 各自保存无敏感状态和 input digest；手动 `bun run worktree:setup` 重试 stale 或 failed surface，`bun run worktree:setup -- --force` 强制执行四项。
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
 - 未配置 `core.hooksPath` 时，`lefthook` 2.1.7 或更高版本必须在 `PATH` 中可执行；`bun run hooks:install` 缺少或版本过低时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
-- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前配置生成的 Lefthook 模板及本仓库 marker 逐字相等时才能更新。`prepare-commit-msg` 仅在与带该 hook 配置生成的 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
+- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前配置生成的 Lefthook 模板及本仓库 marker 逐字相等时才能更新。已标记的旧 standard pre-commit 可作为受管前身重装为带 safety check 的模板；其他变体一律保留。`prepare-commit-msg` 仅在与带该 hook 配置生成的 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
 - staged formatter 只能处理无未暂存 hunk 的文件；同一目标文件同时存在 staged 与 unstaged 修改时，受管 pre-commit wrapper 必须在 Lefthook 运行前失败，并保持 index 与工作树不变。不得依赖 shared Git common-dir 中 Lefthook 未暂存补丁的路径或时效性；检查与 formatter 必须共享同一路径过滤逻辑。
 - 资源同步锁必须位于当前 worktree 的 Git metadata；采用随持锁进程退出自动释放的 advisory lock，同一 worktree busy 时必须非阻塞跳过，不同 linked worktree 不得互相等待。setup 对同一 worktree 自动路径同样非阻塞，手动入口串行等待。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。

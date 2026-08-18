@@ -214,7 +214,11 @@ legacy_repo="$tmp_dir/legacy-wrapper"
 mkdir -p "$legacy_repo/scripts"
 cp "$repo_root/lefthook.yml" "$legacy_repo/lefthook.yml"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$legacy_repo/scripts/install-lefthook-hooks.sh"
+cp "$repo_root/scripts/format-staged-files.sh" "$legacy_repo/scripts/format-staged-files.sh"
+cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$legacy_repo/scripts/check-staged-formatter-safety.sh"
 chmod +x "$legacy_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$legacy_repo/scripts/format-staged-files.sh"
+chmod +x "$legacy_repo/scripts/check-staged-formatter-safety.sh"
 git -C "$legacy_repo" init -q
 git -C "$legacy_repo" config user.name 'Codex Test'
 git -C "$legacy_repo" config user.email 'codex-test@example.com'
@@ -229,12 +233,15 @@ prepare-commit-msg:
 EOF_LEGACY_HOOK
   PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install prepare-commit-msg >/dev/null
   cp "$repo_root/lefthook.yml" lefthook.yml
+  PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install pre-commit >/dev/null
+  printf '\n# managed by codex-vibe-monitor hooks:install\n' >> .git/hooks/pre-commit
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 legacy_hook="$legacy_repo/.git/hooks/prepare-commit-msg"
 if [ -e "$legacy_hook" ] || [ -L "$legacy_hook" ]; then
   fail 'exact obsolete Lefthook prepare-commit-msg wrapper was not removed'
 fi
+assert_contains "$legacy_repo/.git/hooks/pre-commit" 'bash scripts/check-staged-formatter-safety.sh'
 idempotent_output="$tmp_dir/idempotent-install.log"
 (
   cd "$legacy_repo"

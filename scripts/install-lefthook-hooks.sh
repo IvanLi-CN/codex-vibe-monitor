@@ -177,6 +177,8 @@ is_managed_hook() {
   printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
   if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
     rm -rf "$template_dir"
+    # A marked standard pre-commit template is a known predecessor of the
+    # safety wrapper and may be replaced during this managed migration.
     return 0
   fi
   if [ "$hook_name" = 'pre-commit' ] \
