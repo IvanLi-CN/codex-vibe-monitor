@@ -267,6 +267,7 @@ export const Operational24Hours: Story = {
     const modelToggle = await canvas.findByRole("button", {
       name: "展开 gpt-5.5 路由记录",
     });
+    await expect(modelToggle).not.toHaveAttribute("aria-controls");
     await userEvent.click(modelToggle);
     const collapseControl = await canvas.findByRole("button", {
       name: "收起 gpt-5.5 路由记录",

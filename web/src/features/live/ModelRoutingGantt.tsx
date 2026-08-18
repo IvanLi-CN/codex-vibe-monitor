@@ -690,7 +690,11 @@ function decorateSystemRoutingSvg({
     const toggleLabel = modelToggleLabel(group.model);
     wrapper.setAttribute("aria-label", toggleLabel);
     wrapper.setAttribute("aria-expanded", String(expandedModel === group.model));
-    wrapper.setAttribute("aria-controls", modelRoutingRecordsId(group.model));
+    if (expandedModel === group.model) {
+      wrapper.setAttribute("aria-controls", modelRoutingRecordsId(group.model));
+    } else {
+      wrapper.removeAttribute("aria-controls");
+    }
     appendSvgTitle(wrapper, toggleLabel);
     bindSvgAction(wrapper, () => onToggleModelRecords(group.model));
     const countLabel = svgElement("text", {
