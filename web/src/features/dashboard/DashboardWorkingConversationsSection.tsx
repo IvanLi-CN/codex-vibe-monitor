@@ -485,7 +485,7 @@ function CompactLatencyPills({
     >
       <span
         data-testid="dashboard-compact-latency-first-byte"
-        className="inline-flex min-w-0 items-center gap-0.5 text-secondary"
+        className="inline-flex min-w-0 items-center gap-0.5 text-success"
       >
         <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
@@ -870,7 +870,7 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
 }
 
 function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (value == null || !Number.isFinite(value) || value <= 0) return "--";
 
   const seconds = value / 1000;
   const roundedTenths = Math.round(seconds * 10) / 10;
@@ -885,8 +885,7 @@ function formatCompactLatencySecondsValue(value: number | null | undefined, loca
 }
 
 function formatCompactResponseTimeValue(value: number | null | undefined, localeTag: string) {
-  const formattedValue = formatCompactLatencySecondsValue(value, localeTag);
-  return formattedValue === FALLBACK_CELL ? "--" : formattedValue;
+  return formatCompactLatencySecondsValue(value, localeTag);
 }
 
 function finiteNumber(value: number | null | undefined) {

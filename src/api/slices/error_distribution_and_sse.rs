@@ -2378,6 +2378,22 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_activity_live_snapshot_rejects_stale_responding_without_first_token() {
+        let record = live_record(
+            "stale-responding",
+            Some(42),
+            "running",
+            Some("responding"),
+            1,
+        );
+
+        let snapshot = build_dashboard_activity_live_snapshot(11, [record]);
+
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 0);
+    }
+
+    #[test]
     fn dashboard_activity_live_revision_reservation_is_monotonic() {
         let first = reserve_dashboard_activity_live_revision();
         let second = reserve_dashboard_activity_live_revision();
@@ -4174,10 +4190,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 "running" | "pending"
             )
             .then(|| {
-                let live_phase = record
-                    .live_phase
-                    .clone()
-                    .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+                let live_phase =
+                    effective_runtime_invocation_live_phase(&record).map(str::to_string);
                 DashboardProjectionInvocation {
                     upstream_account_id: record.upstream_account_id,
                     upstream_account_name: record.upstream_account_name,
@@ -4251,10 +4265,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
         .or_else(|| baseline_record.and_then(|record| record.upstream_account_name.clone()));
         let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
             || baseline_record.is_some_and(|record| record.is_retry);
-        let live_phase = record
-            .live_phase
-            .clone()
-            .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+        let live_phase = effective_runtime_invocation_live_phase(&record).map(str::to_string);
         projection_records.insert(
             key,
             DashboardProjectionInvocation {

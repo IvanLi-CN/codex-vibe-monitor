@@ -60,6 +60,18 @@ describe("resolveInvocationLivePhase", () => {
     ).toBe("requesting");
   });
 
+  it("keeps pending records queued when stale phase metadata is present", () => {
+    expect(
+      resolveInvocationLivePhase({
+        status: "pending",
+        failureClass: "none",
+        livePhase: "responding",
+        upstreamAccountId: "account-1",
+        firstTokenMs: null,
+      }),
+    ).toBe("queued");
+  });
+
   it("keeps terminal or resolved-failure rows out of the live phase model", () => {
     expect(
       resolveInvocationLivePhase({

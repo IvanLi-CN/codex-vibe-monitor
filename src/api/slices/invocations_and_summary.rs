@@ -277,6 +277,21 @@ pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'
     }
 }
 
+pub(crate) fn effective_runtime_invocation_live_phase(
+    record: &ApiInvocation,
+) -> Option<&'static str> {
+    let inferred_phase = runtime_invocation_live_phase(record)?;
+    if inferred_phase == INVOCATION_LIVE_PHASE_RESPONDING {
+        return Some(inferred_phase);
+    }
+
+    match normalized_runtime_text(record.live_phase.as_deref()).as_str() {
+        INVOCATION_LIVE_PHASE_QUEUED => Some(INVOCATION_LIVE_PHASE_QUEUED),
+        INVOCATION_LIVE_PHASE_REQUESTING => Some(INVOCATION_LIVE_PHASE_REQUESTING),
+        _ => Some(inferred_phase),
+    }
+}
+
 #[cfg(test)]
 mod invocation_live_phase_tests {
     use super::*;
@@ -6988,10 +7003,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 source_scope,
             )
         {
-            let runtime_phase = runtime_record
-                .live_phase
-                .as_deref()
-                .or_else(|| runtime_invocation_live_phase(runtime_record));
+            let runtime_phase = effective_runtime_invocation_live_phase(runtime_record);
             if runtime_phase != row.live_phase.as_deref() {
                 phase_counts.decrement_phase_name(row.live_phase.as_deref());
                 phase_counts.increment_phase_name(runtime_phase);
@@ -7054,12 +7066,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
         .fold(
             InvocationPhaseCountsResponse::default(),
             |mut counts, record| {
-                counts.increment_phase_name(
-                    record
-                        .live_phase
-                        .as_deref()
-                        .or_else(|| runtime_invocation_live_phase(record)),
-                );
+                counts.increment_phase_name(effective_runtime_invocation_live_phase(record));
                 counts
             },
         );
@@ -10996,10 +11003,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
     {
         return None;
     }
-    let live_phase = record
-        .live_phase
-        .clone()
-        .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+    let live_phase = effective_runtime_invocation_live_phase(&record).map(str::to_string);
     Some(UpstreamAccountInvocationPreviewRow {
         upstream_account_id: record.upstream_account_id,
         id: record.id,
@@ -11783,10 +11787,7 @@ async fn query_upstream_account_in_progress_counts_with_baseline(
             continue;
         }
         let key = (record.invoke_id.clone(), record.occurred_at.clone());
-        let runtime_phase = record
-            .live_phase
-            .as_deref()
-            .or_else(|| runtime_invocation_live_phase(&record));
+        let runtime_phase = effective_runtime_invocation_live_phase(&record);
         if let Some((db_upstream_account_id, db_is_retry, db_phase, db_wait_ms)) =
             db_runtime_keys.get(&key)
         {
