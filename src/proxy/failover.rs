@@ -39,6 +39,20 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 #[cfg(not(test))]
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
+pub(crate) fn no_candidate_next_eligible_delay(
+    audit: &PoolRoutingNoCandidateAudit,
+) -> Option<Duration> {
+    audit
+        .next_eligible_at
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .map(|eligible_at| {
+            (eligible_at - Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+        })
+}
+
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
     if text.is_empty() {
@@ -426,7 +440,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolutionWithWait> {
-    let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
+    let mut availability = state.pool_routing_availability.subscribe();
 
     loop {
         let now = Instant::now();
@@ -452,7 +466,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         if wait_for_no_available
             && matches!(
                 resolution,
-                PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
+                PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate(_)
             )
             && wait_deadline.is_none()
         {
@@ -463,9 +477,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         }
         match resolution {
             resolution @ (PoolAccountResolution::Unavailable
-            | PoolAccountResolution::NoCandidate)
+            | PoolAccountResolution::NoCandidate(_))
                 if wait_for_no_available =>
             {
+                let next_eligible_delay = match &resolution {
+                    PoolAccountResolution::NoCandidate(audit) => {
+                        no_candidate_next_eligible_delay(audit)
+                    }
+                    _ => None,
+                };
                 let wait_deadline = if let Some(deadline) = *wait_deadline {
                     deadline
                 } else {
@@ -484,13 +504,111 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                     return Ok(PoolAccountResolutionWithWait::Resolution(resolution));
                 }
                 notify_pool_no_available_wait_hook(state);
-                tokio::time::sleep(
-                    poll_interval.min(effective_deadline.saturating_duration_since(now)),
-                )
-                .await;
+                let remaining = effective_deadline.saturating_duration_since(now);
+                let wake_after = next_eligible_delay
+                    .map(|delay| delay.min(remaining))
+                    .unwrap_or(remaining);
+                tokio::select! {
+                    changed = availability.changed() => {
+                        // A release, recovery, reset, or settings change made capacity
+                        // observable again. The next loop owns the fresh selection.
+                        let _ = changed;
+                    }
+                    _ = tokio::time::sleep(wake_after) => {}
+                }
             }
             _ => return Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
+    state: Arc<AppState>,
+    sticky_key: Option<String>,
+    requested_model: Option<String>,
+    excluded_ids: Vec<i64>,
+    excluded_upstream_route_keys: HashSet<String>,
+    required_upstream_route_key: Option<String>,
+    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: String,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+    reservation_key: String,
+) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
+    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        let mut wait_deadline = wait_deadline;
+        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+            state.as_ref(),
+            sticky_key.as_deref(),
+            requested_model.as_deref(),
+            &excluded_ids,
+            &excluded_upstream_route_keys,
+            required_upstream_route_key.as_deref(),
+            binding_constraint.as_ref(),
+            conversation_override.as_ref(),
+            wait_for_no_available,
+            &mut wait_deadline,
+            total_timeout_deadline,
+            endpoint.as_str(),
+            image_intent,
+            codex_imagegen_request,
+            Some(reservation_key.as_str()),
+        )
+        .await;
+        (resolution, wait_deadline)
+    }));
+
+    await_pool_route_selection_task(task, wait_deadline).await
+}
+
+pub(crate) async fn await_pool_route_selection_task(
+    task: tokio_util::task::AbortOnDropHandle<(
+        Result<PoolAccountResolutionWithWait>,
+        Option<Instant>,
+    )>,
+    fallback_wait_deadline: Option<Instant>,
+) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
+    match task.await {
+        Ok(result) => result,
+        Err(err) => (
+            Err(anyhow!("pool route selection task failed: {err}")),
+            fallback_wait_deadline,
+        ),
+    }
+}
+
+pub(crate) fn build_pool_route_selection_failure_error(
+    err: &anyhow::Error,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        codex_imagegen_rewrite: None,
+        account: None,
+        status: StatusCode::BAD_GATEWAY,
+        message: format!("failed to resolve pool account: {err}"),
+        canonical_error_message: None,
+        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+        blocked_binding: None,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+        ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     }
 }
 
@@ -1143,25 +1261,27 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                 });
             let route_scoped_overload_selection = overload_required_upstream_route_key.clone();
-            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-                state.as_ref(),
-                sticky_key,
-                requested_model.as_deref(),
-                &excluded_ids,
-                &excluded_upstream_route_keys,
-                route_scoped_overload_selection.as_deref(),
-                binding_constraint.as_ref(),
-                conversation_override.as_ref(),
-                wait_for_no_available,
-                &mut no_available_wait_deadline,
-                total_timeout_deadline,
-                capability_endpoint,
-                image_intent,
-                codex_imagegen_request,
-                Some(&reservation_key),
-            )
-            .await
-            {
+            let (resolution, updated_wait_deadline) =
+                resolve_pool_account_for_failover_on_fresh_task(
+                    state.clone(),
+                    sticky_key.map(str::to_owned),
+                    requested_model.clone(),
+                    excluded_ids.clone(),
+                    excluded_upstream_route_keys.clone(),
+                    route_scoped_overload_selection.clone(),
+                    binding_constraint.clone(),
+                    conversation_override.clone(),
+                    wait_for_no_available,
+                    no_available_wait_deadline,
+                    total_timeout_deadline,
+                    capability_endpoint.to_string(),
+                    image_intent,
+                    codex_imagegen_request,
+                    reservation_key.clone(),
+                )
+                .await;
+            no_available_wait_deadline = updated_wait_deadline;
+            match resolution {
                 Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
                     account,
                 ))) => account,
@@ -1312,7 +1432,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                     {
                         last_error.unwrap_or(PoolUpstreamError {
-        codex_imagegen_rewrite: None,
+                            codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -1336,6 +1456,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             attempt_count,
                             distinct_account_count,
                             state.pool_no_available_wait.retry_after_secs,
+                            None,
                         )
                     };
                     if terminal_failure_kind
@@ -1377,7 +1498,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     return Err(err);
                 }
                 Ok(PoolAccountResolutionWithWait::Resolution(
-                    PoolAccountResolution::NoCandidate,
+                    PoolAccountResolution::NoCandidate(no_candidate_audit),
                 )) => {
                     if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
                         state.as_ref(),
@@ -1396,7 +1517,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                     if uses_timeout_route_failover && timeout_route_failover_pending {
                         let mut err = last_error.unwrap_or(PoolUpstreamError {
-        codex_imagegen_rewrite: None,
+                            codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -1476,13 +1597,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     attempt_count,
                                     distinct_account_count,
                                     state.pool_no_available_wait.retry_after_secs,
+                                    Some(no_candidate_audit.clone()),
                                 )
                             });
-                            err.attempt_summary = pool_attempt_summary(
-                                attempt_count,
-                                distinct_account_count,
-                                Some(err.failure_kind.to_string()),
-                            );
+                            err.attempt_summary = PoolAttemptSummary {
+                                pool_routing_no_candidate_audit: Some(no_candidate_audit.clone()),
+                                ..pool_attempt_summary(
+                                    attempt_count,
+                                    distinct_account_count,
+                                    Some(err.failure_kind.to_string()),
+                                )
+                            };
                             err
                         },
                     );
@@ -1577,7 +1702,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                     let terminal_failure_kind = PROXY_FAILURE_POOL_ROUTING_BLOCKED;
                     let mut err = PoolUpstreamError {
-        codex_imagegen_rewrite: None,
+                        codex_imagegen_rewrite: None,
                         account: None,
                         status: StatusCode::SERVICE_UNAVAILABLE,
                         message,
@@ -1621,29 +1746,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     return Err(err);
                 }
                 Err(err) => {
-                    return Err(PoolUpstreamError {
-        codex_imagegen_rewrite: None,
-                        account: None,
-                        status: StatusCode::BAD_GATEWAY,
-                        message: format!("failed to resolve pool account: {err}"),
-                        canonical_error_message: None,
-                        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
-                        blocked_binding: None,
-                        connect_latency_ms: 0.0,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: None,
-                        proxy_binding_key_snapshot: None,
-                        oauth_responses_debug: None,
-                        attempt_summary: pool_attempt_summary(
-                            attempt_count,
-                            distinct_account_count,
-                            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
-                        ),
-                        requested_service_tier: None,
-                        request_body_for_capture: None,
-                    });
+                    return Err(build_pool_route_selection_failure_error(
+                        &err,
+                        attempt_count,
+                        distinct_account_count,
+                    ));
                 }
             }
         };

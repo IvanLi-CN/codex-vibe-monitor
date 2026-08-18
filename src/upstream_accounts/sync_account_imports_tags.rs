@@ -356,6 +356,16 @@ pub(crate) async fn sync_upstream_account_by_id(
     };
     sync_result?;
 
+    let refreshed_row = load_upstream_account_row(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found after sync"))?;
+    let now = Utc::now();
+    if !is_account_selectable_for_fresh_assignment(&row, false, now)
+        && is_account_selectable_for_fresh_assignment(&refreshed_row, false, now)
+    {
+        publish_pool_routing_availability(state);
+    }
+
     let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await?
         .ok_or_else(|| anyhow!("account not found after sync"))?;
@@ -1009,6 +1019,11 @@ pub(crate) async fn apply_imported_oauth_probe_result(
     probe: &ImportedOauthProbeOutcome,
 ) -> Result<Option<String>> {
     if let Some(snapshot) = probe.usage_snapshot.as_ref() {
+        let before = load_upstream_account_row(&state.pool, account_id).await?;
+        let now = Utc::now();
+        let was_selectable = before
+            .as_ref()
+            .is_some_and(|row| is_account_selectable_for_fresh_assignment(row, false, now));
         persist_usage_snapshot(
             &state.pool,
             account_id,
@@ -1025,8 +1040,33 @@ pub(crate) async fn apply_imported_oauth_probe_result(
             probe.maintenance_proxy_snapshot.as_ref(),
         )
         .await?;
+        let became_selectable = load_upstream_account_row(&state.pool, account_id)
+            .await?
+            .is_some_and(|row| is_account_selectable_for_fresh_assignment(&row, false, Utc::now()));
+        if !was_selectable && became_selectable {
+            publish_pool_routing_availability(state);
+        }
     }
     Ok(probe.usage_snapshot_warning.clone())
+}
+
+pub(crate) async fn publish_new_account_routing_availability_if_selectable(
+    state: &AppState,
+    account_id: i64,
+) {
+    match load_upstream_account_row(&state.pool, account_id).await {
+        Ok(Some(row)) if is_account_selectable_for_fresh_assignment(&row, false, Utc::now()) => {
+            publish_pool_routing_availability(state);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            warn!(
+                account_id,
+                error = %err,
+                "failed to inspect a newly created account for routing availability"
+            );
+        }
+    }
 }
 
 pub(crate) async fn persist_imported_oauth_existing_inner(

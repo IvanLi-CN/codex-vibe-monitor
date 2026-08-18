@@ -1219,6 +1219,9 @@ export const BlockedPoolWorkflow: Story = {
     record: blockedWorkflowRecord,
     size: "default",
   },
+  parameters: {
+    viewport: { defaultViewport: "desktop1440" },
+  },
   decorators: [
     (Story) => (
       <>
@@ -1227,6 +1230,87 @@ export const BlockedPoolWorkflow: Story = {
       </>
     ),
   ],
+};
+
+export const NoCandidateAudit: Story = {
+  args: {
+    record: blockedWorkflowRecord,
+    size: "default",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock
+          recordId={77}
+          response={{
+            ...blockedWorkflowResponse,
+            hero: {
+              ...blockedWorkflowResponse.hero,
+              poolRoutingNoCandidateAudit: {
+                terminalReasonCode: "modelConcurrencyLimit",
+                candidateCount: 3,
+                eligibleCandidateCount: 2,
+                reservationConflictCount: 2,
+                nextEligibleAt: null,
+                excludedReasonCounts: {
+                  modelConcurrencyLimit: 2,
+                  policyExcluded: 1,
+                },
+                candidates: [
+                  {
+                    accountId: 12,
+                    accountName: "dzw",
+                    reasonCode: "modelConcurrencyLimit",
+                  },
+                  {
+                    accountId: 13,
+                    accountName: "Ciii2",
+                    reasonCode: "modelConcurrencyLimit",
+                  },
+                  {
+                    accountId: 14,
+                    accountName: "upstream-account-with-an-extra-long-operator-label",
+                    reasonCode: "policyExcluded",
+                  },
+                ],
+              },
+            },
+          }}
+        />
+        <Story />
+      </>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("pool-routing-no-candidate-audit")).toBeVisible();
+    await expect(
+      canvas.getAllByText(/模型并发容量已满|Model concurrency capacity is full/),
+    ).toHaveLength(3);
+    await expect(canvas.getAllByText("modelConcurrencyLimit", { exact: true })).toHaveLength(3);
+    await expect(
+      canvas.getByText("upstream-account-with-an-extra-long-operator-label"),
+    ).toBeVisible();
+  },
+};
+
+export const NoCandidateAuditMobile: Story = {
+  ...NoCandidateAudit,
+  args: {
+    ...NoCandidateAudit.args,
+    size: "compact",
+  },
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    viewport: { defaultViewport: "mobile393" },
+  },
+};
+
+export const NoCandidateAuditDark: Story = {
+  ...NoCandidateAudit,
+  globals: {
+    themeMode: "dark",
+  },
 };
 
 export const FailedPoolWorkflowDark: Story = {

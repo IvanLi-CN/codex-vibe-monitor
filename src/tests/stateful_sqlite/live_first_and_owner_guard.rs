@@ -224,7 +224,6 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -370,7 +369,6 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -621,7 +619,6 @@ fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
             true,
             PoolNoAvailableWaitSettings {
                 timeout: Duration::from_millis(80),
-                poll_interval: Duration::from_millis(10),
                 retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
             },
         )
@@ -1798,7 +1795,6 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -1904,7 +1900,6 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2012,6 +2007,644 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     assert_eq!(owner_unavailable_attempts, 0);
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attempt() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket capacity holder",
+        "upstream-websocket-capacity-holder",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-websocket-no-candidate";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed websocket model route");
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit websocket model route to one reservation");
+
+    let reservation = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/realtime",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("websocket-no-candidate-holder"),
+    )
+    .await
+    .expect("reserve only websocket candidate");
+    assert!(matches!(reservation, PoolAccountResolution::Resolved(_)));
+
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-no-candidate-audit".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/realtime".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some(model.to_string()),
+    };
+    let result = prepare_upstream_websocket(
+        state.clone(),
+        5354,
+        &format!("/v1/realtime?model={model}")
+            .parse()
+            .expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        &resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts"),
+        None,
+        Some(model),
+        None,
+        None,
+        None,
+        false,
+        &trace,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("websocket capacity conflict should not connect upstream");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load websocket no-candidate invocation payload");
+    let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
+    assert_eq!(payload["poolAttemptCount"], 0);
+    assert_eq!(
+        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+        "modelConcurrencyLimit"
+    );
+    let attempt_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count websocket no-candidate attempts");
+    assert_eq!(attempt_count, 0);
+
+    release_pool_routing_reservation(&state, "websocket-no-candidate-holder");
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_owner_guard_no_candidate_persists_invocation_audit_without_attempt() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket owner capacity holder",
+        "upstream-websocket-owner-holder",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-websocket-owner-no-candidate";
+    let prompt_cache_key = "pck-websocket-owner-no-candidate";
+    observe_model_route_seen(&state.pool, owner_account_id, Some(model))
+        .await
+        .expect("seed websocket owner model route");
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist websocket encrypted owner");
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(owner_account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit websocket owner model route to one reservation");
+    let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/realtime",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("websocket-owner-no-candidate-holder"),
+    )
+    .await
+    .expect("reserve only websocket owner candidate");
+    assert!(matches!(holder, PoolAccountResolution::Resolved(_)));
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
+            .await
+            .expect("load websocket owner routing constraint");
+    assert!(owner_auto_guard_active);
+
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-owner-no-candidate-audit".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/realtime".to_string(),
+        sticky_key: Some(prompt_cache_key.to_string()),
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some(model.to_string()),
+    };
+    let result = prepare_upstream_websocket(
+        state.clone(),
+        5356,
+        &format!("/v1/realtime?model={model}")
+            .parse()
+            .expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        &resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts"),
+        Some(prompt_cache_key),
+        Some(model),
+        Some(prompt_cache_key),
+        binding_constraint,
+        None,
+        owner_auto_guard_active,
+        &trace,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("websocket owner capacity conflict should not connect upstream");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load websocket owner no-candidate invocation payload");
+    let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
+    assert_eq!(payload["poolAttemptCount"], 0);
+    assert_eq!(
+        payload["failureKind"],
+        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE
+    );
+    assert_eq!(
+        payload["downstreamErrorMessage"],
+        ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE
+    );
+    assert_eq!(
+        payload["poolAttemptTerminalReason"],
+        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE
+    );
+    assert_eq!(
+        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+        "modelConcurrencyLimit"
+    );
+    let (failure_kind, error_message): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT failure_kind, error_message FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket owner no-candidate terminal fields");
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+    assert!(
+        error_message.as_deref().is_some_and(|message| {
+            message.contains(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE)
+        })
+    );
+    let invocation_id: i64 =
+        sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load websocket owner invocation id");
+    let Json(workflow) =
+        fetch_invocation_workflow_detail(State(state.clone()), axum::extract::Path(invocation_id))
+            .await
+            .expect("load websocket owner workflow detail");
+    let workflow = serde_json::to_value(workflow).expect("serialize workflow detail");
+    let final_failure = workflow["timeline"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["kind"] == "systemFinalFailure")
+        })
+        .expect("workflow should contain a system final failure");
+    assert_eq!(final_failure["responseBody"]["available"], true);
+    let response_body = final_failure["responseBody"]["bodyText"]
+        .as_str()
+        .expect("workflow final failure should expose its body");
+    let response_body: Value =
+        serde_json::from_str(response_body).expect("decode workflow failure body");
+    assert_eq!(
+        response_body["error"],
+        ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE
+    );
+    assert_eq!(
+        response_body["code"],
+        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE
+    );
+    let attempt_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count websocket owner no-candidate attempts");
+    assert_eq!(attempt_count, 0);
+
+    release_pool_routing_reservation(&state, "websocket-owner-no-candidate-holder");
+    upstream_handle.abort();
+}
+
+#[test]
+fn http_prebuffered_no_candidate_persists_invocation_audit_without_attempt() {
+    run_future_with_large_stack(async move {
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "HTTP capacity holder",
+            "upstream-http-capacity-holder",
+            None,
+            None,
+            None,
+        )
+        .await;
+        let model = "gpt-http-no-candidate";
+        observe_model_route_seen(&state.pool, account_id, Some(model))
+            .await
+            .expect("seed HTTP model route");
+        sqlx::query(
+            "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("enable queue overflow mode");
+        sqlx::query(
+            "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+        )
+        .bind(account_id)
+        .bind(model)
+        .execute(&state.pool)
+        .await
+        .expect("limit HTTP model route to one reservation");
+        let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+            &state,
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+            None,
+            "/v1/responses",
+            crate::ImageIntent::Unknown,
+            false,
+            Some("http-no-candidate-holder"),
+        )
+        .await
+        .expect("reserve only HTTP candidate");
+        assert!(matches!(holder, PoolAccountResolution::Resolved(_)));
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let err = proxy_openai_v1_via_pool(
+            state.clone(),
+            5355,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(format!(
+                r#"{{"model":"{model}","stream":false,"input":"hello"}}"#
+            )),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect_err("occupied HTTP model route should return no candidate");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+
+        let payload: String = sqlx::query_scalar(
+            "SELECT payload FROM codex_invocations WHERE invoke_id = 'pool-via-5355'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load HTTP no-candidate invocation payload");
+        let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
+        assert_eq!(payload["poolAttemptCount"], 0);
+        assert_eq!(
+            payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+            "modelConcurrencyLimit"
+        );
+        let attempt_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = 'pool-via-5355'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("count HTTP no-candidate attempts");
+        assert_eq!(attempt_count, 0);
+
+        release_pool_routing_reservation(&state, "http-no-candidate-holder");
+    });
+}
+
+#[tokio::test]
+async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Availability Gate", "availability-gate-key")
+            .await;
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("healthy-websocket-success"),
+        None,
+        None,
+    )
+    .await
+    .expect("record healthy websocket-style success");
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("healthy-http-success"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("record healthy HTTP-style success");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "ordinary successful requests on an already healthy account must not wake pool waiters"
+    );
+
+    let failure_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(1));
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'needs_reauth', last_error = 'temporary route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("mark account unavailable before websocket-style recovery");
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("recovering-websocket-success"),
+        None,
+        None,
+    )
+    .await
+    .expect("record websocket-style account recovery");
+    let websocket_recovery_generation = *availability.borrow();
+    assert_ne!(websocket_recovery_generation, initial_generation);
+
+    let failure_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(1));
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'needs_reauth', last_error = 'temporary route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("mark account unavailable before HTTP-style recovery");
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("recovering-http-success"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("record HTTP-style account recovery");
+    assert_ne!(*availability.borrow(), websocket_recovery_generation);
+}
+
+#[tokio::test]
+async fn http_and_websocket_success_terminals_share_cache_route_observation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Cache Observer", "cache-observer-key").await;
+    let model = "gpt-shared-terminal-cache-observer";
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable cache-hit protection");
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed shared observer route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        8,
+    )
+    .await
+    .expect("make route cache-owned");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let metadata_free_record =
+        test_proxy_capture_record("proxy-cache-observer-metadata-free", &shanghai_now_string());
+    observe_successful_proxy_capture_model_route_cache(&state, &metadata_free_record).await;
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a successful terminal without account/model metadata must not wake pool waiters"
+    );
+
+    let payload = json!({
+        "endpoint": "/v1/responses",
+        "requestModel": model,
+        "routeMode": "pool",
+        "upstreamAccountId": account_id,
+    })
+    .to_string();
+    let mut http_record =
+        test_proxy_capture_record("proxy-shared-cache-observer-http", &shanghai_now_string());
+    http_record.model = Some(model.to_string());
+    http_record.payload = Some(payload.clone());
+    http_record.usage.input_tokens = None;
+    http_record.usage.cache_input_tokens = None;
+    observe_successful_proxy_capture_model_route_cache(&state, &http_record).await;
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "missing cache usage constrains capacity and must not wake pool waiters"
+    );
+
+    let missing_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load HTTP-observed route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("HTTP-observed route is visible");
+    assert_eq!(missing_route.cache_concurrency_limit, Some(1));
+    assert_eq!(
+        missing_route.cache_usage_missing_reason.as_deref(),
+        Some("missing_input_tokens")
+    );
+
+    let mut websocket_record = test_proxy_capture_record(
+        "pool-ws-shared-cache-observer-websocket",
+        &shanghai_now_string(),
+    );
+    websocket_record.model = Some(model.to_string());
+    websocket_record.payload = Some(payload);
+    websocket_record.usage.input_tokens = Some(3_840);
+    websocket_record.usage.cache_input_tokens = Some(384);
+    observe_successful_proxy_capture_model_route_cache(&state, &websocket_record).await;
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "a successful cache recovery that increases capacity must wake pool waiters"
+    );
+
+    let observed_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load WebSocket-observed route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("WebSocket-observed route is visible");
+    assert!(observed_route.cache_usage_missing_since.is_none());
+    assert!(observed_route.cache_usage_missing_reason.is_none());
+    assert_eq!(observed_route.cache_concurrency_limit, Some(2));
 }
 
 #[tokio::test]
@@ -2291,7 +2924,6 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2456,7 +3088,6 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2535,7 +3166,6 @@ async fn websocket_response_first_frame_rejection_avoids_pseudo_attempt_persiste
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2670,7 +3300,6 @@ async fn websocket_response_create_turns_persist_usage_per_terminal() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2833,7 +3462,6 @@ async fn websocket_downstream_disconnect_drains_terminal_usage() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2973,7 +3601,6 @@ async fn websocket_upstream_close_before_terminal_sends_retryable_close() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3203,7 +3830,6 @@ async fn websocket_handshake_failure_retries_next_candidate_with_retained_first_
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3424,7 +4050,6 @@ async fn websocket_deferred_prepare_requires_upstream_subprotocol_match_before_r
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3554,7 +4179,6 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3583,11 +4207,63 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         None,
     )
     .await;
+    let capacity_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Capacity Holder",
+        "upstream-capacity-holder",
+        None,
+        None,
+        Some("https://websocket-capacity-holder.example.com/backend-api/codex"),
+    )
+    .await;
     set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
     let sticky_only_key = "sticky-only-websocket-key";
+    let model = "gpt-5-realtime";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, sticky_only_key, owner_account_id)
         .await
         .expect("persist sticky-only named encrypted owner row");
+    upsert_sticky_route(
+        &state.pool,
+        sticky_only_key,
+        sticky_only_failover_account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed sticky route toward the handshake-failing account");
+    observe_model_route_seen(&state.pool, capacity_account_id, Some(model))
+        .await
+        .expect("seed capacity-holder model route");
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable websocket queue overflow mode");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(capacity_account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit capacity-holder model route");
+    let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[sticky_only_failover_account_id],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/realtime",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("websocket-retry-exhausted-capacity-holder"),
+    )
+    .await
+    .expect("reserve the fallback websocket candidate");
+    assert!(matches!(holder, PoolAccountResolution::Resolved(_)));
 
     let headers = HeaderMap::from_iter([
         (
@@ -3614,10 +4290,19 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
     assert!(binding_constraint.is_none());
     assert!(!owner_auto_guard_active);
 
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-5353".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/realtime".to_string(),
+        sticky_key: trace_sticky_key,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some(model.to_string()),
+    };
     let err = prepare_upstream_websocket(
         state.clone(),
         5353,
-        &"/v1/realtime?model=gpt-5-realtime"
+        &format!("/v1/realtime?model={model}")
             .parse()
             .expect("valid uri"),
         &headers,
@@ -3625,20 +4310,12 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
             .await
             .expect("resolve pool runtime timeouts"),
         sticky_key.as_deref(),
-        Some("gpt-5-realtime"),
+        Some(model),
         websocket_effective_prompt_cache_key(prompt_cache_key.as_deref()),
         binding_constraint,
         None,
         owner_auto_guard_active,
-        &PoolUpstreamAttemptTraceContext {
-            invoke_id: "pool-ws-5353".to_string(),
-            occurred_at: shanghai_now_string(),
-            endpoint: "/v1/realtime".to_string(),
-            sticky_key: trace_sticky_key,
-            requester_ip: None,
-            upstream_base_url_host: None,
-            request_model: None,
-        },
+        &trace,
         None,
     )
     .await;
@@ -3670,6 +4347,58 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
     );
 
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let (status, failure_kind, payload): (String, Option<String>, String) = sqlx::query_as(
+        "SELECT status, failure_kind, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket retry-exhausted invocation");
+    assert_eq!(status, "http_502");
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
+    let payload: Value =
+        serde_json::from_str(&payload).expect("decode websocket invocation payload");
+    assert_eq!(payload["poolAttemptCount"], 1);
+    assert_eq!(payload["poolDistinctAccountCount"], 1);
+    assert_eq!(
+        payload["poolAttemptTerminalReason"],
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+    );
+    assert!(payload["poolRoutingNoCandidateAudit"].is_object());
+
+    let invocation_id: i64 =
+        sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load websocket retry-exhausted invocation id");
+    let Json(workflow) =
+        fetch_invocation_workflow_detail(State(state.clone()), axum::extract::Path(invocation_id))
+            .await
+            .expect("load websocket retry-exhausted workflow detail");
+    let workflow = serde_json::to_value(workflow).expect("serialize workflow detail");
+    let final_failure = workflow["timeline"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["kind"] == "systemFinalFailure")
+        })
+        .expect("workflow should contain the retry-exhausted final failure");
+    assert_eq!(final_failure["responseBody"]["available"], true);
+    let response_body = final_failure["responseBody"]["bodyText"]
+        .as_str()
+        .expect("workflow retry-exhausted failure should expose its body");
+    let response_body: Value =
+        serde_json::from_str(response_body).expect("decode retry-exhausted failure body");
+    assert_eq!(response_body["error"], err.message);
+    assert_eq!(response_body["code"], PROXY_FAILURE_FAILED_CONTACT_UPSTREAM);
+
+    release_pool_routing_reservation(&state, "websocket-retry-exhausted-capacity-holder");
     upstream_handle.abort();
 }
 
@@ -3684,7 +4413,6 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(200),
-            poll_interval: Duration::from_millis(20),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3758,7 +4486,6 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(200),
-            poll_interval: Duration::from_millis(20),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3839,7 +4566,6 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(200),
-            poll_interval: Duration::from_millis(20),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -3956,7 +4682,6 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(200),
-            poll_interval: Duration::from_millis(20),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -4179,7 +4904,6 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(400),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -4259,7 +4983,6 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(850),
-            poll_interval: Duration::from_millis(100),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -4290,24 +5013,19 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
         .await
     });
 
-    let pool = state.pool.clone();
-    let runtime_handle = tokio::runtime::Handle::current();
-    let release_task = std::thread::spawn(move || {
+    tokio::task::spawn_blocking(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("header sticky request should signal once the bounded wait starts");
-        runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-        });
-    });
+    })
+    .await
+    .expect("wait hook worker should join");
+    set_test_account_status(&state.pool, delayed_id, "active").await;
+    state.pool_routing_availability.publish();
 
     let response = request_task
         .await
         .expect("header sticky request task should join");
-    release_task
-        .join()
-        .expect("delayed release thread should join");
-
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -4335,7 +5053,6 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(400),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -4489,7 +5206,6 @@ fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from_reque
             true,
             PoolNoAvailableWaitSettings {
                 timeout: Duration::from_millis(220),
-                poll_interval: Duration::from_millis(10),
                 retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
             },
         )
@@ -4576,7 +5292,9 @@ fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_request_sta
             let _ = tx
                 .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
                 .await;
-            tokio::time::sleep(Duration::from_millis(180)).await;
+            // Keep the body completion far beyond the request timeout so the
+            // assertion remains meaningful under a heavily loaded test runner.
+            tokio::time::sleep(Duration::from_secs(2)).await;
             let _ = tx
                 .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
                 .await;
@@ -4617,7 +5335,7 @@ fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_request_sta
             "responses total timeout should still start at request admission, elapsed={elapsed:?}"
         );
         assert!(
-            elapsed < Duration::from_millis(160),
+            elapsed < Duration::from_secs(1),
             "live first attempt should not wait for the entire streamed body before timing out, elapsed={elapsed:?}"
         );
         assert_eq!(
@@ -4642,7 +5360,6 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(600),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -6751,7 +7468,6 @@ async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(120),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -6862,7 +7578,6 @@ fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() 
             true,
             PoolNoAvailableWaitSettings {
                 timeout: Duration::from_millis(120),
-                poll_interval: Duration::from_millis(10),
                 retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
             },
         )
@@ -6957,7 +7672,6 @@ fn proxy_openai_v1_live_first_ignores_nested_prefix_model_before_top_level_model
             true,
             PoolNoAvailableWaitSettings {
                 timeout: Duration::from_millis(120),
-                poll_interval: Duration::from_millis(10),
                 retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
             },
         )
@@ -7182,7 +7896,6 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(200),
-            poll_interval: Duration::from_millis(20),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )

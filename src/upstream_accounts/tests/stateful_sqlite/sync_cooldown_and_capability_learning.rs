@@ -140,12 +140,14 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     observe_model_route_seen(&state.pool, account_id, Some(model))
         .await
         .expect("seed API Key model route");
+    let cache_usage_missing_since = format_utc_iso(Utc::now());
     sqlx::query(
-        "UPDATE pool_upstream_account_model_routes SET last_failure_kind = 'upstream_http_5xx', last_failure_message = ?3 WHERE account_id = ?1 AND model = ?2",
+        "UPDATE pool_upstream_account_model_routes SET last_failure_kind = 'upstream_http_5xx', last_failure_message = ?3, cache_usage_missing_since = ?4, cache_usage_missing_reason = 'missing_cache_input_tokens' WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(model)
     .bind("upstream response contained a sensitive diagnostic")
+    .bind(&cache_usage_missing_since)
     .execute(&state.pool)
     .await
     .expect("seed a sensitive failure message");
@@ -171,6 +173,17 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert_eq!(live.groups[0].model, model);
     assert_eq!(live.groups[0].accounts.len(), 1);
     assert_eq!(live.groups[0].accounts[0].account_id, account_id);
+    assert_eq!(
+        live.groups[0].accounts[0].route.cache_usage_missing_since,
+        Some(cache_usage_missing_since)
+    );
+    assert_eq!(
+        live.groups[0].accounts[0]
+            .route
+            .cache_usage_missing_reason
+            .as_deref(),
+        Some("missing_cache_input_tokens")
+    );
     assert_eq!(live.records.len(), 2);
     assert!(live.records.iter().all(|record| record.kind == "attempt"));
     assert!(live.records.iter().all(|record| record.model == model));
@@ -434,15 +447,185 @@ async fn cache_hit_protection_observation_respects_sample_boundary_and_threshold
 
     observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 8)
         .await
-        .expect("ignore unknown usage");
+        .expect("constrain cache-owned route with missing usage");
+    let missing_usage_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load missing-usage route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("missing-usage route is visible");
+    assert_eq!(missing_usage_route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(missing_usage_route.cache_concurrency_limit, Some(1));
+    assert!(missing_usage_route.cache_usage_missing_since.is_some());
     assert_eq!(
-        cache_hit_route_state(&state, account_id, model).await,
-        state_after_low
+        missing_usage_route.cache_usage_missing_reason.as_deref(),
+        Some("missing_input_tokens")
     );
+    assert_eq!(
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load constrained missing-usage limit"),
+        Some(1)
+    );
+
+    observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 8)
+        .await
+        .expect("keep the same missing-usage episode constrained");
+    let missing_event_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND action = ?2",
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_CACHE_OBSERVATION_MISSING)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count missing cache-usage events");
+    assert_eq!(missing_event_count, 1);
+
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(384),
+        1,
+    )
+    .await
+    .expect("clear missing-usage marker with a valid sample");
+    let observed_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load route after valid cache observation")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("observed route is visible");
+    assert!(observed_route.cache_usage_missing_since.is_none());
+    assert!(observed_route.cache_usage_missing_reason.is_none());
+    assert_eq!(observed_route.cache_concurrency_limit, Some(2));
 }
 
 #[tokio::test]
-async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
+async fn cache_usage_missing_does_not_claim_an_observation_only_route() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Observation Only",
+        "cache-observation-only-key",
+        None,
+        Some("https://cache-observation-only.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-cache-observation-only";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed observation-only route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(384),
+        1,
+    )
+    .await
+    .expect("record a healthy cache observation");
+
+    observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 1)
+        .await
+        .expect("ignore missing usage for observation-only route");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load observation-only route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("observation-only route is visible");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(route.cache_last_hit_rate_percent, Some(10));
+    assert_eq!(route.cache_concurrency_limit, None);
+    assert!(route.cache_usage_missing_since.is_none());
+    assert!(route.cache_usage_missing_reason.is_none());
+    let missing_event_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND model = ?2 AND action = ?3",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_CACHE_OBSERVATION_MISSING)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count observation-only missing usage events");
+    assert_eq!(missing_event_count, 0);
+}
+
+#[tokio::test]
+async fn initial_no_candidate_persists_invocation_audit_without_upstream_attempt() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "no-candidate-initial-audit".to_string(),
+        occurred_at: format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local()),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some("gpt-audit".to_string()),
+    };
+    let audit = PoolRoutingNoCandidateAudit {
+        terminal_reason_code: "modelConcurrencyLimit".to_string(),
+        candidate_count: 2,
+        eligible_candidate_count: 2,
+        reservation_conflict_count: 2,
+        next_eligible_at: None,
+        excluded_reason_counts: std::collections::BTreeMap::from([(
+            "modelConcurrencyLimit".to_string(),
+            2,
+        )]),
+        candidates: vec![PoolRoutingNoCandidateAuditCandidate {
+            account_id: 41,
+            account_name: "dzw".to_string(),
+            reason_code: "modelConcurrencyLimit".to_string(),
+        }],
+    };
+
+    let error = unwrap_via_pool_initial_account(
+        &state,
+        Some(&trace),
+        Ok(PoolAccountResolutionWithWait::Resolution(
+            PoolAccountResolution::NoCandidate(audit.clone()),
+        )),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .await
+    .expect_err("no candidate should remain a local terminal failure");
+    assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load persisted no-candidate invocation payload");
+    let payload: serde_json::Value = serde_json::from_str(&payload).expect("valid payload");
+    assert_eq!(payload["poolAttemptCount"], 0);
+    assert_eq!(
+        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+        "modelConcurrencyLimit"
+    );
+    let attempt_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count upstream attempts");
+    assert_eq!(attempt_count, 0);
+}
+
+#[tokio::test]
+async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -453,6 +636,7 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
     )
     .await;
     let cache_model = "gpt-cache-settings-cleanup";
+    let missing_only_model = "gpt-cache-settings-missing-only";
     let failure_model = "gpt-cache-settings-non-cache-failure";
     enable_cache_hit_protection(&state).await;
     observe_model_route_seen(&state.pool, account_id, Some(cache_model))
@@ -468,6 +652,50 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
     )
     .await
     .expect("create cache-owned protection state");
+    observe_model_route_cache_hit(&state.pool, account_id, Some(cache_model), None, None, 1)
+        .await
+        .expect("mark cache-owned route usage unavailable");
+    observe_model_route_seen(&state.pool, account_id, Some(missing_only_model))
+        .await
+        .expect("seed missing-only cache model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 4, cache_recovery_limit = 8 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(missing_only_model)
+    .execute(&state.pool)
+    .await
+    .expect("seed cache limit without a cache failure");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(missing_only_model),
+        None,
+        None,
+        1,
+    )
+    .await
+    .expect("mark missing-only cache route usage unavailable");
+    let missing_only_before_disable = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load missing-only route before disabling protection")
+        .into_iter()
+        .find(|route| route.model == missing_only_model)
+        .expect("missing-only route is visible");
+    assert_eq!(
+        missing_only_before_disable.state,
+        MODEL_ROUTE_STATE_DEGRADED
+    );
+    assert_eq!(
+        missing_only_before_disable.priority,
+        MODEL_ROUTE_PRIORITY_DEMOTED
+    );
+    assert!(missing_only_before_disable.last_failure_kind.is_none());
+    assert!(
+        missing_only_before_disable
+            .cache_usage_missing_since
+            .is_some()
+    );
     observe_model_route_seen(&state.pool, account_id, Some(failure_model))
         .await
         .expect("seed independent failed model route");
@@ -494,19 +722,16 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
             available_models_mode: None,
             timeouts: None,
             cache_hit_protection: Some(UpdateCacheHitProtectionSettingsRequest {
-                enabled: None,
-                low_hit_rate_threshold_percent: Some(15),
+                enabled: Some(false),
+                low_hit_rate_threshold_percent: None,
                 overflow_mode: None,
             }),
             live_request_streaming: None,
         }),
     )
     .await
-    .expect("change cache-hit threshold");
-    assert_eq!(
-        updated.cache_hit_protection.low_hit_rate_threshold_percent,
-        15
-    );
+    .expect("disable cache-hit protection");
+    assert!(!updated.cache_hit_protection.enabled);
     let cache_route = cache_hit_route_state(&state, account_id, cache_model).await;
     assert_eq!(cache_route.0, MODEL_ROUTE_STATE_AVAILABLE);
     assert_eq!(cache_route.1, None);
@@ -514,6 +739,26 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
     assert_eq!(cache_route.3, 0);
     assert_eq!(cache_route.4, 0);
     assert_eq!(cache_route.5, None);
+    let cache_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load cache route after disabling protection")
+        .into_iter()
+        .find(|route| route.model == cache_model)
+        .expect("cache route is visible");
+    assert!(cache_route.cache_usage_missing_since.is_none());
+    assert!(cache_route.cache_usage_missing_reason.is_none());
+    let missing_only_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load missing-only route after disabling protection")
+        .into_iter()
+        .find(|route| route.model == missing_only_model)
+        .expect("missing-only route remains visible");
+    assert_eq!(missing_only_route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(missing_only_route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(missing_only_route.cache_concurrency_limit, None);
+    assert_eq!(missing_only_route.cache_recovery_limit, None);
+    assert!(missing_only_route.cache_usage_missing_since.is_none());
+    assert!(missing_only_route.cache_usage_missing_reason.is_none());
     let non_cache_route = sqlx::query_as::<_, (String, String, Option<String>)>(
         "SELECT state, priority, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
@@ -534,7 +779,7 @@ async fn cache_hit_threshold_change_clears_only_cache_owned_route_state() {
     .await
     .expect("load cache settings cleanup event");
     assert_eq!(cleanup_event.0, UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RESET);
-    assert_eq!(cleanup_event.1, "cache_hit_threshold_changed");
+    assert_eq!(cleanup_event.1, "cache_hit_protection_disabled");
     assert_eq!(cleanup_event.2, cache_model);
 }
 
@@ -731,10 +976,22 @@ async fn cache_hit_protection_atomically_reserves_single_model_slot() {
     assert_eq!(
         resolutions
             .iter()
-            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate(_)))
             .count(),
         1
     );
+    let audit = resolutions
+        .iter()
+        .find_map(|resolution| match resolution {
+            PoolAccountResolution::NoCandidate(audit) => Some(audit),
+            _ => None,
+        })
+        .expect("capacity conflict should retain a no-candidate audit");
+    assert_eq!(audit.terminal_reason_code, "modelConcurrencyLimit");
+    assert_eq!(audit.candidate_count, 1);
+    assert_eq!(audit.eligible_candidate_count, 1);
+    assert_eq!(audit.reservation_conflict_count, 1);
+    assert_eq!(audit.candidates[0].reason_code, "modelConcurrencyLimit");
 
     release_pool_routing_reservation(&state, "cache-hit-reservation-a");
     release_pool_routing_reservation(&state, "cache-hit-reservation-b");
@@ -819,7 +1076,7 @@ async fn cache_hit_protection_reserves_sticky_fast_path_before_returning_it() {
     assert_eq!(
         resolutions
             .iter()
-            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate(_)))
             .count(),
         1
     );
@@ -1170,7 +1427,7 @@ async fn model_route_single_probe_recovery_is_atomic_for_non_cache_cooldowns() {
     assert_eq!(
         resolutions
             .iter()
-            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate))
+            .filter(|resolution| matches!(resolution, PoolAccountResolution::NoCandidate(_)))
             .count(),
         1
     );
@@ -1178,16 +1435,28 @@ async fn model_route_single_probe_recovery_is_atomic_for_non_cache_cooldowns() {
     release_pool_routing_reservation(&state, "single-probe-reservation-a");
     release_pool_routing_reservation(&state, "single-probe-reservation-b");
 
-    observe_model_route_cache_hit(
+    let success_started_at =
+        format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
+    let successful_attempt = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, ?5, 'pending')",
+    )
+    .bind("non-cache-expired-cooldown-success")
+    .bind(format_utc_iso(Utc::now()))
+    .bind(model)
+    .bind(account_id)
+    .bind(&success_started_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert successful non-cache probe")
+    .last_insert_rowid();
+    record_model_route_success_from_attempt(
         &state.pool,
         account_id,
-        Some(model),
-        Some(3_840),
-        Some(3_840),
-        1,
+        successful_attempt,
+        Some(&success_started_at),
     )
     .await
-    .expect("recover successful non-cache probe");
+    .expect("recover successful non-cache probe without cache usage");
     let recovered = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         "SELECT state, last_failure_kind, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
@@ -1197,6 +1466,12 @@ async fn model_route_single_probe_recovery_is_atomic_for_non_cache_cooldowns() {
     .await
     .expect("load recovered non-cache model route");
     assert_eq!(recovered.0, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load recovered model concurrency"),
+        None
+    );
     assert!(recovered.1.is_none());
     assert!(recovered.2.is_none());
 }
@@ -1264,9 +1539,18 @@ async fn cache_hit_protection_cooldown_restarts_with_single_probe() {
     observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 1)
         .await
         .expect("unknown probe observation");
+    let missing_usage_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load expired route with missing cache usage")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("missing-usage route is visible");
+    assert_eq!(missing_usage_route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(missing_usage_route.cache_concurrency_limit, Some(1));
+    assert!(missing_usage_route.cache_usage_missing_since.is_some());
     assert_eq!(
-        cache_hit_route_state(&state, account_id, model).await.0,
-        MODEL_ROUTE_STATE_COOLING_DOWN
+        missing_usage_route.cache_usage_missing_reason.as_deref(),
+        Some("missing_input_tokens")
     );
 
     for expected_streak in [1, 2] {
@@ -1981,6 +2265,14 @@ async fn manual_model_route_reset_fences_in_flight_failure() {
     observe_model_route_seen(&state.pool, account_id, Some("gpt-reset-fence"))
         .await
         .expect("observe reset fence model");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_usage_missing_since = ?2, cache_usage_missing_reason = 'missing_input_tokens' WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
+    )
+    .bind(account_id)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(&state.pool)
+    .await
+    .expect("seed resettable cache-usage marker");
 
     let attempt_started_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(2));
     let attempt_id = sqlx::query(
@@ -2027,6 +2319,8 @@ async fn manual_model_route_reset_fences_in_flight_failure() {
     assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
     assert_eq!(route.failure_count, 0);
     assert!(route.last_failure_at.is_none());
+    assert!(route.cache_usage_missing_since.is_none());
+    assert!(route.cache_usage_missing_reason.is_none());
 
     let traffic_after_reset = sqlx::query_as::<_, (Option<String>, Option<String>)>(
         "SELECT last_seen_at, last_success_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
@@ -4129,7 +4423,14 @@ async fn sync_api_key_account_clears_stale_manual_recovery_marker_on_active_rows
 #[tokio::test]
 async fn updating_api_key_reactivates_manually_recoverable_account() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Recoverable API Key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Recoverable API Key",
+        "recoverable-api-key",
+        None,
+        Some("https://recoverable-api-key.example.com/backend-api/codex"),
+    )
+    .await;
     seed_hard_unavailable_route_failure(
         &state.pool,
         account_id,
@@ -4139,6 +4440,7 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
         Some(429),
     )
     .await;
+    let mut availability = state.pool_routing_availability.subscribe();
 
     state
         .upstream_accounts
@@ -4171,6 +4473,10 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
         )
         .await
         .expect("update api key account");
+    tokio::time::timeout(Duration::from_secs(1), availability.changed())
+        .await
+        .expect("manual recovery should publish routing availability")
+        .expect("routing availability signal should stay open");
 
     let after = load_upstream_account_row(&state.pool, account_id)
         .await
@@ -4182,6 +4488,131 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
     assert_eq!(
         after.last_action.as_deref(),
         Some(UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED)
+    );
+}
+
+#[tokio::test]
+async fn successful_account_sync_publishes_routing_availability_on_recovery() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sync Recovery Signal",
+        "sync-recovery-signal-key",
+        None,
+        Some("https://sync-recovery-signal.example.com/backend-api/codex"),
+    )
+    .await;
+    set_account_status(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        Some("temporary sync failure"),
+    )
+    .await
+    .expect("make account unavailable before sync");
+    let mut availability = state.pool_routing_availability.subscribe();
+
+    sync_upstream_account_by_id(state.as_ref(), account_id, SyncCause::Manual)
+        .await
+        .expect("sync should recover the account");
+    tokio::time::timeout(Duration::from_secs(1), availability.changed())
+        .await
+        .expect("sync recovery should publish routing availability")
+        .expect("routing availability signal should stay open");
+
+    let recovered = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load recovered account")
+        .expect("recovered account exists");
+    assert_eq!(recovered.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(is_account_selectable_for_fresh_assignment(
+        &recovered,
+        false,
+        Utc::now()
+    ));
+}
+
+#[tokio::test]
+async fn imported_oauth_probe_publishes_routing_availability_on_recovery() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Imported OAuth Recovery Signal",
+        "import-recovery@example.com",
+        "org_import_recovery",
+        "user_import_recovery",
+    )
+    .await;
+    seed_hard_unavailable_route_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+    let mut availability = state.pool_routing_availability.subscribe();
+    let probe = ImportedOauthProbeOutcome {
+        token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
+        credentials: StoredOauthCredentials {
+            access_token: "imported-access-token".to_string(),
+            refresh_token: Some("imported-refresh-token".to_string()),
+            id_token: test_id_token(
+                "import-recovery@example.com",
+                Some("org_import_recovery"),
+                Some("user_import_recovery"),
+                Some("team"),
+            ),
+            token_type: Some("Bearer".to_string()),
+        },
+        claims: ChatgptJwtClaims::default(),
+        usage_snapshot: Some(NormalizedUsageSnapshot {
+            plan_type: Some("team".to_string()),
+            limit_id: "codex".to_string(),
+            limit_name: Some("Codex".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        }),
+        maintenance_proxy_snapshot: None,
+        exhausted: false,
+        usage_snapshot_warning: None,
+    };
+
+    apply_imported_oauth_probe_result(state.as_ref(), account_id, &probe)
+        .await
+        .expect("apply imported OAuth recovery probe");
+    tokio::time::timeout(Duration::from_secs(1), availability.changed())
+        .await
+        .expect("OAuth import recovery should publish routing availability")
+        .expect("routing availability signal should stay open");
+
+    let recovered = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load imported OAuth account")
+        .expect("imported OAuth account exists");
+    assert!(is_account_selectable_for_fresh_assignment(
+        &recovered,
+        false,
+        Utc::now()
+    ));
+
+    let unchanged_availability = state.pool_routing_availability.subscribe();
+    apply_imported_oauth_probe_result(state.as_ref(), account_id, &probe)
+        .await
+        .expect("reapply imported OAuth probe to an already routable account");
+    assert!(
+        !unchanged_availability
+            .has_changed()
+            .expect("read availability"),
+        "an already routable account must not publish a redundant availability event"
     );
 }
 

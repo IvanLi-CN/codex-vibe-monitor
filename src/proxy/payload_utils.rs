@@ -1681,7 +1681,15 @@ pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    reservations.remove(reservation_key);
+    let released = reservations.remove(reservation_key).is_some();
+    drop(reservations);
+    if released {
+        state.pool_routing_availability.publish();
+    }
+}
+
+pub(crate) fn publish_pool_routing_availability(state: &AppState) {
+    state.pool_routing_availability.publish();
 }
 
 pub(crate) fn consume_pool_routing_reservation(state: &AppState, reservation_key: &str) {

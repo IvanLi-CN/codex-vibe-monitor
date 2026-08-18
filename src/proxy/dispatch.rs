@@ -477,7 +477,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
         ProxyPricingMode::ResponseTier,
     )
     .await;
-    let record = ProxyCaptureRecord {
+    let mut record = ProxyCaptureRecord {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
         model: request_info.model.clone(),
@@ -704,6 +704,11 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             t_persist_ms: 0.0,
         },
     };
+    set_proxy_capture_record_pool_routing_no_candidate_audit(
+        &mut record,
+        terminal_attempt_summary
+            .and_then(|summary| summary.pool_routing_no_candidate_audit.as_ref()),
+    );
     if let Err(err) =
         persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
     {
@@ -1975,6 +1980,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_persist_ms: 0.0,
                     },
                 };
+                set_proxy_capture_record_pool_routing_no_candidate_audit(
+                    &mut record,
+                    err.attempt_summary.pool_routing_no_candidate_audit.as_ref(),
+                );
                 if let (Some(decision), Some(measurement)) = (
                     pool_attempt_runtime_snapshot
                         .as_ref()

@@ -2165,7 +2165,7 @@ pub(crate) async fn reset_upstream_account_model_routing(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let Some(route_state) = reset_model_route(&state.pool, id, &payload.model)
+    let Some(model_state) = reset_model_route(&state.pool, id, &payload.model)
         .await
         .map_err(internal_error_tuple)?
     else {
@@ -2177,7 +2177,8 @@ pub(crate) async fn reset_upstream_account_model_routing(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    Ok(Json(route_state))
+    publish_pool_routing_availability(state.as_ref());
+    Ok(Json(model_state))
 }
 
 #[derive(Debug, Default, Deserialize)]

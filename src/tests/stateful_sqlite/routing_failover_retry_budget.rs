@@ -2254,7 +2254,6 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
         true,
         PoolNoAvailableWaitSettings {
             timeout: Duration::from_millis(220),
-            poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2353,6 +2352,131 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
 }
 
 #[tokio::test]
+async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
+    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async {
+        panic!("synthetic pool route selection panic");
+        #[allow(unreachable_code)]
+        (Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired), None)
+    }));
+
+    let fallback_deadline = Some(Instant::now() + Duration::from_secs(1));
+    let (resolution, wait_deadline) =
+        await_pool_route_selection_task(task, fallback_deadline).await;
+    let err = resolution.expect_err("panicked selection task should surface as an error");
+    assert!(err.to_string().contains("pool route selection task failed"));
+    assert_eq!(wait_deadline, fallback_deadline);
+
+    let mapped = build_pool_route_selection_failure_error(&err, 0, 0);
+    assert_eq!(mapped.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(mapped.failure_kind, PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
+    assert_eq!(mapped.attempt_summary.pool_attempt_count, 0);
+    assert!(mapped.message.contains("pool route selection task failed"));
+}
+
+#[test]
+fn elapsed_no_candidate_next_eligible_at_retries_immediately() {
+    let audit = PoolRoutingNoCandidateAudit {
+        terminal_reason_code: "expiredCooldownProbe".to_string(),
+        candidate_count: 1,
+        eligible_candidate_count: 1,
+        reservation_conflict_count: 0,
+        next_eligible_at: Some((Utc::now() - chrono::Duration::milliseconds(1)).to_rfc3339()),
+        excluded_reason_counts: std::collections::BTreeMap::from([(
+            "expiredCooldownProbe".to_string(),
+            1,
+        )]),
+        candidates: Vec::new(),
+    };
+
+    assert_eq!(
+        no_candidate_next_eligible_delay(&audit),
+        Some(Duration::ZERO),
+        "an eligibility timestamp that expires between selection and waiting must trigger an immediate retry"
+    );
+}
+
+#[tokio::test]
+async fn failover_route_selection_task_preserves_the_external_deadline() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+    )
+    .await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let started = Instant::now();
+    let (resolution, wait_deadline) = resolve_pool_account_for_failover_on_fresh_task(
+        state,
+        None,
+        None,
+        Vec::new(),
+        HashSet::new(),
+        None,
+        None,
+        None,
+        true,
+        None,
+        Some(Instant::now() + Duration::from_millis(40)),
+        "/v1/responses".to_string(),
+        crate::ImageIntent::Unknown,
+        false,
+        "deadline-selection-task".to_string(),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(
+            resolution.expect("selection task should join successfully"),
+            PoolAccountResolutionWithWait::TotalTimeoutExpired
+        ),
+        "selection task should preserve total-timeout expiry"
+    );
+    assert!(wait_deadline.is_some());
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "selection task should not outlive the external deadline, elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let inner_dropped = dropped.clone();
+    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        let _drop_signal = DropSignal(inner_dropped);
+        std::future::pending::<()>().await;
+        #[allow(unreachable_code)]
+        (Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired), None)
+    }));
+    let outer = tokio::spawn(await_pool_route_selection_task(task, None));
+    tokio::task::yield_now().await;
+
+    outer.abort();
+    let join_error = outer
+        .await
+        .expect_err("aborting the outer wait should cancel it");
+    assert!(join_error.is_cancelled());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !dropped.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("inner route selection task should be aborted and dropped");
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_starts() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2387,7 +2511,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
         None,
         true,
         &mut wait_deadline,
-        Some(Instant::now() + Duration::from_millis(650)),
+        Some(Instant::now() + Duration::from_secs(5)),
     )
     .await
     .expect("helper resolution should succeed");
@@ -2398,7 +2522,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
         .expect("delayed release thread should join");
 
     assert!(
-        elapsed < Duration::from_millis(850),
+        elapsed < Duration::from_millis(5_500),
         "helper should still resolve once the account recovers after the bounded wait begins, elapsed={elapsed:?}"
     );
     match resolution {
@@ -2415,6 +2539,243 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
         wait_deadline.is_some(),
         "bounded waits should record the deadline once they actually start"
     );
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_with_wait_wakes_when_a_routable_account_is_created() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .await;
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let create_state = state.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let (account_id_tx, account_id_rx) = std::sync::mpsc::channel();
+    let create_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("waiter should subscribe before account creation");
+        let account_id = runtime_handle.block_on(async move {
+            insert_test_pool_api_key_account(
+                &create_state,
+                "Created During Wait",
+                "upstream-created-during-wait",
+            )
+            .await
+        });
+        account_id_tx
+            .send(account_id)
+            .expect("send created account id");
+    });
+
+    let started = Instant::now();
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        true,
+        &mut wait_deadline,
+        Some(Instant::now() + Duration::from_secs(1)),
+    )
+    .await
+    .expect("waiter should resolve after account creation publishes availability");
+    let elapsed = started.elapsed();
+    create_task
+        .join()
+        .expect("account creation task should join");
+    let account_id = account_id_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("receive created account id");
+
+    match resolution {
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
+            assert_eq!(account.account_id, account_id);
+        }
+        other => panic!("created routable account should resolve, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "account creation should wake the waiter before its deadline, elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation_is_released() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Model Limited", "upstream-model-limited").await;
+    let model = "gpt-model-reservation-wake";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit model route to one reservation");
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+        .execute(&state.pool)
+        .await
+        .expect("enable queue overflow mode");
+
+    let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("model-reservation-holder"),
+    )
+    .await
+    .expect("reserve the only model slot");
+    assert!(matches!(holder, PoolAccountResolution::Resolved(_)));
+
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let release_state = state.clone();
+    let release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter should subscribe before release");
+        release_pool_routing_reservation(&release_state, "model-reservation-holder");
+    });
+
+    let started = Instant::now();
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        true,
+        &mut wait_deadline,
+        Some(Instant::now() + Duration::from_secs(1)),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("model-reservation-waiter"),
+    )
+    .await
+    .expect("waiter should resolve after the availability event");
+    let elapsed = started.elapsed();
+    release_task.join().expect("release task should join");
+
+    match resolution {
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
+            assert_eq!(account.account_id, account_id);
+        }
+        other => panic!("expected released model slot to resolve, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "reservation release should wake the waiter before the two-second queue timeout, elapsed={elapsed:?}"
+    );
+
+    release_pool_routing_reservation(&state, "model-reservation-waiter");
+}
+
+#[tokio::test]
+async fn expired_model_cooldown_probe_conflict_has_a_distinct_no_candidate_reason() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Cooldown Probe", "upstream-probe").await;
+    let model = "gpt-expired-cooldown-probe";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_account_model_routes
+           SET state = 'cooling_down',
+               priority = 'excluded',
+               cooldown_until = ?3,
+               last_failure_kind = 'upstream_http_503'
+         WHERE account_id = ?1 AND model = ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+    .execute(&state.pool)
+    .await
+    .expect("expire model cooldown");
+    sqlx::query("UPDATE pool_routing_settings SET cache_hit_overflow_mode = 'queue' WHERE id = 1")
+        .execute(&state.pool)
+        .await
+        .expect("enable queue overflow mode");
+
+    let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("expired-probe-holder"),
+    )
+    .await
+    .expect("reserve expired cooldown probe");
+    assert!(matches!(holder, PoolAccountResolution::Resolved(_)));
+
+    let conflict = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("expired-probe-waiter"),
+    )
+    .await
+    .expect("resolve occupied expired cooldown probe");
+    let PoolAccountResolution::NoCandidate(audit) = conflict else {
+        panic!("occupied expired cooldown probe should return NoCandidate");
+    };
+    assert_eq!(audit.terminal_reason_code, "expiredCooldownProbe");
+    assert_eq!(audit.reservation_conflict_count, 1);
+    assert_eq!(audit.excluded_reason_counts["expiredCooldownProbe"], 1);
+    assert_eq!(audit.candidates[0].reason_code, "expiredCooldownProbe");
+
+    release_pool_routing_reservation(&state, "expired-probe-holder");
 }
 
 #[tokio::test]

@@ -874,6 +874,7 @@ pub(crate) struct PoolAttemptSummary {
     pub(crate) pool_attempt_count: usize,
     pub(crate) pool_distinct_account_count: usize,
     pub(crate) pool_attempt_terminal_reason: Option<String>,
+    pub(crate) pool_routing_no_candidate_audit: Option<PoolRoutingNoCandidateAudit>,
 }
 
 pub(crate) fn pool_attempt_summary(
@@ -885,6 +886,7 @@ pub(crate) fn pool_attempt_summary(
         pool_attempt_count,
         pool_distinct_account_count,
         pool_attempt_terminal_reason,
+        pool_routing_no_candidate_audit: None,
     }
 }
 
@@ -932,6 +934,7 @@ pub(crate) fn build_pool_no_available_account_error(
     attempt_count: usize,
     distinct_account_count: usize,
     _retry_after_secs: u64,
+    no_candidate_audit: Option<PoolRoutingNoCandidateAudit>,
 ) -> PoolUpstreamError {
     PoolUpstreamError {
         codex_imagegen_rewrite: None,
@@ -948,11 +951,14 @@ pub(crate) fn build_pool_no_available_account_error(
         upstream_request_id: None,
         proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
-        attempt_summary: pool_attempt_summary(
-            attempt_count,
-            distinct_account_count,
-            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
-        ),
+        attempt_summary: PoolAttemptSummary {
+            pool_routing_no_candidate_audit: no_candidate_audit,
+            ..pool_attempt_summary(
+                attempt_count,
+                distinct_account_count,
+                Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+            )
+        },
         requested_service_tier: None,
         request_body_for_capture: None,
     }
@@ -2317,14 +2323,12 @@ pub(crate) fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration 
 }
 
 pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS: u64 = 10;
-pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS: u64 = 250;
 pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS: u64 = 10;
 pub(crate) const POOL_NO_AVAILABLE_ACCOUNT_MESSAGE: &str = "no healthy pool account is available";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PoolNoAvailableWaitSettings {
     pub(crate) timeout: Duration,
-    pub(crate) poll_interval: Duration,
     pub(crate) retry_after_secs: u64,
 }
 
@@ -2332,20 +2336,7 @@ impl Default for PoolNoAvailableWaitSettings {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS),
-            poll_interval: Duration::from_millis(
-                DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS,
-            ),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
-        }
-    }
-}
-
-impl PoolNoAvailableWaitSettings {
-    pub(crate) fn normalized_poll_interval(self) -> Duration {
-        if self.poll_interval.is_zero() {
-            Duration::from_millis(1)
-        } else {
-            self.poll_interval
         }
     }
 }
@@ -6311,7 +6302,7 @@ mod tests {
         store_pool_failover_error(
             &mut last_error,
             &mut preserve_sticky_owner_terminal_error,
-            build_pool_no_available_account_error(0, 0, 0),
+            build_pool_no_available_account_error(0, 0, 0, None),
             Some(&audit),
         );
 

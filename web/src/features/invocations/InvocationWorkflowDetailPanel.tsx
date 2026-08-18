@@ -118,6 +118,17 @@ function formatOptionalText(value: string | null | undefined) {
   return normalized ? normalized : FALLBACK_CELL;
 }
 
+function formatNoCandidateReason(code: string, isZh: boolean) {
+  const labels: Record<string, [string, string]> = {
+    modelConcurrencyLimit: ["模型并发容量已满", "Model concurrency capacity is full"],
+    expiredCooldownProbe: ["冷却后的探针容量已占用", "Expired cooldown probe capacity is occupied"],
+    stickyRouteReservationConflict: ["粘性路由预约冲突", "Sticky-route reservation conflict"],
+    policyExcluded: ["路由策略已排除", "Routing policy excluded the candidate"],
+    noEligibleCandidate: ["没有符合条件的候选账号", "No eligible account candidate"],
+  };
+  return labels[code]?.[isZh ? 0 : 1] ?? (isZh ? "未知路由原因" : "Unknown routing reason");
+}
+
 function formatReasoningEffortValue(value: unknown) {
   return formatReasoningEffort(typeof value === "string" ? value : null);
 }
@@ -3056,6 +3067,7 @@ export function InvocationWorkflowDetailPanel({
       ? `${isZh ? "信息不完整" : "Partial detail"}${detail.partialReason ? `: ${detail.partialReason}` : ""}`
       : null,
   ].filter((value): value is string => Boolean(value));
+  const noCandidateAudit = hero.poolRoutingNoCandidateAudit;
   const snapshotMetrics = [
     {
       label: isZh ? "最终结果" : "Final Result",
@@ -3182,7 +3194,7 @@ export function InvocationWorkflowDetailPanel({
               )}
             >
               <div className="min-w-0">
-                <div className="text-[11px] font-medium text-base-content/56">
+                <div className="text-xs font-medium text-base-content/56">
                   {isZh ? "调用 ID" : "Call ID"}
                 </div>
                 <div className="mt-1 break-all font-mono text-[1.08rem] font-semibold tracking-[-0.02em] text-base-content sm:text-[1.22rem]">
@@ -3223,6 +3235,80 @@ export function InvocationWorkflowDetailPanel({
               ))}
             </div>
 
+            {noCandidateAudit ? (
+              <Alert
+                variant="warning"
+                className={cn("mt-4", isCompact && "mt-3")}
+                data-testid="pool-routing-no-candidate-audit"
+              >
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1 text-sm leading-5">
+                  <div className="font-semibold">
+                    {isZh ? "未分配上游账号诊断" : "No upstream account diagnostic"}
+                  </div>
+                  <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span>
+                      {isZh ? "原因" : "Reason"}:{" "}
+                      {formatNoCandidateReason(noCandidateAudit.terminalReasonCode, isZh)}
+                    </span>
+                    <code className="max-w-full break-all rounded-md border border-warning/25 bg-warning/10 px-1.5 py-0.5 font-mono text-xs leading-4 text-base-content/72">
+                      {noCandidateAudit.terminalReasonCode}
+                    </code>
+                  </div>
+
+                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+                    {[
+                      {
+                        label: isZh ? "候选账号" : "Candidates",
+                        value: noCandidateAudit.candidateCount,
+                      },
+                      {
+                        label: isZh ? "可用账号" : "Eligible",
+                        value: noCandidateAudit.eligibleCandidateCount,
+                      },
+                      {
+                        label: isZh ? "容量冲突" : "Capacity conflicts",
+                        value: noCandidateAudit.reservationConflictCount,
+                      },
+                    ].map((metric) => (
+                      <div key={metric.label} className="min-w-0">
+                        <dt className="text-xs font-medium text-base-content/58">{metric.label}</dt>
+                        <dd className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-base-content">
+                          {metric.value.toLocaleString(localeTag)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+
+                  {noCandidateAudit.candidates.length > 0 ? (
+                    <div className="mt-3 border-t border-warning/25 pt-3">
+                      <div className="text-xs font-medium text-base-content/58">
+                        {isZh ? "候选明细" : "Candidate details"}
+                      </div>
+                      <ul className="mt-2 grid min-w-0 gap-2 sm:grid-cols-2">
+                        {noCandidateAudit.candidates.map((candidate) => (
+                          <li
+                            key={`${candidate.accountId}-${candidate.reasonCode}`}
+                            className="min-w-0"
+                          >
+                            <div className="break-words text-xs font-semibold text-base-content/84">
+                              {candidate.accountName}
+                            </div>
+                            <div className="mt-0.5 break-words text-xs text-base-content/70">
+                              {formatNoCandidateReason(candidate.reasonCode, isZh)}
+                            </div>
+                            <code className="mt-0.5 block max-w-full break-all font-mono text-xs leading-4 text-base-content/58">
+                              {candidate.reasonCode}
+                            </code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              </Alert>
+            ) : null}
+
             <div
               className={cn(
                 "mt-4 grid gap-4 border-t border-base-300/65 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.95fr)]",
@@ -3250,7 +3336,7 @@ export function InvocationWorkflowDetailPanel({
 
               {heroStatusNotes.length > 0 ? (
                 <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-base-content/56">
+                  <div className="text-xs font-medium text-base-content/56">
                     {isZh ? "状态" : "Status"}
                   </div>
                   <div className="mt-1 space-y-1 text-sm text-base-content/72">
@@ -3276,7 +3362,7 @@ export function InvocationWorkflowDetailPanel({
                 {isZh ? "关键指标" : "Key metrics"}
               </div>
               {hero.failureClass ? (
-                <Chip size="compact" tone="error" className="px-2.5 py-1 font-mono text-[11px]">
+                <Chip size="compact" tone="error" className="px-2.5 py-1 font-mono text-xs">
                   {hero.failureClass}
                 </Chip>
               ) : null}

@@ -43,4 +43,23 @@ describe("ModelRoutingHealthPanel", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain("加载更多");
   });
+
+  it("uses the shared error alert preset for routing load failures", () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <ModelRoutingHealthPanel
+          accountId={21}
+          states={[]}
+          error="模型路由状态刷新失败"
+          writesEnabled
+          onReset={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(html).toContain('data-testid="model-routing-error"');
+    expect(html).toContain("border-error/45");
+    expect(html).toContain("bg-error/15");
+    expect(html).toContain("tone-ink-error");
+  });
 });

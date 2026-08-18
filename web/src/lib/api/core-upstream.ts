@@ -344,6 +344,8 @@ export interface ModelRoutingState {
   cacheLowHitStreak?: number;
   cacheCooldownLevel?: number;
   cacheLastHitRatePercent?: number | null;
+  cacheUsageMissingSince?: string | null;
+  cacheUsageMissingReason?: string | null;
   probeRequired?: boolean;
 }
 
@@ -1571,6 +1573,10 @@ function normalizeModelRoutingState(raw: unknown): ModelRoutingState | null {
       Math.trunc(normalizeFiniteNumber(payload.cacheCooldownLevel) ?? 0),
     ),
     cacheLastHitRatePercent: normalizeFiniteNumber(payload.cacheLastHitRatePercent),
+    cacheUsageMissingSince:
+      typeof payload.cacheUsageMissingSince === "string" ? payload.cacheUsageMissingSince : null,
+    cacheUsageMissingReason:
+      typeof payload.cacheUsageMissingReason === "string" ? payload.cacheUsageMissingReason : null,
     probeRequired: payload.probeRequired === true,
   };
 }

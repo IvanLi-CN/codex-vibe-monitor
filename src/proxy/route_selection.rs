@@ -1549,8 +1549,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 pool_total_timeout_exhausted_message(total_timeout),
             ));
         }
-        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
-        | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable)) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
@@ -1565,6 +1564,29 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             .await
             {
                 return Err(err);
+            }
+            return Err(plain_proxy_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+            ));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(
+            audit,
+        ))) => {
+            if let Some(trace_context) = trace_context
+                && let Err(err) = persist_pool_routing_no_candidate_invocation(
+                    state,
+                    trace_context,
+                    prompt_cache_key,
+                    &audit,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = trace_context.invoke_id,
+                    error = %err,
+                    "failed to persist zero-attempt pool routing diagnostic"
+                );
             }
             return Err(plain_proxy_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -3533,9 +3555,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             let excluded_ids = Vec::new();
                             let excluded_upstream_route_keys = HashSet::new();
                             let mut no_available_wait_deadline = None;
-                            let poll_interval = state_for_wait
-                                .pool_no_available_wait
-                                .normalized_poll_interval();
+                            let mut availability =
+                                state_for_wait.pool_routing_availability.subscribe();
                             loop {
                                 let now = Instant::now();
                                 if pre_attempt_total_timeout_deadline
@@ -3561,7 +3582,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 if matches!(
                                     resolution,
                                     Ok(PoolAccountResolution::Unavailable
-                                        | PoolAccountResolution::NoCandidate)
+                                        | PoolAccountResolution::NoCandidate(_))
                                 ) && no_available_wait_deadline.is_none()
                                 {
                                     let deadline = Instant::now()
@@ -3583,7 +3604,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 match resolution {
                                     Ok(
                                         resolution @ (PoolAccountResolution::Unavailable
-                                        | PoolAccountResolution::NoCandidate),
+                                        | PoolAccountResolution::NoCandidate(_)),
                                     ) => {
                                         let wait_deadline =
                                             if let Some(deadline) = no_available_wait_deadline {
@@ -3619,10 +3640,23 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             );
                                         }
                                         notify_pool_no_available_wait_hook(state_for_wait.as_ref());
-                                        tokio::time::sleep(poll_interval.min(
-                                            effective_deadline.saturating_duration_since(now),
-                                        ))
-                                        .await;
+                                        let next_eligible_delay = match &resolution {
+                                            PoolAccountResolution::NoCandidate(audit) => {
+                                                no_candidate_next_eligible_delay(audit)
+                                            }
+                                            _ => None,
+                                        };
+                                        let remaining =
+                                            effective_deadline.saturating_duration_since(now);
+                                        let wake_after = next_eligible_delay
+                                            .map(|delay| delay.min(remaining))
+                                            .unwrap_or(remaining);
+                                        tokio::select! {
+                                            changed = availability.changed() => {
+                                                let _ = changed;
+                                            }
+                                            _ = tokio::time::sleep(wake_after) => {}
+                                        }
                                     }
                                     Ok(resolution) => {
                                         break (
@@ -3685,7 +3719,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             }
                             Ok(
                                 PoolAccountResolution::Unavailable
-                                | PoolAccountResolution::NoCandidate,
+                                | PoolAccountResolution::NoCandidate(_),
                             ) => {}
                         }
                         let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
@@ -3799,7 +3833,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             PoolAccountResolution::Unavailable,
                                         ))
                                         | Ok(PoolAccountResolutionWithWait::Resolution(
-                                            PoolAccountResolution::NoCandidate,
+                                            PoolAccountResolution::NoCandidate(_),
                                         )) => {}
                                     }
                                     if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
@@ -4016,7 +4050,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     PoolAccountResolution::Unavailable,
                                 ))
                                 | Ok(PoolAccountResolutionWithWait::Resolution(
-                                    PoolAccountResolution::NoCandidate,
+                                    PoolAccountResolution::NoCandidate(_),
                                 )) => {}
                             }
                         }
