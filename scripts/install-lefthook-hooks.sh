@@ -156,6 +156,7 @@ is_marked_standard_pre_commit() {
   local existing_hook_path="$1"
   local template_dir template_path
 
+  [ -L "$existing_hook_path" ] && return 1
   template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")" || return 1
   if ! git -C "$template_dir" init -q \
     || ! cp "$repo_root/lefthook.yml" "$template_dir/lefthook.yml" \

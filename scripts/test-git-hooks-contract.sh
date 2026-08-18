@@ -270,6 +270,28 @@ printf '\necho custom-pre-commit\n' >> "$pre_commit_hook"
 )
 assert_contains "$pre_commit_hook" 'echo custom-pre-commit'
 
+pre_commit_template_repo="$tmp_dir/pre-commit-template"
+mkdir -p "$pre_commit_template_repo"
+cp "$repo_root/lefthook.yml" "$pre_commit_template_repo/lefthook.yml"
+git -C "$pre_commit_template_repo" init -q
+(
+  cd "$pre_commit_template_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install pre-commit >/dev/null
+)
+pre_commit_symlink_target="$tmp_dir/standard-pre-commit"
+cp "$pre_commit_template_repo/.git/hooks/pre-commit" "$pre_commit_symlink_target"
+printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$pre_commit_symlink_target"
+cp "$pre_commit_symlink_target" "$tmp_dir/standard-pre-commit.before"
+rm -f "$pre_commit_hook"
+ln -s "$pre_commit_symlink_target" "$pre_commit_hook"
+(
+  cd "$legacy_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+[ -L "$pre_commit_hook" ] || fail 'pre-commit symlink was modified'
+cmp -s "$tmp_dir/standard-pre-commit.before" "$pre_commit_symlink_target" \
+  || fail 'pre-commit symlink target was modified'
+
 historical_repo="$tmp_dir/historical-checkout"
 mkdir -p "$historical_repo"
 cp "$repo_root/lefthook.yml" "$historical_repo/lefthook.yml"
