@@ -574,6 +574,7 @@ interface TimelineMetricAction<TSection extends string> {
   tag?: string | null;
   primary: string;
   secondary?: string | null;
+  secondaryTone?: "success";
   tertiary?: string | null;
   tertiaryChips?: string[] | null;
   tertiaryOverflowCount?: number;
@@ -961,6 +962,7 @@ function buildAttemptMetricActions(
         localeTag,
       ),
       secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
+      secondaryTone: typeof attempt.firstTokenMs === "number" ? "success" : undefined,
     },
     {
       section: "requestParsed",
@@ -1480,6 +1482,7 @@ function TimelineMetricButton({
   tag,
   primary,
   secondary,
+  secondaryTone,
   tertiary,
   tertiaryChips,
   tertiaryOverflowCount = 0,
@@ -1491,6 +1494,7 @@ function TimelineMetricButton({
   tag?: string | null;
   primary: string;
   secondary?: string | null;
+  secondaryTone?: "success";
   tertiary?: string | null;
   tertiaryChips?: string[] | null;
   tertiaryOverflowCount?: number;
@@ -1542,7 +1546,10 @@ function TimelineMetricButton({
           {secondary && secondary !== FALLBACK_CELL ? (
             <div
               title={secondary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/64 text-ellipsis whitespace-nowrap"
+              className={cn(
+                "overflow-hidden text-[10.5px] leading-4 text-ellipsis whitespace-nowrap",
+                secondaryTone === "success" ? "text-success" : "text-base-content/64",
+              )}
             >
               {secondary}
             </div>
@@ -2675,6 +2682,7 @@ function TimelineSummary({
                 tag={action.tag}
                 primary={action.primary}
                 secondary={action.secondary}
+                secondaryTone={action.secondaryTone}
                 tertiary={action.tertiary}
                 tertiaryChips={action.tertiaryChips}
                 tertiaryOverflowCount={action.tertiaryOverflowCount}

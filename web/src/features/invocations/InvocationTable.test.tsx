@@ -164,6 +164,7 @@ function createWorkflowDetailFixture(
     phase: attemptStatus === "failed" ? "streaming" : "completed",
     httpStatus: attemptStatus === "failed" ? 200 : 200,
     connectLatencyMs: record.tUpstreamConnectMs ?? null,
+    firstTokenMs: record.firstTokenMs ?? null,
     firstByteLatencyMs: record.tUpstreamTtfbMs ?? 640,
     streamLatencyMs: record.tUpstreamStreamMs ?? record.tTotalMs ?? 5430,
     upstreamRequestId: record.upstreamRequestId ?? "req_test_workflow",
@@ -1961,7 +1962,7 @@ describe("InvocationTable", () => {
     expect(html).toContain("请求想要 Fast，但实际未命中 Priority processing");
   });
 
-  it("renders expanded timing details with seconds for non-ttfb durations", async () => {
+  it("renders expanded timing details with seconds for non-TTFT durations", async () => {
     const record: ApiInvocation = {
       id: 91,
       invokeId: "invocation-expanded-timings",
@@ -2004,7 +2005,7 @@ describe("InvocationTable", () => {
     expect(document.body.textContent).toContain("4 s");
 
     const timingButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFB"),
+      (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFT"),
     ) as HTMLButtonElement | undefined;
     expect(timingButton).toBeTruthy();
 
@@ -2019,7 +2020,9 @@ describe("InvocationTable", () => {
     expect(text).toContain("3,450 ms");
     expect(text).toContain("20 ms");
     expect(text).toContain("456.7 ms");
-    expect(text).toContain("88.8 ms");
+    expect(text).toContain("TTFT");
+    expect(text).toContain("4 s");
+    expect(text).not.toContain("TTFB");
     expect(text).toContain("12,000 ms");
     expect(text).toContain("90 ms");
     expect(text).toContain("8 ms");
@@ -2070,7 +2073,7 @@ describe("InvocationTable", () => {
 
     await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
     const timingButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFB"),
+      (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFT"),
     ) as HTMLButtonElement | undefined;
     expect(timingButton).toBeTruthy();
 
@@ -2083,8 +2086,8 @@ describe("InvocationTable", () => {
     await waitForCondition(() => document.body.textContent?.includes("时间细分") === true);
     const text = document.body.textContent ?? "";
     expect(text).toContain("9.4 s");
-    expect(text).toContain("TTFB");
-    expect(text).toContain("0 ms");
+    expect(text).toContain("TTFT 9.4 s");
+    expect(text).not.toContain("TTFB");
   });
 
   it("keeps missing in-flight TTFT and response duration unavailable", async () => {

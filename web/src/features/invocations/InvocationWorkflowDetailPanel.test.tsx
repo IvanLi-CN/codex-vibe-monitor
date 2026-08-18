@@ -733,6 +733,11 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("上游 HTTP 200");
     expect(host?.textContent ?? "").toContain("TTFT 0.8 s");
     expect(host?.textContent ?? "").not.toContain("TTFB 0.6 s");
+    expect(
+      Array.from(host?.querySelectorAll<HTMLElement>(".text-success") ?? []).some(
+        (element) => element.textContent === "TTFT 0.8 s",
+      ),
+    ).toBe(true);
     expect(host?.textContent ?? "").toContain("attempt-1");
     expect(host?.textContent ?? "").toContain("输入写 112");
     expect(host?.textContent ?? "").toContain("输入读 36");
