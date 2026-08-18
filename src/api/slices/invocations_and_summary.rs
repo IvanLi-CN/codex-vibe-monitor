@@ -247,7 +247,7 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
         "CASE \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'pending' THEN '{queued}' \
-           WHEN {invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms > 0 THEN '{responding}' \
+           WHEN {invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms >= 0 THEN '{responding}' \
            WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
              OR {upstream_account_id} IS NOT NULL \
              OR ({invocation_ref}.t_upstream_connect_ms IS NOT NULL AND {invocation_ref}.t_upstream_connect_ms > 0) \
@@ -263,18 +263,22 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     )
 }
 
-pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
-    fn has_positive_timing(values: &[Option<f64>]) -> bool {
-        values
-            .iter()
-            .flatten()
-            .any(|value| value.is_finite() && *value > 0.0)
-    }
+fn has_positive_timing(values: &[Option<f64>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| value.is_finite() && *value > 0.0)
+}
 
+fn has_measured_first_token(value: Option<f64>) -> bool {
+    value.is_some_and(|value| value.is_finite() && value >= 0.0)
+}
+
+pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
     match normalized_runtime_text(record.status.as_deref()).as_str() {
         "pending" => Some(INVOCATION_LIVE_PHASE_QUEUED),
         "running" => {
-            if has_positive_timing(&[record.first_token_ms]) {
+            if has_measured_first_token(record.first_token_ms) {
                 Some(INVOCATION_LIVE_PHASE_RESPONDING)
             } else if record.upstream_account_id.is_some()
                 || has_positive_timing(&[
@@ -316,9 +320,17 @@ mod invocation_live_phase_tests {
         let sql = invocation_live_phase_sql("invocation");
 
         assert!(sql.contains("invocation.first_token_ms IS NOT NULL"));
+        assert!(sql.contains("invocation.first_token_ms >= 0"));
         assert!(!sql.contains("t_upstream_ttfb_ms IS NOT NULL"));
         assert!(!sql.contains("t_upstream_stream_ms IS NOT NULL"));
         assert!(!sql.contains("streaming_response"));
+    }
+
+    #[test]
+    fn zero_millisecond_first_token_is_a_valid_measurement() {
+        assert!(has_measured_first_token(Some(0.0)));
+        assert!(!has_measured_first_token(Some(-0.1)));
+        assert!(!has_measured_first_token(None));
     }
 
     #[test]

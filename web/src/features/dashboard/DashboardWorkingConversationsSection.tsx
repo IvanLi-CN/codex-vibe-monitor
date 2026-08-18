@@ -870,7 +870,7 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
 }
 
 function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  if (value == null || !Number.isFinite(value) || value <= 0) return "--";
+  if (value == null || !Number.isFinite(value) || value < 0) return "--";
 
   const seconds = value / 1000;
   const roundedTenths = Math.round(seconds * 10) / 10;

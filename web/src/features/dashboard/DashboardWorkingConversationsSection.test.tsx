@@ -6299,7 +6299,7 @@ describe("DashboardWorkingConversationsSection", () => {
             tReqParseMs: 36,
             tUpstreamConnectMs: 100,
             tUpstreamTtfbMs: 0,
-            firstTokenMs: 7_890,
+            firstTokenMs: 0,
             tUpstreamStreamMs: 8_028_073.3,
             tTotalMs: 0,
           }),
@@ -6340,7 +6340,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
         ?.textContent,
-    ).toContain("7.9 s");
+    ).toContain("0 s");
     expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
         ?.textContent,
@@ -6352,7 +6352,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(readings).toContain("1.2 s");
     expect(readings).toContain("--");
-    expect(readings).toContain("7.9 s");
+    expect(readings).toContain("0 s");
     expect(readings).toContain("8028 s");
     expect(readings).toContain("100 s");
     expect(readings).not.toContain("1.234 s");

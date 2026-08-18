@@ -30,14 +30,14 @@ describe("resolveInvocationLivePhase", () => {
     ).toBe("responding");
   });
 
-  it("does not treat zero placeholder timings as response progress", () => {
+  it("treats a measured zero-millisecond first token as response progress", () => {
     expect(
       resolveInvocationLivePhase({
         status: "running",
         failureClass: "none",
         firstTokenMs: 0,
       }),
-    ).toBe("queued");
+    ).toBe("responding");
     expect(
       resolveInvocationLivePhase({
         status: "running",

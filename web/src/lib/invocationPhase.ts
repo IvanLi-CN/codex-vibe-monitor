@@ -36,16 +36,20 @@ function normalizePhase(value: string | null | undefined): InvocationLivePhase |
   return null;
 }
 
-function hasFiniteTiming(value: number | null | undefined): boolean {
+function hasPositiveTiming(value: number | null | undefined): boolean {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function hasMeasuredFirstToken(value: number | null | undefined): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function resolvePreResponsePhase(record: InvocationPhaseSource): InvocationLivePhase {
   if (
     record.upstreamAccountId != null ||
-    hasFiniteTiming(record.tUpstreamConnectMs) ||
-    hasFiniteTiming(record.tReqReadMs) ||
-    hasFiniteTiming(record.tReqParseMs)
+    hasPositiveTiming(record.tUpstreamConnectMs) ||
+    hasPositiveTiming(record.tReqReadMs) ||
+    hasPositiveTiming(record.tReqParseMs)
   ) {
     return "requesting";
   }
@@ -61,7 +65,7 @@ export function resolveInvocationLivePhase(
     return null;
   }
 
-  const hasFirstToken = hasFiniteTiming(record.firstTokenMs);
+  const hasFirstToken = hasMeasuredFirstToken(record.firstTokenMs);
   if (normalizedStatus === "pending") return "queued";
   if (hasFirstToken) return "responding";
   const explicitPhase = normalizePhase(record.livePhase);

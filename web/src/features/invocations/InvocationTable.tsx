@@ -74,7 +74,7 @@ function formatCompactLatencySeconds(
   localeTag: string,
   fallback: string,
 ) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
   const roundedSeconds = Math.round((value / 1000) * 10) / 10;
   const maximumFractionDigits = roundedSeconds >= 100 ? 0 : 1;
   return `${roundedSeconds.toLocaleString(localeTag, {
