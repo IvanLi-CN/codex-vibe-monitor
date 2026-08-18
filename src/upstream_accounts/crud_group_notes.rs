@@ -164,6 +164,7 @@ pub(crate) async fn get_model_routing_live(
             limit
         },
         None,
+        visible_route_keys.as_ref(),
     )
     .await
     .map_err(internal_error_tuple)?
@@ -234,6 +235,7 @@ pub(crate) async fn list_upstream_account_model_routing_events(
         MODEL_ROUTING_HISTORY_HOURS * 60,
         page_size.saturating_add(1),
         cursor.as_ref(),
+        None,
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -432,6 +434,7 @@ async fn load_model_routing_timeline_entries(
     window_minutes: i64,
     limit: usize,
     cursor: Option<&ModelRoutingHistoryCursor>,
+    route_keys: Option<&std::collections::BTreeSet<(i64, String)>>,
 ) -> Result<Vec<ModelRoutingTimelineEntry>> {
     let cutoff_epoch_ms =
         (Utc::now() - ChronoDuration::minutes(window_minutes.max(1))).timestamp_millis() as f64;
@@ -475,8 +478,14 @@ async fn load_model_routing_timeline_entries(
               AND inv.occurred_at = attempts.occurred_at
           LEFT JOIN pool_upstream_account_events AS event ON event.id = (
               SELECT latest.id
-                FROM pool_upstream_account_events AS latest
+               FROM pool_upstream_account_events AS latest
                WHERE latest.attempt_id = attempts.id
+                 AND (
+                     latest.model_route_state_before IS NOT NULL
+                     OR latest.model_route_state_after IS NOT NULL
+                     OR latest.model_route_priority_before IS NOT NULL
+                     OR latest.model_route_priority_after IS NOT NULL
+                 )
                ORDER BY latest.occurred_at DESC, latest.id DESC
                LIMIT 1
           )
@@ -500,6 +509,12 @@ async fn load_model_routing_timeline_entries(
         attempt_query.push(" AND ").push(&model_sql).push(" = ");
         attempt_query.push_bind(model);
     }
+    append_model_routing_route_key_filter(
+        &mut attempt_query,
+        route_keys,
+        "attempts.upstream_account_id",
+        &model_sql,
+    );
     if let Some(cursor) = cursor {
         attempt_query
             .push(" AND (")
@@ -566,6 +581,12 @@ async fn load_model_routing_timeline_entries(
         event_query.push(" AND event.model = ");
         event_query.push_bind(model);
     }
+    append_model_routing_route_key_filter(
+        &mut event_query,
+        route_keys,
+        "event.account_id",
+        "event.model",
+    );
     if let Some(cursor) = cursor {
         event_query
             .push(" AND (")
@@ -608,6 +629,36 @@ async fn load_model_routing_timeline_entries(
     });
     entries.truncate(limit);
     Ok(entries)
+}
+
+fn append_model_routing_route_key_filter(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    route_keys: Option<&std::collections::BTreeSet<(i64, String)>>,
+    account_sql: &str,
+    model_sql: &str,
+) {
+    let Some(route_keys) = route_keys else {
+        return;
+    };
+    if route_keys.is_empty() {
+        query.push(" AND 0 = 1");
+        return;
+    }
+    query.push(" AND (");
+    for (index, (account_id, model)) in route_keys.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push(account_sql)
+            .push(" = ")
+            .push_bind(*account_id)
+            .push(" AND ")
+            .push(model_sql)
+            .push(" = ")
+            .push_bind(model.clone());
+    }
+    query.push(")");
 }
 
 pub(crate) async fn list_upstream_account_attempts(

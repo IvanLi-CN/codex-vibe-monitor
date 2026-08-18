@@ -441,7 +441,12 @@ describe("demo MSW handlers", () => {
     ]);
     const live = (await liveResponse.json()) as {
       groups: Array<{ accounts: Array<{ accountId: number; accountGroupName?: unknown }> }>;
-      records: Array<{ kind: string; attemptIndex?: number; accountGroupName?: unknown }>;
+      records: Array<{
+        kind: string;
+        attemptIndex?: number;
+        invokeId?: string;
+        accountGroupName?: unknown;
+      }>;
     };
     const history = (await historyResponse.json()) as {
       items: Array<{ model: string; kind: string; attemptIndex?: number }>;
@@ -466,6 +471,9 @@ describe("demo MSW handlers", () => {
     );
     expect(live.records).not.toContainEqual(
       expect.objectContaining({ accountGroupName: expect.anything() }),
+    );
+    expect(live.records.filter((record) => record.kind === "event")).not.toContainEqual(
+      expect.objectContaining({ invokeId: expect.any(String) }),
     );
     expect(history.items).toEqual(
       expect.arrayContaining([

@@ -269,12 +269,6 @@ function routingLaneLabel(accountId: number) {
   return `API Key #${accountId}`;
 }
 
-function modelRoutePriorityRank(priority: string) {
-  if (priority === "excluded") return 2;
-  if (priority === "demoted" || priority === "deprioritized") return 1;
-  return 0;
-}
-
 function routingTaskId(model: string, accountId: number) {
   return `route-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}-${accountId}`;
 }
@@ -319,12 +313,10 @@ export function buildModelRoutingGanttData({
     }
   }
 
+  // Keep lane order stable by API Key id. Dynamic routing priority is represented only by
+  // the time-varying Task bands so vertical position cannot be mistaken for route rank.
   const lanes = Array.from(accountMap.values())
-    .sort(
-      (left, right) =>
-        modelRoutePriorityRank(left.priority) - modelRoutePriorityRank(right.priority) ||
-        left.accountId - right.accountId,
-    )
+    .sort((left, right) => left.accountId - right.accountId)
     .map((account) => {
       const laneRecords = modelRecords.filter((record) => record.accountId === account.accountId);
       return {

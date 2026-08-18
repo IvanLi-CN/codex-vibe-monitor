@@ -3808,6 +3808,10 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     error = %err,
                     "failed to observe model route cache hit"
                 );
+            } else {
+                state
+                    .subscription_hub
+                    .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
             }
         }
     }
