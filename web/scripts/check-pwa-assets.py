@@ -152,6 +152,7 @@ def assert_build_contract(version: str) -> None:
     built_html = (DIST_DIR / "index.html").read_text()
     assert f"apple-touch-icon.png?v={version}" in built_html, "built Apple touch URL is stale"
     worker = (DIST_DIR / "sw.js").read_text()
+    assert "ignoreURLParametersMatching" in worker, "built service worker does not match versioned icon URLs offline"
     for asset in INSTALL_ICON_ASSETS:
         assert asset in worker, f"Workbox precache omits {asset}"
 
@@ -174,6 +175,8 @@ def main() -> None:
     assert 'purpose: "any"' in config and 'purpose: "maskable"' in config, "manifest purposes are incomplete"
     assert 'maskable-192.png' in config and 'maskable-512.png' in config, "maskable assets are not declared"
     assert 'versionedIcon("icon-192.png")' in config, "shortcut icon is not content-versioned"
+    service_worker = (WEB_DIR / "src" / "pwa" / "sw.ts").read_text()
+    assert "ignoreURLParametersMatching" in service_worker, "service worker does not match versioned icon URLs offline"
     index = (WEB_DIR / "index.html").read_text()
     assert "%INSTALL_ICON_VERSION%" in index, "HTML install links are not content-versioned"
     assert_build_contract(install_icon_version())
