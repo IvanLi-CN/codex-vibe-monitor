@@ -3528,6 +3528,7 @@ struct InvocationWorkflowIdentityRow {
 
 #[derive(Debug, FromRow)]
 struct InvocationWorkflowAttemptRow {
+    attempt_row_id: i64,
     attempt_id: Option<String>,
     invoke_id: String,
     occurred_at: String,
@@ -4779,16 +4780,24 @@ fn invocation_workflow_attempt_row_is_pseudo_terminal(
             .is_none_or(str::is_empty)
 }
 
-fn last_success_like_attempt_index(attempt_rows: &[&InvocationWorkflowAttemptRow]) -> Option<i64> {
+fn last_success_like_attempt_row_id(attempt_rows: &[&InvocationWorkflowAttemptRow]) -> Option<i64> {
     attempt_rows
         .iter()
-        .rfind(|attempt| {
+        .filter(|attempt| {
             matches!(
                 normalized_runtime_text(Some(attempt.status.as_str())).as_str(),
                 "success" | "completed" | "warning_success"
             )
         })
-        .map(|attempt| attempt.attempt_index)
+        .max_by_key(|attempt| (attempt.attempt_index, attempt.attempt_row_id))
+        .map(|attempt| attempt.attempt_row_id)
+}
+
+fn final_real_attempt_row_id(attempts: &[&InvocationWorkflowAttemptRow]) -> Option<i64> {
+    attempts
+        .iter()
+        .max_by_key(|attempt| (attempt.attempt_index, attempt.attempt_row_id))
+        .map(|attempt| attempt.attempt_row_id)
 }
 
 fn build_workflow_timeline_entries(
@@ -4974,11 +4983,8 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
             .iter()
             .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
             .collect::<Vec<_>>();
-        let final_attempt_index = real_attempt_rows
-            .iter()
-            .map(|attempt| attempt.attempt_index)
-            .max();
-        let last_success_attempt_index = last_success_like_attempt_index(&real_attempt_rows);
+        let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
+        let last_success_attempt_row_id = last_success_like_attempt_row_id(&real_attempt_rows);
         let usage_cost_audit = (invocation_status_is_success_like(&record)
             && invocation_has_usage_evidence(&record))
         .then(|| build_invocation_cost_audit(&record, &pricing_catalog, true))
@@ -4990,10 +4996,10 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
                     &record,
                     attempt_row,
                     payload_value.as_ref(),
-                    (last_success_attempt_index == Some(attempt_row.attempt_index))
+                    (last_success_attempt_row_id == Some(attempt_row.attempt_row_id))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
-                    final_attempt_index == Some(attempt_row.attempt_index),
+                    final_attempt_row_id == Some(attempt_row.attempt_row_id),
                 );
                 let attempt_id = attempt.attempt_id.clone()?;
                 Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
@@ -5044,6 +5050,7 @@ async fn query_invocation_workflow_attempt_rows(
     sqlx::query_as::<_, InvocationWorkflowAttemptRow>(
         r#"
         SELECT
+            attempts.id AS attempt_row_id,
             attempts.attempt_public_id AS attempt_id,
             attempts.invoke_id,
             attempts.occurred_at,
@@ -5203,7 +5210,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         .iter()
         .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
         .collect::<Vec<_>>();
-    let last_success_attempt_index = last_success_like_attempt_index(&real_attempt_rows);
+    let last_success_attempt_row_id = last_success_like_attempt_row_id(&real_attempt_rows);
     let pricing_catalog = state.pricing_catalog.read().await.clone();
     let usage_cost_audit = (invocation_status_is_success_like(&record)
         && invocation_has_usage_evidence(&record))
@@ -5241,10 +5248,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
             )]
         }
     } else {
-        let final_attempt_index = real_attempt_rows
-            .iter()
-            .map(|attempt| attempt.attempt_index)
-            .max();
+        let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
         real_attempt_rows
             .iter()
             .map(|attempt| {
@@ -5252,10 +5256,10 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                     &record,
                     attempt,
                     payload_value.as_ref(),
-                    (last_success_attempt_index == Some(attempt.attempt_index))
+                    (last_success_attempt_row_id == Some(attempt.attempt_row_id))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
-                    final_attempt_index == Some(attempt.attempt_index),
+                    final_attempt_row_id == Some(attempt.attempt_row_id),
                 )
             })
             .collect::<Vec<_>>()
@@ -20305,6 +20309,7 @@ mod invocation_cost_audit_tests {
 
     fn sample_attempt_row(attempt_index: i64, status: &str) -> InvocationWorkflowAttemptRow {
         InvocationWorkflowAttemptRow {
+            attempt_row_id: attempt_index,
             attempt_id: Some(format!("attempt-{attempt_index}")),
             invoke_id: "invocation-cost-audit".to_string(),
             occurred_at: "2026-07-20 10:25:09".to_string(),
@@ -20449,8 +20454,8 @@ mod invocation_cost_audit_tests {
             sample_attempt_row(3, "warning_success"),
         ];
         let attempt_refs = attempt_rows.iter().collect::<Vec<_>>();
-        let last_success_attempt_index = last_success_like_attempt_index(&attempt_refs);
-        assert_eq!(last_success_attempt_index, Some(3));
+        let last_success_attempt_row_id = last_success_like_attempt_row_id(&attempt_refs);
+        assert_eq!(last_success_attempt_row_id, Some(3));
 
         let attempts = attempt_rows
             .iter()
@@ -20459,7 +20464,7 @@ mod invocation_cost_audit_tests {
                     &record,
                     attempt,
                     None,
-                    (last_success_attempt_index == Some(attempt.attempt_index))
+                    (last_success_attempt_row_id == Some(attempt.attempt_row_id))
                         .then_some(&usage_cost_audit),
                     attempt.attempt_index == 3,
                 )
@@ -20486,6 +20491,37 @@ mod invocation_cost_audit_tests {
             final_response_summary["usage"]["audit"]["reason"].as_str(),
             Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
         );
+    }
+
+    #[test]
+    fn final_real_attempt_uses_row_id_to_break_shared_attempt_index_ties() {
+        let mut record = sample_invocation(Some(0));
+        record.first_token_ms = Some(840.0);
+        let mut earlier_retry = sample_attempt_row(1, "failed");
+        earlier_retry.attempt_row_id = 41;
+        earlier_retry.same_account_retry_index = 0;
+        let mut final_retry = sample_attempt_row(1, "success");
+        final_retry.attempt_row_id = 42;
+        final_retry.same_account_retry_index = 1;
+        let attempts = [&earlier_retry, &final_retry];
+
+        let final_attempt_row_id = final_real_attempt_row_id(&attempts);
+        assert_eq!(final_attempt_row_id, Some(42));
+
+        let mapped = attempts
+            .iter()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    None,
+                    None,
+                    final_attempt_row_id == Some(attempt.attempt_row_id),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mapped[0].first_token_ms, None);
+        assert_eq!(mapped[1].first_token_ms, Some(840.0));
     }
 
     #[test]

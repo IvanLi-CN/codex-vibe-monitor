@@ -2332,13 +2332,29 @@ mod tests {
         }
     }
 
+    fn responding_live_record(
+        invoke_id: &str,
+        account_id: Option<i64>,
+        attempts: i64,
+    ) -> ApiInvocation {
+        let mut record = live_record(
+            invoke_id,
+            account_id,
+            "running",
+            Some("responding"),
+            attempts,
+        );
+        record.first_token_ms = Some(700.0);
+        record
+    }
+
     #[test]
     fn dashboard_activity_live_snapshot_groups_one_runtime_read_by_account() {
         let snapshot = build_dashboard_activity_live_snapshot(
             9,
             [
                 live_record("c-1", Some(42), "running", Some("requesting"), 1),
-                live_record("c-2", Some(42), "pending", Some("responding"), 2),
+                responding_live_record("c-2", Some(42), 2),
                 live_record("u-1", None, "running", None, 1),
                 live_record("done", Some(42), "success", None, 1),
             ],
@@ -2566,13 +2582,7 @@ mod tests {
             .expect("baseline generation should match");
         assert_eq!(installed.snapshot.revision, 1);
 
-        hub.upsert(live_record(
-            "runtime-only",
-            Some(42),
-            "running",
-            Some("responding"),
-            1,
-        ));
+        hub.upsert(responding_live_record("runtime-only", Some(42), 1));
         let capture = hub
             .capture_memory_snapshot()
             .expect("merged runtime projection snapshot");
@@ -2585,6 +2595,7 @@ mod tests {
 
         let mut restored_update = restored.clone();
         restored_update.live_phase = Some("responding".to_string());
+        restored_update.first_token_ms = Some(700.0);
         hub.upsert(restored_update.clone());
         let updated = hub
             .capture_memory_snapshot()
@@ -2616,13 +2627,7 @@ mod tests {
             Some("requesting"),
             1,
         );
-        let retained = live_record(
-            "retained-runtime",
-            Some(42),
-            "running",
-            Some("responding"),
-            1,
-        );
+        let retained = responding_live_record("retained-runtime", Some(42), 1);
         hub.upsert(expired.clone());
         hub.upsert(retained);
         hub.backdate_for_test(
@@ -2860,11 +2865,9 @@ mod tests {
             network_open_buckets: HashMap::new(),
         };
 
-        hub.upsert(live_record(
+        hub.upsert(responding_live_record(
             "runtime-during-baseline",
             Some(42),
-            "running",
-            Some("responding"),
             1,
         ));
         let installed = hub
