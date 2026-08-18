@@ -479,13 +479,17 @@ pub(crate) async fn model_route_requires_expired_cooldown_probe(
 pub(crate) async fn earliest_model_route_cooldown_expiry(
     pool: &Pool<Sqlite>,
     model: Option<&str>,
+    account_ids: &[i64],
 ) -> Result<Option<String>> {
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if account_ids.is_empty() {
+        return Ok(None);
+    }
     let now = Utc::now();
-    let cooldowns = sqlx::query_scalar::<_, String>(
-        "SELECT cooldown_until FROM pool_upstream_account_model_routes WHERE model = ?1 AND state = ?2 AND cooldown_until IS NOT NULL",
+    let cooldowns = sqlx::query_as::<_, (i64, String)>(
+        "SELECT account_id, cooldown_until FROM pool_upstream_account_model_routes WHERE model = ?1 AND state = ?2 AND cooldown_until IS NOT NULL",
     )
     .bind(model)
     .bind(MODEL_ROUTE_STATE_COOLING_DOWN)
@@ -493,7 +497,8 @@ pub(crate) async fn earliest_model_route_cooldown_expiry(
     .await?;
     Ok(cooldowns
         .into_iter()
-        .filter_map(|cooldown| {
+        .filter(|(account_id, _)| account_ids.contains(account_id))
+        .filter_map(|(_, cooldown)| {
             parse_to_utc_datetime(&cooldown)
                 .filter(|until| *until > now)
                 .map(|until| (until, cooldown))

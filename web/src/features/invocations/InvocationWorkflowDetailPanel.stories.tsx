@@ -28,10 +28,10 @@ function StorySurface({ children }: { children: ReactNode }) {
   );
 }
 
-function StoryLocale({ locale, children }: { locale?: "zh" | "en"; children: ReactNode }) {
+function StoryLocale({ locale = "zh", children }: { locale?: "zh" | "en"; children: ReactNode }) {
   const { setLocale } = useTranslation();
   useEffect(() => {
-    if (locale) setLocale(locale);
+    setLocale(locale);
   }, [locale, setLocale]);
   return children;
 }
@@ -1251,6 +1251,9 @@ export const NoCandidateAudit: Story = {
     record: blockedWorkflowRecord,
     size: "default",
   },
+  parameters: {
+    locale: "zh",
+  },
   decorators: [
     (Story) => (
       <>
@@ -1336,12 +1339,17 @@ export const NoCandidateAuditMobile: Story = {
   },
   parameters: {
     ...NoCandidateAudit.parameters,
+    locale: "zh",
     viewport: { defaultViewport: "mobile393" },
   },
 };
 
 export const NoCandidateAuditDark: Story = {
   ...NoCandidateAudit,
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    locale: "zh",
+  },
   globals: {
     themeMode: "dark",
   },

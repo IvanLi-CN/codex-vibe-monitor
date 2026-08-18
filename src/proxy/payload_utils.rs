@@ -1545,6 +1545,37 @@ pub(crate) fn pool_routing_model_reservation_count(
         .count() as i64
 }
 
+pub(crate) fn pool_routing_model_reservation_is_at_capacity(
+    state: &AppState,
+    reservation_key: &str,
+    account_id: i64,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+) -> bool {
+    let (Some(model), Some(limit)) = (
+        model.map(str::trim).filter(|value| !value.is_empty()),
+        model_concurrency_limit,
+    ) else {
+        return false;
+    };
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let active = reservations
+        .iter()
+        .filter(|(key, reservation)| {
+            key.as_str() != reservation_key
+                && reservation.account_id == account_id
+                && reservation
+                    .model
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(model))
+        })
+        .count() as i64;
+    active >= limit.max(1)
+}
+
 pub(crate) fn pool_routing_reservation_matches_model(
     state: &AppState,
     reservation_key: &str,

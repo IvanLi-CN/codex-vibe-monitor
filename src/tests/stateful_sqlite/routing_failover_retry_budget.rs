@@ -2779,6 +2779,162 @@ async fn expired_model_cooldown_probe_conflict_has_a_distinct_no_candidate_reaso
 }
 
 #[tokio::test]
+async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    let first_id = insert_test_pool_api_key_account(&state, "Capacity One", "capacity-one").await;
+    let second_id = insert_test_pool_api_key_account(&state, "Capacity Two", "capacity-two").await;
+    let model = "gpt-queued-capacity-audit";
+    for account_id in [first_id, second_id] {
+        observe_model_route_seen(&state.pool, account_id, Some(model))
+            .await
+            .expect("seed model route");
+        sqlx::query(
+            "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_recovery_limit = 2 WHERE account_id = ?1 AND model = ?2",
+        )
+        .bind(account_id)
+        .bind(model)
+        .execute(&state.pool)
+        .await
+        .expect("limit model route capacity");
+    }
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    {
+        let mut reservations = state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned");
+        for (key, account_id) in [
+            ("capacity-holder-one", first_id),
+            ("capacity-holder-two", second_id),
+        ] {
+            reservations.insert(
+                key.to_string(),
+                PoolRoutingReservation {
+                    account_id,
+                    model: Some(model.to_string()),
+                    proxy_key: None,
+                    created_at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("capacity-audit-waiter"),
+    )
+    .await
+    .expect("resolve queued capacity audit");
+    let PoolAccountResolution::NoCandidate(audit) = resolution else {
+        panic!("all occupied model routes should return NoCandidate");
+    };
+    assert_eq!(audit.terminal_reason_code, "modelConcurrencyLimit");
+    assert_eq!(audit.eligible_candidate_count, 2);
+    assert_eq!(audit.reservation_conflict_count, 2);
+    assert_eq!(audit.excluded_reason_counts["modelConcurrencyLimit"], 2);
+    assert_eq!(audit.candidates.len(), 2);
+}
+
+#[tokio::test]
+async fn queued_model_capacity_audit_ignores_unrelated_cooldown_expiry() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    let capacity_id =
+        insert_test_pool_api_key_account(&state, "Capacity Target", "capacity-target").await;
+    let unrelated_id =
+        insert_test_pool_api_key_account(&state, "Inactive Cooldown", "inactive-cooldown").await;
+    let model = "gpt-unrelated-cooldown-audit";
+    for account_id in [capacity_id, unrelated_id] {
+        observe_model_route_seen(&state.pool, account_id, Some(model))
+            .await
+            .expect("seed model route");
+    }
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_recovery_limit = 2 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(capacity_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit target model route capacity");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = 'cooling_down', priority = 'excluded', cooldown_until = ?3 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(unrelated_id)
+    .bind(model)
+    .bind(format_utc_iso(Utc::now() + ChronoDuration::minutes(5)))
+    .execute(&state.pool)
+    .await
+    .expect("seed unrelated cooldown");
+    set_test_account_status(&state.pool, unrelated_id, "needs_reauth").await;
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "capacity-target-holder".to_string(),
+            PoolRoutingReservation {
+                account_id: capacity_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("unrelated-cooldown-waiter"),
+    )
+    .await
+    .expect("resolve queued capacity audit");
+    let PoolAccountResolution::NoCandidate(audit) = resolution else {
+        panic!("occupied target route should return NoCandidate");
+    };
+    assert_eq!(audit.reservation_conflict_count, 1);
+    assert_eq!(audit.next_eligible_at, None);
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_rejects_recovery_after_external_deadline() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

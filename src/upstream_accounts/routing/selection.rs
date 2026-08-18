@@ -59,7 +59,14 @@ async fn no_candidate_audit_for_request(
         reservation_conflict_count,
         exclusions,
     );
-    audit.next_eligible_at = earliest_model_route_cooldown_expiry(pool, requested_model).await?;
+    let cooldown_candidate_ids = exclusions
+        .iter()
+        .filter(|candidate| candidate.reason_code == "modelTemporarilyExcluded")
+        .map(|candidate| candidate.account_id)
+        .collect::<Vec<_>>();
+    audit.next_eligible_at =
+        earliest_model_route_cooldown_expiry(pool, requested_model, &cooldown_candidate_ids)
+            .await?;
     Ok(audit)
 }
 
@@ -1314,6 +1321,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                 earliest_model_route_cooldown_expiry(
                                                     &state.pool,
                                                     requested_model,
+                                                    &[account.account_id],
                                                 )
                                                 .await?;
                                             return Ok(PoolAccountResolution::NoCandidate(audit));
@@ -1368,6 +1376,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                 earliest_model_route_cooldown_expiry(
                                                     &state.pool,
                                                     requested_model,
+                                                    &[account.account_id],
                                                 )
                                                 .await?;
                                             return Ok(PoolAccountResolution::NoCandidate(audit));
@@ -1889,7 +1898,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         resolve_cache_hit_protection_settings(&load_pool_routing_settings(&state.pool).await?);
     let eligible_candidate_count = resolved_candidates.len();
     let mut reservation_conflict_count = 0_usize;
-    for evaluation in resolved_candidates {
+    let mut resolved_candidates = resolved_candidates.into_iter();
+    while let Some(evaluation) = resolved_candidates.next() {
         if let Some(account) = evaluation.resolved_account {
             if let Some(reservation_key) = reservation_key {
                 let concurrency_limit =
@@ -1929,6 +1939,53 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         );
                     }
                     if cache_hit_protection.overflow_mode == CacheHitOverflowMode::Queue {
+                        for remaining in resolved_candidates {
+                            let Some(remaining_account) = remaining.resolved_account else {
+                                continue;
+                            };
+                            let remaining_limit = model_route_concurrency_limit(
+                                &state.pool,
+                                remaining_account.account_id,
+                                requested_model,
+                            )
+                            .await?;
+                            if !pool_routing_model_reservation_is_at_capacity(
+                                state,
+                                reservation_key,
+                                remaining_account.account_id,
+                                requested_model,
+                                remaining_limit,
+                            ) {
+                                continue;
+                            }
+                            reservation_conflict_count += 1;
+                            let remaining_reason = if model_route_requires_expired_cooldown_probe(
+                                &state.pool,
+                                remaining_account.account_id,
+                                requested_model,
+                            )
+                            .await?
+                            {
+                                "expiredCooldownProbe"
+                            } else if remaining_account.routing_source
+                                == PoolRoutingSelectionSource::StickyReuse
+                            {
+                                "stickyRouteReservationConflict"
+                            } else {
+                                "modelConcurrencyLimit"
+                            };
+                            if !selection_audit_exclusions.iter().any(|candidate| {
+                                candidate.account_id == remaining_account.account_id
+                            }) {
+                                selection_audit_exclusions.push(
+                                    PoolRoutingSelectionAuditExcludedCandidate {
+                                        account_id: remaining_account.account_id,
+                                        account_name: remaining_account.display_name,
+                                        reason_code: remaining_reason.to_string(),
+                                    },
+                                );
+                            }
+                        }
                         return Ok(PoolAccountResolution::NoCandidate(
                             no_candidate_audit_for_request(
                                 &state.pool,
