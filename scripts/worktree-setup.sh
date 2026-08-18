@@ -107,7 +107,10 @@ surface_is_present() {
     root-bun) [ -x "$repo_root/node_modules/.bin/biome" ] ;;
     web-bun) [ -x "$repo_root/web/node_modules/.bin/vitest" ] ;;
     docs-bun) [ -x "$repo_root/docs-site/node_modules/.bin/rspress" ] ;;
-    cargo) return 0 ;;
+    cargo)
+      cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+      find "$cargo_home/registry/cache" -type f -name '*.crate' -print -quit 2>/dev/null | grep -q .
+      ;;
   esac
 }
 

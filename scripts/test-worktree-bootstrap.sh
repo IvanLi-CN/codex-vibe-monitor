@@ -80,12 +80,16 @@ case "$(basename "$(pwd)")" in
 esac
 mkdir -p node_modules
 mkdir -p node_modules/.bin
-case "$surface" in
-  repo) executable=biome ;;
-  web) executable=vitest ;;
-  docs-site) executable=rspress ;;
-esac
-printf '#!/usr/bin/env bash\nexit 0\n' > "node_modules/.bin/$executable"
+  case "$surface" in
+    repo) executable=biome ;;
+    web) executable=vitest ;;
+    docs-site) executable=rspress ;;
+  esac
+  if [ "${FAKE_BUN_BLOCK_SURFACE:-}" = "$surface" ]; then
+    printf 'ready\n' > "${FAKE_BUN_BLOCK_READY:?}"
+    sleep "${FAKE_BUN_BLOCK_SECONDS:-2}"
+  fi
+  printf '#!/usr/bin/env bash\nexit 0\n' > "node_modules/.bin/$executable"
 chmod +x "node_modules/.bin/$executable"
 if [ "${FAKE_BUN_FAIL_SURFACE:-}" = "$surface" ]; then
   exit 11
@@ -100,6 +104,11 @@ write_fake_cargo() {
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\t%s\n' "$(pwd)" "$*" >> "${CARGO_FETCH_LOG:?}"
+if [ "${FAKE_CARGO_FAIL:-}" = '1' ]; then
+  exit 12
+fi
+mkdir -p "${CARGO_HOME:?}/registry/cache/codex-vibe-monitor-test"
+touch "${CARGO_HOME:?}/registry/cache/codex-vibe-monitor-test/fixture-1.0.0.crate"
 EOF_CARGO
   chmod +x "$1/cargo"
 }
@@ -130,12 +139,15 @@ release_advisory_lock() {
 }
 
 bun_bin="$(command -v bun 2>/dev/null || true)"
-global_lefthook="$(command -v lefthook 2>/dev/null || true)"
 [ -n "$bun_bin" ] || fail 'worktree bootstrap smoke requires bun on PATH'
-if [ -z "$global_lefthook" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
-  global_lefthook="$repo_root/node_modules/.bin/lefthook"
-fi
-[ -n "$global_lefthook" ] || fail 'worktree bootstrap smoke requires a Lefthook binary'
+lefthook_source="$(command -v lefthook 2>/dev/null || true)"
+[ -n "$lefthook_source" ] || lefthook_source="$repo_root/node_modules/.bin/lefthook"
+[ -x "$lefthook_source" ] || fail 'worktree bootstrap smoke requires a Lefthook binary'
+external_lefthook_dir="$tmp_dir/external-lefthook-bin"
+mkdir -p "$external_lefthook_dir"
+cp -L "$(realpath "$lefthook_source")" "$external_lefthook_dir/lefthook"
+chmod +x "$external_lefthook_dir/lefthook"
+global_lefthook="$external_lefthook_dir/lefthook"
 
 fixture_repo="$tmp_dir/fixture"
 copy_repo "$repo_root" "$fixture_repo"
@@ -147,8 +159,10 @@ write_fake_bun "$fake_bin"
 write_fake_cargo "$fake_bin"
 bun_install_log="$tmp_dir/bun-install.log"
 cargo_fetch_log="$tmp_dir/cargo-fetch.log"
+fake_cargo_home="$tmp_dir/fake-cargo-home"
 export BUN_INSTALL_LOG="$bun_install_log"
 export CARGO_FETCH_LOG="$cargo_fetch_log"
+export CARGO_HOME="$fake_cargo_home"
 export PATH="$fake_bin:$(dirname "$global_lefthook"):$PATH"
 : > "$bun_install_log"
 : > "$cargo_fetch_log"
@@ -190,6 +204,47 @@ assert_not_contains "$state_path" 'PRIMARY_SECRET'
 : > "$cargo_fetch_log"
 git -C "$worktree_one" checkout --detach HEAD >/dev/null 2>&1
 assert_log_only_surface none no
+
+rm -rf "$fake_cargo_home/registry"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none yes
+
+rm -rf "$fake_cargo_home/registry"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  FAKE_CARGO_FAIL=1 bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none yes
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  FAKE_CARGO_FAIL=1 bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
+)
+assert_log_only_surface none no
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+if (
+  cd "$worktree_one"
+  FAKE_CARGO_FAIL=1 bash scripts/worktree-setup.sh >/dev/null
+); then
+  fail 'manual setup must propagate a Cargo recovery failure'
+fi
+assert_log_only_surface none yes
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  bash scripts/worktree-setup.sh >/dev/null
+)
+assert_log_only_surface none yes
 
 rm -rf "$worktree_one/web/node_modules"
 : > "$bun_install_log"
@@ -318,6 +373,38 @@ release_advisory_lock
   bash scripts/run-lefthook-hook.sh post-checkout HEAD HEAD 1 >/dev/null
 )
 assert_log_only_surface "$worktree_one/docs-site" no
+
+manual_setup_ready="$tmp_dir/manual-setup.ready"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$worktree_one"
+  FAKE_BUN_BLOCK_SURFACE=repo \
+    FAKE_BUN_BLOCK_READY="$manual_setup_ready" \
+    FAKE_BUN_BLOCK_SECONDS=2 \
+    bash scripts/worktree-setup.sh --force >/dev/null
+) &
+first_manual_setup_pid=$!
+for attempt in {1..50}; do
+  [ -f "$manual_setup_ready" ] && break
+  sleep 0.05
+done
+[ -f "$manual_setup_ready" ] || fail 'first manual setup did not begin dependency recovery'
+(
+  cd "$worktree_one"
+  bash scripts/worktree-setup.sh --force >/dev/null
+) &
+second_manual_setup_pid=$!
+sleep 0.2
+[ "$(wc -l < "$bun_install_log" | tr -d ' ')" = '1' ] \
+  || fail 'second manual setup started before the first released its lock'
+wait "$first_manual_setup_pid"
+wait "$second_manual_setup_pid"
+[ "$(wc -l < "$bun_install_log" | tr -d ' ')" = '6' ] \
+  || fail 'concurrent manual setup did not run two serialized Bun recovery sets'
+[ "$(wc -l < "$cargo_fetch_log" | tr -d ' ')" = '2' ] \
+  || fail 'concurrent manual setup did not run two serialized Cargo recovery sets'
+
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_one/.env.local"
 (
   cd "$worktree_one"

@@ -5,7 +5,7 @@
 - Canonical spec: `docs/specs/tr4ev-bun-first-toolchain/SPEC.md`
 - Implementation summary: 已完成
 - Current toolchain baseline: Bun `1.3.14` / Rust `1.96.0` / GitHub-hosted x64 `ubuntu-24.04` / release arm64 `ubuntu-24.04-arm`
-- Static analysis baseline: root Biome `2.5.3` for `web/` and `docs-site/`; `Lint & Format Check` keeps strict Clippy, while local hooks only format matching staged files and developers can run `bun run verify:rust` explicitly.
+- Static analysis baseline: root Biome `2.5.3` for `web/` and `docs-site/`; `Lint & Format Check` keeps strict Clippy, while local hooks only format matching staged files and developers can run `bun run verify:rust` explicitly. Tooling smoke copies the locked Lefthook binary to a temporary repo-external path so CI verifies the same installation boundary.
 
 ## Migrated Implementation Notes
 

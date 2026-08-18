@@ -10,6 +10,7 @@
 - 2026-08-14: 将 hook 入口收敛为 Lefthook-only；标准 `post-checkout` hook 调用 runner，smoke 改为真实 Lefthook 触发并验证 Vitest sentinel、历史 revision no-op 与全局 Lefthook 前置条件。
 - 2026-08-18: checkout setup 改为 per-worktree、per-surface digest 状态；普通切换跳过 Bun/Cargo，failed digest 自动抑制，手动入口重试或 force，资源锁改为非阻塞且隔离。
 - 2026-08-18: 将资源与 setup 锁收敛为持锁进程生命周期内的 advisory lock，避免 stale PID 删除竞态；formatter、hook 安装和历史 checkout 分别收紧 symlink、模板归属与 no-op 边界。
+- 2026-08-18: 将 formatter containment 扩展到所有路径组件；模板比较改为带目标 hook 配置的临时仓库；Cargo `ok` 状态加入 registry archive presence，并以真实手动串行、Cargo 失败和临时 repo 外 Lefthook smoke 固化边界。
 
 ## Key Reasons / Replacements
 

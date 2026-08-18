@@ -118,7 +118,10 @@ cleanup_legacy_prepare_commit_msg() {
   fi
 
   template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")"
-  if ! git -C "$template_dir" init -q || ! (
+  if ! git -C "$template_dir" init -q \
+    || ! cp "$repo_root/lefthook.yml" "$template_dir/lefthook.yml" \
+    || ! printf '\nprepare-commit-msg:\n  commands:\n    legacy-wrapper:\n      run: "true"\n' >> "$template_dir/lefthook.yml" \
+    || ! (
     cd "$template_dir" &&
     "$lefthook_path" install prepare-commit-msg >/dev/null 2>&1
   ); then
@@ -151,7 +154,9 @@ is_managed_hook() {
   fi
 
   template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")" || return 1
-  if ! git -C "$template_dir" init -q || ! (
+  if ! git -C "$template_dir" init -q \
+    || ! cp "$repo_root/lefthook.yml" "$template_dir/lefthook.yml" \
+    || ! (
     cd "$template_dir" &&
     "$lefthook_path" install "$hook_name" >/dev/null 2>&1
   ); then

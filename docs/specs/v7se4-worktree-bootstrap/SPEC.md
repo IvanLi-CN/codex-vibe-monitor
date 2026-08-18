@@ -40,12 +40,12 @@
 
 ### MUST
 
-- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
+- linked worktree 的 `post-checkout` 自动路径只在首次、对应依赖目录缺失或该 surface 输入指纹变化时执行对应的 `bun install --frozen-lockfile` 或 `cargo fetch --locked`；Cargo `ok` 状态还必须有 registry archive。四项 surface 有效时不得执行 Bun/Cargo。主 worktree 的 `post-checkout` 不得安装依赖。
 - `worktree:bootstrap` 必须继续遵守 copy-missing-only；目标文件已存在时不得覆盖。
 - `worktree:setup` 必须为 root Bun、web Bun、docs Bun、Cargo 各自保存无敏感状态和 input digest；手动 `bun run worktree:setup` 重试 stale 或 failed surface，`bun run worktree:setup -- --force` 强制执行四项。
 - 单项失败后必须继续其余任务并记录 failed digest；自动 hook 对相同 failed digest 必须告警并跳过重试，手动入口必须返回非零。
 - 未配置 `core.hooksPath` 时，`lefthook` 2.1.7 或更高版本必须在 `PATH` 中可执行；`bun run hooks:install` 缺少或版本过低时必须明确返回非零。已配置 `core.hooksPath` 时安装入口必须安全 no-op，不要求 Lefthook。
-- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前 Lefthook 生成模板及本仓库 marker 逐字相等时才能更新。`prepare-commit-msg` 仅在与当前 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
+- `hooks:install` 不得覆盖 `core.hooksPath` 或 unmanaged 本地 hook；仅当已有 hook 与当前配置生成的 Lefthook 模板及本仓库 marker 逐字相等时才能更新。`prepare-commit-msg` 仅在与带该 hook 配置生成的 Lefthook 标准模板逐字相等、未配置且不是 symlink 时删除。
 - 资源同步锁必须位于当前 worktree 的 Git metadata；采用随持锁进程退出自动释放的 advisory lock，同一 worktree busy 时必须非阻塞跳过，不同 linked worktree 不得互相等待。setup 对同一 worktree 自动路径同样非阻塞，手动入口串行等待。
 - smoke test 必须使用 fake Bun/Cargo 验证上述调用链，且不得真实联网安装依赖。
 
@@ -73,7 +73,7 @@
 - 目标依赖目录不存在、输入 digest 改变或手动强制执行时，由对应 locked install 命令负责恢复。
 - 自动失败记录只抑制相同 digest；输入变化后自动路径必须重新尝试。
 - 若当前 revision 缺少 bootstrap 脚本，Lefthook command 必须安全 no-op，不能让 checkout 失败。
-- staged formatter 必须拒绝 symlink，不能向 worktree 外的目标写入。
+- staged formatter 必须拒绝任一路径组件中的 symlink，不能向 worktree 外的目标写入。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -107,14 +107,14 @@
   When 自动 hook 继续执行
   Then 其余任务仍执行、输出失败摘要且 hook 返回 0；相同 digest 的后续自动路径不重试，手动 bootstrap 返回非零并重试。
 
-- Given CI 运行 `scripts/test-worktree-bootstrap.sh`
-  When 真实 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
-  Then 测试不联网且能证明主 worktree no-op、选择性恢复、失败抑制、手动重试、force、per-worktree advisory 锁、copy-missing-only 和无敏感状态。
+- Given CI 运行 worktree 与 hook smoke
+  When 锁定版本的 Lefthook 二进制复制到临时 repo 外路径，真实 Lefthook 触发标准 hook、fake `bun` 和 fake `cargo` 捕获 setup 调用链
+  Then 测试不联网且能证明主 worktree no-op、选择性恢复、Cargo cache 缺失恢复、失败抑制、手动重试、force、per-worktree advisory 锁、copy-missing-only、无敏感状态与外置 Lefthook 前置条件。
 
 ## 验收清单（Acceptance checklist）
 
 - [x] Lefthook 触发的首次 linked 自动依赖恢复、重复 checkout 跳过与主 worktree 跳过已由 smoke test 覆盖。
-- [x] locked Bun/Cargo 选择性安装、失败隔离、failed digest 抑制、手动重试与 force 已由 fake `bun`/`cargo` 覆盖。
+- [x] locked Bun/Cargo 选择性安装、Cargo cache 缺失恢复、失败隔离、failed digest 抑制、手动重试与 force 已由 fake `bun`/`cargo` 覆盖。
 - [x] README / AGENTS 已区分 bootstrap 与 setup。
 - [x] archived spec 的历史语义已迁移到 canonical spec。
 
@@ -145,7 +145,7 @@ None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：把依赖安装放进 linked checkout hook 会增加网络和耗时；本规范以 per-surface digest 和存在性检查限制恢复范围，失败不阻断 checkout。
+- 风险：把依赖安装放进 linked checkout hook 会增加网络和耗时；本规范以 per-surface digest、Bun sentinel 与 Cargo registry archive 存在性检查限制恢复范围，失败不阻断 checkout。
 - 风险：新 linked worktree 在 hook 启动前没有本地 `node_modules`，因此依赖全局 `lefthook`；缺少该命令时安装入口必须尽早失败并给出补救提示。
 - 风险：贡献者可能已有自定义 Git hook；安装入口必须跳过 unmanaged hook，避免 Lefthook 将其移动为 `.old` 后停止执行。
 - 假设：Bun 是仓库唯一 JS package manager，且 root、`web/`、`docs-site/` 都由 Bun 管理。

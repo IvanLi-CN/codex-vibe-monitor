@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-git-hooks.XXXXXX")"
+tmp_dir="$(cd "$tmp_dir" && pwd -P)"
 cleanup() {
   rm -rf "$tmp_dir"
 }
@@ -65,11 +66,16 @@ assert_not_contains "$formatter_log" 'deleted.rs'
 assert_not_contains "$formatter_log" 'removed.md'
 assert_not_contains "$formatter_log" 'docs/../README.md'
 
-lefthook_bin="$(command -v lefthook 2>/dev/null || true)"
-if [ -z "$lefthook_bin" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
-  lefthook_bin="$repo_root/node_modules/.bin/lefthook"
+lefthook_source="$(command -v lefthook 2>/dev/null || true)"
+if [ -z "$lefthook_source" ] && [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
+  lefthook_source="$repo_root/node_modules/.bin/lefthook"
 fi
-[ -n "$lefthook_bin" ] || fail 'git hook contract smoke requires a Lefthook binary'
+[ -n "$lefthook_source" ] || fail 'git hook contract smoke requires a Lefthook binary'
+external_lefthook_dir="$tmp_dir/external-lefthook-bin"
+mkdir -p "$external_lefthook_dir"
+cp -L "$(realpath "$lefthook_source")" "$external_lefthook_dir/lefthook"
+chmod +x "$external_lefthook_dir/lefthook"
+lefthook_bin="$external_lefthook_dir/lefthook"
 
 partial_repo="$tmp_dir/partial-stage"
 mkdir -p "$partial_repo/scripts" "$partial_repo/src"
@@ -122,6 +128,14 @@ ln -s "$tmp_dir/outside.rs" "$partial_repo/src/escape.rs"
   CODEX_HOOK_RUSTFMT_BIN="$fake_bin/rustfmt" bash scripts/format-staged-files.sh rust src/escape.rs
 )
 assert_not_contains "$formatter_log" 'src/escape.rs'
+mkdir -p "$tmp_dir/outside-directory"
+printf 'outside ancestor target\n' > "$tmp_dir/outside-directory/escape.rs"
+ln -s "$tmp_dir/outside-directory" "$partial_repo/src/external"
+(
+  cd "$partial_repo"
+  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/rustfmt" bash scripts/format-staged-files.sh rust src/external/escape.rs
+)
+assert_not_contains "$formatter_log" 'src/external/escape.rs'
 
 legacy_repo="$tmp_dir/legacy-wrapper"
 mkdir -p "$legacy_repo/scripts"
@@ -133,13 +147,27 @@ git -C "$legacy_repo" config user.name 'Codex Test'
 git -C "$legacy_repo" config user.email 'codex-test@example.com'
 (
   cd "$legacy_repo"
-  "$lefthook_bin" install prepare-commit-msg >/dev/null
+  cat >> lefthook.yml <<'EOF_LEGACY_HOOK'
+
+prepare-commit-msg:
+  commands:
+    legacy-wrapper:
+      run: "true"
+EOF_LEGACY_HOOK
+  PATH="$(dirname "$lefthook_bin"):$PATH" "$lefthook_bin" install prepare-commit-msg >/dev/null
+  cp "$repo_root/lefthook.yml" lefthook.yml
   PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
 )
 legacy_hook="$legacy_repo/.git/hooks/prepare-commit-msg"
 if [ -e "$legacy_hook" ] || [ -L "$legacy_hook" ]; then
   fail 'exact obsolete Lefthook prepare-commit-msg wrapper was not removed'
 fi
+idempotent_output="$tmp_dir/idempotent-install.log"
+(
+  cd "$legacy_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh > "$idempotent_output" 2>&1
+)
+assert_not_contains "$idempotent_output" 'already exists and is unmanaged'
 printf '#!/bin/sh\necho custom\n' > "$legacy_hook"
 chmod +x "$legacy_hook"
 (

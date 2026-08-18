@@ -4,8 +4,8 @@ set -euo pipefail
 surface="${1:?formatter surface is required}"
 shift
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/.." && pwd -P)"
 cd "$repo_root"
 files=()
 
@@ -15,9 +15,15 @@ for file in "$@"; do
     /*|..|../*|*/..|*/../*) continue ;;
   esac
   path="$repo_root/$file"
-  # Formatters follow symlinks, so staged links must never escape the worktree.
+  # Formatters follow symlinks, so no path component may escape the worktree.
   [ -L "$path" ] && continue
   [ -f "$path" ] || continue
+  resolved_path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+  case "$resolved_path" in
+    "$repo_root"/*) ;;
+    *) continue ;;
+  esac
+  [ "$resolved_path" = "$path" ] || continue
 
   case "$surface" in
     web)
