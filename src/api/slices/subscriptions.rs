@@ -8,7 +8,7 @@ use serde_json::json;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
     Mutex as StdMutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 
@@ -711,6 +711,7 @@ pub(crate) struct SubscriptionHub {
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
+    internal_broadcast_listener_count: AtomicUsize,
     serialization_count: AtomicU64,
     dashboard_topology_counters: DashboardDeliveryTopologyCounters,
     #[cfg(test)]
@@ -2973,6 +2974,7 @@ impl SubscriptionHub {
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
+            internal_broadcast_listener_count: AtomicUsize::new(0),
             serialization_count: AtomicU64::new(0),
             dashboard_topology_counters: DashboardDeliveryTopologyCounters::default(),
             #[cfg(test)]
@@ -2986,6 +2988,18 @@ impl SubscriptionHub {
 
     pub(crate) fn publish_runtime_mutation(&self, mutation: RuntimeMutation) {
         self.runtime_mutation_bus.publish(mutation);
+    }
+
+    pub(crate) fn mark_internal_broadcast_listener_started(&self) {
+        self.internal_broadcast_listener_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn has_external_broadcaster_receiver(&self, receiver_count: usize) -> bool {
+        receiver_count
+            > self
+                .internal_broadcast_listener_count
+                .load(Ordering::Relaxed)
     }
 
     pub(crate) fn runtime_mutation_bus_health(&self) -> RuntimeMutationBusHealth {
@@ -5808,9 +5822,8 @@ impl SubscriptionHub {
         };
         if active {
             // A reconnect acquired the owner between the task's wake-up and this check. Keep
-            // the task armed so the new owner receives a bounded authoritative rebuild.
-            cached.upstream_account_attempt_refresh_in_flight = false;
-            cached.upstream_account_attempt_refresh_pending = false;
+            // the refresh marked in-flight so matching events during the database build are
+            // coalesced into its follow-up snapshot.
             cached.upstream_account_attempt_refresh_scheduled = true;
             return true;
         }
@@ -5875,6 +5888,9 @@ impl SubscriptionHub {
                     .finish_upstream_account_attempt_topic_refresh(&topic)
                     .await;
                 if let Err(err) = result {
+                    hub.mark_topic_dirty(&topic).await;
+                    hub.schedule_dirty_topic_recovery(state.clone(), topic.clone())
+                        .await;
                     warn!(
                         ?err,
                         topic = %topic.name(),
@@ -9076,6 +9092,7 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
     let hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let mut receiver = state.broadcaster.subscribe();
+    hub.mark_internal_broadcast_listener_started();
     let listener_state = state.clone();
     tokio::spawn(async move {
         loop {

@@ -432,8 +432,14 @@ export function UpstreamAccountAttemptTimeline({
     page,
     topicEnabled,
   ]);
+  const hasCurrentRestFallbackError =
+    restFallbackError?.descriptorKey === attemptTopicDescriptorKey;
+  const locatedAttemptMissingFromLiveTopic =
+    activeFocus != null &&
+    locateFallback?.descriptorKey === attemptTopicDescriptorKey &&
+    !attemptTopic.data?.items.some((item) => item.attemptId === activeFocus.attemptId);
   const response =
-    attemptTopic.data ??
+    (locatedAttemptMissingFromLiveTopic ? locateFallback.response : attemptTopic.data) ??
     (locateFallback?.descriptorKey === attemptTopicDescriptorKey
       ? locateFallback.response
       : restFallback?.descriptorKey === attemptTopicDescriptorKey
@@ -441,7 +447,7 @@ export function UpstreamAccountAttemptTimeline({
         : null);
   const loading =
     locateLoading ||
-    (topicEnabled && attemptTopic.isLoading && response == null && restFallbackError == null);
+    (topicEnabled && attemptTopic.isLoading && response == null && !hasCurrentRestFallbackError);
   const error =
     locateError ??
     (attemptTopic.data == null && restFallbackError?.descriptorKey === attemptTopicDescriptorKey
@@ -593,7 +599,10 @@ export function UpstreamAccountAttemptTimeline({
         onFocusRequestHandled?.(focusVersion);
         setLocateLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      setLocateLoading(false);
+    };
   }, [accountId, clearFocusDismissTimer, focusVersion, focusedAttemptId, onFocusRequestHandled, t]);
 
   useLayoutEffect(() => {
