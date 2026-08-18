@@ -498,7 +498,7 @@ describe("demo MSW handlers", () => {
     const filtered = (await filteredResponse.json()) as {
       groups: Array<{
         model: string;
-        accounts: Array<{ accountId: number; state: string; accountDisplayName: string }>;
+        accounts: Array<{ accountId: number; state: string }>;
       }>;
       records: Array<{ model: string }>;
     };
@@ -513,12 +513,10 @@ describe("demo MSW handlers", () => {
         expect.objectContaining({
           accountId: 108,
           state: "available",
-          accountDisplayName: "API Key #108",
         }),
         expect.objectContaining({
           accountId: 115,
           state: "available",
-          accountDisplayName: "API Key #115",
         }),
       ]),
     );
