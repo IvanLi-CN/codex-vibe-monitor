@@ -960,12 +960,9 @@ fn overlay_runtime_timeseries_snapshot(
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
         entry.in_flight_count += 1;
-        entry.in_flight_phase_counts.increment_phase_name(
-            record
-                .live_phase
-                .as_deref()
-                .or_else(|| runtime_invocation_live_phase(record)),
-        );
+        entry
+            .in_flight_phase_counts
+            .increment_phase_name(effective_runtime_invocation_live_phase(record));
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
@@ -3172,10 +3169,7 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
         entry.in_flight_count += 1;
-        let runtime_phase = record
-            .live_phase
-            .as_deref()
-            .or_else(|| runtime_invocation_live_phase(&record));
+        let runtime_phase = effective_runtime_invocation_live_phase(&record);
         entry
             .in_flight_phase_counts
             .increment_phase_name(runtime_phase);

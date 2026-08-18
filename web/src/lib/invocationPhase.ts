@@ -63,12 +63,12 @@ export function resolveInvocationLivePhase(
 
   const hasFirstToken = hasFiniteTiming(record.firstTokenMs);
   if (normalizedStatus === "pending") return "queued";
+  if (hasFirstToken) return "responding";
   const explicitPhase = normalizePhase(record.livePhase);
   if (explicitPhase === "responding" && !hasFirstToken) {
     return resolvePreResponsePhase(record);
   }
   if (explicitPhase) return explicitPhase;
-  if (hasFirstToken) return "responding";
   return resolvePreResponsePhase(record);
 }
 

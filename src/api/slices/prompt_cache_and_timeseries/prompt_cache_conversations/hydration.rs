@@ -653,10 +653,7 @@ pub(crate) fn invocation_preview_from_runtime_record(
             .status
             .clone()
             .unwrap_or_else(|| "unknown".to_string()),
-        live_phase: record
-            .live_phase
-            .clone()
-            .or_else(|| runtime_invocation_live_phase(record).map(str::to_string)),
+        live_phase: effective_runtime_invocation_live_phase(record).map(str::to_string),
         failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
         route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
         model: normalize_trimmed_optional_string(record.model.clone()),

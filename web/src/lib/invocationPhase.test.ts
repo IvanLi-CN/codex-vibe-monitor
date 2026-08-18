@@ -60,6 +60,17 @@ describe("resolveInvocationLivePhase", () => {
     ).toBe("requesting");
   });
 
+  it("promotes a measured first token over stale pre-response phase metadata", () => {
+    expect(
+      resolveInvocationLivePhase({
+        status: "running",
+        failureClass: "none",
+        livePhase: "requesting",
+        firstTokenMs: 42,
+      }),
+    ).toBe("responding");
+  });
+
   it("keeps pending records queued when stale phase metadata is present", () => {
     expect(
       resolveInvocationLivePhase({
