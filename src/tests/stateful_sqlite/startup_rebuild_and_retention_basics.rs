@@ -1422,6 +1422,10 @@ async fn live_activity_v2_coverage_wake_preserves_an_active_retry_backoff() {
     .await
     .expect("seed active coverage retry backoff");
 
+    let before = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load active coverage retry before the live update");
+
     wake_account_activity_v2_coverage_repair(&state.pool, 1)
         .await
         .expect("record live coverage progress without bypassing the retry deadline");
@@ -1435,7 +1439,7 @@ async fn live_activity_v2_coverage_wake_preserves_an_active_retry_backoff() {
         Some(deferred_until.as_str())
     );
     assert!(!progress.is_due(Utc::now()));
-    assert!(progress.wake_generation > 0);
+    assert_eq!(progress.wake_generation, before.wake_generation);
 }
 
 #[tokio::test]

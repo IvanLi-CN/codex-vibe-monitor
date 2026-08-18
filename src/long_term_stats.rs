@@ -1416,10 +1416,13 @@ fn long_term_projection_repair_due(
     next_repair_at: Option<Instant>,
     now: Instant,
 ) -> bool {
-    has_persisted_work
-        || has_due_dirty_bucket
-        || runtime_state_is_empty
-        || next_repair_at.is_some_and(|retry_at| retry_at <= now)
+    // A scheduled repair owns the expensive rebuild deadline. Persisted terminal
+    // deltas still use the bounded terminal pass, but must not pull this rebuild
+    // forward before the deadline.
+    next_repair_at.map_or(
+        has_persisted_work || has_due_dirty_bucket || runtime_state_is_empty,
+        |retry_at| retry_at <= now,
+    )
 }
 
 async fn defer_long_term_projection_terminal_repair(state: &AppState, defer_reason: &'static str) {
@@ -6179,6 +6182,13 @@ mod tests {
             false,
             false,
             false,
+            Some(now + Duration::from_secs(1)),
+            now,
+        ));
+        assert!(!long_term_projection_repair_due(
+            true,
+            true,
+            true,
             Some(now + Duration::from_secs(1)),
             now,
         ));

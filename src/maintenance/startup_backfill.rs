@@ -960,6 +960,20 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
 ) -> Result<u64> {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
     let task_name = task.name();
+    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    let backoff_preserved = progress.zero_update_streak > 0 && !progress.is_due(Utc::now());
+    if backoff_preserved {
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, startup_backfill_progress_due(&progress));
+        info!(
+            task = task.log_label(),
+            wake_reason,
+            backoff_preserved,
+            retry_generation = progress.zero_update_streak,
+            "kept account activity v2 coverage repair on its active retry deadline"
+        );
+        return Ok(progress.wake_generation);
+    }
+
     sqlx::query(
         r#"
         INSERT INTO startup_backfill_progress (
@@ -997,12 +1011,7 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     .await?;
 
     let progress = load_startup_backfill_progress(pool, task_name).await?;
-    let backoff_preserved = progress.zero_update_streak > 0 && !progress.is_due(Utc::now());
-    if backoff_preserved {
-        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, startup_backfill_progress_due(&progress));
-    } else {
-        STARTUP_BACKFILL_SCHEDULER.wake(task);
-    }
+    STARTUP_BACKFILL_SCHEDULER.wake(task);
     info!(
         task = task.log_label(),
         wake_reason,
@@ -1011,6 +1020,16 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
         "woke account activity v2 coverage repair"
     );
     Ok(progress.wake_generation)
+}
+
+fn startup_backfill_hourly_rollup_refresh_scope(
+    ran_account_activity_v2_coverage_repair: bool,
+) -> HourlyRollupRefreshScope {
+    if ran_account_activity_v2_coverage_repair {
+        HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+    } else {
+        HourlyRollupRefreshScope::Full
+    }
 }
 
 async fn run_startup_backfill_coverage_repair_if_due(
@@ -1114,6 +1133,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
 ) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
+    let mut ran_account_activity_v2_coverage_repair = false;
     let mut had_deferred_task = false;
     let tasks = match selected_tasks {
         Some(tasks) => tasks,
@@ -1146,6 +1166,8 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             Ok(outcome) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
+                ran_account_activity_v2_coverage_repair |=
+                    *task == StartupBackfillTask::AccountActivityV2Coverage && outcome.actionable;
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
                 if outcome.completed {
@@ -1172,10 +1194,13 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     }
 
     if ran_actionable_task {
+        let refresh_scope =
+            startup_backfill_hourly_rollup_refresh_scope(ran_account_activity_v2_coverage_repair);
         refresh_hourly_rollups_for_read_surfaces_best_effort(
             &state.pool,
             state.hourly_rollup_sync_lock.as_ref(),
             "startup backfill maintenance pass",
+            refresh_scope,
         )
         .await;
         if !cancel.is_cancelled() {
@@ -2084,6 +2109,18 @@ mod startup_backfill_tests {
         assert_eq!(health.state, "degraded");
         assert_eq!(health.failed_task_count, 1);
         assert_eq!(health.pressure_defer_count, 1);
+    }
+
+    #[test]
+    fn coverage_repair_does_not_repeat_its_planner_in_the_following_hourly_refresh() {
+        assert_eq!(
+            startup_backfill_hourly_rollup_refresh_scope(true),
+            HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+        );
+        assert_eq!(
+            startup_backfill_hourly_rollup_refresh_scope(false),
+            HourlyRollupRefreshScope::Full
+        );
     }
 
     #[test]
