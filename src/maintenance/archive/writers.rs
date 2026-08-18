@@ -147,7 +147,7 @@ pub(crate) fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
 
 pub(crate) async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
     let mut connection = open_archive_sqlite_connection(path).await?;
-    sqlx::query("VACUUM")
+    sqlx::query("PRAGMA optimize")
         .execute(&mut connection)
         .await
         .with_context(|| format!("failed to finalize archive sqlite file {}", path.display()))?;
@@ -1057,6 +1057,14 @@ pub(crate) async fn write_archive_batch_upstream_activity(
 mod tests {
     use super::*;
 
+    struct TempArchiveTestDirectory(std::path::PathBuf);
+
+    impl Drop for TempArchiveTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn segment_part_key_is_stable_for_one_prepared_identity() {
         let forward = archive_segment_part_key_for_ids(&[7, 3, 5]).expect("part key");
@@ -1116,6 +1124,65 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn archive_finalization_skips_full_vacuum() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-archive-finalization-{}",
+            retention_temp_suffix()
+        ));
+        let _root_cleanup = TempArchiveTestDirectory(root.clone());
+        fs::create_dir_all(&root).expect("create archive root");
+        let path = root.join("periodic-maintenance.sqlite");
+
+        let mut connection = open_archive_sqlite_connection(&path)
+            .await
+            .expect("open archive sqlite file");
+        sqlx::query("CREATE TABLE archive_payloads (payload BLOB NOT NULL)")
+            .execute(&mut connection)
+            .await
+            .expect("create archive payload table");
+        sqlx::query("INSERT INTO archive_payloads (payload) VALUES (?1)")
+            .bind(vec![0_u8; 512 * 1024])
+            .execute(&mut connection)
+            .await
+            .expect("insert archive payload");
+        sqlx::query("DELETE FROM archive_payloads")
+            .execute(&mut connection)
+            .await
+            .expect("delete archive payload");
+        let free_pages_before: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(&mut connection)
+            .await
+            .expect("read archive freelist before finalization");
+        assert!(
+            free_pages_before > 0,
+            "fixture must contain reclaimable pages before archive finalization"
+        );
+        connection.close().await.expect("close archive sqlite file");
+
+        finalize_archive_sqlite_file(&path)
+            .await
+            .expect("finalize archive sqlite file");
+
+        let mut connection = open_archive_sqlite_connection(&path)
+            .await
+            .expect("reopen archive sqlite file");
+        let free_pages_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(&mut connection)
+            .await
+            .expect("read archive freelist after finalization");
+        connection
+            .close()
+            .await
+            .expect("close inspected archive sqlite file");
+        let preserved_reclaimable_pages = free_pages_after > 0;
+
+        assert!(
+            preserved_reclaimable_pages,
+            "periodic archive finalization must not run a full VACUUM"
+        );
     }
 
     #[tokio::test]
