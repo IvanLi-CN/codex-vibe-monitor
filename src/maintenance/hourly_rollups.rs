@@ -81,7 +81,7 @@ async fn sync_hourly_rollups_from_live_tables_once(
         }
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
-    wake_historical_rollups_for_live_activity_v2_coverage(pool, repaired_activity_v2_rows).await?;
+    wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
@@ -89,17 +89,13 @@ async fn sync_hourly_rollups_from_live_tables_once(
     Ok(())
 }
 
-pub(crate) async fn wake_historical_rollups_for_live_activity_v2_coverage(
+pub(crate) async fn wake_account_activity_v2_coverage_repair(
     pool: &Pool<Sqlite>,
     repaired_activity_v2_rows: u64,
 ) -> Result<()> {
     if repaired_activity_v2_rows > 0 {
-        wake_startup_backfill_tasks(
-            pool,
-            &[StartupBackfillTask::HistoricalRollups],
-            "live_account_activity_v2_coverage_updated",
-        )
-        .await?;
+        wake_startup_backfill_coverage_repair(pool, "live_account_activity_v2_coverage_updated")
+            .await?;
     }
     Ok(())
 }

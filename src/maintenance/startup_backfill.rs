@@ -24,6 +24,7 @@ pub(crate) enum StartupBackfillTask {
     UpstreamActivityLive,
     UpstreamActivityArchives,
     PoolUpstreamNodeHealthArchives,
+    AccountActivityV2Coverage,
     HistoricalRollups,
 }
 
@@ -158,21 +159,6 @@ impl StartupBackfillScheduler {
         self.noop_suppressed_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_coverage_repair_success(
-        &self,
-        task: StartupBackfillTask,
-        task_completed_in_current_pass: bool,
-        task_failed_in_current_pass: bool,
-        task_deferred_in_current_pass: bool,
-    ) {
-        if task_completed_in_current_pass
-            && !task_failed_in_current_pass
-            && !task_deferred_in_current_pass
-        {
-            self.record_task_result(task, false, false);
-        }
-    }
-
     fn health_snapshot(&self) -> StartupBackfillHealthSnapshot {
         let woken_task_count = self
             .woken_tasks
@@ -281,6 +267,7 @@ impl StartupBackfillTask {
             Self::UpstreamActivityLive,
             Self::UpstreamActivityArchives,
             Self::PoolUpstreamNodeHealthArchives,
+            Self::AccountActivityV2Coverage,
             Self::HistoricalRollups,
         ]
     }
@@ -303,6 +290,7 @@ impl StartupBackfillTask {
             Self::PoolUpstreamNodeHealthArchives => {
                 STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES
             }
+            Self::AccountActivityV2Coverage => STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE,
             Self::HistoricalRollups => STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
         }
     }
@@ -321,6 +309,7 @@ impl StartupBackfillTask {
             Self::UpstreamActivityLive => "upstream activity live rows",
             Self::UpstreamActivityArchives => "upstream activity archives",
             Self::PoolUpstreamNodeHealthArchives => "pool upstream node health archives",
+            Self::AccountActivityV2Coverage => "account activity v2 coverage repair",
             Self::HistoricalRollups => "historical rollup materialization",
         }
     }
@@ -837,17 +826,6 @@ pub(crate) struct StartupBackfillMaintenancePass {
     pub(crate) had_failure: bool,
 }
 
-fn selected_task_includes(
-    selected_tasks: Option<&[StartupBackfillTask]>,
-    task: StartupBackfillTask,
-) -> bool {
-    let tasks = match selected_tasks {
-        Some(tasks) => tasks,
-        None => StartupBackfillTask::ordered_tasks(),
-    };
-    tasks.contains(&task)
-}
-
 pub(crate) async fn defer_startup_backfill_task(
     state: &AppState,
     task: StartupBackfillTask,
@@ -890,8 +868,10 @@ pub(crate) fn coverage_repair_retry_delay(retry_generation: u32) -> Duration {
     )
 }
 
-pub(crate) async fn defer_startup_backfill_coverage_repair(state: &AppState) -> Result<()> {
-    let task = StartupBackfillTask::HistoricalRollups;
+pub(crate) async fn defer_startup_backfill_coverage_repair(
+    state: &AppState,
+) -> Result<DateTime<Utc>> {
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
     let task_name = startup_backfill_task_progress_key(state, task).await;
     let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
     let retry_generation = progress.zero_update_streak.saturating_add(1);
@@ -928,29 +908,20 @@ pub(crate) async fn defer_startup_backfill_coverage_repair(state: &AppState) -> 
         wake_reason = "coverage_repair_retry",
         "startup backfill coverage repair retry scheduled"
     );
-    Ok(())
+    Ok(retry_at)
 }
 
 pub(crate) async fn record_startup_backfill_coverage_repair_progress(
     state: &AppState,
     outcome: ActiveAccountActivityV2RepairOutcome,
-) -> Result<()> {
+) -> Result<DateTime<Utc>> {
     if outcome.repaired_bucket_count == 0 {
-        return Ok(());
+        return Ok(Utc::now());
     }
 
-    let task = StartupBackfillTask::HistoricalRollups;
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
     let task_name = startup_backfill_task_progress_key(state, task).await;
     let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
-    if progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE {
-        debug!(
-            task = task.log_label(),
-            coverage_priority_bucket_count = outcome.priority_bucket_count,
-            repaired_bucket_count = outcome.repaired_bucket_count,
-            "coverage repair made progress without waking a source-unavailable historical backfill"
-        );
-        return Ok(());
-    }
     let retry_after = format_utc_iso(
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
     );
@@ -980,7 +951,160 @@ pub(crate) async fn record_startup_backfill_coverage_repair_progress(
         wake_reason = "coverage_repair_progress",
         "startup backfill coverage repair progress reset its retry backoff"
     );
-    Ok(())
+    Ok(retry_at)
+}
+
+pub(crate) async fn wake_startup_backfill_coverage_repair(
+    pool: &Pool<Sqlite>,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let task_name = task.name();
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        )
+        VALUES (?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1)
+        ON CONFLICT(task_name) DO UPDATE SET
+            next_run_after = CASE
+                WHEN startup_backfill_progress.zero_update_streak > 0
+                    THEN startup_backfill_progress.next_run_after
+                ELSE NULL
+            END,
+            last_status = CASE
+                WHEN startup_backfill_progress.zero_update_streak > 0
+                    THEN startup_backfill_progress.last_status
+                ELSE ?2
+            END,
+            wake_generation = startup_backfill_progress.wake_generation + 1
+        "#,
+    )
+    .bind(task_name)
+    .bind(STARTUP_BACKFILL_STATUS_IDLE)
+    .execute(pool)
+    .await?;
+
+    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    let backoff_preserved = progress.zero_update_streak > 0 && !progress.is_due(Utc::now());
+    if backoff_preserved {
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, startup_backfill_progress_due(&progress));
+    } else {
+        STARTUP_BACKFILL_SCHEDULER.wake(task);
+    }
+    info!(
+        task = task.log_label(),
+        wake_reason,
+        backoff_preserved,
+        retry_generation = progress.zero_update_streak,
+        "woke account activity v2 coverage repair"
+    );
+    Ok(progress.wake_generation)
+}
+
+async fn run_startup_backfill_coverage_repair_if_due(
+    state: &Arc<AppState>,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    let repair_outcome = repair_active_account_activity_v2_coverage_best_effort(
+        &state.pool,
+        state.hourly_rollup_sync_lock.as_ref(),
+        "startup backfill account-activity coverage repair",
+    )
+    .await;
+    match repair_outcome {
+        ActiveAccountActivityV2RepairResult::Repaired(outcome)
+            if outcome.repaired_bucket_count > 0 =>
+        {
+            let next_due =
+                record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome).await?;
+            Ok(StartupBackfillTaskRunOutcome {
+                actionable: true,
+                failed: false,
+                deferred: false,
+                completed: true,
+                next_due,
+            })
+        }
+        ActiveAccountActivityV2RepairResult::Repaired(outcome)
+            if outcome.priority_bucket_count > 0 =>
+        {
+            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
+            Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: true,
+                completed: true,
+                next_due,
+            })
+        }
+        ActiveAccountActivityV2RepairResult::Repaired(_) => {
+            let task = StartupBackfillTask::AccountActivityV2Coverage;
+            let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+            let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+            let next_retry_after = format_utc_iso(
+                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_IDLE_INTERVAL_SECS as i64),
+            );
+            save_startup_backfill_progress(
+                &state.pool,
+                &task_name,
+                StartupBackfillProgressUpdate {
+                    cursor_id: progress.cursor_id,
+                    scanned: progress.last_scanned,
+                    updated: progress.last_updated,
+                    zero_update_streak: 0,
+                    next_run_after: &next_retry_after,
+                    status: STARTUP_BACKFILL_STATUS_IDLE,
+                    suspension_reason: None,
+                },
+            )
+            .await?;
+            let next_due = parse_to_utc_datetime(&next_retry_after).unwrap_or_else(Utc::now);
+            STARTUP_BACKFILL_SCHEDULER.record_next_due(task, next_due);
+            debug!(
+                task = task.log_label(),
+                next_retry_after = %next_retry_after,
+                "account activity v2 coverage repair is idle"
+            );
+            Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: false,
+                completed: true,
+                next_due,
+            })
+        }
+        ActiveAccountActivityV2RepairResult::Deferred => {
+            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
+            Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: true,
+                completed: true,
+                next_due,
+            })
+        }
+        ActiveAccountActivityV2RepairResult::Failed => {
+            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
+            Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: true,
+                deferred: false,
+                completed: true,
+                next_due,
+            })
+        }
+    }
 }
 
 pub(crate) async fn run_startup_backfill_maintenance_pass(
@@ -991,9 +1115,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
-    let mut historical_rollup_task_completed = false;
-    let mut historical_rollup_task_failed = false;
-    let mut historical_rollup_task_deferred = false;
     let tasks = match selected_tasks {
         Some(tasks) => tasks,
         None => StartupBackfillTask::ordered_tasks(),
@@ -1027,11 +1148,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 ran_actionable_task |= outcome.actionable;
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
-                if *task == StartupBackfillTask::HistoricalRollups {
-                    historical_rollup_task_completed |= outcome.completed;
-                    historical_rollup_task_failed |= outcome.failed;
-                    historical_rollup_task_deferred |= outcome.deferred;
-                }
                 if outcome.completed {
                     STARTUP_BACKFILL_SCHEDULER.record_task_result(
                         *task,
@@ -1042,9 +1158,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             }
             Err(err) => {
                 had_failure = true;
-                if *task == StartupBackfillTask::HistoricalRollups {
-                    historical_rollup_task_failed = true;
-                }
                 STARTUP_BACKFILL_SCHEDULER.record_task_result(*task, true, false);
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(
                     *task,
@@ -1076,74 +1189,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                 crate::db_pressure::global_db_pressure_gate()
                     .record_error("parallel_work_rollup_maintenance", &err);
                 warn!(error = %err, "parallel-work rollup maintenance pass failed");
-            }
-        }
-    }
-
-    // Coverage repair belongs to the historical-rollup task. It remains bounded to two buckets
-    // and runs only during the initial pass or when that task is explicitly due or woken.
-    if !cancel.is_cancelled()
-        && selected_task_includes(selected_tasks, StartupBackfillTask::HistoricalRollups)
-    {
-        let repair_outcome = repair_active_account_activity_v2_coverage_best_effort(
-            &state.pool,
-            state.hourly_rollup_sync_lock.as_ref(),
-            "startup backfill historical-rollup coverage repair",
-        )
-        .await;
-        match repair_outcome {
-            ActiveAccountActivityV2RepairResult::Repaired(outcome) => {
-                ran_actionable_task |= outcome.repaired_bucket_count > 0;
-                match record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
-                    .await
-                {
-                    Ok(()) => STARTUP_BACKFILL_SCHEDULER.record_coverage_repair_success(
-                        StartupBackfillTask::HistoricalRollups,
-                        historical_rollup_task_completed,
-                        historical_rollup_task_failed,
-                        historical_rollup_task_deferred,
-                    ),
-                    Err(err) => {
-                        had_failure = true;
-                        STARTUP_BACKFILL_SCHEDULER.record_task_result(
-                            StartupBackfillTask::HistoricalRollups,
-                            true,
-                            false,
-                        );
-                        crate::db_pressure::global_db_pressure_gate()
-                            .record_error("startup_backfill_coverage_progress", &err);
-                        warn!(error = %err, "failed to persist startup backfill coverage repair progress");
-                    }
-                }
-            }
-            outcome @ (ActiveAccountActivityV2RepairResult::Deferred
-            | ActiveAccountActivityV2RepairResult::Failed) => {
-                let failed = matches!(outcome, ActiveAccountActivityV2RepairResult::Failed);
-                had_failure |= failed;
-                if let Err(err) = defer_startup_backfill_coverage_repair(state.as_ref()).await {
-                    had_failure = true;
-                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
-                        StartupBackfillTask::HistoricalRollups,
-                        true,
-                        false,
-                    );
-                    crate::db_pressure::global_db_pressure_gate()
-                        .record_error("startup_backfill_coverage_retry", &err);
-                    warn!(error = %err, "failed to schedule startup backfill coverage retry");
-                } else if failed {
-                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
-                        StartupBackfillTask::HistoricalRollups,
-                        true,
-                        false,
-                    );
-                } else {
-                    had_deferred_task = true;
-                    STARTUP_BACKFILL_SCHEDULER.record_task_result(
-                        StartupBackfillTask::HistoricalRollups,
-                        false,
-                        true,
-                    );
-                }
             }
         }
     }
@@ -1258,6 +1303,10 @@ async fn run_startup_backfill_task_if_due_outcome(
             completed: false,
             next_due: startup_backfill_progress_due(&progress),
         });
+    }
+
+    if task == StartupBackfillTask::AccountActivityV2Coverage {
+        return run_startup_backfill_coverage_repair_if_due(state).await;
     }
 
     let _permit = match gate.try_begin_background("startup_backfill") {
@@ -1758,6 +1807,9 @@ pub(crate) async fn run_startup_backfill_task(
                 ),
             ))
         }
+        StartupBackfillTask::AccountActivityV2Coverage => Err(anyhow!(
+            "account activity v2 coverage repair must use its dedicated scheduler path"
+        )),
         StartupBackfillTask::HistoricalRollups => {
             let historical_elapsed_budget = startup_backfill_run_budget(source_unavailable_probe);
             let before =
@@ -2022,63 +2074,11 @@ mod startup_backfill_tests {
     }
 
     #[test]
-    fn coverage_repair_cannot_clear_a_same_pass_historical_rollup_failure() {
+    fn coverage_repair_health_is_independent_from_historical_rollups() {
         let scheduler = StartupBackfillScheduler::default();
         scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
 
-        scheduler.record_coverage_repair_success(
-            StartupBackfillTask::HistoricalRollups,
-            true,
-            true,
-            false,
-        );
-
-        let health = scheduler.health_snapshot();
-        assert_eq!(health.state, "degraded");
-        assert_eq!(health.failed_task_count, 1);
-    }
-
-    #[test]
-    fn coverage_repair_cannot_clear_a_same_pass_historical_rollup_deferral() {
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
-
-        scheduler.record_coverage_repair_success(
-            StartupBackfillTask::HistoricalRollups,
-            true,
-            false,
-            true,
-        );
-
-        let health = scheduler.health_snapshot();
-        assert_eq!(health.state, "deferred");
-        assert_eq!(health.deferred_task_count, 1);
-        assert_eq!(health.pressure_defer_count, 1);
-    }
-
-    #[test]
-    fn coverage_repair_cannot_clear_a_prior_historical_rollup_failure_when_not_due() {
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
-
-        scheduler.record_coverage_repair_success(
-            StartupBackfillTask::HistoricalRollups,
-            false,
-            false,
-            false,
-        );
-
-        let health = scheduler.health_snapshot();
-        assert_eq!(health.state, "degraded");
-        assert_eq!(health.failed_task_count, 1);
-    }
-
-    #[test]
-    fn deferred_coverage_repair_cannot_clear_an_active_historical_rollup_failure() {
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
-
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
+        scheduler.record_task_result(StartupBackfillTask::AccountActivityV2Coverage, false, true);
 
         let health = scheduler.health_snapshot();
         assert_eq!(health.state, "degraded");

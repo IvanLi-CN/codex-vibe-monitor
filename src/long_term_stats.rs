@@ -1362,11 +1362,17 @@ pub(crate) fn spawn_long_term_projection_supervisor(
 async fn long_term_projection_terminal_flush_needed(state: &AppState) -> bool {
     let has_persisted_work = state.terminal_projection_hub.has_persisted_work();
     let runtime = state.long_term_projection_runtime.lock().await;
-    runtime.state.is_empty()
-        || (has_persisted_work
-            && runtime
-                .next_repair_at
-                .is_none_or(|retry_at| retry_at <= Instant::now()))
+    long_term_projection_terminal_flush_due(has_persisted_work, runtime.state.is_empty())
+}
+
+fn long_term_projection_terminal_flush_due(
+    has_persisted_work: bool,
+    runtime_state_is_empty: bool,
+) -> bool {
+    // A deferred date rebuild must not suppress the bounded terminal delta pass.
+    // The pass can still advance any ready prefix while the repair ticker owns
+    // the expensive rebuild deadline.
+    has_persisted_work || runtime_state_is_empty
 }
 
 async fn long_term_projection_repair_needed(state: &AppState) -> Result<bool> {
@@ -6176,6 +6182,13 @@ mod tests {
             Some(now + Duration::from_secs(1)),
             now,
         ));
+    }
+
+    #[test]
+    fn terminal_projection_flush_does_not_share_the_repair_backoff() {
+        assert!(long_term_projection_terminal_flush_due(true, false));
+        assert!(long_term_projection_terminal_flush_due(false, true));
+        assert!(!long_term_projection_terminal_flush_due(false, false));
     }
 
     async fn create_long_term_test_invocations(pool: &Pool<Sqlite>) {
