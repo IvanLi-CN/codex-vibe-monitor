@@ -65,7 +65,6 @@ type RoutingDraft = {
   cacheHitRateThresholdPercent: string;
   cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
   liveRequestStreamingEnabled: boolean;
-  liveRequestStreamingGroupNames: string;
   liveRequestStreamingTreatmentPercent: string;
 };
 
@@ -276,7 +275,6 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     ),
     cacheHitOverflowMode: routing.cacheHitProtection?.overflowMode ?? "queue",
     liveRequestStreamingEnabled: routing.liveRequestStreaming?.enabled ?? false,
-    liveRequestStreamingGroupNames: (routing.liveRequestStreaming?.groupNames ?? []).join(", "),
     liveRequestStreamingTreatmentPercent: String(
       routing.liveRequestStreaming?.treatmentPercent ?? 50,
     ),
@@ -783,11 +781,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       setRoutingValidationMessage(t("settings.routing.errors.liveRequestStreamingPercent"));
       return;
     }
-    const liveRequestStreamingGroupNames = routingDraft.liveRequestStreamingGroupNames
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-
     const payload: UpdatePoolRoutingSettingsPayload = {
       requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
       requestCompressionLevelPreset: routingDraft.requestCompressionLevelPreset,
@@ -802,7 +795,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       },
       liveRequestStreaming: {
         enabled: routingDraft.liveRequestStreamingEnabled,
-        groupNames: liveRequestStreamingGroupNames,
         treatmentPercent: liveRequestStreamingTreatmentPercent,
       },
     };

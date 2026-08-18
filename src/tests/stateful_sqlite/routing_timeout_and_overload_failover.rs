@@ -234,7 +234,6 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
         "liveRequestStreaming": {
             "enabled": true,
-            "groupNames": [test_required_group_name()],
             "treatmentPercent": 100,
         },
     }))

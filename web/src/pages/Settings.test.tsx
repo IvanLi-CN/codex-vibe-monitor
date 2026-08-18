@@ -310,7 +310,6 @@ describe("Settings forward proxy table", () => {
       },
       liveRequestStreaming: {
         enabled: false,
-        groupNames: [],
         treatmentPercent: 50,
       },
       timeouts: {

@@ -211,8 +211,6 @@ pub(crate) struct PoolRoutingSettingsRow {
     #[sqlx(default)]
     pub(crate) live_request_streaming_enabled: Option<i64>,
     #[sqlx(default)]
-    pub(crate) live_request_streaming_group_names_json: Option<String>,
-    #[sqlx(default)]
     pub(crate) live_request_streaming_treatment_percent: Option<i64>,
 }
 

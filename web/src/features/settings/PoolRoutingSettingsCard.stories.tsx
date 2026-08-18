@@ -33,7 +33,6 @@ const meta = {
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
       liveRequestStreamingEnabled: false,
-      liveRequestStreamingGroupNames: "canary-a, canary-b",
       liveRequestStreamingTreatmentPercent: "50",
     },
     busy: false,
@@ -90,7 +89,6 @@ export const ModelPolicy: Story = {
           cacheHitRateThresholdPercent: "10",
           cacheHitOverflowMode: "queue",
           liveRequestStreamingEnabled: false,
-          liveRequestStreamingGroupNames: "canary-a, canary-b",
           liveRequestStreamingTreatmentPercent: "50",
         }}
         busy={false}
@@ -128,7 +126,6 @@ export const CacheHitProtection: Story = {
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "reroute",
       liveRequestStreamingEnabled: true,
-      liveRequestStreamingGroupNames: "canary-a",
       liveRequestStreamingTreatmentPercent: "50",
     },
   },

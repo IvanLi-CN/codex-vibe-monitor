@@ -380,7 +380,6 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
     let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
         "liveRequestStreaming": {
             "enabled": true,
-            "groupNames": [test_required_group_name()],
             "treatmentPercent": 100,
         },
     }))

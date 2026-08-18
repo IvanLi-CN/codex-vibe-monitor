@@ -1983,7 +1983,6 @@ pub(crate) struct CacheHitProtectionSettingsResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LiveRequestStreamingSettingsResponse {
     pub(crate) enabled: bool,
-    pub(crate) group_names: Vec<String>,
     pub(crate) treatment_percent: u8,
 }
 
@@ -2036,8 +2035,6 @@ pub(crate) struct UpdateCacheHitProtectionSettingsRequest {
 pub(crate) struct UpdateLiveRequestStreamingSettingsRequest {
     #[serde(default)]
     pub(crate) enabled: Option<bool>,
-    #[serde(default)]
-    pub(crate) group_names: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) treatment_percent: Option<u8>,
 }
