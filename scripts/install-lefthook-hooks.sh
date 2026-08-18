@@ -64,6 +64,20 @@ if [ -z "$lefthook_path" ]; then
   exit 1
 fi
 
+lefthook_version="$($lefthook_path version 2>/dev/null || true)"
+lefthook_triplet="$(printf '%s\n' "$lefthook_version" | sed -nE 's/^[^0-9]*([0-9]+)\.([0-9]+)\.([0-9]+).*/\1 \2 \3/p' | head -n 1)"
+set -- $lefthook_triplet
+lefthook_major="${1:-}"
+lefthook_minor="${2:-}"
+lefthook_patch="${3:-}"
+if [ -z "$lefthook_major" ] \
+  || [ "$lefthook_major" -lt 2 ] \
+  || { [ "$lefthook_major" -eq 2 ] && [ "$lefthook_minor" -lt 1 ]; } \
+  || { [ "$lefthook_major" -eq 2 ] && [ "$lefthook_minor" -eq 1 ] && [ "$lefthook_patch" -lt 7 ]; }; then
+  printf '[worktree-bootstrap] Lefthook 2.1.7 or newer is required for safe staged-file restoration; found %s\n' "${lefthook_version:-unknown}" >&2
+  exit 1
+fi
+
 hooks_dir="$(git -C "$repo_root" rev-parse --git-path hooks)"
 case "$hooks_dir" in
   /*) ;;
@@ -79,6 +93,51 @@ if [ -L "$hooks_dir" ]; then
   printf '[worktree-bootstrap] hooks directory is a symlink; leaving hooks untouched: %s\n' "$hooks_dir" >&2
   exit 0
 fi
+
+config_declares_prepare_commit_msg() {
+  for config_file in "$repo_root"/lefthook*.yml "$repo_root"/lefthook*.yaml; do
+    [ -f "$config_file" ] || continue
+    if grep -Eq '^[[:space:]]*prepare-commit-msg:' "$config_file"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+cleanup_legacy_prepare_commit_msg() {
+  hook_path="$hooks_dir/prepare-commit-msg"
+  [ -e "$hook_path" ] || [ -L "$hook_path" ] || return 0
+
+  if [ -L "$hook_path" ]; then
+    printf '[worktree-bootstrap] prepare-commit-msg is a symlink; leaving it untouched\n' >&2
+    return 0
+  fi
+  if config_declares_prepare_commit_msg; then
+    printf '[worktree-bootstrap] prepare-commit-msg is configured; leaving it untouched\n' >&2
+    return 0
+  fi
+
+  template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")"
+  if ! git -C "$template_dir" init -q || ! (
+    cd "$template_dir" &&
+    "$lefthook_path" install prepare-commit-msg >/dev/null 2>&1
+  ); then
+    rm -rf "$template_dir"
+    printf '[worktree-bootstrap] could not verify prepare-commit-msg ownership; leaving it untouched\n' >&2
+    return 0
+  fi
+
+  template_path="$template_dir/.git/hooks/prepare-commit-msg"
+  if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
+    rm -f "$hook_path"
+    printf '[worktree-bootstrap] removed obsolete Lefthook prepare-commit-msg wrapper\n'
+  else
+    printf '[worktree-bootstrap] prepare-commit-msg is unmanaged; leaving it untouched\n' >&2
+  fi
+  rm -rf "$template_dir"
+}
+
+cleanup_legacy_prepare_commit_msg
 
 install_hooks=()
 is_managed_hook() {

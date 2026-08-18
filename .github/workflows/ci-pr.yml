@@ -106,14 +106,16 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Type-check Web Demo sources
-        working-directory: web
-        run: bunx tsc -b
+        run: bun run typecheck:web
 
       - name: Install docs-site dependencies
         run: bun install --cwd docs-site --frozen-lockfile
 
       - name: Worktree bootstrap smoke
         run: bash scripts/test-worktree-bootstrap.sh
+
+      - name: Git hook contract smoke
+        run: bash scripts/test-git-hooks-contract.sh
 
       - name: Bun-first guard
         run: bun run check:bun-first
