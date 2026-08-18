@@ -13,6 +13,7 @@
     "build:pwa-test": "vite build && bun scripts/write-version.mjs",
     "lint": "bun --cwd .. run lint:web",
     "test": "vitest run --project=unit",
+    "test:pwa-assets": "python3 scripts/check-pwa-assets.py",
     "test-storybook": "vitest run --project=storybook",
     "preview": "vite preview",
     "test:e2e": "playwright test",

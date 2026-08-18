@@ -12,12 +12,15 @@ PUBLIC_DIR = REPO_ROOT / "web" / "public"
 
 PRODUCT_MARK_MASTER = BRAND_DIR / "codex-vibe-monitor-product-mark.svg"
 APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-app-icon.svg"
+MASKABLE_APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-maskable-app-icon.svg"
 
 PRODUCT_MARK_PUBLIC = PUBLIC_DIR / "brand-mark.svg"
 FAVICON_PUBLIC = PUBLIC_DIR / "favicon.svg"
 APPLE_TOUCH_PUBLIC = PUBLIC_DIR / "apple-touch-icon.png"
 ICON_192_PUBLIC = PUBLIC_DIR / "icon-192.png"
 ICON_512_PUBLIC = PUBLIC_DIR / "icon-512.png"
+MASKABLE_ICON_192_PUBLIC = PUBLIC_DIR / "maskable-192.png"
+MASKABLE_ICON_512_PUBLIC = PUBLIC_DIR / "maskable-512.png"
 
 
 SIGNAL_GRADIENT = [
@@ -125,27 +128,25 @@ def product_mark_svg() -> str:
     return "\n".join(lines)
 
 
-def app_icon_svg() -> str:
+def app_icon_svg(*, background: str | None, scale: float, translate_x: float, translate_y: float) -> str:
+    role = "maskable application icon" if background else "regular application icon"
     lines = [
         '<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">',
-        "<!-- Generated from traced product mark + approved rounded-square app-icon container -->",
-        "  <title>Codex Vibe Monitor app icon</title>",
-        "  <desc>Rounded-square application icon using the traced product mark.</desc>",
-        "  <defs>",
-        '    <filter id="icon-shadow" x="0" y="0" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">',
-        '      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#CCD7EA" flood-opacity="0.75" />',
-        "    </filter>",
-        "  </defs>",
-        '  <g filter="url(#icon-shadow)">',
-        '    <rect x="32" y="40" width="448" height="432" rx="72" fill="#FBFDFF" />',
-        '    <rect x="34" y="42" width="444" height="428" rx="70" stroke="#DDE7F5" stroke-width="4" />',
-        "  </g>",
-        '  <g transform="translate(58 67) scale(0.065)">',
-        '    <defs>',
-        *[f"      {line}" for line in SIGNAL_GRADIENT],
-        "    </defs>",
-        '    <g transform="translate(0 5570) scale(1 -1)">',
+        "<!-- Generated from the approved product mark without platform chrome. -->",
+        f"  <title>Codex Vibe Monitor {role}</title>",
+        "  <desc>Product mark prepared for platform-owned application framing.</desc>",
     ]
+    if background:
+        lines.append(f'  <rect width="512" height="512" fill="{background}" />')
+    lines.extend(
+        [
+            f'  <g transform="translate({translate_x:g} {translate_y:g}) scale({scale:g})">',
+            '    <defs>',
+            *[f"      {line}" for line in SIGNAL_GRADIENT],
+            "    </defs>",
+            '    <g transform="translate(0 5570) scale(1 -1)">',
+        ]
+    )
     lines.append(f'      <path d="{PRODUCT_MARK_PATHS[0]}" fill="url(#signal-gradient)" />')
     for path, fill in zip(PRODUCT_MARK_PATHS[1:], RING_FILLS, strict=True):
         lines.append(f'      <path d="{path}" fill="{fill}" />')
@@ -157,16 +158,32 @@ def app_icon_svg() -> str:
 
 def main() -> None:
     product_svg = product_mark_svg()
-    icon_svg = app_icon_svg()
+    # Regular icons preserve the product mark's existing visual scale on transparency.
+    regular_icon_svg = app_icon_svg(
+        background=None,
+        scale=0.065,
+        translate_x=58,
+        translate_y=67,
+    )
+    # The 60% mark fits inside the W3C maskable safe circle after platform masking.
+    maskable_icon_svg = app_icon_svg(
+        background="#FBFDFF",
+        scale=0.05865,
+        translate_x=80.3,
+        translate_y=93.3,
+    )
 
     write_text(PRODUCT_MARK_MASTER, product_svg)
-    write_text(APP_ICON_MASTER, icon_svg)
+    write_text(APP_ICON_MASTER, regular_icon_svg)
+    write_text(MASKABLE_APP_ICON_MASTER, maskable_icon_svg)
     write_text(PRODUCT_MARK_PUBLIC, product_svg)
-    write_text(FAVICON_PUBLIC, icon_svg)
+    write_text(FAVICON_PUBLIC, regular_icon_svg)
 
-    render_png(APP_ICON_MASTER, APPLE_TOUCH_PUBLIC, 180)
+    render_png(MASKABLE_APP_ICON_MASTER, APPLE_TOUCH_PUBLIC, 180)
     render_png(APP_ICON_MASTER, ICON_192_PUBLIC, 192)
     render_png(APP_ICON_MASTER, ICON_512_PUBLIC, 512)
+    render_png(MASKABLE_APP_ICON_MASTER, MASKABLE_ICON_192_PUBLIC, 192)
+    render_png(MASKABLE_APP_ICON_MASTER, MASKABLE_ICON_512_PUBLIC, 512)
 
 
 if __name__ == "__main__":
