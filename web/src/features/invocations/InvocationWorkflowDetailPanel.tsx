@@ -81,8 +81,12 @@ interface InvocationWorkflowDetailPanelProps {
 
 const FALLBACK_CELL = "—";
 
+function hasMeasuredDurationMs(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function formatDurationMs(value: number | null | undefined, locale: string) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return FALLBACK_CELL;
+  if (!hasMeasuredDurationMs(value)) return FALLBACK_CELL;
   const seconds = value / 1000;
   const rounded = Math.round(seconds * 10) / 10;
   const precision = Math.abs(rounded) >= 100 ? 0 : 1;
@@ -796,12 +800,11 @@ function buildTimelineFacts(
       facts.push({
         key: "latency",
         label: latencyValue,
-        tone:
-          typeof attempt.streamLatencyMs === "number"
-            ? "secondary"
-            : typeof attempt.firstTokenMs === "number"
-              ? "success"
-              : "secondary",
+        tone: hasMeasuredDurationMs(attempt.streamLatencyMs)
+          ? "secondary"
+          : hasMeasuredDurationMs(attempt.firstTokenMs)
+            ? "success"
+            : "secondary",
       });
     }
     if (usageAudit?.cacheWriteTokens != null) {
@@ -955,7 +958,7 @@ function buildAttemptMetricActions(
       label: isZh ? "时间" : "Timing",
       primary: formatDurationMs(attempt.streamLatencyMs, localeTag),
       secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
-      secondaryTone: typeof attempt.firstTokenMs === "number" ? "success" : undefined,
+      secondaryTone: hasMeasuredDurationMs(attempt.firstTokenMs) ? "success" : undefined,
     },
     {
       section: "requestParsed",

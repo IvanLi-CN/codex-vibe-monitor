@@ -880,6 +880,13 @@ describe("InvocationWorkflowDetailPanel", () => {
 
     expect(host?.textContent ?? "").not.toContain("TTFT -1.5 s");
     expect(host?.textContent ?? "").toContain("TTFT —");
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent?.includes("TTFT —"),
+    );
+    expect(timingButton?.querySelector('[title="TTFT —"]')?.className).not.toContain(
+      "text-success",
+    );
   });
 
   it("lazy-fetches the selected non-final attempt response body by attempt identity", async () => {

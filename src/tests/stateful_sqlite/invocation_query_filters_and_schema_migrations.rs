@@ -2403,7 +2403,7 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
 }
 
 #[tokio::test]
-async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_response_duration() {
+async fn fetch_invocation_summary_keeps_zero_ms_ttft_and_excludes_negative_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2438,11 +2438,34 @@ async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_respons
     .await
     .expect("insert zero-ms summary row");
 
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("summary-negative-first-token")
+    .bind("2026-03-10 09:11:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(-1.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert invalid TTFT summary row");
+
     let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
         .await
         .expect("summary query with zero-ms samples should succeed");
 
-    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.total_count, 2);
     assert_eq!(summary.network.avg_ttfb_ms, Some(0.0));
     assert_eq!(summary.network.p95_ttfb_ms, Some(0.0));
     assert_eq!(summary.network.avg_first_token_ms, Some(0.0));

@@ -121,7 +121,11 @@ function createConversation(
   };
 }
 
-function buildWorkingConversationsResponse() {
+function buildWorkingConversationsResponse({
+  currentFirstTokenMs = 740,
+}: {
+  currentFirstTokenMs?: number | null;
+} = {}) {
   const conversations = [
     createConversation("wc-current-1", [
       createPreview({
@@ -131,7 +135,7 @@ function buildWorkingConversationsResponse() {
         status: "running",
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
-        firstTokenMs: 740,
+        firstTokenMs: currentFirstTokenMs,
         tUpstreamTtfbMs: null,
         tUpstreamStreamMs: null,
         tTotalMs: null,
@@ -487,7 +491,10 @@ const VIEWPORTS: LayoutExpectation[] = [
   { viewport: { width: 1873, height: 900 }, expectedColumns: 4 },
 ];
 
-async function installDashboardRoutes(page: Page) {
+async function installDashboardRoutes(
+  page: Page,
+  options: { currentFirstTokenMs?: number | null } = {},
+) {
   await page.route("**/events**", async (route) => {
     const url = new URL(route.request().url());
     const topicsParam = url.searchParams.get("topics");
@@ -516,7 +523,7 @@ async function installDashboardRoutes(page: Page) {
           payload:
             descriptor.topic === "dashboard.activity.current"
               ? buildDashboardActivityResponse()
-              : buildWorkingConversationsResponse(),
+              : buildWorkingConversationsResponse(options),
         }),
       )
       .map((frame) => `data: ${frame}\n\n`)
@@ -552,7 +559,7 @@ async function installDashboardRoutes(page: Page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(buildWorkingConversationsResponse()),
+      body: JSON.stringify(buildWorkingConversationsResponse(options)),
     });
   });
 
@@ -638,6 +645,38 @@ test.describe("Dashboard working conversations responsive layout", () => {
       "0.7 s",
     );
     await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+  });
+
+  test("keeps zero TTFT measured and invalid live timing unavailable", async ({ page }) => {
+    await installDashboardRoutes(page, { currentFirstTokenMs: 0 });
+    await page.setViewportSize({ width: 1660, height: 1180 });
+    await page.goto("/#/dashboard");
+
+    const currentSlot = page.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
+      "0 s",
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+
+    await page.close();
+    const invalidPage = await page.context().newPage();
+    await installDashboardRoutes(invalidPage, { currentFirstTokenMs: -1 });
+    await invalidPage.setViewportSize({ width: 1660, height: 1180 });
+    await invalidPage.goto("/#/dashboard");
+
+    const invalidSlot = invalidPage.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
+      "--",
+    );
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
       "--",
     );
   });

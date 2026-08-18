@@ -683,6 +683,30 @@ describe("demo MSW handlers", () => {
     expect(missingAttemptResponse.status).toBe(404);
   });
 
+  it("keeps Demo workflow response duration unavailable while an invocation is responding", async () => {
+    const response = await fetch("http://demo.invalid/api/invocations/9001/workflow-detail");
+    const detail = (await response.json()) as {
+      timeline: Array<{
+        kind: string;
+        attempt?: {
+          phase?: string | null;
+          finishedAt?: string | null;
+          firstTokenMs?: number | null;
+          streamLatencyMs?: number | null;
+        } | null;
+      }>;
+    };
+
+    const attempt = detail.timeline.find((entry) => entry.kind === "attempt")?.attempt;
+    expect(response.ok).toBe(true);
+    expect(attempt).toMatchObject({
+      phase: "responding",
+      finishedAt: null,
+      firstTokenMs: 705,
+      streamLatencyMs: null,
+    });
+  });
+
   it("fails closed instead of returning a real network response in network-failure scene", async () => {
     demoModel.setScene("network-failure");
 
