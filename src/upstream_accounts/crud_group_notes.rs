@@ -501,6 +501,7 @@ async fn load_model_routing_timeline_entries(
          WHERE accounts.kind = "#,
     ));
     attempt_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    attempt_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     attempt_query
         .push(" AND ")
         .push(&attempt_epoch_sql)
@@ -575,6 +576,7 @@ async fn load_model_routing_timeline_entries(
          WHERE accounts.kind = "#,
     ));
     event_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    event_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     event_query.push(" AND event.attempt_id IS NULL AND event.model IS NOT NULL");
     event_query
         .push(" AND ")

@@ -205,6 +205,55 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
         Some(model),
     )
     .await;
+    let deleted_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Routing live API deleted account",
+        "routing-live-api-deleted-key",
+        None,
+        None,
+    )
+    .await;
+    observe_model_route_seen(&state.pool, deleted_account_id, Some(model))
+        .await
+        .expect("seed deleted API Key model route");
+    insert_model_failure_attempt(
+        &state,
+        deleted_account_id,
+        "routing-live-api-deleted-attempt",
+        Some(model),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET deleted_at = datetime('now') WHERE id = ?1")
+        .bind(deleted_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("soft-delete API Key routing account");
+
+    let Json(with_deleted) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("1h".to_string()),
+            model: Some(model.to_string()),
+            state: None,
+            limit: Some(100),
+        }),
+    )
+    .await
+    .expect("exclude soft-deleted API Key routing account");
+    assert!(
+        with_deleted
+            .groups
+            .iter()
+            .flat_map(|group| group.accounts.iter())
+            .all(|account| account.account_id != deleted_account_id)
+    );
+    assert!(
+        with_deleted
+            .records
+            .iter()
+            .all(|record| record.account_id != deleted_account_id)
+    );
+
     sqlx::query(
         "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4 WHERE account_id = ?1 AND model = ?2",
     )

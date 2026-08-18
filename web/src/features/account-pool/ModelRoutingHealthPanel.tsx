@@ -48,18 +48,22 @@ function routeStateLabel(state: string, t: (key: string) => string) {
     : translated;
 }
 
-function routeProtocolLabel(value: string | null | undefined, t: (key: string) => string) {
-  if (!value) return t("accountPool.upstreamAccounts.modelRouting.history.unknown");
-  const candidates = [
-    `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.states.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
-    `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+function routeProtocolLabel(values: Array<string | null | undefined>, t: (key: string) => string) {
+  const keyFactories = [
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.reasons.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.failureKinds.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.states.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.priorities.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.modelRouting.history.results.${value}`,
+    (value: string) => `accountPool.upstreamAccounts.latestAction.actions.${value}`,
   ];
-  for (const key of candidates) {
-    const translated = t(key);
-    if (translated !== key) return translated;
+  for (const value of values) {
+    if (!value) continue;
+    for (const keyFactory of keyFactories) {
+      const key = keyFactory(value);
+      const translated = t(key);
+      if (translated !== key) return translated;
+    }
   }
   return t("accountPool.upstreamAccounts.modelRouting.history.unknown");
 }
@@ -67,7 +71,7 @@ function routeProtocolLabel(value: string | null | undefined, t: (key: string) =
 function HistoryRecord({ record }: { record: ModelRoutingTimelineRecord }) {
   const { t } = useTranslation();
   const summary = routeProtocolLabel(
-    record.reasonCode || record.action || record.failureKind || record.status,
+    [record.reasonCode, record.action, record.failureKind, record.status],
     t,
   );
   return (
@@ -257,7 +261,7 @@ export function ModelRoutingHealthPanel({
               const failureSummary =
                 route.lastFailureKind || route.failureCount > 0
                   ? route.lastFailureKind
-                    ? routeProtocolLabel(route.lastFailureKind, t)
+                    ? routeProtocolLabel([route.lastFailureKind], t)
                     : t("accountPool.upstreamAccounts.modelRouting.history.failureCount", {
                         count: route.failureCount,
                       })
