@@ -152,6 +152,31 @@ cleanup_legacy_prepare_commit_msg() {
 cleanup_legacy_prepare_commit_msg
 
 install_hooks=()
+is_marked_standard_pre_commit() {
+  local existing_hook_path="$1"
+  local template_dir template_path
+
+  template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-lefthook.XXXXXX")" || return 1
+  if ! git -C "$template_dir" init -q \
+    || ! cp "$repo_root/lefthook.yml" "$template_dir/lefthook.yml" \
+    || ! (
+    cd "$template_dir" &&
+    "$lefthook_path" install pre-commit >/dev/null 2>&1
+  ); then
+    rm -rf "$template_dir"
+    return 1
+  fi
+
+  template_path="$template_dir/.git/hooks/pre-commit"
+  printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
+  if [ -f "$template_path" ] && cmp -s "$existing_hook_path" "$template_path"; then
+    rm -rf "$template_dir"
+    return 0
+  fi
+  rm -rf "$template_dir"
+  return 1
+}
+
 is_managed_hook() {
   hook_name="$1"
   hook_path="$2"
@@ -177,8 +202,7 @@ is_managed_hook() {
   printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$template_path"
   if [ -f "$template_path" ] && cmp -s "$hook_path" "$template_path"; then
     rm -rf "$template_dir"
-    # A marked standard pre-commit template is a known predecessor of the
-    # safety wrapper and may be replaced during this managed migration.
+    [ "$hook_name" = 'pre-commit' ] && return 1
     return 0
   fi
   if [ "$hook_name" = 'pre-commit' ] \
@@ -194,11 +218,12 @@ is_managed_hook() {
 
 for hook_name in pre-commit commit-msg post-checkout; do
   hook_path="$hooks_dir/$hook_name"
-  if ! is_managed_hook "$hook_name" "$hook_path"; then
+  if is_managed_hook "$hook_name" "$hook_path" \
+    || { [ "$hook_name" = 'pre-commit' ] && is_marked_standard_pre_commit "$hook_path"; }; then
+    install_hooks+=("$hook_name")
+  else
     printf '[worktree-bootstrap] %s already exists and is unmanaged; leaving it untouched\n' "$hook_name" >&2
-    continue
   fi
-  install_hooks+=("$hook_name")
 done
 
 if [ "${#install_hooks[@]}" -gt 0 ]; then
