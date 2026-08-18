@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Chip } from "../../components/ui/chip";
+import { Chip, type ChipTone } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { type TranslationKey, useTranslation } from "../../i18n";
@@ -68,6 +68,7 @@ interface TimelineFact {
   key: string;
   label: string;
   tooltip?: string;
+  tone?: ChipTone;
 }
 
 interface InvocationWorkflowDetailPanelProps {
@@ -83,7 +84,8 @@ const FALLBACK_CELL = "—";
 function formatDurationMs(value: number | null | undefined, locale: string) {
   if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
   const seconds = value / 1000;
-  const precision = Math.abs(seconds) >= 10 ? 1 : 2;
+  const rounded = Math.round(seconds * 10) / 10;
+  const precision = Math.abs(rounded) >= 100 ? 0 : 1;
   return `${seconds.toLocaleString(locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: precision,
@@ -772,8 +774,8 @@ function buildTimelineFacts(
     const latencyValue =
       typeof attempt.streamLatencyMs === "number"
         ? `${isZh ? "流式" : "Stream"} ${formatDurationMs(attempt.streamLatencyMs, localeTag)}`
-        : typeof attempt.firstByteLatencyMs === "number"
-          ? `TTFB ${formatDurationMs(attempt.firstByteLatencyMs, localeTag)}`
+        : typeof attempt.firstTokenMs === "number"
+          ? `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`
           : null;
 
     if (attempt.upstreamAccountName?.trim()) {
@@ -789,7 +791,18 @@ function buildTimelineFacts(
         label: isZh ? `上游 ${upstreamStatus}` : `Upstream ${upstreamStatus}`,
       });
     }
-    if (latencyValue) facts.push({ key: "latency", label: latencyValue });
+    if (latencyValue) {
+      facts.push({
+        key: "latency",
+        label: latencyValue,
+        tone:
+          typeof attempt.streamLatencyMs === "number"
+            ? "secondary"
+            : typeof attempt.firstTokenMs === "number"
+              ? "success"
+              : "secondary",
+      });
+    }
     if (usageAudit?.cacheWriteTokens != null) {
       facts.push({
         key: "cache-write",
@@ -942,12 +955,12 @@ function buildAttemptMetricActions(
       primary: formatDurationMs(
         typeof attempt.streamLatencyMs === "number"
           ? attempt.streamLatencyMs
-          : typeof attempt.firstByteLatencyMs === "number"
-            ? attempt.firstByteLatencyMs
+          : typeof attempt.firstTokenMs === "number"
+            ? attempt.firstTokenMs
             : attempt.connectLatencyMs,
         localeTag,
       ),
-      secondary: `TTFB ${formatDurationMs(attempt.firstByteLatencyMs, localeTag)}`,
+      secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
     },
     {
       section: "requestParsed",
@@ -1672,8 +1685,8 @@ function AttemptDetail({
       value: formatMilliseconds(attempt.connectLatencyMs, localeTag),
     },
     {
-      label: "TTFB",
-      value: formatMilliseconds(attempt.firstByteLatencyMs, localeTag),
+      label: "TTFT",
+      value: formatDurationMs(attempt.firstTokenMs, localeTag),
     },
     {
       label: isZh ? "流式耗时" : "Stream",
@@ -1714,7 +1727,7 @@ function AttemptDetail({
       label: isZh ? "连接" : "Connect",
       value: formatMilliseconds(attempt.connectLatencyMs, localeTag),
     },
-    { label: "TTFB", value: formatMilliseconds(attempt.firstByteLatencyMs, localeTag) },
+    { label: "TTFT", value: formatDurationMs(attempt.firstTokenMs, localeTag) },
     {
       label: isZh ? "流式" : "Stream",
       value: formatMilliseconds(attempt.streamLatencyMs, localeTag),
@@ -2616,14 +2629,18 @@ function TimelineSummary({
                       side="top"
                       sideOffset={8}
                     >
-                      <Chip size="micro" tone="secondary" className="min-w-0 break-all px-2">
+                      <Chip
+                        size="micro"
+                        tone={fact.tone ?? "secondary"}
+                        className="min-w-0 break-all px-2"
+                      >
                         {fact.label}
                       </Chip>
                     </Tooltip>
                   ) : (
                     <Chip
                       size="micro"
-                      tone="secondary"
+                      tone={fact.tone ?? "secondary"}
                       key={`${entry.blockId}-${fact.key}`}
                       className="min-w-0 break-all px-2"
                     >

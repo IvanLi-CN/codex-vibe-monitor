@@ -21,7 +21,7 @@ describe("demo MSW handlers", () => {
       items: Array<{
         attemptId: string;
         phase: string | null;
-        firstByteLatencyMs: number | null;
+        firstTokenMs: number | null;
         streamLatencyMs: number | null;
       }>;
       total: number;
@@ -33,7 +33,7 @@ describe("demo MSW handlers", () => {
       expect.arrayContaining([
         expect.objectContaining({
           phase: "responding",
-          firstByteLatencyMs: 210,
+          firstTokenMs: 705,
           streamLatencyMs: null,
         }),
       ]),

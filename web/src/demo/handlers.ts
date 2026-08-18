@@ -2358,12 +2358,18 @@ function poolAttempts(invokeId: string) {
         ? null
         : `2026-07-10T09:25:00Z`,
     status: needsRetry ? "failed" : (record.status ?? "success"),
-    phase: record.status === "running" ? "responding" : "completed",
+    phase:
+      record.status === "running" && (record.firstTokenMs ?? 0) > 0
+        ? "responding"
+        : record.status === "running"
+          ? "requesting"
+          : "completed",
     httpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     downstreamHttpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     failureKind: needsRetry ? "rate_limited" : (record.failureKind ?? null),
     errorMessage: needsRetry ? "Simulated retry after rate limit." : (record.errorMessage ?? null),
     connectLatencyMs: record.tUpstreamConnectMs ?? 42,
+    firstTokenMs: record.firstTokenMs ?? null,
     firstByteLatencyMs: record.tUpstreamTtfbMs ?? null,
     streamLatencyMs: record.tUpstreamStreamMs ?? null,
     upstreamRequestId: `up_demo_${record.id}_1`,
@@ -2588,6 +2594,7 @@ function buildDemoInvocationWorkflowDetail(
         failureKind: record.failureKind ?? null,
         errorMessage: record.errorMessage ?? null,
         connectLatencyMs: record.tUpstreamConnectMs ?? 184,
+        firstTokenMs: record.firstTokenMs ?? null,
         firstByteLatencyMs: record.tUpstreamTtfbMs ?? 0,
         streamLatencyMs: 4_830,
         upstreamRequestId: `req_demo_${record.id}`,

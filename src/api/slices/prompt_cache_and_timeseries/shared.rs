@@ -267,6 +267,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.error_message,
             attempts.downstream_error_message,
             attempts.connect_latency_ms,
+            inv.first_token_ms,
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,

@@ -166,6 +166,8 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) connect_latency_ms: Option<f64>,
     #[sqlx(default)]
+    pub(crate) first_token_ms: Option<f64>,
+    #[sqlx(default)]
     pub(crate) first_byte_latency_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) stream_latency_ms: Option<f64>,

@@ -3648,6 +3648,8 @@ pub(crate) struct InvocationWorkflowAttempt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) connect_latency_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_token_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_byte_latency_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stream_latency_ms: Option<f64>,
@@ -4467,6 +4469,7 @@ fn build_workflow_attempt_from_row(
                 .then_some(record.t_upstream_connect_ms)
                 .flatten()
         }),
+        first_token_ms: is_final_attempt.then_some(record.first_token_ms).flatten(),
         first_byte_latency_ms: attempt.first_byte_latency_ms.or_else(|| {
             is_final_attempt
                 .then_some(record.t_upstream_ttfb_ms)
@@ -4622,6 +4625,7 @@ fn build_synthetic_workflow_attempt(
         error_message: record.error_message.clone(),
         downstream_error_message: record.downstream_error_message.clone(),
         connect_latency_ms: record.t_upstream_connect_ms,
+        first_token_ms: record.first_token_ms,
         first_byte_latency_ms: record.t_upstream_ttfb_ms,
         stream_latency_ms: record.t_upstream_stream_ms,
         upstream_request_id: record.upstream_request_id.clone(),

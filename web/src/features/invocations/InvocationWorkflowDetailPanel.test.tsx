@@ -261,8 +261,9 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
           errorMessage: "upstream stream aborted",
           downstreamErrorMessage: "downstream closed while streaming",
           connectLatencyMs: 120,
+          firstTokenMs: 780,
           firstByteLatencyMs: 640,
-          streamLatencyMs: 5430,
+          streamLatencyMs: 100_040,
           upstreamRequestId: "req_77",
           requestSummary: {
             endpoint: "/v1/responses",
@@ -717,6 +718,7 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("invoke-workflow-77");
     expect(host?.textContent ?? "").toContain(expectedConversationId);
     expect(host?.textContent ?? "").toContain("17.4 s");
+    expect(host?.textContent ?? "").toContain("100 s");
     expect(host?.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
     expect(host?.textContent ?? "").toContain(requestBodySizeLabel);
     expect(host?.textContent ?? "").toContain("priority");
@@ -729,6 +731,8 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("web_search");
     expect(host?.textContent ?? "").toContain("+1");
     expect(host?.textContent ?? "").toContain("上游 HTTP 200");
+    expect(host?.textContent ?? "").toContain("TTFT 0.8 s");
+    expect(host?.textContent ?? "").not.toContain("TTFB 0.6 s");
     expect(host?.textContent ?? "").toContain("attempt-1");
     expect(host?.textContent ?? "").toContain("输入写 112");
     expect(host?.textContent ?? "").toContain("输入读 36");

@@ -806,6 +806,7 @@ async fn load_upstream_account_attempt_page(
             attempts.error_message,
             attempts.downstream_error_message,
             attempts.connect_latency_ms,
+            inv.first_token_ms,
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
