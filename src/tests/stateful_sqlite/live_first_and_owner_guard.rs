@@ -2550,6 +2550,164 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
 }
 
 #[tokio::test]
+async fn same_second_newer_account_failure_fences_success_without_publish() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Same-second Failure Fence",
+        "same-second-fence-key",
+    )
+    .await;
+    let request_started_at = DateTime::parse_from_rfc3339("2026-08-19T02:03:04.100Z")
+        .expect("valid request start")
+        .with_timezone(&Utc);
+    let newer_failure_at = "2026-08-19T02:03:04.900Z";
+    let mut failure_tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .expect("begin concurrent failure transaction");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'needs_reauth', last_error = 'newer route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(newer_failure_at)
+    .execute(&mut *failure_tx)
+    .await
+    .expect("stage a failure later in the same second");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let success_state = state.clone();
+    let success_task = tokio::spawn(async move {
+        record_pool_route_success_with_affinity_generation_and_broadcast(
+            success_state.as_ref(),
+            account_id,
+            request_started_at,
+            None,
+            None,
+            Some("same-second-stale-success"),
+            None,
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !success_task.is_finished(),
+        "success transaction must wait for the in-flight failure transaction"
+    );
+    failure_tx
+        .commit()
+        .await
+        .expect("commit newer account failure");
+    success_task
+        .await
+        .expect("join concurrent success recorder")
+        .expect("stale success is ignored without failing persistence");
+
+    let account: (String, Option<String>, Option<String>, i64) = sqlx::query_as(
+        "SELECT status, last_error, last_route_failure_at, consecutive_route_failures FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load fenced account");
+    assert_eq!(account.0, "needs_reauth");
+    assert_eq!(account.1.as_deref(), Some("newer route failure"));
+    assert_eq!(account.2.as_deref(), Some(newer_failure_at));
+    assert_eq!(account.3, 1);
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a stale success must neither recover the account nor wake pool waiters"
+    );
+}
+
+#[tokio::test]
+async fn legacy_second_precision_failure_in_request_second_fails_closed() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Legacy Failure Fence", "legacy-fence-key").await;
+    let legacy_failure_at = "2026-08-19T02:03:04Z";
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'needs_reauth', last_error = 'ambiguous legacy failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(legacy_failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed legacy second-precision failure");
+
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        DateTime::parse_from_rfc3339("2026-08-19T02:03:04.900Z")
+            .expect("valid request start")
+            .with_timezone(&Utc),
+        None,
+        Some("legacy-same-second-success"),
+    )
+    .await
+    .expect("ambiguous legacy success is ignored");
+
+    let stored_failure_at: Option<String> = sqlx::query_scalar(
+        "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load legacy failure fence");
+    assert_eq!(stored_failure_at.as_deref(), Some(legacy_failure_at));
+}
+
+#[tokio::test]
+async fn account_route_failure_writer_persists_millisecond_fence() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Precise Failure Fence", "precise-fence-key")
+            .await;
+
+    apply_pool_route_cooldown_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+        None,
+        "temporary upstream failure",
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+        StatusCode::BAD_GATEWAY,
+        5,
+        Some("precise-failure-fence"),
+        None,
+    )
+    .await
+    .expect("record precise account route failure");
+
+    let failure_at: String = sqlx::query_scalar(
+        "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load precise account route failure");
+    assert!(
+        failure_at.contains('.'),
+        "new account route failures must retain sub-second precision: {failure_at}"
+    );
+    assert!(parse_to_utc_datetime(&failure_at).is_some());
+}
+
+#[tokio::test]
 async fn http_and_websocket_success_terminals_share_cache_route_observation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2645,6 +2803,100 @@ async fn http_and_websocket_success_terminals_share_cache_route_observation() {
     assert!(observed_route.cache_usage_missing_since.is_none());
     assert!(observed_route.cache_usage_missing_reason.is_none());
     assert_eq!(observed_route.cache_concurrency_limit, Some(2));
+}
+
+#[tokio::test]
+async fn http_and_websocket_cache_recovery_do_not_publish_through_account_failure_fence() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Terminal Account Fence",
+        "terminal-account-fence-key",
+    )
+    .await;
+    let model = "gpt-terminal-account-fence";
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable cache-hit protection");
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        8,
+    )
+    .await
+    .expect("make route cache-owned");
+
+    let payload = json!({
+        "endpoint": "/v1/responses",
+        "requestModel": model,
+        "routeMode": "pool",
+        "upstreamAccountId": account_id,
+    })
+    .to_string();
+    let mut missing_usage =
+        test_proxy_capture_record("proxy-terminal-account-fence-seed", &shanghai_now_string());
+    missing_usage.model = Some(model.to_string());
+    missing_usage.payload = Some(payload.clone());
+    missing_usage.usage.input_tokens = None;
+    missing_usage.usage.cache_input_tokens = None;
+    observe_successful_proxy_capture_model_route_cache(&state, &missing_usage).await;
+
+    let failure_at = format_utc_iso_millis(Utc::now());
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'active', last_error = 'newer account route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("record account failure after request start");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    for invoke_id in [
+        "proxy-terminal-account-fence-http",
+        "pool-ws-terminal-account-fence-websocket",
+    ] {
+        let mut record = test_proxy_capture_record(invoke_id, &shanghai_now_string());
+        record.model = Some(model.to_string());
+        record.payload = Some(payload.clone());
+        record.usage.input_tokens = Some(3_840);
+        record.usage.cache_input_tokens = Some(384);
+        observe_successful_proxy_capture_model_route_cache(&state, &record).await;
+        assert_eq!(
+            *availability.borrow(),
+            initial_generation,
+            "{invoke_id} must not wake waiters through a newer account failure"
+        );
+    }
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load independently observed model route")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("model route exists");
+    assert_eq!(route.cache_concurrency_limit, Some(3));
+    let account_failure: Option<String> = sqlx::query_scalar(
+        "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account failure fence");
+    assert_eq!(account_failure.as_deref(), Some(failure_at.as_str()));
 }
 
 #[tokio::test]

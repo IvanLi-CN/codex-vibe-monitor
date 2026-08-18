@@ -903,6 +903,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         Some(account.account_id),
         upstream_url.host_str(),
     );
+    let connect_started_at_utc = Utc::now();
     let connect_started = Instant::now();
     let connect_timeout = runtime_timeouts.default_send_timeout;
     let connect_result = timeout(
@@ -1128,7 +1129,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     if let Err(err) = record_pool_route_success_with_affinity_generation_and_broadcast(
         state.as_ref(),
         account.account_id,
-        Utc::now(),
+        connect_started_at_utc,
         trace.sticky_key.as_deref(),
         websocket_effective_prompt_cache_key(prompt_cache_key),
         Some(trace.invoke_id.as_str()),

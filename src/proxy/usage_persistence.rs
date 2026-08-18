@@ -3913,6 +3913,7 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
         return;
     }
 
+    let metadata = terminal_payload_metadata(record.payload.as_deref());
     match observe_proxy_cache_hit_if_success(state, record).await {
         Ok(outcome) => {
             if outcome.observed {
@@ -3921,7 +3922,35 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                     .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
             }
             if outcome.availability_increased {
-                publish_pool_routing_availability(state);
+                let account_allows_publish = match metadata.upstream_account_id {
+                    Some(account_id) => match pool_account_allows_model_route_availability_publish(
+                        &state.pool,
+                        account_id,
+                    )
+                    .await
+                    {
+                        Ok(allowed) => allowed,
+                        Err(err) => {
+                            warn!(
+                                invoke_id = %record.invoke_id,
+                                account_id,
+                                error = %err,
+                                "failed to verify account fence before publishing model route availability"
+                            );
+                            false
+                        }
+                    },
+                    None => false,
+                };
+                if account_allows_publish {
+                    publish_pool_routing_availability(state);
+                } else {
+                    debug!(
+                        invoke_id = %record.invoke_id,
+                        upstream_account_id = metadata.upstream_account_id,
+                        "model cache observation increased capacity without publishing because the account remains fenced"
+                    );
+                }
             }
         }
         Err(err) => {

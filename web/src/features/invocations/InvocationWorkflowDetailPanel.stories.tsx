@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import { I18nProvider } from "../../i18n";
+import { I18nProvider, useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   ApiInvocationWorkflowDetailResponse,
@@ -26,6 +26,14 @@ function StorySurface({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+function StoryLocale({ locale, children }: { locale?: "zh" | "en"; children: ReactNode }) {
+  const { setLocale } = useTranslation();
+  useEffect(() => {
+    if (locale) setLocale(locale);
+  }, [locale, setLocale]);
+  return children;
 }
 
 function WorkflowPageSurface({ children }: { children: ReactNode }) {
@@ -1108,18 +1116,24 @@ const meta = {
   decorators: [
     (Story, context) => (
       <I18nProvider>
-        {context.parameters.pageSurface ? (
-          <Story />
-        ) : (
-          <StorySurface>
+        <StoryLocale locale={context.parameters.locale}>
+          {context.parameters.pageSurface ? (
             <Story />
-          </StorySurface>
-        )}
+          ) : (
+            <StorySurface>
+              <Story />
+            </StorySurface>
+          )}
+        </StoryLocale>
       </I18nProvider>
     ),
   ],
   parameters: {
     viewport: { defaultViewport: "desktop1280" },
+    a11y: {
+      options: { rules: { "color-contrast": { enabled: true } } },
+      config: { rules: [{ id: "color-contrast", enabled: true }] },
+    },
   },
 } satisfies Meta<typeof InvocationWorkflowDetailPanel>;
 
@@ -1251,7 +1265,7 @@ export const NoCandidateAudit: Story = {
                 candidateCount: 3,
                 eligibleCandidateCount: 2,
                 reservationConflictCount: 2,
-                nextEligibleAt: null,
+                nextEligibleAt: "2026-08-19T02:04:05Z",
                 excludedReasonCounts: {
                   modelConcurrencyLimit: 2,
                   policyExcluded: 1,
@@ -1288,9 +1302,29 @@ export const NoCandidateAudit: Story = {
       canvas.getAllByText(/模型并发容量已满|Model concurrency capacity is full/),
     ).toHaveLength(3);
     await expect(canvas.getAllByText("modelConcurrencyLimit", { exact: true })).toHaveLength(3);
+    await expect(canvas.getByText(/下一可用时间|Next eligible at/)).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-next-eligible-at"),
+    ).not.toBeEmptyDOMElement();
     await expect(
       canvas.getByText("upstream-account-with-an-extra-long-operator-label"),
     ).toBeVisible();
+  },
+};
+
+export const NoCandidateAuditEnglish: Story = {
+  ...NoCandidateAudit,
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    locale: "en",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Next eligible at")).toBeVisible());
+    await expect(canvas.getByText("Model concurrency capacity is full")).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-next-eligible-at"),
+    ).not.toBeEmptyDOMElement();
   },
 };
 

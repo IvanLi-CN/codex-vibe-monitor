@@ -1501,7 +1501,7 @@ function TimelineMetricButton({
       type="button"
       className={cn(
         "h-full min-w-0 bg-base-100/84 px-3 py-2.5 text-left transition-[background-color,color] duration-150 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
-        active ? "bg-primary/8 text-primary" : "text-base-content hover:bg-base-100",
+        active ? "bg-primary/8" : "text-base-content hover:bg-base-100",
       )}
       onClick={onClick}
     >
@@ -1510,7 +1510,7 @@ function TimelineMetricButton({
           <div
             className={cn(
               "text-[10.5px] font-medium",
-              active ? "text-primary" : "text-base-content/50",
+              active ? "tone-ink-primary" : "text-base-content/70",
             )}
           >
             {label}
@@ -1532,7 +1532,7 @@ function TimelineMetricButton({
             className={cn(
               "overflow-hidden text-[12.5px] font-semibold leading-[1.3] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]",
               monospace && "font-mono text-[12px] leading-[1.35]",
-              active ? "text-primary" : "text-base-content/88",
+              active ? "tone-ink-primary" : "text-base-content/90",
             )}
           >
             {primary}
@@ -1540,7 +1540,7 @@ function TimelineMetricButton({
           {secondary && secondary !== FALLBACK_CELL ? (
             <div
               title={secondary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/64 text-ellipsis whitespace-nowrap"
+              className="overflow-hidden text-[10.5px] leading-4 text-base-content/70 text-ellipsis whitespace-nowrap"
             >
               {secondary}
             </div>
@@ -1571,7 +1571,7 @@ function TimelineMetricButton({
           ) : tertiary && tertiary !== FALLBACK_CELL ? (
             <div
               title={tertiary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/48 text-ellipsis whitespace-nowrap"
+              className="overflow-hidden text-[10.5px] leading-4 text-base-content/70 text-ellipsis whitespace-nowrap"
             >
               {tertiary}
             </div>
@@ -2605,7 +2605,7 @@ function TimelineSummary({
             <Chip tone={kindMeta.variant}>{kindMeta.label}</Chip>
             {entry.status ? <Chip tone={statusMeta.variant}>{statusMeta.label}</Chip> : null}
             {attemptId ? (
-              <span className="font-mono text-[11px] text-primary/90">{attemptId}</span>
+              <span className="tone-ink-primary font-mono text-[11px]">{attemptId}</span>
             ) : null}
           </div>
           <div className={cn("min-w-0", showTitle ? "mt-2" : "mt-1.5")}>
@@ -3149,7 +3149,7 @@ export function InvocationWorkflowDetailPanel({
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/72">
+            <div className="tone-ink-primary text-[11px] font-semibold uppercase tracking-[0.22em]">
               {isZh ? "调用详情" : "Invocation Detail"}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -3256,25 +3256,42 @@ export function InvocationWorkflowDetailPanel({
                     </code>
                   </div>
 
-                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+                  <dl
+                    className={cn(
+                      "mt-3 grid grid-cols-2 gap-x-4 gap-y-2",
+                      noCandidateAudit.nextEligibleAt ? "sm:grid-cols-4" : "sm:grid-cols-3",
+                    )}
+                  >
                     {[
                       {
                         label: isZh ? "候选账号" : "Candidates",
-                        value: noCandidateAudit.candidateCount,
+                        value: noCandidateAudit.candidateCount.toLocaleString(localeTag),
                       },
                       {
                         label: isZh ? "可用账号" : "Eligible",
-                        value: noCandidateAudit.eligibleCandidateCount,
+                        value: noCandidateAudit.eligibleCandidateCount.toLocaleString(localeTag),
                       },
                       {
                         label: isZh ? "容量冲突" : "Capacity conflicts",
-                        value: noCandidateAudit.reservationConflictCount,
+                        value: noCandidateAudit.reservationConflictCount.toLocaleString(localeTag),
                       },
+                      ...(noCandidateAudit.nextEligibleAt
+                        ? [
+                            {
+                              label: isZh ? "下一可用时间" : "Next eligible at",
+                              value: formatTimestamp(noCandidateAudit.nextEligibleAt, localeTag),
+                              testId: "pool-routing-no-candidate-next-eligible-at",
+                            },
+                          ]
+                        : []),
                     ].map((metric) => (
                       <div key={metric.label} className="min-w-0">
                         <dt className="text-xs font-medium text-base-content/58">{metric.label}</dt>
-                        <dd className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-base-content">
-                          {metric.value.toLocaleString(localeTag)}
+                        <dd
+                          className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-base-content"
+                          data-testid={metric.testId}
+                        >
+                          {metric.value}
                         </dd>
                       </div>
                     ))}
