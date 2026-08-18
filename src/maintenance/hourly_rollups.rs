@@ -1958,6 +1958,14 @@ mod hourly_rollup_budget_tests {
     }
 
     #[test]
+    fn runtime_startup_bootstrap_leaves_active_coverage_to_the_dedicated_task() {
+        assert_eq!(
+            runtime_startup_hourly_rollup_refresh_scope(),
+            HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+        );
+    }
+
+    #[test]
     fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
         assert!(!historical_rollup_elapsed_budget_reached(
             Instant::now(),
@@ -2039,12 +2047,34 @@ pub(crate) async fn bootstrap_hourly_rollups_with_parallel_work_coverage(
     pool: &Pool<Sqlite>,
     invocation_full_detail_days: Option<u64>,
 ) -> Result<()> {
-    repair_live_invocation_usage_breakdown_rollups(pool).await?;
-    sync_hourly_rollups_from_live_tables_with_parallel_work_coverage(
+    bootstrap_hourly_rollups_with_scope(
         pool,
         invocation_full_detail_days,
+        HourlyRollupRefreshScope::Full,
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+) -> Result<()> {
+    bootstrap_hourly_rollups_with_scope(
+        pool,
+        invocation_full_detail_days,
+        runtime_startup_hourly_rollup_refresh_scope(),
+    )
+    .await
+}
+
+async fn bootstrap_hourly_rollups_with_scope(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<()> {
+    repair_live_invocation_usage_breakdown_rollups(pool).await?;
+    sync_hourly_rollups_from_live_tables_with_scope(pool, invocation_full_detail_days, scope)
+        .await?;
     repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
     repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
@@ -2060,6 +2090,12 @@ pub(crate) async fn bootstrap_hourly_rollups_with_parallel_work_coverage(
         repair_materialized_upstream_account_archive_markers(pool).await?;
     }
     Ok(())
+}
+
+fn runtime_startup_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
+    // The dedicated startup task owns active-window coverage and its backoff.
+    // Bootstrap still catches up rollups, but must not run that planner twice.
+    HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
 }
 
 pub(crate) async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>) -> Result<()> {

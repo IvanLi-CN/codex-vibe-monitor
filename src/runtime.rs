@@ -49,11 +49,8 @@ pub(crate) async fn run() -> Result<()> {
     }
     if should_run_blocking_startup_hourly_rollup_bootstrap(&cli) {
         let rollup_bootstrap_started_at = Instant::now();
-        bootstrap_hourly_rollups_with_parallel_work_coverage(
-            &pool,
-            Some(config.invocation_max_days),
-        )
-        .await?;
+        bootstrap_hourly_rollups_for_runtime_startup(&pool, Some(config.invocation_max_days))
+            .await?;
         ensure_invocation_summary_rollups_ready_best_effort(&pool).await?;
         log_startup_phase("hourly_rollup_bootstrap", rollup_bootstrap_started_at);
     }
