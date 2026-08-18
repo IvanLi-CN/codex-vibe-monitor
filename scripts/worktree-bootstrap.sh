@@ -11,7 +11,7 @@ fi
 if ! bash "$repo_root/scripts/sync-worktree-resources.sh"; then
   status=1
 fi
-if ! bash "$repo_root/scripts/worktree-setup.sh"; then
+if ! bash "$repo_root/scripts/worktree-setup.sh" "$@"; then
   status=1
 fi
 exit "$status"

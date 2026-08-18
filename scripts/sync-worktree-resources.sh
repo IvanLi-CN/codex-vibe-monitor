@@ -8,15 +8,11 @@ log() {
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo_root="$(cd "$script_dir/.." && pwd)"
 repo_root="${WORKTREE_BOOTSTRAP_TARGET_ROOT:-$default_repo_root}"
-if [ -z "$repo_root" ]; then
-  exit 0
-fi
+[ -n "$repo_root" ] || exit 0
 repo_root="$(cd "$repo_root" && pwd)"
 
 common_dir="${WORKTREE_BOOTSTRAP_GIT_COMMON_DIR:-$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)}"
-if [ -z "$common_dir" ]; then
-  exit 0
-fi
+[ -n "$common_dir" ] || exit 0
 case "$common_dir" in
   /*) ;;
   *) common_dir="$repo_root/$common_dir" ;;
@@ -25,130 +21,55 @@ common_dir="$(cd "$common_dir" && pwd)"
 
 source_root="${WORKTREE_BOOTSTRAP_SOURCE_ROOT:-$(cd "$(dirname "$common_dir")" && pwd)}"
 manifest_path="${WORKTREE_BOOTSTRAP_MANIFEST:-$repo_root/scripts/worktree-sync.paths}"
-
-if [ ! -f "$manifest_path" ]; then
-  exit 0
-fi
-
+[ -f "$manifest_path" ] || exit 0
 source_root="$(cd "$source_root" && pwd)"
+[ "$repo_root" != "$source_root" ] || exit 0
 
-if [ "$repo_root" = "$source_root" ]; then
-  exit 0
-fi
-
-sync_lock_path="$common_dir/worktree-bootstrap-sync.lock"
-lock_owner_start="$(ps -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-lock_owner_token="$$|$lock_owner_start"
-legacy_empty_lock_grace_seconds=10
-lock_acquired=0
-lock_attempt=0
-while [ "$lock_attempt" -lt 200 ]; do
-  if [ ! -e "$sync_lock_path" ] && [ ! -L "$sync_lock_path" ] \
-    && ln -s "$lock_owner_token" "$sync_lock_path" 2>/dev/null; then
-    lock_acquired=1
-    break
-  fi
-  legacy_lock_dir=0
-  if [ -d "$sync_lock_path" ]; then
-    legacy_lock_dir=1
-    lock_token=''
-    lock_owner="$(sed -n '1p' "$sync_lock_path/owner" 2>/dev/null || true)"
-    lock_owner_start="$(sed -n '2p' "$sync_lock_path/owner" 2>/dev/null || true)"
+git_dir="$(git -C "$repo_root" rev-parse --git-dir)"
+case "$git_dir" in
+  /*) ;;
+  *) git_dir="$repo_root/$git_dir" ;;
+esac
+git_dir="$(cd "$git_dir" && pwd)"
+sync_lock_path="${WORKTREE_BOOTSTRAP_SYNC_LOCK_PATH:-$git_dir/worktree-bootstrap-sync.flock}"
+if [ "${WORKTREE_BOOTSTRAP_SYNC_LOCK_HELD:-}" != '1' ]; then
+  if perl -MFcntl=:flock -e '
+    my ($lock_path, $script, @args) = @ARGV;
+    open my $lock, ">>", $lock_path or exit 1;
+    exit 75 unless flock($lock, LOCK_EX | LOCK_NB);
+    $ENV{WORKTREE_BOOTSTRAP_SYNC_LOCK_HELD} = 1;
+    my $status = system { $script } $script, @args;
+    exit($status == -1 ? 1 : $status >> 8);
+  ' "$sync_lock_path" "$script_dir/sync-worktree-resources.sh" "$@"; then
+    exit 0
   else
-    lock_token="$(readlink "$sync_lock_path" 2>/dev/null || true)"
-    lock_owner="${lock_token%%|*}"
-    lock_owner_start="${lock_token#*|}"
+    lock_status=$?
   fi
-  legacy_empty_lock_old=0
-  legacy_empty_lock_active=0
-  if [ "$legacy_lock_dir" -eq 1 ] && [ -z "$lock_owner" ]; then
-    lock_mtime="$(stat -f %m "$sync_lock_path" 2>/dev/null || true)"
-    case "$lock_mtime" in
-      ''|*[!0-9]*) lock_mtime="$(stat -c %Y "$sync_lock_path" 2>/dev/null || true)" ;;
-    esac
-    current_time="$(date +%s)"
-    if [ -n "$lock_mtime" ] && [ "$lock_mtime" -le $((current_time - legacy_empty_lock_grace_seconds)) ]; then
-      legacy_empty_lock_old=1
-    fi
-    process_pids="$(ps -axo pid=,command= 2>/dev/null | awk '$0 ~ /sync-worktree-resources\.sh/ { print $1 }' || true)"
-    for process_pid in $process_pids; do
-      [ -n "$process_pid" ] && [ "$process_pid" != "$$" ] || continue
-      process_cwd="$(lsof -a -p "$process_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)"
-      if [ -z "$process_cwd" ] && [ -L "/proc/$process_pid/cwd" ]; then
-        process_cwd="$(readlink "/proc/$process_pid/cwd" 2>/dev/null || true)"
-      fi
-      [ -n "$process_cwd" ] || continue
-      process_common_dir="$(git -C "$process_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
-      case "$process_common_dir" in
-        /*) process_common_dir="$(cd "$process_common_dir" 2>/dev/null && pwd || true)" ;;
-        *) process_common_dir="$(cd "$process_cwd/$process_common_dir" 2>/dev/null && pwd || true)" ;;
-      esac
-      if [ "$process_common_dir" = "$common_dir" ]; then
-        legacy_empty_lock_active=1
-        break
-      fi
-    done
+  if [ "$lock_status" -eq 75 ]; then
+    log 'sync lock is busy; skipping resource sync'
+    exit 0
   fi
-  lock_stale=0
-  if [ -n "$lock_owner" ] && ! kill -0 "$lock_owner" 2>/dev/null; then
-    lock_stale=1
-  elif [ -n "$lock_owner" ] && [ -n "$lock_owner_start" ]; then
-    current_owner_start="$(ps -p "$lock_owner" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
-    [ -n "$current_owner_start" ] && [ "$current_owner_start" != "$lock_owner_start" ] && lock_stale=1
-  fi
-  if [ "$lock_stale" -eq 1 ]; then
-    if [ "$legacy_lock_dir" -eq 1 ]; then
-      rm -f "$sync_lock_path/owner"
-      rmdir "$sync_lock_path" >/dev/null 2>&1 || true
-    elif [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_token" ]; then
-      rm -f "$sync_lock_path"
-    fi
-    continue
-  fi
-  if [ "$legacy_lock_dir" -eq 1 ] && [ "$legacy_empty_lock_old" -eq 1 ] \
-    && [ "$legacy_empty_lock_active" -eq 0 ] && [ "$lock_attempt" -ge 20 ]; then
-    rmdir "$sync_lock_path" >/dev/null 2>&1 || true
-    [ -e "$sync_lock_path" ] || continue
-  fi
-  lock_attempt=$((lock_attempt + 1))
-  sleep 0.05
-done
-if [ "$lock_acquired" -ne 1 ]; then
-  log "sync lock is busy; skipping resource sync"
-  exit 1
+  exit "$lock_status"
 fi
-release_sync_lock() {
-  if [ "$(readlink "$sync_lock_path" 2>/dev/null || true)" = "$lock_owner_token" ]; then
-    rm -f "$sync_lock_path"
-  fi
-}
-trap release_sync_lock EXIT
 
 copied_count=0
 missing_count=0
-
 while IFS= read -r raw_line || [ -n "$raw_line" ]; do
   line="${raw_line%%#*}"
   line="${line#${line%%[![:space:]]*}}"
   line="${line%${line##*[![:space:]]}}"
-
-  if [ -z "$line" ]; then
-    continue
-  fi
+  [ -n "$line" ] || continue
 
   src="$source_root/$line"
   dest="$repo_root/$line"
-
   if [ -e "$dest" ] || [ -L "$dest" ]; then
     continue
   fi
-
   if [ ! -e "$src" ] && [ ! -L "$src" ]; then
     log "source missing, skipped: $line"
     missing_count=$((missing_count + 1))
     continue
   fi
-
   mkdir -p "$(dirname "$dest")"
   cp -pR "$src" "$dest"
   log "copied $line"
@@ -156,5 +77,5 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
 done < "$manifest_path"
 
 if [ "$copied_count" -eq 0 ] && [ "$missing_count" -eq 0 ]; then
-  log "nothing to sync"
+  log 'nothing to sync'
 fi

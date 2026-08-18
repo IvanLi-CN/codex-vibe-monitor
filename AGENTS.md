@@ -12,11 +12,13 @@
 - `cargo fmt` — format Rust sources with project defaults.
 - `cargo check` — type-check backend without producing binaries.
 - `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
-- `lefthook` — must be available outside repo-local `node_modules/.bin` on `PATH` before installing shared hooks; linked worktree hooks use the globally available binary.
+- `lefthook` — version `2.1.7` or newer must be available outside repo-local `node_modules/.bin` on `PATH` before installing shared hooks; linked worktree hooks use the globally available binary.
 - `bun install` — install repo-level tooling for hooks, worktree bootstrap, and docs checks.
 - `bun run hooks:install` — verify Lefthook and install the standard shared Git hooks for every linked worktree in this repository.
 - `bun run worktree:bootstrap` — manually rerun local resource sync and dependency recovery for the current worktree.
-- `bun run worktree:setup` — install root, `web/`, `docs-site/`, and Rust dependencies with locked dependency metadata.
+- `bun run worktree:setup` — restore only stale root, `web/`, `docs-site/`, and Rust dependency surfaces from locked metadata; unchanged Bun surfaces validate manifest-direct package directories and Cargo validates its lockfile registry archives; pass `-- --force` to restore all four.
+- `bun run typecheck:web` — run the complete Web TypeScript build check.
+- `bun run verify:rust` — run complete Rust formatting and Clippy verification.
 - `cd web && bun install` — install SPA dependencies once per setup.
 - `cd web && bun run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
 - `cd web && bun run build` — produce production assets for `web/dist`.
@@ -76,6 +78,6 @@ Use non-blocking runtime management for long-lived services, but do not require 
 ## Security & Configuration Tips
 
 - Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
-- Worktree bootstrap is driven by the standard Lefthook `post-checkout` hook. A repo-external Lefthook must be available on `PATH` before `bun run hooks:install` or creating linked worktrees; repo-local `node_modules/.bin/lefthook` is not sufficient. The hook calls the current checkout's `scripts/run-lefthook-hook.sh`, which copies missing resources declared in `scripts/worktree-sync.paths` and recovers dependencies in linked worktrees. It syncs `.env.local` from the primary worktree without overwriting existing local files, never copies dependency or runtime directories, and uses locked Bun installs plus `cargo fetch --locked`. Automatic dependency failures warn and do not block checkout; manual `bun run worktree:bootstrap` returns non-zero when any recovery step fails.
+- Worktree bootstrap is driven by the standard Lefthook `post-checkout` hook. A repo-external Lefthook 2.1.7 or newer must be available on `PATH` before `bun run hooks:install` or creating linked worktrees; repo-local `node_modules/.bin/lefthook` is not sufficient. The hook calls the current checkout's `scripts/run-lefthook-hook.sh`, which copies missing resources declared in `scripts/worktree-sync.paths` and restores only stale dependency surfaces in linked worktrees. Its per-worktree Git-metadata state contains only surface status and input digest; unchanged ready worktrees do not run Bun/Cargo after checking manifest-direct Bun packages and `Cargo.lock` registry archives. Resource sync and automatic setup use nonblocking per-worktree advisory locks that release with the holding process, while manual setup serializes behind its lock. It syncs `.env.local` from the primary worktree without overwriting existing local files, never copies dependency or runtime directories, and uses locked Bun installs plus `cargo fetch --locked`. Automatic dependency failures warn once per digest and do not block checkout; manual `bun run worktree:bootstrap` retries and returns non-zero when any recovery step fails.
 - SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `DATABASE_PATH` if running in containers.
 - SSE and HTTP clients depend on stable polling; monitor logs (`RUST_LOG=info cargo run`) when adjusting concurrency or timeouts.

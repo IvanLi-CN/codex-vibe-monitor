@@ -231,7 +231,7 @@ bun run test:e2e:pwa
 
 ## Worktree bootstrap
 
-首次拉到包含该功能的版本后，先确认全局 `lefthook` 已在 `PATH` 中（repo-local `node_modules/.bin/lefthook` 不足以启动 linked worktree），再在任一 worktree 执行一次，安装 shared Git hooks：
+首次拉到包含该功能的版本后，先确认全局 `lefthook` 版本不低于 `2.1.7` 且已在 `PATH` 中（repo-local `node_modules/.bin/lefthook` 不足以启动 linked worktree），再在任一 worktree 执行一次，安装 shared Git hooks：
 
 ```bash
 command -v lefthook
@@ -239,7 +239,7 @@ bun install
 bun run hooks:install
 ```
 
-`hooks:install` 会让 Lefthook 生成标准 shared Git hooks；之后新建或切换 linked worktree 时，`post-checkout` hook 会调用当前 checkout 的 bootstrap runner，自动补齐缺失的 `.env.local`，并尝试恢复当前 checkout 所需的依赖。主 worktree 的普通 checkout 不会触发依赖安装。如果需要手动重跑完整 bootstrap，可执行：
+`hooks:install` 会让 Lefthook 生成标准 shared Git hooks；之后新建 linked worktree，或某个依赖 surface 缺失 / 输入指纹变化时，`post-checkout` hook 会调用当前 checkout 的 bootstrap runner，自动补齐缺失的 `.env.local`，并只恢复失效依赖。主 worktree 与已就绪 linked worktree 的普通 checkout 都不会执行 Bun/Cargo。如果需要手动重跑资源与失效依赖，可执行：
 
 ```bash
 bun run worktree:bootstrap
@@ -247,10 +247,11 @@ bun run worktree:bootstrap
 
 该 bootstrap 会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源，并使用锁定文件恢复 repo root、`web/`、`docs-site/` 的 Bun 依赖以及 Rust crate 缓存。它不会覆盖已有本地文件，也不会复制 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
 
-安装分为 repo root、`web`、`docs-site` 三项 `bun install --frozen-lockfile` 和一项 `cargo fetch --locked`，每项失败后仍会继续执行其余项。自动 `post-checkout` 会告警但不阻断 checkout；手动 bootstrap 会在存在失败时返回非零，便于脚本或 CI 发现问题。若需只执行依赖安装，可使用：
+安装分为 repo root、`web`、`docs-site` 三项 `bun install --frozen-lockfile` 和一项 `cargo fetch --locked`，每项有独立的 Git-metadata digest 与存在性检查：Bun surface 核验 manifest 的直接依赖包，Cargo surface 核验 `Cargo.lock` 所列 registry archive。资源同步与自动 setup 都使用 per-worktree 非阻塞 advisory lock；持锁进程退出后锁自动释放，手动 setup 会串行等待。自动 `post-checkout` 对同一 failed digest 只记录一次并不阻断 checkout；手动 bootstrap 会重试并在存在失败时返回非零。若需只执行依赖安装，或强制恢复四项，可使用：
 
 ```bash
 bun run worktree:setup
+bun run worktree:setup -- --force
 ```
 
 ## 第一次部署最该先确认的配置

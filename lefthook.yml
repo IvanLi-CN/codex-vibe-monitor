@@ -1,22 +1,18 @@
 pre-commit:
   parallel: true
   commands:
-    check-web:
+    format-web:
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
-      run: bun run lint:web
-    typecheck-web:
-      run: cd web && bunx tsc -b
+      run: bash scripts/format-staged-files.sh web {staged_files}
+      stage_fixed: true
     format-markdown:
-      files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
-      run: ./node_modules/.bin/dprint fmt {files}
+      glob: "**/*.md"
+      run: bash scripts/format-staged-files.sh markdown {staged_files}
       stage_fixed: true
-    fmt:
+    format-rust:
       glob: "*.{rs}"
-      run: cargo fmt
+      run: bash scripts/format-staged-files.sh rust {staged_files}
       stage_fixed: true
-    check:
-      glob: "*.{rs}"
-      run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
 commit-msg:
   commands:
@@ -26,4 +22,4 @@ commit-msg:
 post-checkout:
   commands:
     worktree-bootstrap:
-      run: '[ -x ./scripts/run-lefthook-hook.sh ] && ./scripts/run-lefthook-hook.sh post-checkout || true'
+      run: 'if [ -x ./scripts/run-lefthook-hook.sh ]; then ./scripts/run-lefthook-hook.sh post-checkout; fi'

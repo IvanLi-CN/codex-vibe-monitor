@@ -75,9 +75,21 @@ jobs:
       - name: Install repo tooling
         run: bun install --frozen-lockfile
 
+      - name: Install Lefthook for hook smoke
+        run: bun install --global lefthook@2.1.10
+
       - name: Install front-end dependencies
         working-directory: web
         run: bun install --frozen-lockfile
+
+      - name: Type-check Web Demo sources
+        run: bun run typecheck:web
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Git hook contract smoke
+        run: bash scripts/test-git-hooks-contract.sh
 
       - name: Bun-first guard
         run: bun run check:bun-first

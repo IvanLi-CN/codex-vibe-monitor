@@ -5,7 +5,7 @@
 - Canonical spec: `docs/specs/tr4ev-bun-first-toolchain/SPEC.md`
 - Implementation summary: 已完成
 - Current toolchain baseline: Bun `1.3.14` / Rust `1.96.0` / GitHub-hosted x64 `ubuntu-24.04` / release arm64 `ubuntu-24.04-arm`
-- Static analysis baseline: root Biome `2.5.3` for `web/` and `docs-site/`; Clippy runs with `-D warnings` in local hooks and the existing `Lint & Format Check` jobs.
+- Static analysis baseline: root Biome `2.5.3` for `web/` and `docs-site/`; `Lint & Format Check` keeps strict Clippy, while local hooks only format matching staged files and developers can run `bun run verify:rust` explicitly. Tooling CI installs the locked Lefthook binary globally, and smoke invokes that repo-external executable so it verifies the same installation boundary.
 
 ## Migrated Implementation Notes
 
@@ -35,6 +35,8 @@
 - `cd web && bun run build`
 - `cd web && bun run storybook:build -- --quiet`
 - `bun run check:bun-first`
+- `bun run typecheck:web`
+- `bun run verify:rust`
 - `docker build -t codex-vibe-monitor:gha-env-refresh --build-arg APP_EFFECTIVE_VERSION=dev .`
 
 ### Biome and Clippy quality-gate convergence
@@ -44,6 +46,7 @@
 - Biome recommended rules remain enabled. Existing behavior-sensitive React dependency, accessibility, key, and assertion diagnostics stay visible as warnings while parse, format, import organization, and all non-migrated diagnostics remain blocking; legacy Hook exceptions use file-level, reasoned Biome suppressions instead of ESLint comments.
 - `web/` delegates `lint` to `bun run lint:web`; `docs-site/` delegates to `bun run lint:docs`; ESLint and its configuration have been removed.
 - CI job names and required-check inventory remain unchanged while the existing lint job now installs Clippy and runs the strict command above.
+- `lefthook.yml` intentionally does not run repository-wide Biome, TypeScript, Cargo fmt, or Clippy during `pre-commit`; the hook formats only matching staged files with `stage_fixed`, while CI and the explicit commands retain full validation.
 - Visual verification uses `Dashboard/WorkingConversationsSection` `Wide Desktop 1660` Storybook canvas, with existing story interaction coverage retained.
 
 ## Visual Evidence
