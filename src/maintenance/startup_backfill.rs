@@ -1,7 +1,7 @@
 use super::*;
 
-const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT: u64 = 2;
-const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BUDGET_SECS: u64 = 6;
+const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
+const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
@@ -436,6 +436,7 @@ pub(crate) struct StartupBackfillRunState {
     scanned: u64,
     updated: u64,
     hit_scan_limit: bool,
+    retry_soon: bool,
     force_idle: bool,
     source_unavailable: bool,
     samples: Vec<String>,
@@ -449,6 +450,8 @@ pub(crate) fn startup_backfill_next_delay(
         Duration::from_secs(24 * 60 * 60)
     } else if run.force_idle {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
+    } else if run.retry_soon {
+        Duration::from_secs(15)
     } else if run.updated > 0 {
         Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
     } else if run.hit_scan_limit && run.scanned > 0 {
@@ -519,6 +522,7 @@ pub(crate) fn historical_rollup_startup_backfill_run_state(
             .max(selected_backlog_progress)
             .max(bucket_progress),
         hit_scan_limit: pending_after > 0 && !permanently_blocked,
+        retry_soon: false,
         force_idle: pending_after == 0 || permanently_blocked,
         source_unavailable: permanently_blocked,
         samples: Vec::new(),
@@ -1388,7 +1392,11 @@ async fn run_startup_backfill_task_if_due_outcome(
             } else {
                 0
             };
-            let next_cursor_id = run.next_cursor_id.max(progress.cursor_id);
+            let next_cursor_id = if task == StartupBackfillTask::HistoricalRollups {
+                run.next_cursor_id
+            } else {
+                run.next_cursor_id.max(progress.cursor_id)
+            };
             let next_run_after = startup_backfill_next_run_after(&run, zero_update_streak);
             save_startup_backfill_progress(
                 &state.pool,
@@ -1490,7 +1498,7 @@ pub(crate) async fn run_startup_backfill_task(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     cursor_id: i64,
-    zero_update_streak: u32,
+    _zero_update_streak: u32,
     source_unavailable_probe: bool,
 ) -> Result<(StartupBackfillRunState, String)> {
     let scan_limit = startup_backfill_scan_limit(source_unavailable_probe);
@@ -1520,6 +1528,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1563,6 +1572,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1591,6 +1601,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1619,6 +1630,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1645,6 +1657,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1673,6 +1686,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1695,6 +1709,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1716,6 +1731,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1738,6 +1754,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned_batches,
                     updated: outcome.summary.updated_rows,
                     hit_scan_limit: outcome.hit_budget,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: outcome.samples,
@@ -1759,6 +1776,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: 0,
                     updated: updated_accounts,
                     hit_scan_limit: false,
+                    retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
                     samples: Vec::new(),
@@ -1783,6 +1801,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: summary.scanned_batches,
                     updated: summary.updated_accounts,
                     hit_scan_limit: pending_accounts > 0 && summary.hit_budget,
+                    retry_soon: false,
                     force_idle,
                     source_unavailable: pending_accounts > 0 && force_idle,
                     samples: Vec::new(),
@@ -1810,6 +1829,7 @@ pub(crate) async fn run_startup_backfill_task(
                     scanned: cache_summary.scanned_batches + hourly_summary.scanned_batches,
                     updated: cache_summary.cached_rows + hourly_summary.materialized_rows,
                     hit_scan_limit: cache_summary.hit_budget || hourly_summary.hit_budget,
+                    retry_soon: false,
                     force_idle: cache_summary.pending_batches == 0
                         && hourly_summary.pending_batches == 0,
                     source_unavailable: false,
@@ -1828,118 +1848,51 @@ pub(crate) async fn run_startup_backfill_task(
             "account activity v2 coverage repair must use its dedicated scheduler path"
         )),
         StartupBackfillTask::HistoricalRollups => {
-            let historical_elapsed_budget = startup_backfill_run_budget(source_unavailable_probe);
-            let before =
-                load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
-            if before.pending_usage_breakdown_batches > 0 {
-                let priority_elapsed_budget = if source_unavailable_probe {
-                    historical_elapsed_budget
-                } else {
-                    Duration::from_secs(STARTUP_HISTORICAL_ROLLUP_PRIORITY_BUDGET_SECS)
-                };
-                let skip_pending_archives =
-                    (cursor_id as u64 % before.pending_usage_breakdown_batches) as usize;
-                let summary = materialize_usage_breakdown_historical_rollups_bounded_from_skip(
-                    &state.pool,
-                    &state.config,
-                    Some(STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT),
-                    Some(priority_elapsed_budget),
-                    skip_pending_archives,
-                )
-                .await?;
-                let after =
-                    load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
-                let drained_usage_breakdown_batches = before
-                    .pending_usage_breakdown_batches
-                    .saturating_sub(after.pending_usage_breakdown_batches);
-                info!(
-                    task = StartupBackfillTask::HistoricalRollups.log_label(),
-                    priority_mode = "usage_breakdown_repair",
-                    priority_batch_limit = STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT,
-                    priority_elapsed_budget_ms = priority_elapsed_budget.as_millis() as u64,
-                    pending_usage_breakdown_batches = before.pending_usage_breakdown_batches,
-                    drained_usage_breakdown_batches,
-                    remaining_usage_breakdown_batches = after.pending_usage_breakdown_batches,
-                    blocked_archive_batches = summary.blocked_archive_batches,
-                    "startup historical rollup priority pass completed"
-                );
-                return Ok((
-                    historical_rollup_startup_backfill_run_state(
-                        cursor_id,
-                        zero_update_streak,
-                        &before,
-                        &after,
-                        &summary,
-                        before.pending_usage_breakdown_batches,
-                        after.pending_usage_breakdown_batches,
-                    ),
-                    format!(
-                        "priority_mode=usage_breakdown_repair pending_usage_breakdown_before={} pending_usage_breakdown_after={} blocked_archive_batches={} legacy_archive_pending_after={}",
-                        before.pending_usage_breakdown_batches,
-                        after.pending_usage_breakdown_batches,
-                        summary.blocked_archive_batches,
-                        after.legacy_archive_pending,
-                    ),
-                ));
-            }
-            if before.legacy_archive_pending == 0 {
-                return Ok((
-                    StartupBackfillRunState {
-                        next_cursor_id: cursor_id,
-                        scanned: 0,
-                        updated: 0,
-                        hit_scan_limit: false,
-                        force_idle: true,
-                        source_unavailable: false,
-                        samples: Vec::new(),
-                    },
-                    "pending_archive_batches=0".to_string(),
-                ));
-            }
-
-            let skip_pending_archives = (cursor_id as u64 % before.legacy_archive_pending) as usize;
-            let summary = materialize_historical_rollups_bounded_from_skip(
+            let window = materialize_historical_rollups_startup_window(
                 &state.pool,
-                &state.config,
-                false,
-                Some(1),
-                Some(historical_elapsed_budget),
-                skip_pending_archives,
+                cursor_id,
+                Duration::from_secs(STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS),
             )
             .await?;
-            let after =
-                load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            let summary = window.summary;
+            let updated = window.changed_path_count as u64;
             info!(
                 task = StartupBackfillTask::HistoricalRollups.log_label(),
-                priority_mode = "normal",
-                priority_batch_limit = 0_u64,
-                priority_elapsed_budget_ms = 0_u64,
-                pending_usage_breakdown_batches = before.pending_usage_breakdown_batches,
-                drained_usage_breakdown_batches = before
-                    .pending_usage_breakdown_batches
-                    .saturating_sub(after.pending_usage_breakdown_batches),
-                remaining_usage_breakdown_batches = after.pending_usage_breakdown_batches,
+                candidate_limit = 32_u64,
+                batch_limit = STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT,
+                elapsed_budget_ms =
+                    Duration::from_secs(STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS).as_millis() as u64,
+                candidate_count = window.candidate_count,
+                inspected_path_count = window.inspected_path_count,
+                changed_path_count = window.changed_path_count,
+                wrapped = window.wrapped,
                 blocked_archive_batches = summary.blocked_archive_batches,
-                "startup historical rollup generic pass completed"
+                "startup historical rollup keyset pass completed"
             );
             Ok((
-                historical_rollup_startup_backfill_run_state(
-                    cursor_id,
-                    zero_update_streak,
-                    &before,
-                    &after,
-                    &summary,
-                    before.legacy_archive_pending,
-                    after.legacy_archive_pending,
-                ),
+                StartupBackfillRunState {
+                    next_cursor_id: window.next_cursor_id,
+                    scanned: summary.scanned_archive_batches as u64,
+                    updated,
+                    hit_scan_limit: updated > 0
+                        && (window.candidate_count >= 32
+                            || summary.scanned_archive_batches
+                                >= STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT as usize),
+                    retry_soon: window.hit_budget && window.next_cursor_id != cursor_id,
+                    force_idle: window.candidate_count == 0,
+                    source_unavailable: false,
+                    samples: Vec::new(),
+                },
                 format!(
-                    "pending_before={} pending_after={} pending_usage_breakdown_before={} pending_usage_breakdown_after={} blocked_archive_batches={} alert_level={:?}",
-                    before.legacy_archive_pending,
-                    after.legacy_archive_pending,
-                    before.pending_usage_breakdown_batches,
-                    after.pending_usage_breakdown_batches,
+                    "candidate_count={} inspected_path_count={} changed_path_count={} hit_budget={} wrapped={} next_cursor_id={} materialized_archive_batches={} blocked_archive_batches={}",
+                    window.candidate_count,
+                    window.inspected_path_count,
+                    window.changed_path_count,
+                    window.hit_budget,
+                    window.wrapped,
+                    window.next_cursor_id,
+                    summary.materialized_archive_batches,
                     summary.blocked_archive_batches,
-                    after.alert_level
                 ),
             ))
         }
@@ -2139,6 +2092,22 @@ mod startup_backfill_tests {
             startup_backfill_next_delay(&run, 99),
             Duration::from_secs(15 * 60)
         );
+    }
+
+    #[test]
+    fn historical_rollup_cursor_advance_after_budget_exhaustion_retries_without_a_task_run() {
+        let run = StartupBackfillRunState {
+            next_cursor_id: 12,
+            scanned: 1,
+            retry_soon: true,
+            ..StartupBackfillRunState::default()
+        };
+
+        assert_eq!(
+            startup_backfill_next_delay(&run, 1),
+            Duration::from_secs(15)
+        );
+        assert!(!startup_backfill_run_is_actionable(&run));
     }
 
     #[test]

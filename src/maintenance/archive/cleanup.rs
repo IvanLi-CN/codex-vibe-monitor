@@ -906,6 +906,189 @@ pub(crate) struct HistoricalRollupPendingArchiveBatchRow {
     coverage_end_at: Option<String>,
 }
 
+const STARTUP_HISTORICAL_ROLLUP_CANDIDATE_LIMIT: i64 = 32;
+const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: usize = 16;
+
+#[derive(Debug, FromRow)]
+struct HistoricalRollupStartupCandidateRow {
+    id: i64,
+    dataset: String,
+    file_path: String,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+}
+
+impl HistoricalRollupStartupCandidateRow {
+    fn archive_file(&self) -> ArchiveBatchFileRow {
+        ArchiveBatchFileRow {
+            id: self.id,
+            file_path: self.file_path.clone(),
+            coverage_start_at: self.coverage_start_at.clone(),
+            coverage_end_at: self.coverage_end_at.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct HistoricalRollupStartupWindowResult {
+    pub(crate) summary: HistoricalRollupMaterializationSummary,
+    pub(crate) next_cursor_id: i64,
+    pub(crate) candidate_count: usize,
+    pub(crate) inspected_path_count: usize,
+    pub(crate) changed_path_count: usize,
+    pub(crate) hit_budget: bool,
+    pub(crate) wrapped: bool,
+}
+
+async fn load_historical_rollup_startup_candidates(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+        r#"
+        SELECT
+            batches.id,
+            batches.dataset,
+            batches.file_path,
+            batches.coverage_start_at,
+            batches.coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.status = ?2
+          AND batches.id > ?3
+          AND (
+                (batches.dataset = 'codex_invocations' AND (
+                    batches.historical_rollups_materialized_at IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM hourly_rollup_archive_replay AS replay
+                        WHERE replay.target = ?1
+                          AND replay.dataset = batches.dataset
+                          AND replay.file_path = batches.file_path
+                    )
+                ))
+                OR (batches.dataset = 'forward_proxy_attempts'
+                    AND batches.historical_rollups_materialized_at IS NULL)
+          )
+        ORDER BY batches.id ASC
+        LIMIT ?4
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(cursor_id)
+    .bind(STARTUP_HISTORICAL_ROLLUP_CANDIDATE_LIMIT)
+    .fetch_all(pool)
+    .await
+    .context("failed to load historical rollup startup keyset candidates")
+}
+
+pub(crate) async fn materialize_historical_rollups_startup_window(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+    max_elapsed: Duration,
+) -> Result<HistoricalRollupStartupWindowResult> {
+    let mut candidates = load_historical_rollup_startup_candidates(pool, cursor_id).await?;
+    let mut wrapped = false;
+    if candidates.is_empty() && cursor_id > 0 {
+        candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
+        wrapped = !candidates.is_empty();
+    }
+    if candidates.is_empty() {
+        return Ok(HistoricalRollupStartupWindowResult {
+            summary: HistoricalRollupMaterializationSummary::default(),
+            next_cursor_id: 0,
+            candidate_count: 0,
+            inspected_path_count: 0,
+            changed_path_count: 0,
+            hit_budget: false,
+            wrapped,
+        });
+    }
+
+    let started_at = Instant::now();
+    let mut tx = pool.begin().await?;
+    let mut next_cursor_id = cursor_id;
+    let mut scanned_archive_batches = 0_usize;
+    let mut skipped_archive_batches = 0_usize;
+    let mut materialized_archive_batches = 0_usize;
+    let mut changed_path_count = 0_usize;
+    let mut blocked_archive_batches = 0_usize;
+    let mut materialized_invocation_batches = 0_usize;
+    let mut materialized_forward_proxy_batches = 0_usize;
+    let mut inspected_path_count = 0_usize;
+    let mut hit_budget = false;
+
+    for candidate in candidates
+        .iter()
+        .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
+    {
+        let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
+                tx.as_mut(),
+                started_at,
+                Some(1),
+                Some(max_elapsed),
+                0,
+                vec![candidate.archive_file()],
+            )
+            .await?
+        } else {
+            replay_forward_proxy_archive_files_into_hourly_rollups_tx_with_limits(
+                tx.as_mut(),
+                started_at,
+                Some(1),
+                Some(max_elapsed),
+                0,
+                vec![candidate.archive_file()],
+            )
+            .await?
+        };
+        if candidate_summary.scanned_batches == 0 {
+            hit_budget |= candidate_summary.hit_budget;
+            break;
+        }
+        inspected_path_count += candidate_summary.scanned_batches as usize;
+        scanned_archive_batches += candidate_summary.scanned_batches as usize;
+        skipped_archive_batches += candidate_summary.skipped_batches as usize;
+        materialized_archive_batches += candidate_summary.materialized_batches as usize;
+        changed_path_count += candidate_summary.changed_batches as usize;
+        blocked_archive_batches += candidate_summary.blocked_batches as usize;
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            materialized_invocation_batches += candidate_summary.materialized_batches as usize;
+        } else {
+            materialized_forward_proxy_batches += candidate_summary.materialized_batches as usize;
+        }
+        if candidate_summary.hit_budget {
+            hit_budget = true;
+            if candidate_summary.advance_cursor_after_unstarted_replay {
+                next_cursor_id = candidate.id;
+            }
+            break;
+        }
+        next_cursor_id = candidate.id;
+    }
+    tx.commit().await?;
+
+    Ok(HistoricalRollupStartupWindowResult {
+        summary: HistoricalRollupMaterializationSummary {
+            scanned_archive_batches,
+            skipped_archive_batches,
+            materialized_archive_batches,
+            blocked_archive_batches,
+            materialized_bucket_count: 0,
+            materialized_invocation_batches,
+            materialized_forward_proxy_batches,
+            last_materialized_bucket_start_epoch: None,
+        },
+        next_cursor_id,
+        candidate_count: candidates.len(),
+        inspected_path_count,
+        changed_path_count,
+        hit_budget,
+        wrapped,
+    })
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct LegacyArchivePruneCandidateRow {
     id: i64,
