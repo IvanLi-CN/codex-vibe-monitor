@@ -111,9 +111,9 @@ run_profile() {
   case "$selected_profile" in
     lightweight)
       filter_expr='(test(/^(tests|upstream_accounts::tests)::lightweight::/)) or (not test(/^(tests|upstream_accounts::tests)::/))'
-      # Keep SQLite-backed lightweight tests below the connection-pool contention
-      # threshold observed on shared CI workers.
-      test_threads="2"
+      # Keep SQLite-backed lightweight tests serialized to avoid connection-pool
+      # contention on shared CI workers.
+      test_threads="1"
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
