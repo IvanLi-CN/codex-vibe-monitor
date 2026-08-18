@@ -2855,8 +2855,8 @@ export function InvocationWorkflowAttemptRecord({
     <div
       ref={containerRef}
       className={cn(
-        "min-w-0 max-w-full scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
-        focused && "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35",
+        "invocation-workflow-attempt min-w-0 max-w-full scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
+        focused && "invocation-workflow-attempt--focused bg-primary/8",
         className,
       )}
       data-focus-visible={focused ? "true" : "false"}

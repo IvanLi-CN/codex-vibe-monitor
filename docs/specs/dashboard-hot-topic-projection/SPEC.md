@@ -248,6 +248,21 @@ evidence_note: The deterministic account detail request panel loads without a 50
 PR: include
 ![Account detail invocation in-flight timing unavailable desktop](./assets/account-detail-invocation-inflight-timing-desktop.png)
 
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: account-pool-components-upstream-account-attempt-timeline--full-workflow-success-attempt-page
+state: focused successful account attempt after request and response body details are closed
+evidence_note: The account attempt focus outline is rendered above its full-width detail block, so all four rounded sides remain visible while the inner rail keeps its own clipping behavior.
+
+PR: include
+![Account detail invocation focus outline desktop](./assets/account-detail-invocation-focus-outline-desktop.png)
+
 ### Live invocation timing
 
 source_type: ui_demo

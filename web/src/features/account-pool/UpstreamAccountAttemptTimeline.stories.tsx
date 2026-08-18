@@ -561,7 +561,14 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large response");
   });
-  await userEvent.click(responseBodyButton);
+  const closedResponseBodyButton = (
+    await canvas.findAllByRole("button", { name: /响应体|response body/i })
+  )[0];
+  await userEvent.click(closedResponseBodyButton);
+  await waitFor(() => {
+    expect(canvasElement.textContent ?? "").not.toContain("large response");
+  });
+  closedResponseBodyButton.blur();
 }
 
 function withAttemptTimelineFetchMock(Story: () => ReactNode) {
