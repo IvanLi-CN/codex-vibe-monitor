@@ -882,7 +882,7 @@ async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_enc
 }
 
 #[tokio::test]
-async fn query_pool_attempt_records_from_live_includes_request_compression_observation() {
+async fn query_pool_attempt_records_from_live_limits_ttft_to_the_final_attempt() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect in-memory sqlite");
@@ -901,9 +901,10 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
             status,
             payload,
             raw_response,
-            request_raw_codec
+            request_raw_codec,
+            first_token_ms
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind(invoke_id)
@@ -913,28 +914,68 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
     .bind(r#"{"endpoint":"/v1/responses"}"#)
     .bind(r#"{"ok":true}"#)
     .bind("identity")
+    .bind(840.0)
     .execute(&pool)
     .await
     .expect("insert invocation row");
 
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: None,
+    };
     insert_pool_upstream_request_attempt_with_scope(
         &pool,
-        &PoolUpstreamAttemptTraceContext {
-            invoke_id: invoke_id.to_string(),
-            occurred_at: occurred_at.to_string(),
-            endpoint: "/v1/responses".to_string(),
-            sticky_key: None,
-            requester_ip: None,
-            upstream_base_url_host: None,
-            request_model: None,
-        },
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED),
+        Some(StatusCode::OK),
+        None,
+        None,
+        None,
+        None,
+        Some(10.0),
+        Some(20.0),
+        Some(30.0),
+        Some("req_predecessor"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert predecessor pool attempt row");
+
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
         None,
         None,
         None,
         None,
         None,
         Some("https://api.openai.com"),
-        1,
+        2,
         1,
         0,
         Some(occurred_at),
@@ -966,25 +1007,27 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
     let rows = query_pool_attempt_records_from_live(&pool, invoke_id)
         .await
         .expect("query pool attempt records");
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].first_token_ms, None);
+    assert_eq!(rows[1].first_token_ms, Some(840.0));
     assert_eq!(
-        rows[0].downstream_request_content_encoding.as_deref(),
+        rows[1].downstream_request_content_encoding.as_deref(),
         Some("identity")
     );
     assert_eq!(
-        rows[0].upstream_request_compression_algorithm.as_deref(),
+        rows[1].upstream_request_compression_algorithm.as_deref(),
         Some("gzip")
     );
     assert_eq!(
-        rows[0].upstream_request_compression_mode.as_deref(),
+        rows[1].upstream_request_compression_mode.as_deref(),
         Some("recompressed")
     );
-    assert_eq!(rows[0].logical_body_bytes, Some(128));
-    assert_eq!(rows[0].transmitted_body_bytes, Some(64));
-    assert_eq!(rows[0].saved_bytes, Some(64));
-    assert_eq!(rows[0].ratio_pct, Some(-50.0));
-    assert_eq!(rows[0].approx_upload_bytes, Some(88));
-    assert_eq!(rows[0].approx_download_bytes, Some(560));
+    assert_eq!(rows[1].logical_body_bytes, Some(128));
+    assert_eq!(rows[1].transmitted_body_bytes, Some(64));
+    assert_eq!(rows[1].saved_bytes, Some(64));
+    assert_eq!(rows[1].ratio_pct, Some(-50.0));
+    assert_eq!(rows[1].approx_upload_bytes, Some(88));
+    assert_eq!(rows[1].approx_download_bytes, Some(560));
 }
 
 #[test]

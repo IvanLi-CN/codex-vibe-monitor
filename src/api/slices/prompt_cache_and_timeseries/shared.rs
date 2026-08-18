@@ -231,7 +231,9 @@ pub(crate) async fn query_pool_attempt_records_from_live(
     pool: &Pool<Sqlite>,
     invoke_id: &str,
 ) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
-    let mut records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+    let final_attempt_first_token_ms_sql =
+        crate::final_pool_attempt_first_token_ms_sql("attempts", "inv");
+    let query = format!(
         r#"
         SELECT
             attempts.id,
@@ -267,7 +269,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.error_message,
             attempts.downstream_error_message,
             attempts.connect_latency_ms,
-            inv.first_token_ms,
+            {final_attempt_first_token_ms_sql},
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
@@ -294,10 +296,11 @@ pub(crate) async fn query_pool_attempt_records_from_live(
         WHERE attempts.invoke_id = ?1
         ORDER BY attempts.attempt_index ASC, attempts.id ASC
         "#,
-    )
-    .bind(invoke_id)
-    .fetch_all(pool)
-    .await?;
+    );
+    let mut records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(&query)
+        .bind(invoke_id)
+        .fetch_all(pool)
+        .await?;
     hydrate_pool_attempt_request_compression_fields(&mut records);
     hydrate_pool_attempt_routing_selection_audits(&mut records);
     load_pool_attempt_account_names(pool, &mut records).await?;

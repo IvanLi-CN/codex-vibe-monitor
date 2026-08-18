@@ -223,6 +223,20 @@ pub(crate) fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
     )
 }
 
+pub(crate) fn final_pool_attempt_first_token_ms_sql(
+    attempt_ref: &str,
+    invocation_ref: &str,
+) -> String {
+    format!(
+        "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
+            FROM pool_upstream_request_attempts AS final_attempt \
+           WHERE final_attempt.invoke_id = {attempt_ref}.invoke_id \
+             AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
+           ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
+           LIMIT 1) THEN {invocation_ref}.first_token_ms END AS first_token_ms"
+    )
+}
+
 pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
     let upstream_account_id_sql = format!(
@@ -304,6 +318,17 @@ mod invocation_live_phase_tests {
         assert!(!sql.contains("t_upstream_ttfb_ms IS NOT NULL"));
         assert!(!sql.contains("t_upstream_stream_ms IS NOT NULL"));
         assert!(!sql.contains("streaming_response"));
+    }
+
+    #[test]
+    fn final_attempt_first_token_sql_limits_invocation_timing_to_the_last_attempt() {
+        let sql = final_pool_attempt_first_token_ms_sql("attempts", "inv");
+
+        assert!(sql.contains("attempts.id"));
+        assert!(sql.contains("final_attempt.invoke_id = attempts.invoke_id"));
+        assert!(sql.contains("final_attempt.occurred_at = attempts.occurred_at"));
+        assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
+        assert!(sql.ends_with("THEN inv.first_token_ms END AS first_token_ms"));
     }
 }
 

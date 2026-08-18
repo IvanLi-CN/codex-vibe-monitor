@@ -953,14 +953,7 @@ function buildAttemptMetricActions(
     {
       section: "timing",
       label: isZh ? "时间" : "Timing",
-      primary: formatDurationMs(
-        typeof attempt.streamLatencyMs === "number"
-          ? attempt.streamLatencyMs
-          : typeof attempt.firstTokenMs === "number"
-            ? attempt.firstTokenMs
-            : attempt.connectLatencyMs,
-        localeTag,
-      ),
+      primary: formatDurationMs(attempt.streamLatencyMs, localeTag),
       secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
       secondaryTone: typeof attempt.firstTokenMs === "number" ? "success" : undefined,
     },
@@ -1014,7 +1007,9 @@ function buildAttemptMetricActions(
     },
   ];
 
-  return actions.filter((item) => item.primary !== FALLBACK_CELL);
+  return actions.filter(
+    (item) => item.primary !== FALLBACK_CELL || item.secondaryTone === "success",
+  );
 }
 
 function buildGenericMetricActions(

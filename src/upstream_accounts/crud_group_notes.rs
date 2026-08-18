@@ -806,7 +806,7 @@ async fn load_upstream_account_attempt_page(
             attempts.error_message,
             attempts.downstream_error_message,
             attempts.connect_latency_ms,
-            inv.first_token_ms,
+            {final_attempt_first_token_ms_sql},
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
@@ -834,6 +834,8 @@ async fn load_upstream_account_attempt_page(
         compaction_request_kind_sql = ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL,
         compaction_response_kind_sql = ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL,
         image_intent_sql = ACCOUNT_ATTEMPT_IMAGE_INTENT_SQL,
+        final_attempt_first_token_ms_sql =
+            crate::final_pool_attempt_first_token_ms_sql("attempts", "inv"),
     ));
     push_upstream_account_attempt_scope(&mut query, account_id, &cutoff);
     push_upstream_account_attempt_filters(&mut query, filters, true);

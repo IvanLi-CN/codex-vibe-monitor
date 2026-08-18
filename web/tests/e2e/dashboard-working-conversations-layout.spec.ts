@@ -278,7 +278,7 @@ function buildWorkingConversationsResponse() {
         cacheInputTokens: 66,
       }),
       createPreview({
-        id: 15,
+        id: 16,
         invokeId: "wc-8-b",
         occurredAt: "2026-04-06T11:50:20.000Z",
         status: "success",

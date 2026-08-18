@@ -1062,7 +1062,7 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
             request_raw_path, request_raw_size, request_raw_truncated,
             response_raw_path, response_raw_size, response_raw_truncated,
             detail_level, t_total_ms, t_req_read_ms, t_req_parse_ms,
-            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
+            t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms,
             t_resp_parse_ms, t_persist_ms, created_at
         )
         VALUES (
@@ -1072,7 +1072,7 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
             'request-body.json', 217958, 0,
             'response-body.json', 79224, 0,
             'full', 3280, 11, 13,
-            45, 120, 3120,
+            45, 120, 780, 3120,
             18, 22, ?2
         )
         "#,
@@ -1166,6 +1166,7 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
     assert_eq!(success_item.transmitted_body_bytes, Some(53295));
     assert_eq!(success_item.approx_upload_bytes, Some(54319));
     assert_eq!(success_item.approx_download_bytes, Some(80000));
+    assert_eq!(success_item.first_token_ms, Some(780.0));
 
     let success_entry = success_item.workflow_entry.as_ref().unwrap();
     let success_attempt = success_entry.attempt.as_ref().unwrap();
@@ -1204,6 +1205,7 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
         .iter()
         .find(|item| item.attempt_id == "AFAIL001")
         .expect("failure attempt");
+    assert_eq!(failure_item.first_token_ms, None);
     let failure_response_summary = failure_item
         .workflow_entry
         .as_ref()

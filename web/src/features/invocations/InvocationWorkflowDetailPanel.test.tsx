@@ -842,6 +842,29 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").not.toContain("最终响应体：调用级存档。");
   });
 
+  it("keeps measured TTFT separate from an unfinished response duration", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.streamLatencyMs = null;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("时间") &&
+        candidate.textContent.includes("TTFT 0.8 s"),
+    );
+    expect(timingButton).not.toBeNull();
+    expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
+  });
+
   it("lazy-fetches the selected non-final attempt response body by attempt identity", async () => {
     const response = createWorkflowDetailResponse();
     const firstAttemptEntry = response.timeline.find((entry) => entry.kind === "attempt");
