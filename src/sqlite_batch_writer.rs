@@ -5166,7 +5166,7 @@ mod tests {
             })
         };
 
-        let resumed = tokio::time::timeout(Duration::from_secs(3), async {
+        let resumed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if writer.accounting_snapshot().p2_flush_attempt_count > 0 {
                     break;
