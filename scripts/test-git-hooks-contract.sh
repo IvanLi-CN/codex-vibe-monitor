@@ -29,10 +29,14 @@ for surface in web markdown rust; do
 done
 assert_contains "$repo_root/lefthook.yml" '{staged_files}'
 assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
+assert_contains "$repo_root/lefthook.yml" 'parallel: true'
+assert_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
 assert_not_contains "$repo_root/lefthook.yml" 'cargo clippy'
 assert_not_contains "$repo_root/lefthook.yml" 'tsc -b'
 assert_not_contains "$repo_root/lefthook.yml" 'bun run lint:web'
 assert_not_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'lefthook uninstall'
+assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'lefthook-unstaged.patch'
+assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
 
 fake_bin="$tmp_dir/fake-bin"
 formatter_log="$tmp_dir/formatter.log"
@@ -76,7 +80,11 @@ partial_repo="$tmp_dir/partial-stage"
 mkdir -p "$partial_repo/scripts" "$partial_repo/src"
 cp "$repo_root/lefthook.yml" "$partial_repo/lefthook.yml"
 cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-staged-files.sh"
+cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
+cp "$repo_root/scripts/install-lefthook-hooks.sh" "$partial_repo/scripts/install-lefthook-hooks.sh"
 chmod +x "$partial_repo/scripts/format-staged-files.sh"
+chmod +x "$partial_repo/scripts/check-staged-formatter-safety.sh"
+chmod +x "$partial_repo/scripts/install-lefthook-hooks.sh"
 cat > "$partial_repo/src/sample.rs" <<'EOF_RUST'
 fn main() {
     println!("base");
@@ -87,6 +95,12 @@ git -C "$partial_repo" config user.name 'Codex Test'
 git -C "$partial_repo" config user.email 'codex-test@example.com'
 git -C "$partial_repo" add .
 git -C "$partial_repo" commit -qm 'fixture'
+(
+  cd "$partial_repo"
+  PATH="$(dirname "$lefthook_bin"):$PATH" bash scripts/install-lefthook-hooks.sh >/dev/null
+)
+partial_pre_commit_hook="$partial_repo/.git/hooks/pre-commit"
+assert_contains "$partial_pre_commit_hook" 'bash scripts/check-staged-formatter-safety.sh'
 cat > "$partial_repo/src/sample.rs" <<'EOF_STAGED'
 fn main(){ println!("staged"); }
 EOF_STAGED
@@ -109,7 +123,7 @@ EOF_PARTIAL_RUSTFMT
 chmod +x "$fake_bin/partial-rustfmt"
 if (
   cd "$partial_repo"
-  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$lefthook_bin" run pre-commit --no-auto-install \
+  LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook" \
     > "$tmp_dir/partial-stage.log" 2>&1
 ); then
   fail 'partially staged formatter rewrite must fail before modifying the worktree'
@@ -133,7 +147,7 @@ fn main(){ println!("staged"); }
 EOF_FULL_STAGE
 (
   cd "$partial_repo"
-  CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$lefthook_bin" run pre-commit --no-auto-install
+  LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook"
 )
 git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/formatted-index.contents"
 cp "$partial_repo/src/sample.rs" "$tmp_dir/formatted-worktree.contents"
@@ -146,6 +160,40 @@ cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-index.contents
   || fail 'formatter rewrite was not staged exactly'
 cmp -s "$tmp_dir/expected-formatted.contents" "$tmp_dir/formatted-worktree.contents" \
   || fail 'formatter rewrite was not applied exactly'
+
+partial_linked_repo="$tmp_dir/partial-stage-linked"
+git -C "$partial_repo" branch partial-stage-linked
+git -C "$partial_repo" worktree add -q "$partial_linked_repo" partial-stage-linked
+cat > "$partial_linked_repo/src/sample.rs" <<'EOF_LINKED_STAGED'
+fn main(){ println!("staged"); }
+EOF_LINKED_STAGED
+git -C "$partial_linked_repo" diff > "$tmp_dir/linked-staged.patch"
+cat > "$partial_linked_repo/src/sample.rs" <<'EOF_LINKED_WORKTREE'
+fn main(){ println!("staged"); }
+// linked-worktree unstaged hunk must survive
+EOF_LINKED_WORKTREE
+git -C "$partial_linked_repo" apply --cached "$tmp_dir/linked-staged.patch"
+linked_common_dir="$(git -C "$partial_linked_repo" rev-parse --git-common-dir)"
+printf 'stale shared Lefthook patch\n' > "$linked_common_dir/info/lefthook-unstaged.patch"
+if (
+  cd "$partial_linked_repo"
+  LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook" \
+    > "$tmp_dir/linked-partial-stage.log" 2>&1
+); then
+  fail 'linked worktree partial-stage formatter rewrite must fail before modifying the worktree'
+fi
+git -C "$partial_linked_repo" show :src/sample.rs > "$tmp_dir/linked-index.contents"
+cp "$partial_linked_repo/src/sample.rs" "$tmp_dir/linked-worktree.contents"
+cat > "$tmp_dir/expected-linked-worktree.contents" <<'EOF_EXPECTED_LINKED_WORKTREE'
+fn main(){ println!("staged"); }
+// linked-worktree unstaged hunk must survive
+EOF_EXPECTED_LINKED_WORKTREE
+assert_contains "$tmp_dir/linked-partial-stage.log" 'refusing to auto-format partially staged file: src/sample.rs'
+cmp -s "$tmp_dir/expected-index.contents" "$tmp_dir/linked-index.contents" \
+  || fail 'linked partial-stage guard modified the index'
+cmp -s "$tmp_dir/expected-linked-worktree.contents" "$tmp_dir/linked-worktree.contents" \
+  || fail 'linked partial-stage guard modified the worktree'
+git -C "$partial_repo" worktree remove --force "$partial_linked_repo"
 printf 'outside target\n' > "$tmp_dir/outside.rs"
 ln -s "$tmp_dir/outside.rs" "$partial_repo/src/escape.rs"
 (

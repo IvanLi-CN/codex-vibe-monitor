@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-surface="${1:?formatter surface is required}"
-shift
+check_only=0
+if [ "${1:-}" = '--check' ]; then
+  check_only=1
+  surface='all'
+  shift
+  candidate_files=()
+  while IFS= read -r -d '' staged_file; do
+    candidate_files+=("$staged_file")
+  done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+else
+  surface="${1:?formatter surface is required}"
+  shift
+  candidate_files=("$@")
+fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 cd "$repo_root"
 files=()
 
-for file in "$@"; do
+for file in "${candidate_files[@]}"; do
   # Deleted paths are still present in Git's staged-file list, but cannot be formatted.
   case "$file" in
     /*|..|../*|*/..|*/../*) continue ;;
@@ -39,25 +51,28 @@ for file in "$@"; do
     markdown)
       case "$file" in *.md) files+=("$file") ;; esac
       ;;
+    all)
+      case "$file" in
+        web/*.js|web/*.ts|web/*.cjs|web/*.mjs|web/*.d.cts|web/*.d.mts|web/*.jsx|web/*.tsx|web/*.json|web/*.jsonc|*.rs|*.md)
+          files+=("$file")
+          ;;
+      esac
+      ;;
   esac
 done
 
 [ "${#files[@]}" -gt 0 ] || exit 0
 
-lefthook_unstaged_patch="$(git rev-parse --git-path info/lefthook-unstaged.patch)"
-for file in "${files[@]}"; do
-  if [ -f "$lefthook_unstaged_patch" ] \
-    && grep -Fq -- "diff --git a/$file b/$file" "$lefthook_unstaged_patch"; then
-    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
-    printf 'stage or unstage all changes in this file before committing\n' >&2
-    exit 1
-  fi
-  if [ ! -f "$lefthook_unstaged_patch" ] && ! git diff --quiet -- "$file"; then
-    printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
-    printf 'stage or unstage all changes in this file before committing\n' >&2
-    exit 1
-  fi
-done
+if [ "$check_only" -eq 1 ]; then
+  for file in "${files[@]}"; do
+    if ! git diff --quiet -- "$file"; then
+      printf 'refusing to auto-format partially staged file: %s\n' "$file" >&2
+      printf 'stage or unstage all changes in this file before committing\n' >&2
+      exit 1
+    fi
+  done
+  exit 0
+fi
 
 case "$surface" in
   web)

@@ -104,6 +104,15 @@ config_declares_prepare_commit_msg() {
   return 1
 }
 
+customize_pre_commit_template() {
+  local template_hook_path="$1"
+  local original_line='call_lefthook run "pre-commit" "$@"'
+
+  [ "$(grep -Fxc "$original_line" "$template_hook_path" || true)" = '1' ] || return 1
+  perl -0pi -e 's{call_lefthook run "pre-commit" "\$@"}{if ! bash scripts/check-staged-formatter-safety.sh\nthen\n  exit 1\nfi\n\ncall_lefthook run "pre-commit" "\$@"}' "$template_hook_path"
+  grep -Fq 'bash scripts/check-staged-formatter-safety.sh' "$template_hook_path"
+}
+
 cleanup_legacy_prepare_commit_msg() {
   hook_path="$hooks_dir/prepare-commit-msg"
   [ -e "$hook_path" ] || [ -L "$hook_path" ] || return 0
@@ -170,6 +179,13 @@ is_managed_hook() {
     rm -rf "$template_dir"
     return 0
   fi
+  if [ "$hook_name" = 'pre-commit' ] \
+    && customize_pre_commit_template "$template_path" \
+    && [ -f "$template_path" ] \
+    && cmp -s "$hook_path" "$template_path"; then
+    rm -rf "$template_dir"
+    return 0
+  fi
   rm -rf "$template_dir"
   return 1
 }
@@ -188,6 +204,11 @@ if [ "${#install_hooks[@]}" -gt 0 ]; then
     cd "$repo_root"
     "$lefthook_path" install "${install_hooks[@]}"
     for hook_name in "${install_hooks[@]}"; do
+      if [ "$hook_name" = 'pre-commit' ] \
+        && ! customize_pre_commit_template "$hooks_dir/$hook_name"; then
+        printf '[worktree-bootstrap] could not install pre-commit safety check\n' >&2
+        exit 1
+      fi
       printf '\n# managed by codex-vibe-monitor hooks:install\n' >> "$hooks_dir/$hook_name"
     done
   )
