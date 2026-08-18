@@ -1745,8 +1745,8 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
         (base_secs * (1_i64 << exponent)).min(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS);
     let now_iso = format_utc_iso_millis(now);
     let streak_started_at_iso = format_utc_iso_millis(streak_started_at);
-    let cooldown_until =
-        should_start_cooldown.then(|| format_utc_iso(now + ChronoDuration::seconds(cooldown_secs)));
+    let cooldown_until = should_start_cooldown
+        .then(|| format_utc_iso_millis(now + ChronoDuration::seconds(cooldown_secs)));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
