@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import { I18nProvider, useTranslation } from "../../i18n";
+import { I18nProvider } from "../../i18n";
 import type {
   ApiInvocation,
   ApiInvocationWorkflowDetailResponse,
@@ -26,14 +26,6 @@ function StorySurface({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
-}
-
-function StoryLocale({ locale = "zh", children }: { locale?: "zh" | "en"; children: ReactNode }) {
-  const { setLocale } = useTranslation();
-  useEffect(() => {
-    setLocale(locale);
-  }, [locale, setLocale]);
-  return children;
 }
 
 function WorkflowPageSurface({ children }: { children: ReactNode }) {
@@ -1115,16 +1107,14 @@ const meta = {
   tags: ["autodocs"],
   decorators: [
     (Story, context) => (
-      <I18nProvider>
-        <StoryLocale locale={context.parameters.locale}>
-          {context.parameters.pageSurface ? (
+      <I18nProvider initialLocale={context.parameters.locale ?? "zh"} persistLocale={false}>
+        {context.parameters.pageSurface ? (
+          <Story />
+        ) : (
+          <StorySurface>
             <Story />
-          ) : (
-            <StorySurface>
-              <Story />
-            </StorySurface>
-          )}
-        </StoryLocale>
+          </StorySurface>
+        )}
       </I18nProvider>
     ),
   ],
