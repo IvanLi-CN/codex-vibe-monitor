@@ -1806,17 +1806,35 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     recovery_trigger: &'static str,
     record_route_failure: bool,
 ) {
+    let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id);
+    let mut reservation_released_after_failure = false;
     if record_route_failure && let Some(account_id) = upstream_account_id {
         let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
-        if let Err(err) = record_pool_route_transport_failure(
-            &state.pool,
-            account_id,
-            sticky_key,
-            &error_message,
-            Some(invoke_id),
-        )
-        .await
-        {
+        let result = if let Some(reservation_key) = reservation_key.as_deref() {
+            reservation_released_after_failure = true;
+            persist_pool_route_failure_then_release(
+                state,
+                reservation_key,
+                record_pool_route_transport_failure(
+                    &state.pool,
+                    account_id,
+                    sticky_key,
+                    &error_message,
+                    Some(invoke_id),
+                ),
+            )
+            .await
+        } else {
+            record_pool_route_transport_failure(
+                &state.pool,
+                account_id,
+                sticky_key,
+                &error_message,
+                Some(invoke_id),
+            )
+            .await
+        };
+        if let Err(err) = result {
             warn!(
                 invoke_id,
                 account_id,
@@ -1827,7 +1845,7 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
         }
     }
 
-    if let Some(reservation_key) = pool_routing_reservation_key_for_invoke_id(invoke_id) {
+    if !reservation_released_after_failure && let Some(reservation_key) = reservation_key {
         release_pool_routing_reservation(state, &reservation_key);
     }
 }

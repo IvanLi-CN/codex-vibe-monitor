@@ -321,6 +321,7 @@ pub(crate) struct PoolRoutingReservationGuard {
     state: Arc<AppState>,
     reservation_key: String,
     armed: bool,
+    publish_availability: bool,
 }
 
 impl PoolRoutingReservationGuard {
@@ -329,14 +330,26 @@ impl PoolRoutingReservationGuard {
             state,
             reservation_key,
             armed: true,
+            publish_availability: true,
         }
+    }
+
+    fn suppress_availability_publish(&mut self) {
+        self.publish_availability = false;
     }
 
     fn release(&mut self) {
         if !self.armed {
             return;
         }
-        release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+        if self.publish_availability {
+            release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+        } else {
+            release_pool_routing_reservation_without_availability(
+                self.state.as_ref(),
+                &self.reservation_key,
+            );
+        }
         self.armed = false;
     }
 }
@@ -967,6 +980,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             )
             .await
             {
+                reservation_guard.suppress_availability_publish();
                 warn!(
                     invoke_id = %trace.invoke_id,
                     account_id = account.account_id,
@@ -1031,6 +1045,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             )
             .await
             {
+                reservation_guard.suppress_availability_publish();
                 warn!(
                     invoke_id = %trace.invoke_id,
                     account_id = account.account_id,
@@ -1086,6 +1101,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await
         {
+            reservation_guard.suppress_availability_publish();
             warn!(
                 invoke_id = %trace.invoke_id,
                 account_id = account.account_id,
@@ -1140,6 +1156,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     )
     .await
     {
+        reservation_guard.suppress_availability_publish();
         warn!(
             invoke_id = %trace.invoke_id,
             account_id = account.account_id,
@@ -1600,8 +1617,8 @@ pub(crate) async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
-    if let Some(message) = upstream_route_failure.as_deref()
-        && let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
+    if let Some(message) = upstream_route_failure.as_deref() {
+        if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
             &state.pool,
             usage_tracker.account.account_id,
             usage_tracker.trace.sticky_key.as_deref(),
@@ -1613,13 +1630,15 @@ pub(crate) async fn proxy_websocket_tunnel(
                 .and_then(|pending| pending.attempt_id),
         )
         .await
-    {
-        warn!(
-            invoke_id = %usage_tracker.trace.invoke_id,
-            account_id = usage_tracker.account.account_id,
-            error = %err,
-            "failed to record post-upgrade websocket pool route transport failure"
-        );
+        {
+            reservation_guard.suppress_availability_publish();
+            warn!(
+                invoke_id = %usage_tracker.trace.invoke_id,
+                account_id = usage_tracker.account.account_id,
+                error = %err,
+                "failed to record post-upgrade websocket pool route transport failure"
+            );
+        }
     }
     if mark_account_ws_unsupported_after_close
         && let Err(err) = ensure_account_has_websocket_unsupported_tag(

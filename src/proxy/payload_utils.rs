@@ -1708,25 +1708,66 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
 }
 
 pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+    release_pool_routing_reservation_with_availability(state, reservation_key, true);
+}
+
+pub(crate) fn release_pool_routing_reservation_without_availability(
+    state: &AppState,
+    reservation_key: &str,
+) {
+    release_pool_routing_reservation_with_availability(state, reservation_key, false);
+}
+
+fn release_pool_routing_reservation_with_availability(
+    state: &AppState,
+    reservation_key: &str,
+    publish_availability: bool,
+) {
     let mut reservations = state
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
     let released = reservations.remove(reservation_key).is_some();
     drop(reservations);
-    if released {
+    if released && publish_availability {
         state.pool_routing_availability.publish();
     }
 }
 
-pub(crate) async fn persist_pool_route_failure_then_release<T>(
+pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
     state: &AppState,
     reservation_key: &str,
-    persist_failure: impl std::future::Future<Output = T>,
-) -> T {
-    let persisted_failure = persist_failure.await;
-    release_pool_routing_reservation(state, reservation_key);
-    persisted_failure
+    persist_failure: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    match persist_failure.await {
+        Ok(value) => {
+            release_pool_routing_reservation(state, reservation_key);
+            Ok(value)
+        }
+        Err(err) => {
+            // The failed write did not fence this route. Release its slot so it cannot leak,
+            // but do not wake waiters into an immediate unfenced retry.
+            release_pool_routing_reservation_without_availability(state, reservation_key);
+            Err(err)
+        }
+    }
+}
+
+pub(crate) async fn persist_pool_route_success_then_release<T, E>(
+    state: &AppState,
+    reservation_key: &str,
+    persist_success: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    match persist_success.await {
+        Ok(value) => {
+            release_pool_routing_reservation(state, reservation_key);
+            Ok(value)
+        }
+        Err(err) => {
+            release_pool_routing_reservation_without_availability(state, reservation_key);
+            Err(err)
+        }
+    }
 }
 
 pub(crate) fn publish_pool_routing_availability(state: &AppState) {

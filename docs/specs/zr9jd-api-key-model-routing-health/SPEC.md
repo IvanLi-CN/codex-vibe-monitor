@@ -64,8 +64,8 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - NoCandidate 的 Storybook 中英文、移动端与暗色证据必须显式注入 locale，且不得读写产品 locale 持久化状态；证据结果不得依赖 Story 或 meta 的浏览顺序。
 - 关闭缓存保护或修改阈值时，仅清除缓存保护状态和缓存原因冷却，不清除仍有效的非缓存失败状态；仅修改溢出模式保留已学习的缓存保护状态。
 - 账号级路由成功只能清除请求开始前已存在的失败。新写入的账号路由失败及由其派生的冷却截止时间必须基于同一时刻保留亚秒精度；兼容读取既有秒级时间，但秒级失败与请求开始落在同一秒时无法证明先后，必须保守拒绝恢复和可用性广播。
-- 成功终态的缓存观测可以独立更新模型证据；仅当关联账号当前仍为 `active` 且账号 route failure、cooldown 与连续失败 fence 均已清除时，模型容量增加才可发布全局 pool availability 信号。
-- 任一会持久化账号或模型路由 failure 的终态，必须先完成该持久化操作，再释放 combination reservation 或发布由释放产生的 pool availability 信号；持久化报错也必须在该操作返回后才允许释放，避免等待者在 failure fence 前重选同一路由。
+- 成功终态的缓存观测可以独立更新模型证据；仅当关联账号当前仍为 `active`、已启用、未软删除，且账号 route failure、cooldown 与连续失败 fence 均已清除时，模型容量增加才可发布全局 pool availability 信号。
+- 任一会持久化账号或模型路由 failure 的终态，必须先完成该持久化操作，再释放 combination reservation 或发布由释放产生的 pool availability 信号；持久化报错也必须在该操作返回后才允许释放，但该无 fence 的释放不得发布 availability，避免等待者在 failure fence 前重选同一路由。
 
 ### SHOULD
 

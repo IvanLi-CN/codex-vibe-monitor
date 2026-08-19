@@ -2576,6 +2576,81 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
 }
 
 #[tokio::test]
+async fn disabled_or_deleted_account_recovery_does_not_publish_availability() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Unavailable Recovery",
+        "unavailable-recovery-key",
+    )
+    .await;
+    let availability = state.pool_routing_availability.subscribe();
+    let failure_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(1));
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET enabled = 0, status = 'needs_reauth', last_error = 'temporary route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("disable account before websocket-style recovery");
+    let initial_generation = *availability.borrow();
+
+    record_pool_route_success_with_affinity_generation_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("disabled-websocket-style-recovery"),
+        None,
+        None,
+    )
+    .await
+    .expect("record disabled websocket-style recovery");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a disabled account must not wake waiters after a recovery"
+    );
+
+    let failure_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(1));
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET enabled = 1, deleted_at = ?3, status = 'needs_reauth', last_error = 'temporary route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .bind(shanghai_now_string())
+    .execute(&state.pool)
+    .await
+    .expect("soft-delete account before HTTP-style recovery");
+
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("deleted-http-style-recovery"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("record deleted HTTP-style recovery");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a deleted account must not wake waiters after a recovery"
+    );
+}
+
+#[tokio::test]
 async fn same_second_newer_account_failure_fences_success_without_publish() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

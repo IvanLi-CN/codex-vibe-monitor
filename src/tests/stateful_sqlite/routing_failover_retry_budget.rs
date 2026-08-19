@@ -2576,6 +2576,55 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
+async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Failed Failure Fence", "failed-fence-key").await;
+    let reservation_key = "failed-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-failed-fence".to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    let result = persist_pool_route_failure_then_release(state.as_ref(), reservation_key, async {
+        Err::<(), _>("simulated persistence failure")
+    })
+    .await;
+
+    assert!(
+        result.is_err(),
+        "the persistence failure must remain visible"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "failed persistence must still release the reservation instead of leaking capacity"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "unfenced release must not wake waiters into an immediate retry"
+    );
+}
+
+#[tokio::test]
 async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

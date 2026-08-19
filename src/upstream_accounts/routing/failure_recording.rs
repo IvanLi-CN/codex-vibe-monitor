@@ -66,6 +66,21 @@ pub(crate) async fn pool_account_allows_model_route_availability_publish(
     Ok(eligible != 0)
 }
 
+async fn publish_pool_routing_availability_if_account_eligible(state: &AppState, account_id: i64) {
+    match pool_account_allows_model_route_availability_publish(&state.pool, account_id).await {
+        Ok(true) => publish_pool_routing_availability(state),
+        Ok(false) => debug!(
+            account_id,
+            "suppressing pool availability publication because the recovered account is not selectable"
+        ),
+        Err(err) => warn!(
+            account_id,
+            error = %err,
+            "failed to verify account eligibility before publishing pool availability"
+        ),
+    }
+}
+
 impl UpstreamCapabilityAxis {
     fn observed_column(self) -> &'static str {
         match self {
@@ -194,7 +209,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         );
     }
     if outcome.availability_increased {
-        publish_pool_routing_availability(state);
+        publish_pool_routing_availability_if_account_eligible(state, account_id).await;
     }
     Ok(())
 }
@@ -517,7 +532,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         );
     }
     if outcome.availability_increased {
-        publish_pool_routing_availability(state);
+        publish_pool_routing_availability_if_account_eligible(state, account_id).await;
     }
     record_pool_route_success_capability_observations(
         &state.pool,
