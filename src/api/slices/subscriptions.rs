@@ -708,6 +708,9 @@ type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFrame
 #[derive(Debug)]
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
+    // Summary projection hydration is single-flight per service instance. Keeping this with the
+    // hub avoids suppressing bootstrap for an independent AppState (including test fixtures).
+    summary_projection_refresh: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -2986,6 +2989,7 @@ impl SubscriptionHub {
         let (broadcaster, _) = broadcast::channel(1_024);
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
+            summary_projection_refresh: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -3008,6 +3012,12 @@ impl SubscriptionHub {
 
     pub(crate) async fn summary_projection(&self) -> Option<Arc<SummaryProjection>> {
         self.state.lock().await.summary_projection.clone()
+    }
+
+    pub(crate) fn try_lock_summary_projection_refresh(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, tokio::sync::TryLockError> {
+        self.summary_projection_refresh.try_lock()
     }
 
     pub(crate) async fn next_summary_projection_revision(&self) -> u64 {

@@ -6996,11 +6996,6 @@ const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = SUMMARY_SNAPSHOT_REFRESH_INTER
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 
-// Startup hydration, the cadence, and event coalescing can overlap during a slow archive
-// replay. Serialize complete rebuilds so a burst cannot multiply SQLite/archive work; readers
-// keep the last atomically-installed projection while the next build is in flight.
-static SUMMARY_PROJECTION_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SummarySnapshotKey {
     window: String,
@@ -7685,7 +7680,7 @@ pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
-    let Ok(_refresh_guard) = SUMMARY_PROJECTION_REFRESH_LOCK.try_lock() else {
+    let Ok(_refresh_guard) = state.subscription_hub.try_lock_summary_projection_refresh() else {
         debug!("summary projection refresh already in flight; coalescing trigger");
         return Ok(());
     };
@@ -22858,6 +22853,26 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate summary projection fixture");
+    }
+
+    #[tokio::test]
+    async fn summary_projection_hydration_is_single_flight_per_hub() {
+        let first = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let second = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+
+        tokio::join!(
+            hydrate_summary_projection_fixture(&first),
+            hydrate_summary_projection_fixture(&second),
+        );
+
+        assert!(first.subscription_hub.summary_projection().await.is_some());
+        assert!(second.subscription_hub.summary_projection().await.is_some());
     }
 
     #[tokio::test]
