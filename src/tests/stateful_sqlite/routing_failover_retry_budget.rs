@@ -2653,10 +2653,12 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     let (fence_started_tx, fence_started_rx) = tokio::sync::oneshot::channel();
     let task_state = state.clone();
     let task = tokio::spawn(async move {
-        let _reservation_guard =
+        let mut reservation_guard =
             PoolRoutingReservationDropGuard::new(task_state, reservation_key.to_string());
         let _ = fence_started_tx.send(());
-        std::future::pending::<()>().await;
+        let _ = reservation_guard
+            .fence_failure(async { std::future::pending::<Result<(), ()>>().await })
+            .await;
     });
 
     fence_started_rx
@@ -2679,6 +2681,66 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
         *availability.borrow(),
         initial_generation,
         "cancellation before a failure fence commits must not wake waiters into an unfenced retry"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Handoff Cancellation", "handoff-cancel-key")
+            .await;
+    let reservation_key = "live-first-handoff-cancellation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-live-first-handoff".to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (handoff_started_tx, handoff_started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let reservation_guard =
+            PoolRoutingReservationDropGuard::new(task_state, reservation_key.to_string());
+        // This mirrors the response handoff: the outer selection has returned and the
+        // capture task exclusively owns the reservation until it can consume it.
+        let _capture_task_guard = Some(reservation_guard);
+        let _ = handoff_started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    handoff_started_rx
+        .await
+        .expect("capture-task handoff must begin before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the capture-task handoff should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "handoff cancellation must release the stream task reservation"
+    );
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "healthy capacity released by handoff cancellation must wake waiters"
     );
 }
 

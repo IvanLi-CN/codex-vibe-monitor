@@ -72,4 +72,27 @@ describe("I18nProvider", () => {
     expect(button?.textContent).toBe("en");
     expect(window.localStorage.getItem("codex-vibe-monitor.locale")).toBe("zh");
   });
+
+  it("tracks an isolated story locale when the decorator changes it", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <I18nProvider initialLocale="zh" persistLocale={false}>
+          <LocaleProbe />
+        </I18nProvider>,
+      );
+    });
+    expect(host.querySelector("button")?.textContent).toBe("zh");
+
+    act(() => {
+      root?.render(
+        <I18nProvider initialLocale="en" persistLocale={false}>
+          <LocaleProbe />
+        </I18nProvider>,
+      );
+    });
+    expect(host.querySelector("button")?.textContent).toBe("en");
+  });
 });

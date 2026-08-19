@@ -153,16 +153,17 @@ pub(crate) fn set_proxy_capture_record_pool_routing_no_candidate_audit(
 }
 
 pub(crate) async fn persist_pool_routing_no_candidate_invocation(
-    state: &AppState,
+    state: Arc<AppState>,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
     audit: &PoolRoutingNoCandidateAudit,
 ) -> Result<()> {
-    persist_pool_routing_no_candidate_invocation_with_error(
+    persist_pool_routing_no_candidate_invocation_with_snapshot(
         state,
         trace,
         prompt_cache_key,
         audit,
+        None,
         StatusCode::SERVICE_UNAVAILABLE,
         PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
         POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
@@ -173,11 +174,12 @@ pub(crate) async fn persist_pool_routing_no_candidate_invocation(
     .await
 }
 
-pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
-    state: &AppState,
+pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_snapshot(
+    state: Arc<AppState>,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
     audit: &PoolRoutingNoCandidateAudit,
+    request_body_snapshot: Option<PoolReplayBodySnapshot>,
     status: StatusCode,
     failure_kind: &str,
     error_message: &str,
@@ -194,6 +196,25 @@ pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
         trace.sticky_key.as_deref(),
         prompt_cache_key,
     );
+    let request_body_logging_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .request_body_logging_enabled;
+    record.req_raw = match request_body_snapshot {
+        Some(snapshot) => {
+            spawn_raw_payload_snapshot_write(
+                state.clone(),
+                &trace.invoke_id,
+                "request",
+                snapshot,
+                request_body_logging_enabled,
+            )
+            .finish()
+            .await
+        }
+        None => RawPayloadMeta::default(),
+    };
     record.model = trace.request_model.clone();
     record.status = format!("http_{}", status.as_u16());
     record.error_message = Some(format!("[{failure_kind}] {error_message}"));
@@ -243,7 +264,35 @@ pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
         record.payload = serde_json::to_string(&value).ok();
     }
     set_proxy_capture_record_pool_routing_no_candidate_audit(&mut record, Some(audit));
-    persist_and_broadcast_proxy_capture_terminal_record(state, record).await
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record).await
+}
+
+pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
+    state: Arc<AppState>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    audit: &PoolRoutingNoCandidateAudit,
+    status: StatusCode,
+    failure_kind: &str,
+    error_message: &str,
+    pool_attempt_count: usize,
+    pool_distinct_account_count: usize,
+    pool_attempt_terminal_reason: &str,
+) -> Result<()> {
+    persist_pool_routing_no_candidate_invocation_with_snapshot(
+        state,
+        trace,
+        prompt_cache_key,
+        audit,
+        None,
+        status,
+        failure_kind,
+        error_message,
+        pool_attempt_count,
+        pool_distinct_account_count,
+        pool_attempt_terminal_reason,
+    )
+    .await
 }
 
 pub(crate) fn blocked_binding_json_from_payload(payload: Option<&str>) -> Option<String> {

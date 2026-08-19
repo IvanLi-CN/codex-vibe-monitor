@@ -81,6 +81,12 @@ export function I18nProvider({
   );
 
   useEffect(() => {
+    if (!persistLocale && initialLocale) {
+      setLocaleState((current) => (current === initialLocale ? current : initialLocale));
+    }
+  }, [initialLocale, persistLocale]);
+
+  useEffect(() => {
     if (typeof document === "undefined") return;
     const lang = DOC_LANG_MAP[locale] ?? DOC_LANG_MAP[FALLBACK_LOCALE];
     document.documentElement.lang = lang;

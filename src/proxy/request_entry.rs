@@ -846,6 +846,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) request_body_for_capture: Option<Bytes>,
     pub(crate) codex_imagegen_rewrite: Option<Value>,
+    pub(crate) reservation_guard: Option<PoolRoutingReservationDropGuard>,
 }
 
 #[derive(Debug)]

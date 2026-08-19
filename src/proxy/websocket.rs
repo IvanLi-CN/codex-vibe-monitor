@@ -464,7 +464,7 @@ pub(crate) async fn prepare_upstream_websocket(
                         distinct_account_count,
                     );
                     let _ = persist_pool_routing_no_candidate_invocation_with_error(
-                        state.as_ref(),
+                        state.clone(),
                         trace,
                         prompt_cache_key,
                         &audit,
@@ -495,7 +495,7 @@ pub(crate) async fn prepare_upstream_websocket(
                 }
                 if let Some(failure) = last_failure.as_ref() {
                     let _ = persist_pool_routing_no_candidate_invocation_with_error(
-                        state.as_ref(),
+                        state.clone(),
                         trace,
                         prompt_cache_key,
                         &audit,
@@ -509,7 +509,7 @@ pub(crate) async fn prepare_upstream_websocket(
                     .await;
                 } else {
                     let _ = persist_pool_routing_no_candidate_invocation(
-                        state.as_ref(),
+                        state.clone(),
                         trace,
                         prompt_cache_key,
                         &audit,

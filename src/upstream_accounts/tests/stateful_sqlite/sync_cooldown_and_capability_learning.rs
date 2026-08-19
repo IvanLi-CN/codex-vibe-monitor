@@ -586,8 +586,9 @@ async fn initial_no_candidate_persists_invocation_audit_without_upstream_attempt
         }],
     };
 
-    let error = unwrap_via_pool_initial_account(
-        &state,
+    let request_body = Bytes::from_static(br#"{"model":"gpt-audit","input":[]}"#);
+    let error = unwrap_via_pool_initial_account_with_request_body(
+        state.clone(),
         Some(&trace),
         Ok(PoolAccountResolutionWithWait::Resolution(
             PoolAccountResolution::NoCandidate(audit.clone()),
@@ -597,6 +598,7 @@ async fn initial_no_candidate_persists_invocation_audit_without_upstream_attempt
         None,
         false,
         None,
+        Some(PoolReplayBodySnapshot::Memory(request_body.clone())),
     )
     .await
     .expect_err("no candidate should remain a local terminal failure");
@@ -613,6 +615,24 @@ async fn initial_no_candidate_persists_invocation_audit_without_upstream_attempt
     assert_eq!(
         payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
         "modelConcurrencyLimit"
+    );
+    let request_raw_size: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(request_raw_size, 0) FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind(&trace.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted no-candidate request body size");
+    assert_eq!(request_raw_size, request_body.len() as i64);
+    let request_raw_path: Option<String> =
+        sqlx::query_scalar("SELECT request_raw_path FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&trace.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load persisted no-candidate request body path");
+    assert!(
+        request_raw_path.is_some(),
+        "zero-attempt diagnostics must retain the known request body instead of a tombstone"
     );
     let attempt_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",

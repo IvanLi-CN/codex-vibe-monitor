@@ -1482,6 +1482,7 @@ pub(crate) struct PoolRoutingReservationDropGuard {
     state: Arc<AppState>,
     reservation_key: String,
     active: bool,
+    publish_on_drop: bool,
 }
 
 impl PoolRoutingReservationDropGuard {
@@ -1490,23 +1491,40 @@ impl PoolRoutingReservationDropGuard {
             state,
             reservation_key,
             active: true,
-            // A dropped request may be in the middle of persisting a route failure. Releasing
-            // capacity is required to avoid a leak, but only an explicit, fenced completion may
-            // wake waiters to select that route again.
+            publish_on_drop: true,
         }
     }
 
     pub(crate) fn disarm(&mut self) {
         self.active = false;
     }
+
+    pub(crate) fn suppress_availability_on_drop(&mut self) {
+        self.publish_on_drop = false;
+    }
+
+    pub(crate) fn restore_availability_on_drop(&mut self) {
+        self.publish_on_drop = true;
+    }
+
+    pub(crate) async fn fence_failure<T, E, F>(&mut self, persist_failure: F) -> Result<T, E>
+    where
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        self.suppress_availability_on_drop();
+        let result = persist_failure.await;
+        self.restore_availability_on_drop();
+        result
+    }
 }
 
 impl Drop for PoolRoutingReservationDropGuard {
     fn drop(&mut self) {
         if self.active {
-            release_pool_routing_reservation_without_availability(
+            release_pool_routing_reservation_with_availability(
                 self.state.as_ref(),
                 &self.reservation_key,
+                self.publish_on_drop,
             );
         }
     }
@@ -1745,7 +1763,27 @@ pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
     reservation_key: &str,
     persist_failure: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    match persist_failure.await {
+    persist_pool_route_failure_then_release_with_guard(
+        state,
+        reservation_key,
+        None,
+        persist_failure,
+    )
+    .await
+}
+
+pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
+    state: &AppState,
+    reservation_key: &str,
+    reservation_guard: Option<&mut PoolRoutingReservationDropGuard>,
+    persist_failure: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let result = if let Some(guard) = reservation_guard {
+        guard.fence_failure(persist_failure).await
+    } else {
+        persist_failure.await
+    };
+    match result {
         Ok(value) => {
             release_pool_routing_reservation(state, reservation_key);
             Ok(value)
