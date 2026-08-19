@@ -1265,7 +1265,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         upstream,
         transport_flush_task: _transport_flush_task,
         pending_attempt_record,
-        model_mapping,
+        mut model_mapping,
         mut deferred_cleanup_guard,
         mut reservation_guard,
         account,
@@ -1370,21 +1370,23 @@ pub(crate) async fn proxy_websocket_tunnel(
             {
                 Ok((rewritten, mapping)) => {
                     message = rewritten;
-                    if let Some(mapping) = mapping
-                        && let Some(pending) = pending_attempt_record.as_ref()
-                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-                            &state.pool,
-                            pending,
-                            Some(&mapping.target_model),
-                            Some(&mapping.source_model),
-                        )
-                        .await
-                    {
-                        warn!(
-                            invoke_id = %pending.invoke_id,
-                            error = %err,
-                            "failed to persist websocket frame model mapping audit"
-                        );
+                    if let Some(mapping) = mapping {
+                        model_mapping = Some(mapping.clone());
+                        if let Some(pending) = pending_attempt_record.as_ref()
+                            && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                                &state.pool,
+                                pending,
+                                Some(&mapping.target_model),
+                                Some(&mapping.source_model),
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = %pending.invoke_id,
+                                error = %err,
+                                "failed to persist websocket frame model mapping audit"
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -1497,21 +1499,23 @@ pub(crate) async fn proxy_websocket_tunnel(
                         {
                             Ok((rewritten, mapping)) => {
                                 message = rewritten;
-                                if let Some(mapping) = mapping
-                                    && let Some(pending) = pending_attempt_record.as_ref()
-                                    && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-                                        &state.pool,
-                                        pending,
-                                        Some(&mapping.target_model),
-                                        Some(&mapping.source_model),
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        invoke_id = %pending.invoke_id,
-                                        error = %err,
-                                        "failed to persist websocket frame model mapping audit"
-                                    );
+                                if let Some(mapping) = mapping {
+                                    model_mapping = Some(mapping.clone());
+                                    if let Some(pending) = pending_attempt_record.as_ref()
+                                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                                            &state.pool,
+                                            pending,
+                                            Some(&mapping.target_model),
+                                            Some(&mapping.source_model),
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            invoke_id = %pending.invoke_id,
+                                            error = %err,
+                                            "failed to persist websocket frame model mapping audit"
+                                        );
+                                    }
                                 }
                             }
                             Err(err) => {

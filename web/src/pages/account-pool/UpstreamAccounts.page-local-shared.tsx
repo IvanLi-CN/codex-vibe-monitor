@@ -42,8 +42,8 @@ import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveR
 import {
   areModelMappingDraftsEqual,
   createModelMappingDrafts,
-  ModelMappingEditor,
   type ModelMappingDraft,
+  ModelMappingEditor,
   toModelMappings,
   validateModelMappingDrafts,
 } from "../../features/account-pool/ModelMappingEditor";
@@ -2557,16 +2557,26 @@ function SharedUpstreamAccountDetailDrawerInner({
           className="max-w-md rounded-lg"
         >
           <DialogHeader>
-            <DialogTitle>{t("accountPool.upstreamAccounts.modelMappings.discardTitle")}</DialogTitle>
+            <DialogTitle>
+              {t("accountPool.upstreamAccounts.modelMappings.discardTitle")}
+            </DialogTitle>
             <DialogDescription>
               {t("accountPool.upstreamAccounts.modelMappings.discardDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => modelMappingDiscardPrompt?.stay?.()}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => modelMappingDiscardPrompt?.stay?.()}
+            >
               {t("accountPool.upstreamAccounts.modelMappings.keepEditing")}
             </Button>
-            <Button type="button" variant="destructive" onClick={() => modelMappingDiscardPrompt?.discard()}>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => modelMappingDiscardPrompt?.discard()}
+            >
               {t("accountPool.upstreamAccounts.modelMappings.discard")}
             </Button>
           </DialogFooter>

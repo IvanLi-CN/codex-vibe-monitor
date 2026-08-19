@@ -4153,7 +4153,8 @@ const baseTranslations = {
       "每条映射都需要填写原模型和目标模型。",
     "accountPool.upstreamAccounts.modelMappings.validation.duplicate":
       "原模型规则在忽略 ASCII 字母大小写后必须唯一。",
-    "accountPool.upstreamAccounts.modelMappings.validation.limit": "每个账号最多可配置 100 条模型映射。",
+    "accountPool.upstreamAccounts.modelMappings.validation.limit":
+      "每个账号最多可配置 100 条模型映射。",
     "accountPool.upstreamAccounts.modelMappings.count": "{{count}} / 100 条映射",
     "accountPool.upstreamAccounts.modelMappings.save": "保存映射",
     "accountPool.upstreamAccounts.modelMappings.saving": "正在保存...",
