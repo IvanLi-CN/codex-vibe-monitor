@@ -338,6 +338,14 @@ impl PoolRoutingReservationGuard {
         self.publish_availability = false;
     }
 
+    fn release_after_persisted_failure(&mut self) {
+        if !self.armed {
+            return;
+        }
+        release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+        self.armed = false;
+    }
+
     fn release(&mut self) {
         if !self.armed {
             return;
@@ -967,7 +975,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
+            reservation_guard.suppress_availability_publish();
+            let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
                 &state.pool,
                 account.account_id,
                 trace.sticky_key.as_deref(),
@@ -978,15 +987,17 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
             )
-            .await
-            {
-                reservation_guard.suppress_availability_publish();
+            .await;
+            if let Err(ref err) = failure_recorded {
                 warn!(
                     invoke_id = %trace.invoke_id,
                     account_id = account.account_id,
                     error = %err,
                     "failed to record websocket pool route transport failure"
                 );
+            }
+            if failure_recorded.is_ok() {
+                reservation_guard.release_after_persisted_failure();
             }
             if should_mark_ws_unsupported
                 && let Err(err) =
@@ -1032,7 +1043,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
+            reservation_guard.suppress_availability_publish();
+            let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
                 &state.pool,
                 account.account_id,
                 trace.sticky_key.as_deref(),
@@ -1043,15 +1055,17 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
             )
-            .await
-            {
-                reservation_guard.suppress_availability_publish();
+            .await;
+            if let Err(ref err) = failure_recorded {
                 warn!(
                     invoke_id = %trace.invoke_id,
                     account_id = account.account_id,
                     error = %err,
                     "failed to record websocket pool route timeout failure"
                 );
+            }
+            if failure_recorded.is_ok() {
+                reservation_guard.release_after_persisted_failure();
             }
             reservation_guard.release();
             return Err(WsAttemptFailure {
@@ -1088,7 +1102,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await;
         complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-        if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
+        reservation_guard.suppress_availability_publish();
+        let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
             &state.pool,
             account.account_id,
             trace.sticky_key.as_deref(),
@@ -1099,15 +1114,17 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 .as_ref()
                 .and_then(|pending| pending.attempt_id),
         )
-        .await
-        {
-            reservation_guard.suppress_availability_publish();
+        .await;
+        if let Err(ref err) = failure_recorded {
             warn!(
                 invoke_id = %trace.invoke_id,
                 account_id = account.account_id,
                 error = %err,
                 "failed to record websocket subprotocol mismatch route failure"
             );
+        }
+        if failure_recorded.is_ok() {
+            reservation_guard.release_after_persisted_failure();
         }
         reservation_guard.release();
         return Err(WsAttemptFailure {
@@ -1618,7 +1635,8 @@ pub(crate) async fn proxy_websocket_tunnel(
     )
     .await;
     if let Some(message) = upstream_route_failure.as_deref() {
-        if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind(
+        reservation_guard.suppress_availability_publish();
+        let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
             &state.pool,
             usage_tracker.account.account_id,
             usage_tracker.trace.sticky_key.as_deref(),
@@ -1629,15 +1647,17 @@ pub(crate) async fn proxy_websocket_tunnel(
                 .as_ref()
                 .and_then(|pending| pending.attempt_id),
         )
-        .await
-        {
-            reservation_guard.suppress_availability_publish();
+        .await;
+        if let Err(ref err) = failure_recorded {
             warn!(
                 invoke_id = %usage_tracker.trace.invoke_id,
                 account_id = usage_tracker.account.account_id,
                 error = %err,
                 "failed to record post-upgrade websocket pool route transport failure"
             );
+        }
+        if failure_recorded.is_ok() {
+            reservation_guard.release_after_persisted_failure();
         }
     }
     if mark_account_ws_unsupported_after_close
@@ -3430,6 +3450,61 @@ pub(crate) fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option
 #[cfg(test)]
 mod websocket_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelling_websocket_failure_fence_releases_without_waking_waiters() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let reservation_key = "websocket-cancelled-fence";
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                reservation_key.to_string(),
+                PoolRoutingReservation {
+                    account_id: 42,
+                    model: Some("gpt-ws-cancelled-fence".to_string()),
+                    proxy_key: None,
+                    created_at: Instant::now(),
+                },
+            );
+        let availability = state.pool_routing_availability.subscribe();
+        let initial_generation = *availability.borrow();
+        let (fence_started_tx, fence_started_rx) = tokio::sync::oneshot::channel();
+        let task_state = state.clone();
+        let task = tokio::spawn(async move {
+            let mut reservation_guard =
+                PoolRoutingReservationGuard::new(task_state, reservation_key.to_string());
+            reservation_guard.suppress_availability_publish();
+            let _ = fence_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        fence_started_rx
+            .await
+            .expect("pending websocket failure fence should begin before cancellation");
+        task.abort();
+        let join_error = task
+            .await
+            .expect_err("cancelling the websocket failure fence should cancel its task");
+        assert!(join_error.is_cancelled());
+        assert!(
+            !state
+                .pool_routing_reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned")
+                .contains_key(reservation_key),
+            "cancellation must release the websocket reservation"
+        );
+        assert_eq!(
+            *availability.borrow(),
+            initial_generation,
+            "websocket cancellation before a failure fence commits must not wake waiters"
+        );
+    }
 
     fn api_key_account(upstream_base_url: Url) -> PoolResolvedAccount {
         PoolResolvedAccount {

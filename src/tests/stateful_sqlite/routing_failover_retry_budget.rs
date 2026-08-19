@@ -2374,7 +2374,7 @@ async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
 }
 
 #[test]
-fn elapsed_no_candidate_next_eligible_at_retries_immediately() {
+fn elapsed_no_candidate_next_eligible_at_retries_with_a_bounded_delay() {
     let audit = PoolRoutingNoCandidateAudit {
         terminal_reason_code: "expiredCooldownProbe".to_string(),
         candidate_count: 1,
@@ -2388,10 +2388,11 @@ fn elapsed_no_candidate_next_eligible_at_retries_immediately() {
         candidates: Vec::new(),
     };
 
-    assert_eq!(
-        no_candidate_next_eligible_delay(&audit),
-        Some(Duration::ZERO),
-        "an eligibility timestamp that expires between selection and waiting must trigger an immediate retry"
+    assert!(
+        no_candidate_next_eligible_delay(&audit)
+            .expect("expired next-eligible timestamp should schedule a reselect")
+            >= Duration::from_millis(25),
+        "a stale timestamp must not create a zero-delay database selection loop"
     );
 }
 
@@ -2621,6 +2622,63 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
         *availability.borrow(),
         initial_generation,
         "unfenced release must not wake waiters into an immediate retry"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Cancelled Failure Fence", "cancelled-fence-key")
+            .await;
+    let reservation_key = "cancelled-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-cancelled-fence".to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (fence_started_tx, fence_started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let _reservation_guard =
+            PoolRoutingReservationDropGuard::new(task_state, reservation_key.to_string());
+        let _ = fence_started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    fence_started_rx
+        .await
+        .expect("pending failure fence should begin before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the pending failure fence should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "cancellation must release the reservation instead of leaking model capacity"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "cancellation before a failure fence commits must not wake waiters into an unfenced retry"
     );
 }
 

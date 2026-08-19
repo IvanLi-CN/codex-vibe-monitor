@@ -1490,6 +1490,9 @@ impl PoolRoutingReservationDropGuard {
             state,
             reservation_key,
             active: true,
+            // A dropped request may be in the middle of persisting a route failure. Releasing
+            // capacity is required to avoid a leak, but only an explicit, fenced completion may
+            // wake waiters to select that route again.
         }
     }
 
@@ -1501,7 +1504,10 @@ impl PoolRoutingReservationDropGuard {
 impl Drop for PoolRoutingReservationDropGuard {
     fn drop(&mut self) {
         if self.active {
-            release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+            release_pool_routing_reservation_without_availability(
+                self.state.as_ref(),
+                &self.reservation_key,
+            );
         }
     }
 }

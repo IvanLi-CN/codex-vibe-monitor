@@ -1909,6 +1909,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         &account,
         trace_context.and_then(|trace| trace.request_model.as_deref()),
     );
+    let mut reservation_guard =
+        PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
     let request_connection_scoped = connection_scoped_header_names(headers);
     let connect_started = Instant::now();
     let attempt_started_at_utc = Utc::now();
@@ -2844,6 +2846,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         first_chunk = None;
         first_chunk_received_at = None;
     }
+    // The response capture owns this reservation after the live-first handoff.
+    reservation_guard.disarm();
     Ok(PoolUpstreamResponse {
         account,
         response,
@@ -4789,7 +4793,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         response_info.contains_encrypted_content;
 
                                     if downstream_closed {
-                                        release_pool_routing_reservation_without_availability(
+                                        release_pool_routing_reservation(
                                             state_for_record.as_ref(),
                                             &reservation_key_for_record,
                                         );
@@ -5527,7 +5531,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             let response_contains_encrypted_content = response_info.contains_encrypted_content;
 
             if downstream_closed {
-                release_pool_routing_reservation_without_availability(
+                release_pool_routing_reservation(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );

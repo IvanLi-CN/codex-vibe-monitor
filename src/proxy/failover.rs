@@ -42,6 +42,8 @@ pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 pub(crate) fn no_candidate_next_eligible_delay(
     audit: &PoolRoutingNoCandidateAudit,
 ) -> Option<Duration> {
+    const MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY: Duration = Duration::from_millis(25);
+
     audit
         .next_eligible_at
         .as_deref()
@@ -50,6 +52,7 @@ pub(crate) fn no_candidate_next_eligible_delay(
             (eligible_at - Utc::now())
                 .to_std()
                 .unwrap_or(Duration::ZERO)
+                .max(MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY)
         })
 }
 
@@ -2014,7 +2017,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
-                        if let Err(route_err) = record_pool_route_transport_failure_for_model(
+                        // The drop guard releases silently if cancellation interrupts this fence.
+                        let failure_recorded = record_pool_route_transport_failure_for_model(
                             &state.pool,
                             account.account_id,
                             sticky_key,
@@ -2022,8 +2026,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                             requested_model.as_deref(),
                         )
-                        .await
-                        {
+                        .await;
+                        if let Err(ref route_err) = failure_recorded {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
                         }
                         store_pool_failover_error(
@@ -2051,7 +2055,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
-                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        if failure_recorded.is_ok() {
+                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        } else {
+                            release_pool_routing_reservation_without_availability(
+                                state.as_ref(),
+                                &reservation_key,
+                            );
+                        }
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }

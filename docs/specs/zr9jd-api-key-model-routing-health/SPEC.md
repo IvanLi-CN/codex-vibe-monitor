@@ -66,6 +66,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 账号级路由成功只能清除请求开始前已存在的失败。新写入的账号路由失败及由其派生的冷却截止时间必须基于同一时刻保留亚秒精度；兼容读取既有秒级时间，但秒级失败与请求开始落在同一秒时无法证明先后，必须保守拒绝恢复和可用性广播。
 - 成功终态的缓存观测可以独立更新模型证据；仅当关联账号当前仍为 `active`、已启用、未软删除，且账号 route failure、cooldown 与连续失败 fence 均已清除时，模型容量增加才可发布全局 pool availability 信号。
 - 任一会持久化账号或模型路由 failure 的终态，必须先完成该持久化操作，再释放 combination reservation 或发布由释放产生的 pool availability 信号；持久化报错也必须在该操作返回后才允许释放，但该无 fence 的释放不得发布 availability，避免等待者在 failure fence 前重选同一路由。
+- 终态在 failure fence 持久化期间被取消时，必须释放 combination reservation 防止容量泄漏，但不得发布 availability；只有已完成并确认的 fence 或非 failure 的正常容量释放才能唤醒等待者。
 
 ### SHOULD
 

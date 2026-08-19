@@ -472,6 +472,106 @@ async fn proxy_openai_v1_capture_responses_sends_the_live_treatment_before_reque
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn cancelling_live_first_request_releases_its_routing_reservation() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_secs(5);
+    config.proxy_enforce_stream_include_usage = false;
+    let (upstream_base, upstream_handle) =
+        spawn_pool_delayed_headers_upstream(Duration::from_secs(5)).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    body_tx
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","input":"pending"}"#,
+        )))
+        .await
+        .expect("send live request prefix");
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
+        )
+        .await
+    });
+
+    timeout(
+        Duration::from_secs(1),
+        wait_for_pool_upstream_request_attempts(&state.pool, 1),
+    )
+    .await
+    .expect("live-first request should reserve a route before upstream headers arrive");
+    assert!(
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("lock routing reservations")
+            .len()
+            == 1,
+        "live-first request should hold its reservation while waiting for upstream headers"
+    );
+
+    request_task.abort();
+    let join_error = request_task
+        .await
+        .expect_err("cancelling the live-first request should cancel its task");
+    assert!(join_error.is_cancelled());
+    drop(body_tx);
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if state
+                .pool_routing_reservations
+                .lock()
+                .expect("lock routing reservations")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelling a live-first request must release its routing reservation");
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
 {
