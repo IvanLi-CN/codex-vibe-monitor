@@ -6467,6 +6467,7 @@ export const ErrorState: Story = {
 };
 
 export const Mobile390: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(wideDesktopResponse),
@@ -6520,6 +6521,7 @@ export const Mobile393: Story = {
 };
 
 export const WideDesktop1660: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(wideDesktopResponse),
@@ -6555,6 +6557,7 @@ export const WideDesktop1660: Story = {
 };
 
 export const FourCardParallelThreeSlotProof: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(fourCardParallelThreeSlotProofResponse),

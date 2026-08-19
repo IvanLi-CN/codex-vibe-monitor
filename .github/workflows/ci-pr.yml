@@ -440,15 +440,20 @@ jobs:
           set -euo pipefail
           records_status=0
           demo_status=0
+          dashboard_status=0
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
             bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
             bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
           demo_pid=$!
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \
+            bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts &
+          dashboard_pid=$!
           wait "$records_pid" || records_status=$?
           wait "$demo_pid" || demo_status=$?
-          exit $(( records_status || demo_status ))
+          wait "$dashboard_pid" || dashboard_status=$?
+          exit $(( records_status || demo_status || dashboard_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -458,6 +463,7 @@ jobs:
           path: |
             web/playwright-report-records
             web/playwright-report-demo
+            web/playwright-report-dashboard
             web/test-results
           if-no-files-found: ignore
 

@@ -2545,8 +2545,6 @@ function InvocationSlot({
 
   return (
     <div
-      role={interactionsDisabled ? undefined : "button"}
-      tabIndex={interactionsDisabled ? undefined : 0}
       aria-label={interactionsDisabled ? undefined : invocationActionLabel}
       data-testid="dashboard-working-conversation-slot"
       data-slot-kind={slotKind}
@@ -2555,14 +2553,21 @@ function InvocationSlot({
         statusMeta.slotSurfaceClassName,
         interactionsDisabled
           ? "transition-colors duration-200"
-          : "cursor-pointer transition-colors duration-200 hover:bg-base-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+          : "cursor-pointer transition-colors duration-200 hover:bg-base-100/10",
       )}
       onClick={interactionsDisabled ? undefined : handleOpenInvocation}
       onKeyDown={interactionsDisabled ? undefined : handleSlotKeyDown}
     >
-      <div
+      <button
+        type="button"
+        disabled={interactionsDisabled}
+        aria-label={interactionsDisabled ? undefined : invocationActionLabel}
+        className="block w-full appearance-none border-0 bg-transparent p-0 text-left font-inherit disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
+        onClick={(event) => {
+          event.stopPropagation();
+          handleOpenInvocation();
+        }}
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
       >
         <div className="flex min-w-0 items-center gap-1 overflow-hidden">
           <div
@@ -2663,7 +2668,7 @@ function InvocationSlot({
             className="shrink-0 flex-nowrap gap-0.5 text-[10px]"
           />
         </div>
-      </div>
+      </button>
 
       <div className="mt-1.5 space-y-1">
         <div

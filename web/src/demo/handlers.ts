@@ -2380,7 +2380,11 @@ function poolAttempts(invokeId: string) {
   };
   if (!needsRetry) return [first];
   return [
-    first,
+    {
+      ...first,
+      firstTokenMs: null,
+      streamLatencyMs: null,
+    },
     {
       ...first,
       id: record.id * 10 + 2,
@@ -2420,6 +2424,8 @@ function poolAttempts(invokeId: string) {
       errorMessage: record.status === "http_502" ? "Simulated recovery relay timeout." : null,
       startedAt: "2026-07-10T09:24:02Z",
       finishedAt: "2026-07-10T09:24:05Z",
+      firstTokenMs: record.firstTokenMs ?? null,
+      streamLatencyMs: record.tUpstreamStreamMs ?? null,
       upstreamRequestId: `up_demo_${record.id}_2`,
     },
   ];

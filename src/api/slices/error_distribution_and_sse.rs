@@ -1862,48 +1862,56 @@ pub(crate) async fn fetch_perf_stats(
             "total",
             rows.iter()
                 .filter_map(|row| row.t_total_ms)
+                .filter(|value| is_valid_perf_stage_sample("total", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "requestRead",
             rows.iter()
                 .filter_map(|row| row.t_req_read_ms)
+                .filter(|value| is_valid_perf_stage_sample("requestRead", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "requestParse",
             rows.iter()
                 .filter_map(|row| row.t_req_parse_ms)
+                .filter(|value| is_valid_perf_stage_sample("requestParse", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamConnect",
             rows.iter()
                 .filter_map(|row| row.t_upstream_connect_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamConnect", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamFirstByte",
             rows.iter()
                 .filter_map(|row| row.t_upstream_ttfb_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamFirstByte", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamStream",
             rows.iter()
                 .filter_map(|row| row.t_upstream_stream_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamStream", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "responseParse",
             rows.iter()
                 .filter_map(|row| row.t_resp_parse_ms)
+                .filter(|value| is_valid_perf_stage_sample("responseParse", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "persistence",
             rows.iter()
                 .filter_map(|row| row.t_persist_ms)
+                .filter(|value| is_valid_perf_stage_sample("persistence", *value))
                 .collect::<Vec<_>>(),
         ),
     ];

@@ -164,8 +164,12 @@ where
             .push(
                 " AS billing_service_tier, \
                  t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
-                 first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
+                 ",
             )
+            .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+            .push(" AS first_token_ms, ")
+            .push(final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms").as_str())
+            .push(" AS t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
             .push(INVOCATION_ENDPOINT_SQL)
             .push(" AS endpoint, ")
             .push(INVOCATION_COMPACTION_REQUEST_KIND_SQL)

@@ -238,6 +238,26 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
     )
 }
 
+pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &str) -> String {
+    format!(
+        "CASE WHEN NOT EXISTS (SELECT 1 \
+           FROM pool_upstream_request_attempts AS final_attempt \
+          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND final_attempt.occurred_at = {invocation_ref}.occurred_at) \
+          OR COALESCE((SELECT CASE \
+             WHEN LOWER(TRIM(COALESCE(final_attempt.status, ''))) IN ('success', 'completed', 'warning_success', 'http_200') THEN 1 \
+             WHEN final_attempt.first_byte_latency_ms IS NOT NULL AND final_attempt.first_byte_latency_ms > 0 THEN 1 \
+             ELSE 0 END \
+           FROM pool_upstream_request_attempts AS final_attempt \
+          WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
+            AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
+            AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
+          ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
+          LIMIT 1), 0) = 1 \
+        THEN {invocation_ref}.{column} END"
+    )
+}
+
 pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
     let first_token_measured_sql =
@@ -295,6 +315,10 @@ fn sqlite_positive_timing_sql(column: &str) -> String {
 
 fn has_measured_first_token(value: Option<f64>) -> bool {
     value.is_some_and(|value| value.is_finite() && value >= 0.0)
+}
+
+fn finite_nonnegative_timing(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
@@ -366,6 +390,15 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.ends_with("THEN inv.first_token_ms END AS first_token_ms"));
+    }
+
+    #[test]
+    fn invocation_timing_sql_requires_a_real_final_attempt_measurement() {
+        let sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
+
+        assert!(sql.contains("final_attempt.first_byte_latency_ms IS NOT NULL"));
+        assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
+        assert!(sql.contains("THEN inv.first_token_ms END"));
     }
 }
 
@@ -524,8 +557,17 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
          detail_level, detail_pruned_at, detail_prune_reason, \
-         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, \
-         t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
+         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+         ",
+        )
+        .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+        .push(
+            " AS first_token_ms, \
+         ",
+        )
+        .push(final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms").as_str())
+        .push(
+            " AS t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
          created_at \
          FROM codex_invocations WHERE 1 = 1",
         );
@@ -4532,7 +4574,9 @@ fn build_workflow_attempt_from_row(
                 .then_some(record.t_upstream_connect_ms)
                 .flatten()
         }),
-        first_token_ms: is_final_attempt.then_some(record.first_token_ms).flatten(),
+        first_token_ms: is_final_attempt
+            .then_some(finite_nonnegative_timing(record.first_token_ms))
+            .flatten(),
         first_byte_latency_ms: attempt.first_byte_latency_ms.or_else(|| {
             is_final_attempt
                 .then_some(record.t_upstream_ttfb_ms)
@@ -4688,7 +4732,7 @@ fn build_synthetic_workflow_attempt(
         error_message: record.error_message.clone(),
         downstream_error_message: record.downstream_error_message.clone(),
         connect_latency_ms: record.t_upstream_connect_ms,
-        first_token_ms: record.first_token_ms,
+        first_token_ms: finite_nonnegative_timing(record.first_token_ms),
         first_byte_latency_ms: record.t_upstream_ttfb_ms,
         stream_latency_ms: record.t_upstream_stream_ms,
         upstream_request_id: record.upstream_request_id.clone(),
@@ -6974,18 +7018,22 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             }
         }
     };
+    let live_ttfb_nonnegative_sql = sqlite_nonnegative_timing_sql("live.upstream_ttfb_ms");
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
             COALESCE(COUNT(*), 0) AS in_progress_count, \
             COALESCE(SUM(",
     );
     query.push(retry_sql.as_str()).push(
-        "), 0) AS retry_count, \
-         AVG(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN live.upstream_ttfb_ms END) AS avg_wait_ms, \
-         COUNT(CASE WHEN live.upstream_ttfb_ms IS NOT NULL AND live.upstream_ttfb_ms >= 0 THEN 1 END) AS avg_wait_sample_count \
+        format!(
+            "), 0) AS retry_count, \
+         AVG(CASE WHEN {live_ttfb_nonnegative_sql} THEN live.upstream_ttfb_ms END) AS avg_wait_ms, \
+         COUNT(CASE WHEN {live_ttfb_nonnegative_sql} THEN 1 END) AS avg_wait_sample_count \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \
          WHERE 1 = 1",
+        )
+        .as_str(),
     );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -10580,7 +10628,11 @@ fn build_upstream_account_activity_preview_select(
              ",
         )
         .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
-        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
+        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, ")
+        .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+        .push(" AS first_token_ms, ")
+        .push(final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms").as_str())
+        .push(" AS t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
         .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
         .push(" AS downstream_status_code, ")
         .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)

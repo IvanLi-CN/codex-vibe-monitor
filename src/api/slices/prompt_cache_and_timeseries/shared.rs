@@ -1246,7 +1246,7 @@ pub(crate) fn record_perf_stage_sample(
     stage: &str,
     value: Option<f64>,
 ) {
-    let Some(value) = value else {
+    let Some(value) = value.filter(|value| is_valid_perf_stage_sample(stage, *value)) else {
         return;
     };
     let entry = by_stage
@@ -1258,10 +1258,24 @@ pub(crate) fn record_perf_stage_sample(
     add_approx_histogram_sample(&mut entry.3, value);
 }
 
+pub(crate) fn is_valid_perf_stage_sample(stage: &str, value: f64) -> bool {
+    value.is_finite() && value >= 0.0 && (stage != "upstreamStream" || value > 0.0)
+}
+
 #[cfg(test)]
 mod in_flight_query_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[test]
+    fn perf_stage_samples_reject_invalid_values_and_zero_streams() {
+        assert!(is_valid_perf_stage_sample("upstreamFirstByte", 0.0));
+        assert!(is_valid_perf_stage_sample("upstreamStream", 0.1));
+        assert!(!is_valid_perf_stage_sample("upstreamStream", 0.0));
+        assert!(!is_valid_perf_stage_sample("total", -0.1));
+        assert!(!is_valid_perf_stage_sample("total", f64::INFINITY));
+        assert!(!is_valid_perf_stage_sample("total", f64::NAN));
+    }
 
     #[tokio::test]
     async fn in_flight_query_ignores_projection_cursor_and_keeps_account_scope() {
