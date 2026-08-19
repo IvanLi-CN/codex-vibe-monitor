@@ -1299,6 +1299,9 @@ pub(crate) async fn list_system_task_runs(
     {
         builder.push(" AND status = ").push_bind(status);
     }
+    if started_at_from.is_some() || started_at_to.is_some() {
+        builder.push(" AND started_at GLOB '????-??-??T??:??:??.???Z'");
+    }
     if let Some(started_at_from) = started_at_from.as_deref() {
         builder
             .push(" AND started_at >= ")
@@ -1344,6 +1347,9 @@ pub(crate) async fn list_system_task_runs(
         .filter(|value| !value.is_empty())
     {
         count_builder.push(" AND status = ").push_bind(status);
+    }
+    if started_at_from.is_some() || started_at_to.is_some() {
+        count_builder.push(" AND started_at GLOB '????-??-??T??:??:??.???Z'");
     }
     if let Some(started_at_from) = started_at_from.as_deref() {
         count_builder

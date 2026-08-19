@@ -818,7 +818,7 @@ async fn system_task_runs_cursor_preserves_invalid_legacy_timestamp() {
         .expect("invalid legacy timestamp still yields a cursor");
 
     let second_page = list_system_task_runs(
-        State(state),
+        State(state.clone()),
         Query(SystemTaskRunsQuery {
             page_size: Some(1),
             cursor: Some(cursor),
@@ -830,6 +830,20 @@ async fn system_task_runs_cursor_preserves_invalid_legacy_timestamp() {
     .0;
     assert_eq!(second_page.items[0].task_kind, "older_canonical_timestamp");
     assert!(second_page.next_cursor.is_none());
+
+    let ranged_page = list_system_task_runs(
+        State(state),
+        Query(SystemTaskRunsQuery {
+            started_at_from: Some("2026-02-01T00:00:00Z".to_string()),
+            started_at_to: Some("2026-03-01T00:00:00Z".to_string()),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("exclude invalid legacy timestamp from time range")
+    .0;
+    assert_eq!(ranged_page.total, 0);
+    assert!(ranged_page.items.is_empty());
 }
 
 #[tokio::test]
