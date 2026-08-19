@@ -4154,9 +4154,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 ELSE finished_at
             END
         WHERE
-            started_at NOT GLOB '????-??-??T??:??:??.???Z'
+            (started_at NOT GLOB '????-??-??T??:??:??.???Z'
+                AND date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8))
             OR (finished_at IS NOT NULL
-                AND finished_at NOT GLOB '????-??-??T??:??:??.???Z')
+                AND finished_at NOT GLOB '????-??-??T??:??:??.???Z'
+                AND date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8))
         "#,
     )
     .execute(pool)

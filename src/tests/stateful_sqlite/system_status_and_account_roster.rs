@@ -945,6 +945,23 @@ async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
     );
 
     sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('legacy_rfc3339_without_millis', 'fixture', 'success', '2026-06-22T08:45:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy RFC3339 timestamp without milliseconds");
+    ensure_schema(&pool)
+        .await
+        .expect("normalize legacy RFC3339 timestamp without milliseconds");
+    let legacy_rfc3339_started_at: String = sqlx::query_scalar(
+        "SELECT started_at FROM system_task_runs WHERE task_kind = 'legacy_rfc3339_without_millis'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized legacy RFC3339 timestamp");
+    assert_eq!(legacy_rfc3339_started_at, "2026-06-22T08:45:00.000Z");
+
+    sqlx::query(
         "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('invalid_legacy_task_timestamp', 'fixture', 'success', '2026-02-30 08:45:00', '2026-02-30 17:15:00+08:00')",
     )
     .execute(&pool)
