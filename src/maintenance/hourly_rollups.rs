@@ -422,7 +422,6 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
 }
 
 pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
-#[cfg(test)]
 pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,6 +436,21 @@ pub(crate) struct HistoricalRollupArchiveReplayResult {
     cursor_id: i64,
 }
 
+fn historical_rollup_replay_made_progress(
+    replay: HistoricalRollupArchiveReplayResult,
+    initial_cursor_id: i64,
+) -> bool {
+    replay.cursor_id > initial_cursor_id
+}
+
+fn historical_rollup_candidate_changed(
+    changed_in_prior_stage: bool,
+    replay_progressed: bool,
+    coverage_updated: bool,
+) -> bool {
+    changed_in_prior_stage || replay_progressed || coverage_updated
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct HistoricalRollupArchiveReplaySummary {
     pub(crate) scanned_batches: u64,
@@ -445,6 +459,9 @@ pub(crate) struct HistoricalRollupArchiveReplaySummary {
     pub(crate) budget_consumed_batches: u64,
     pub(crate) blocked_batches: u64,
     pub(crate) materialized_batches: u64,
+    pub(crate) changed_batches: u64,
+    pub(crate) hit_budget: bool,
+    pub(crate) advance_cursor_after_unstarted_replay: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -488,7 +505,6 @@ pub(crate) fn historical_rollup_materialization_budget_reached(
         || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
 }
 
-#[cfg(test)]
 pub(crate) fn inflate_gzip_sqlite_file_with_budget(
     source: &Path,
     destination: &Path,
@@ -559,6 +575,60 @@ pub(crate) async fn open_historical_rollup_archive_pool(
             inflate_gzip_sqlite_file(archive_path, temp_path)?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.with_context(|| {
+                format!(
+                    "failed to reopen archive batch {} after resetting temp db (initial error: {first_err})",
+                    archive_path.display()
+                )
+            })
+        }
+    }
+}
+
+async fn open_historical_rollup_archive_pool_with_budget(
+    archive_path: &Path,
+    temp_path: &Path,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> Result<Option<Pool<Sqlite>>> {
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        return Ok(None);
+    }
+    let current_signature = historical_rollup_archive_source_signature(archive_path)?;
+    let stale_temp = !temp_path.exists()
+        || load_historical_rollup_temp_source_signature(temp_path).as_deref()
+            != Some(current_signature.as_str());
+    if stale_temp {
+        remove_temp_sqlite_artifacts(temp_path);
+        if !inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, max_elapsed)?
+        {
+            remove_temp_sqlite_artifacts(temp_path);
+            return Ok(None);
+        }
+        persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
+    }
+
+    let connect = || async {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(temp_path))
+            .await
+    };
+
+    match connect().await {
+        Ok(pool) => Ok(Some(pool)),
+        Err(first_err) => {
+            remove_temp_sqlite_artifacts(temp_path);
+            if !inflate_gzip_sqlite_file_with_budget(
+                archive_path,
+                temp_path,
+                started_at,
+                max_elapsed,
+            )? {
+                remove_temp_sqlite_artifacts(temp_path);
+                return Ok(None);
+            }
+            persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
+            connect().await.map(Some).with_context(|| {
                 format!(
                     "failed to reopen archive batch {} after resetting temp db (initial error: {first_err})",
                     archive_path.display()
@@ -1119,7 +1189,7 @@ pub(crate) async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget
     }
 }
 
-async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
+pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     started_at: Instant,
     max_archive_batches: Option<u64>,
@@ -1143,6 +1213,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             max_archive_batches,
             max_elapsed,
         ) {
+            summary.hit_budget = true;
             break;
         }
         summary.scanned_batches += 1;
@@ -1187,6 +1258,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 &archive_file.file_path,
             )
             .await?;
+            summary.changed_batches += 1;
             continue;
         }
         if pending_targets.is_empty() && !account_activity_v2_pending {
@@ -1196,6 +1268,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 &archive_file.file_path,
             )
             .await?;
+            summary.changed_batches += 1;
             continue;
         }
         let replay_cursor = load_hourly_rollup_archive_progress_tx(
@@ -1250,9 +1323,21 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             retention_temp_suffix()
         ));
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
+        let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
+            &archive_path,
+            &temp_path,
+            started_at,
+            max_elapsed,
+        )
+        .await?
+        else {
+            summary.hit_budget = true;
+            summary.advance_cursor_after_unstarted_replay = true;
+            break;
+        };
         let has_pruned_success_details =
             invocation_archive_has_pruned_success_details_in_db(&archive_pool).await?;
+        let mut changed_in_prior_stage = false;
         if has_pruned_success_details {
             let mut replayable_targets = Vec::with_capacity(pending_targets.len());
             let mut structured_rollup_targets = Vec::new();
@@ -1299,6 +1384,8 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             )
             .await?;
             if replay.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+                let replay_progressed =
+                    historical_rollup_replay_made_progress(replay, account_activity_v2_cursor);
                 if replay.cursor_id > account_activity_v2_cursor {
                     save_hourly_rollup_archive_progress_tx(
                         tx,
@@ -1310,6 +1397,10 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 }
                 archive_pool.close().await;
                 summary.budget_consumed_batches += 1;
+                summary.hit_budget = true;
+                if replay_progressed {
+                    summary.changed_batches += 1;
+                }
                 std::mem::forget(temp_cleanup);
                 break;
             }
@@ -1326,6 +1417,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 &archive_file.file_path,
             )
             .await?;
+            changed_in_prior_stage = true;
             tracing::debug!(
                 archive_replay_target = HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
                 file_path = archive_file.file_path,
@@ -1368,10 +1460,15 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                     "legacy archive account activity replay completed; keyed targets remain blocked"
                 );
             }
+            if account_activity_v2_pending || blocked_targets.is_empty() {
+                summary.changed_batches += 1;
+            }
             continue;
         }
 
-        if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
+        let coverage_updated =
+            archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none();
+        if coverage_updated {
             let bounds = load_archive_coverage_bounds(&archive_pool, "codex_invocations").await?;
             update_archive_batch_coverage_bounds_tx(
                 tx,
@@ -1394,7 +1491,9 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                     max_elapsed,
                 )
                 .await?;
-            if catch_up_outcome.cursor_id > usage_breakdown_cursor {
+            let catch_up_progressed =
+                historical_rollup_replay_made_progress(catch_up_outcome, usage_breakdown_cursor);
+            if catch_up_progressed {
                 save_hourly_rollup_archive_progress_tx(
                     tx,
                     INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
@@ -1403,12 +1502,21 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 )
                 .await?;
                 usage_breakdown_cursor = catch_up_outcome.cursor_id;
+                changed_in_prior_stage = true;
             }
             if catch_up_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget
                 && usage_breakdown_cursor < replay_cursor
             {
                 archive_pool.close().await;
                 summary.budget_consumed_batches += 1;
+                summary.hit_budget = true;
+                if historical_rollup_candidate_changed(
+                    changed_in_prior_stage,
+                    false,
+                    coverage_updated,
+                ) {
+                    summary.changed_batches += 1;
+                }
                 std::mem::forget(temp_cleanup);
                 break;
             }
@@ -1425,8 +1533,11 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
         .await?;
         archive_pool.close().await;
         if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+            let replay_progressed =
+                historical_rollup_replay_made_progress(replay_outcome, replay_cursor);
             summary.budget_consumed_batches += 1;
-            if replay_outcome.cursor_id > replay_cursor {
+            summary.hit_budget = true;
+            if replay_progressed {
                 save_hourly_rollup_archive_progress_tx(
                     tx,
                     HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -1443,6 +1554,13 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                     replay_outcome.cursor_id,
                 )
                 .await?;
+            }
+            if historical_rollup_candidate_changed(
+                changed_in_prior_stage,
+                replay_progressed,
+                coverage_updated,
+            ) {
+                summary.changed_batches += 1;
             }
             std::mem::forget(temp_cleanup);
             break;
@@ -1494,6 +1612,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
             );
         }
+        summary.changed_batches += 1;
     }
 
     summary.remaining_skip_batches = skip_remaining;
@@ -1568,8 +1687,6 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let mut summary = HistoricalRollupArchiveReplaySummary::default();
-    let mut skip_remaining = skip_archive_batches;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -1584,6 +1701,28 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
     .fetch_all(&mut *tx)
     .await?;
 
+    replay_forward_proxy_archive_files_into_hourly_rollups_tx_with_limits(
+        tx,
+        started_at,
+        max_archive_batches,
+        max_elapsed,
+        skip_archive_batches,
+        archive_files,
+    )
+    .await
+}
+
+pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_with_limits(
+    tx: &mut SqliteConnection,
+    started_at: Instant,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_archive_batches: usize,
+    archive_files: Vec<ArchiveBatchFileRow>,
+) -> Result<HistoricalRollupArchiveReplaySummary> {
+    let mut summary = HistoricalRollupArchiveReplaySummary::default();
+    let mut skip_remaining = skip_archive_batches;
+
     for archive_file in archive_files {
         if skip_remaining > 0 {
             skip_remaining -= 1;
@@ -1597,6 +1736,7 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
             max_archive_batches,
             max_elapsed,
         ) {
+            summary.hit_budget = true;
             break;
         }
         summary.scanned_batches += 1;
@@ -1614,6 +1754,7 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
                 &archive_file.file_path,
             )
             .await?;
+            summary.changed_batches += 1;
             continue;
         }
         let replay_cursor = load_hourly_rollup_archive_progress_tx(
@@ -1644,9 +1785,22 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
             retention_temp_suffix()
         ));
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
+        let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
+            &archive_path,
+            &temp_path,
+            started_at,
+            max_elapsed,
+        )
+        .await?
+        else {
+            summary.hit_budget = true;
+            summary.advance_cursor_after_unstarted_replay = true;
+            break;
+        };
 
-        if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
+        let coverage_updated =
+            archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none();
+        if coverage_updated {
             let bounds =
                 load_archive_coverage_bounds(&archive_pool, "forward_proxy_attempts").await?;
             update_archive_batch_coverage_bounds_tx(
@@ -1668,8 +1822,11 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
         .await?;
         archive_pool.close().await;
         if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+            let replay_progressed =
+                historical_rollup_replay_made_progress(replay_outcome, replay_cursor);
             summary.budget_consumed_batches += 1;
-            if replay_outcome.cursor_id > replay_cursor {
+            summary.hit_budget = true;
+            if replay_progressed {
                 save_hourly_rollup_archive_progress_tx(
                     tx,
                     HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
@@ -1677,6 +1834,9 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
                     replay_outcome.cursor_id,
                 )
                 .await?;
+            }
+            if replay_progressed || coverage_updated {
+                summary.changed_batches += 1;
             }
             std::mem::forget(temp_cleanup);
             break;
@@ -1703,6 +1863,7 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
         )
         .await?;
         summary.materialized_batches += 1;
+        summary.changed_batches += 1;
     }
 
     summary.remaining_skip_batches = skip_remaining;
@@ -1983,6 +2144,45 @@ mod hourly_rollup_budget_tests {
         ]));
         assert!(modern_query.contains("first_token_ms,"));
         assert!(!modern_query.contains("NULL AS first_token_ms"));
+    }
+
+    #[tokio::test]
+    async fn replay_budget_exhaustion_before_the_first_row_has_no_progress() {
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open archive pool");
+        sqlx::query("CREATE TABLE forward_proxy_attempts (id INTEGER PRIMARY KEY)")
+            .execute(&archive_pool)
+            .await
+            .expect("create forward proxy archive schema");
+        let mut tx = SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("open rollup transaction connection");
+
+        let replay = replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
+            &mut tx,
+            &archive_pool,
+            0,
+            Instant::now() - Duration::from_millis(1),
+            Some(Duration::ZERO),
+        )
+        .await
+        .expect("stop before replaying archive rows");
+
+        assert_eq!(
+            replay.outcome,
+            HistoricalRollupArchiveReplayOutcome::HitBudget
+        );
+        assert_eq!(replay.cursor_id, 0);
+        assert!(!historical_rollup_replay_made_progress(replay, 0));
+    }
+
+    #[test]
+    fn candidate_with_prior_replay_progress_remains_actionable_after_later_budget_exhaustion() {
+        assert!(historical_rollup_candidate_changed(true, false, false));
+        assert!(!historical_rollup_candidate_changed(false, false, false));
     }
 
     #[test]

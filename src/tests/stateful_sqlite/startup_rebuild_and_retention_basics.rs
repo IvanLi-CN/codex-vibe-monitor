@@ -1075,6 +1075,220 @@ async fn startup_historical_rollup_backfill_prioritizes_usage_breakdown_repair()
     assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
 }
 
+async fn seed_missing_historical_rollup_startup_candidates(pool: &SqlitePool, count: usize) -> i64 {
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin startup candidate seed transaction");
+    for index in 0..count {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, sha256, row_count, status, created_at
+            )
+            VALUES ('forward_proxy_attempts', '2025-01', ?1, ?2, 1, 'completed', datetime('now'))
+            "#,
+        )
+        .bind(format!(
+            "/missing/historical-rollup-startup-{index}.sqlite.gz"
+        ))
+        .bind(format!("startup-candidate-{index}"))
+        .execute(tx.as_mut())
+        .await
+        .expect("insert missing historical rollup startup candidate");
+    }
+    let last_id = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM archive_batches")
+        .fetch_one(tx.as_mut())
+        .await
+        .expect("load last startup candidate id");
+    tx.commit()
+        .await
+        .expect("commit startup candidate seed transaction");
+    last_id
+}
+
+#[tokio::test]
+async fn historical_rollup_startup_window_bounds_a_twenty_thousand_batch_fixture_and_wraps() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let last_id = seed_missing_historical_rollup_startup_candidates(&state.pool, 20_000).await;
+
+    let pending_hint = count_historical_rollup_startup_pending_hint(&state.pool)
+        .await
+        .expect("load bounded historical rollup startup pending hint");
+    assert_eq!(pending_hint.pending_archive_batches, 0);
+    assert_eq!(pending_hint.candidate_count, 32);
+    assert_eq!(pending_hint.inspected_path_count, 32);
+    assert!(pending_hint.candidate_count <= 32);
+    assert!(pending_hint.inspected_path_count <= 32);
+
+    let first =
+        materialize_historical_rollups_startup_window(&state.pool, 0, Duration::from_secs(6))
+            .await
+            .expect("run bounded historical rollup startup window");
+    assert_eq!(first.candidate_count, 32);
+    assert_eq!(first.inspected_path_count, 16);
+    assert_eq!(first.summary.scanned_archive_batches, 16);
+    assert!(first.candidate_count <= 32);
+    assert!(first.inspected_path_count <= 32);
+    assert!(first.summary.scanned_archive_batches > 2);
+    assert!(first.next_cursor_id > 0);
+
+    let resumed = materialize_historical_rollups_startup_window(
+        &state.pool,
+        first.next_cursor_id,
+        Duration::from_secs(6),
+    )
+    .await
+    .expect("resume bounded historical rollup startup window");
+    assert_eq!(resumed.candidate_count, 32);
+    assert_eq!(resumed.inspected_path_count, 16);
+    assert!(resumed.next_cursor_id > first.next_cursor_id);
+
+    let wrapped =
+        materialize_historical_rollups_startup_window(&state.pool, last_id, Duration::from_secs(6))
+            .await
+            .expect("wrap bounded historical rollup startup window");
+    assert!(wrapped.wrapped);
+    assert_eq!(wrapped.candidate_count, 32);
+    assert_eq!(wrapped.inspected_path_count, 16);
+    assert!(wrapped.next_cursor_id < last_id);
+}
+
+#[tokio::test]
+async fn historical_rollup_startup_window_advances_in_keyset_order_despite_usage_breakdown_candidates()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_missing_historical_rollup_startup_candidates(&state.pool, 20).await;
+    let sixteenth_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM archive_batches WHERE dataset = 'forward_proxy_attempts' ORDER BY id LIMIT 1 OFFSET 15",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load sixteenth forward proxy candidate id");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status, created_at
+        )
+        VALUES ('codex_invocations', '2025-01', '/missing/usage-breakdown-priority.sqlite.gz', 'usage-breakdown-priority', 1, 'completed', datetime('now'))
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert usage breakdown candidate after the first keyset batch");
+
+    let first =
+        materialize_historical_rollups_startup_window(&state.pool, 0, Duration::from_secs(6))
+            .await
+            .expect("run first ordered historical rollup startup window");
+    assert_eq!(first.inspected_path_count, 16);
+    assert_eq!(first.next_cursor_id, sixteenth_id);
+
+    let second = materialize_historical_rollups_startup_window(
+        &state.pool,
+        first.next_cursor_id,
+        Duration::from_secs(6),
+    )
+    .await
+    .expect("resume ordered historical rollup startup window");
+    assert_eq!(second.inspected_path_count, 5);
+    assert!(second.next_cursor_id > first.next_cursor_id);
+}
+
+#[tokio::test]
+async fn historical_rollup_startup_window_preserves_cursor_when_budget_is_exhausted() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_missing_historical_rollup_startup_candidates(&state.pool, 32).await;
+
+    let blocked = materialize_historical_rollups_startup_window(&state.pool, 0, Duration::ZERO)
+        .await
+        .expect("run budget-exhausted historical rollup startup window");
+    assert_eq!(blocked.candidate_count, 32);
+    assert_eq!(blocked.inspected_path_count, 0);
+    assert_eq!(blocked.next_cursor_id, 0);
+    assert!(blocked.hit_budget);
+}
+
+#[tokio::test]
+async fn startup_historical_rollup_backfill_persists_cursor_and_defers_under_pressure() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_missing_historical_rollup_startup_candidates(&state.pool, 32).await;
+    let task = StartupBackfillTask::HistoricalRollups;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
+    let held = gate
+        .try_begin_background("test_historical_rollup_pressure")
+        .expect("hold startup backfill gate");
+
+    assert!(
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
+            .expect("defer historical startup backfill under pressure")
+    );
+    let deferred = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load pressure-deferred historical progress");
+    assert_eq!(deferred.cursor_id, 0);
+    assert!(!deferred.is_due(Utc::now()));
+    drop(held);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("make historical startup backfill due");
+    assert!(
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
+            .expect("run bounded historical startup backfill")
+    );
+    let resumed = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load resumed historical progress");
+    assert!(resumed.cursor_id > 0);
+    assert_eq!(resumed.last_scanned, 16);
+}
+
+#[tokio::test]
+async fn historical_rollup_noop_pass_does_not_create_a_system_task_run() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_missing_historical_rollup_startup_candidates(&state.pool, 16).await;
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count startup task runs before historical noop pass");
+
+    let cancel = CancellationToken::new();
+    let outcome = run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+    let after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count startup task runs after historical noop pass");
+    assert!(!outcome.ran_actionable_task);
+    assert!(!outcome.had_failure);
+    assert_eq!(after, before);
+}
+
 #[tokio::test]
 async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
     let state = test_state_with_openai_base(
