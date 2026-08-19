@@ -1744,10 +1744,8 @@ pub(crate) fn runtime_record_first_token_ms_with_retry(
     record: &ApiInvocation,
     is_retry: bool,
 ) -> Option<f64> {
-    let terminal_retry_has_trustworthy_timing = matches!(
-        normalized_runtime_text(record.status.as_deref()).as_str(),
-        "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS | "http_200"
-    );
+    let terminal_retry_has_trustworthy_timing = runtime_record_is_success_for_summary(record)
+        || finite_positive_timing(record.t_upstream_stream_ms).is_some();
     (!is_retry || (!runtime_record_is_in_flight(record) && terminal_retry_has_trustworthy_timing))
         .then_some(finite_nonnegative_timing(record.first_token_ms))
         .flatten()
@@ -19669,7 +19667,7 @@ mod dashboard_activity_read_model_tests {
                 payload TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, \
                 is_actionable INTEGER, t_req_read_ms REAL, t_req_parse_ms REAL, \
                 t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, \
-                t_total_ms REAL, source TEXT\
+                t_upstream_stream_ms REAL, t_total_ms REAL, source TEXT\
              )",
         )
         .execute(&pool)
@@ -19688,12 +19686,12 @@ mod dashboard_activity_read_model_tests {
         sqlx::query(
             "INSERT INTO codex_invocations (\
                 id, invoke_id, occurred_at, status, total_tokens, cost, cache_input_tokens, \
-                payload, failure_class, first_token_ms, source\
+                payload, failure_class, first_token_ms, t_upstream_stream_ms, source\
              ) VALUES \
                 (1, 'valid-final', '2026-08-03 08:00:00', 'success', 10, 0.01, 0, \
-                 '{\"promptCacheKey\":\"valid\",\"upstreamAccountId\":7}', 'none', 720.0, 'proxy'), \
+                 '{\"promptCacheKey\":\"valid\",\"upstreamAccountId\":7}', 'none', 720.0, 500.0, 'proxy'), \
                 (2, 'stale-final', '2026-08-03 08:01:00', 'failed', 10, 0.01, 0, \
-                 '{\"promptCacheKey\":\"stale\",\"upstreamAccountId\":7}', 'service_failure', 900.0, 'proxy')",
+                 '{\"promptCacheKey\":\"stale\",\"upstreamAccountId\":7}', 'service_failure', 900.0, 800.0, 'proxy')",
         )
         .execute(&pool)
         .await
@@ -19729,6 +19727,19 @@ mod dashboard_activity_read_model_tests {
         assert_eq!(rows[0].upstream_account_id, Some(7));
         assert_eq!(rows[0].first_token_sample_count, 1);
         assert_eq!(rows[0].first_token_sum_ms, 720.0);
+
+        let summary = query_invocation_network_summary(
+            &pool,
+            &InvocationRecordsFilters::default(),
+            InvocationSourceScope::All,
+            2,
+        )
+        .await
+        .expect("query network summary");
+        assert_eq!(summary.avg_first_token_ms, Some(720.0));
+        assert_eq!(summary.p95_first_token_ms, Some(720.0));
+        assert_eq!(summary.avg_response_duration_ms, Some(500.0));
+        assert_eq!(summary.p95_response_duration_ms, Some(500.0));
     }
 
     #[tokio::test]
@@ -21127,6 +21138,38 @@ mod invocation_cost_audit_tests {
         let mut record = sample_invocation(None);
         record.status = Some("failed".to_string());
         record.first_token_ms = Some(720.0);
+        record.t_upstream_stream_ms = None;
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), None);
+        assert_eq!(
+            dashboard_activity_terminal_delta(&record).first_token_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn streamed_failed_terminal_retry_keeps_final_first_token_measurement() {
+        let mut record = sample_invocation(None);
+        record.status = Some("failed".to_string());
+        record.first_token_ms = Some(720.0);
+        record.t_upstream_stream_ms = Some(240.0);
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), Some(720.0));
+        assert_eq!(
+            dashboard_activity_terminal_delta(&record).first_token_ms,
+            Some(720.0)
+        );
+    }
+
+    #[test]
+    fn http_200_error_retry_hides_unowned_first_token_measurement() {
+        let mut record = sample_invocation(None);
+        record.status = Some("http_200".to_string());
+        record.error_message = Some("upstream parse failed".to_string());
+        record.first_token_ms = Some(720.0);
+        record.t_upstream_stream_ms = None;
         record.pool_attempt_count = Some(2);
 
         assert_eq!(runtime_record_first_token_ms(&record), None);
