@@ -245,6 +245,7 @@ pub(crate) struct PoolRoutingSnapshotStore {
 struct PoolRoutingSnapshotRefreshState {
     generation: u64,
     pending: bool,
+    wake_waiters: bool,
 }
 
 impl Default for PoolRoutingSnapshotStore {
@@ -271,11 +272,20 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn request_refresh(&self) {
+        self.request_refresh_inner(false);
+    }
+
+    pub(crate) fn request_refresh_and_wake_waiters(&self) {
+        self.request_refresh_inner(true);
+    }
+
+    fn request_refresh_inner(&self, wake_waiters: bool) {
         let mut refresh_state = self
             .refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned");
         refresh_state.pending = true;
+        refresh_state.wake_waiters |= wake_waiters;
         refresh_state.generation = refresh_state.generation.wrapping_add(1);
         drop(refresh_state);
         self.refresh_tx.send_modify(|generation| {
@@ -304,8 +314,11 @@ impl PoolRoutingSnapshotStore {
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
+        let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
-        publish_availability();
+        if wake_waiters {
+            publish_availability();
+        }
         true
     }
 
@@ -319,6 +332,7 @@ impl PoolRoutingSnapshotStore {
             .write()
             .expect("pool routing snapshot lock poisoned") = None;
         refresh_state.pending = false;
+        refresh_state.wake_waiters = false;
         refresh_state.generation = refresh_state.generation.wrapping_add(1);
     }
 

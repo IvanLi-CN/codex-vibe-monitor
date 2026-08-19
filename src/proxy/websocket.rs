@@ -336,6 +336,17 @@ impl PoolRoutingReservationGuard {
         release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
         self.armed = false;
     }
+
+    fn release_without_availability(&mut self) {
+        if !self.armed {
+            return;
+        }
+        release_pool_routing_reservation_without_availability(
+            self.state.as_ref(),
+            &self.reservation_key,
+        );
+        self.armed = false;
+    }
 }
 
 impl Drop for PoolRoutingReservationGuard {
@@ -998,8 +1009,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) =
-                record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+            let failure_recorded =
+                match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                     state.as_ref(),
                     account.account_id,
                     trace.sticky_key.as_deref(),
@@ -1011,14 +1022,18 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                         .and_then(|pending| pending.attempt_id),
                 )
                 .await
-            {
-                warn!(
-                    invoke_id = %trace.invoke_id,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to record websocket pool route transport failure"
-                );
-            }
+                {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            invoke_id = %trace.invoke_id,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to record websocket pool route transport failure"
+                        );
+                        false
+                    }
+                };
             if should_mark_ws_unsupported
                 && let Err(err) =
                     ensure_account_has_websocket_unsupported_tag(&state.pool, account.account_id)
@@ -1031,7 +1046,11 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     "failed to mark upstream account as websocket unsupported"
                 );
             }
-            reservation_guard.release();
+            if failure_recorded {
+                reservation_guard.release();
+            } else {
+                reservation_guard.release_without_availability();
+            }
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
@@ -1063,8 +1082,8 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            if let Err(err) =
-                record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+            let failure_recorded =
+                match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                     state.as_ref(),
                     account.account_id,
                     trace.sticky_key.as_deref(),
@@ -1076,15 +1095,23 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                         .and_then(|pending| pending.attempt_id),
                 )
                 .await
-            {
-                warn!(
-                    invoke_id = %trace.invoke_id,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to record websocket pool route timeout failure"
-                );
+                {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            invoke_id = %trace.invoke_id,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to record websocket pool route timeout failure"
+                        );
+                        false
+                    }
+                };
+            if failure_recorded {
+                reservation_guard.release();
+            } else {
+                reservation_guard.release_without_availability();
             }
-            reservation_guard.release();
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
@@ -1119,27 +1146,36 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await;
         complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-        if let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
-            state.as_ref(),
-            account.account_id,
-            trace.sticky_key.as_deref(),
-            &message,
-            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            Some(trace.invoke_id.as_str()),
-            pending_attempt_record
-                .as_ref()
-                .and_then(|pending| pending.attempt_id),
-        )
-        .await
-        {
-            warn!(
-                invoke_id = %trace.invoke_id,
-                account_id = account.account_id,
-                error = %err,
-                "failed to record websocket subprotocol mismatch route failure"
-            );
+        let failure_recorded =
+            match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                state.as_ref(),
+                account.account_id,
+                trace.sticky_key.as_deref(),
+                &message,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                Some(trace.invoke_id.as_str()),
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
+            )
+            .await
+            {
+                Ok(()) => true,
+                Err(err) => {
+                    warn!(
+                        invoke_id = %trace.invoke_id,
+                        account_id = account.account_id,
+                        error = %err,
+                        "failed to record websocket subprotocol mismatch route failure"
+                    );
+                    false
+                }
+            };
+        if failure_recorded {
+            reservation_guard.release();
+        } else {
+            reservation_guard.release_without_availability();
         }
-        reservation_guard.release();
         return Err(WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message,
@@ -1732,8 +1768,8 @@ pub(crate) async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
-    if let Some(message) = upstream_route_failure.as_deref()
-        && let Err(err) = record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+    let failure_recorded = if let Some(message) = upstream_route_failure.as_deref() {
+        match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
             state.as_ref(),
             usage_tracker.account.account_id,
             usage_tracker.trace.sticky_key.as_deref(),
@@ -1745,14 +1781,21 @@ pub(crate) async fn proxy_websocket_tunnel(
                 .and_then(|pending| pending.attempt_id),
         )
         .await
-    {
-        warn!(
-            invoke_id = %usage_tracker.trace.invoke_id,
-            account_id = usage_tracker.account.account_id,
-            error = %err,
-            "failed to record post-upgrade websocket pool route transport failure"
-        );
-    }
+        {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(
+                    invoke_id = %usage_tracker.trace.invoke_id,
+                    account_id = usage_tracker.account.account_id,
+                    error = %err,
+                    "failed to record post-upgrade websocket pool route transport failure"
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     if mark_account_ws_unsupported_after_close
         && let Err(err) = ensure_account_has_websocket_unsupported_tag(
             &state.pool,
@@ -1768,7 +1811,11 @@ pub(crate) async fn proxy_websocket_tunnel(
         );
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-    reservation_guard.release();
+    if failure_recorded {
+        reservation_guard.release();
+    } else {
+        reservation_guard.release_without_availability();
+    }
 }
 
 pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(

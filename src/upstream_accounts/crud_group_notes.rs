@@ -2226,7 +2226,6 @@ pub(crate) async fn reset_upstream_account_model_routing(
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
     state.pool_routing_snapshot.request_refresh();
-    publish_pool_routing_availability(state.as_ref());
     Ok(Json(model_state))
 }
 

@@ -205,7 +205,11 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     .await?;
     let snapshot_changed = outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
-    if snapshot_changed {
+    if outcome.availability_increased {
+        state
+            .pool_routing_snapshot
+            .request_refresh_and_wake_waiters();
+    } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }
     if outcome.sticky_mutation.writes_conversation_operation() {
@@ -546,7 +550,11 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     let snapshot_changed = capability_changed
         || outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
-    if snapshot_changed {
+    if outcome.availability_increased {
+        state
+            .pool_routing_snapshot
+            .request_refresh_and_wake_waiters();
+    } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }
     if outcome.sticky_mutation.writes_conversation_operation() {

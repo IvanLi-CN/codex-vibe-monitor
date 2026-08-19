@@ -34,6 +34,7 @@ struct CacheHitRouteEvent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ModelRouteCacheObservationOutcome {
     pub(crate) observed: bool,
+    pub(crate) snapshot_changed: bool,
     pub(crate) availability_increased: bool,
 }
 
@@ -787,6 +788,7 @@ async fn mark_model_route_cache_usage_missing(
     }
     Ok(ModelRouteCacheObservationOutcome {
         observed: true,
+        snapshot_changed: changed,
         availability_increased: false,
     })
 }
@@ -891,6 +893,7 @@ pub(crate) async fn observe_model_route_cache_hit(
         tx.commit().await?;
         return Ok(ModelRouteCacheObservationOutcome {
             observed: true,
+            snapshot_changed: false,
             availability_increased: false,
         });
     }
@@ -1063,11 +1066,13 @@ pub(crate) async fn observe_model_route_cache_hit(
     let availability_increased = event
         .as_ref()
         .is_some_and(|event| event.action == UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED);
+    let snapshot_changed = event.is_some();
     if let Some(event) = event {
         persist_cache_hit_route_event(pool, account_id, model, event).await?;
     }
     Ok(ModelRouteCacheObservationOutcome {
         observed: true,
+        snapshot_changed,
         availability_increased,
     })
 }

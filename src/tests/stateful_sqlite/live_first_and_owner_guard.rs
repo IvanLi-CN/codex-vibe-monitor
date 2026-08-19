@@ -3100,6 +3100,11 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
             .expect("snapshot refresh channel must remain open"),
         "a newly observed endpoint capability must request a snapshot refresh"
     );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a pending snapshot refresh must not wake pool waiters before replacement"
+    );
     snapshot_refreshes.borrow_and_update();
     refresh_pool_routing_snapshot(state.as_ref())
         .await
@@ -3589,6 +3594,21 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
         *availability.borrow(),
         initial_generation,
         "missing cache usage constrains capacity and must not wake pool waiters"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "cache health degradation must request a snapshot replacement"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after missing cache usage");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "constraining cache health must not wake pool waiters after replacement"
     );
 
     let missing_route = load_model_routing_states(&state.pool, account_id)
