@@ -2270,6 +2270,8 @@ pub(crate) struct AppState {
     pub(crate) pool_routing_reservations:
         Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
+    pub(crate) pool_routing_snapshot: Arc<PoolRoutingSnapshotStore>,
+    pub(crate) pool_no_candidate_waiters: Arc<Semaphore>,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     #[cfg(test)]
     pub(crate) pool_routing_test_data_version_connection:

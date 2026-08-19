@@ -672,6 +672,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                             &token_expires_at,
                         )
                         .await?;
+                        state.pool_routing_snapshot.request_refresh();
                     }
                     Err(err)
                         if err
@@ -698,6 +699,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                         )
                         .await?;
                         set_account_status(&state.pool, row.id, deferred_status, None).await?;
+                        state.pool_routing_snapshot.request_refresh();
                         return Ok(None);
                     }
                     Err(err) if is_reauth_error(&err) => {
@@ -766,6 +768,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                             proxy_snapshot.as_ref(),
                         )
                         .await?;
+                        state.pool_routing_snapshot.request_refresh();
                         return Ok(None);
                     }
                     Err(err) => {
@@ -838,6 +841,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                                     proxy_snapshot.as_ref(),
                                 )
                                 .await?;
+                                state.pool_routing_snapshot.request_refresh();
                             }
                             UpstreamAccountFailureDisposition::RateLimited
                             | UpstreamAccountFailureDisposition::Retryable => {
@@ -855,6 +859,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                                     None,
                                 )
                                 .await?;
+                                state.pool_routing_snapshot.request_refresh();
                             }
                         }
                         return Ok(None);

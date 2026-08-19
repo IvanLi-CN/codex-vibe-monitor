@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(dead_code)]
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub(crate) struct UpstreamAccountRow {
     pub(crate) id: i64,
     pub(crate) kind: String,

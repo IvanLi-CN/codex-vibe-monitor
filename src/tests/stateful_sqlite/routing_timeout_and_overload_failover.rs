@@ -84,6 +84,9 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
         .execute(&state.pool)
         .await
         .expect("mark broken alternate-route account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout broken alternate setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -242,6 +245,9 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live timeout replay setup");
 
     let chunks = stream::iter(vec![Ok::<Bytes, io::Error>(Bytes::from_static(
         br#"{"model":"gpt-5","input":"hello"}"#,
@@ -3191,6 +3197,9 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after sticky preflight setup");
 
     let err = send_pool_request_with_failover(
         state.clone(),

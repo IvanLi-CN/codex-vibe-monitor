@@ -57,7 +57,13 @@ async fn resolver_skips_account_when_effective_concurrency_limit_is_reached() {
     upsert_sticky_route(&state.pool, "load-seed", limited_account_id, &now_iso)
         .await
         .expect("seed active sticky route");
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after concurrency setup");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
             .await
@@ -748,6 +754,9 @@ async fn node_shunt_sticky_reuse_preserves_slot_for_in_flight_account() {
             },
         );
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("node-shunt-sticky-reuse"),
@@ -1473,6 +1482,9 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve node shunt request after refresh failure");
@@ -1578,6 +1590,9 @@ async fn resolver_ignores_stale_sticky_routes_when_applying_concurrency_limit() 
     .await
     .expect("seed stale sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
             .await
@@ -1642,6 +1657,9 @@ async fn resolver_allows_sticky_reuse_even_when_concurrency_limit_is_reached() {
         .await
         .expect("seed sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-reuse"),
@@ -1724,6 +1742,9 @@ async fn resolver_hands_off_fallback_sticky_to_higher_priority_account() {
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-priority-reuse"),

@@ -190,6 +190,7 @@ pub(crate) async fn update_pool_routing_settings(
             .await;
         }
     }
+    state.pool_routing_snapshot.request_refresh();
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
@@ -1400,7 +1401,8 @@ pub(crate) async fn create_api_key_account(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let detail = create_api_key_account_inner(state, payload).await?;
+    let detail = create_api_key_account_inner(state.clone(), payload).await?;
+    state.pool_routing_snapshot.request_refresh();
     Ok(Json(detail))
 }
 
@@ -1538,6 +1540,7 @@ pub(crate) async fn update_upstream_account(
         .account_ops
         .run_update_account(state.clone(), id, payload)
         .await?;
+    state.pool_routing_snapshot.request_refresh();
     Ok(Json(detail))
 }
 
@@ -2523,6 +2526,7 @@ pub(crate) async fn delete_upstream_account(
         .account_ops
         .run_delete_account(state.clone(), id)
         .await?;
+    state.pool_routing_snapshot.request_refresh();
     Ok(status)
 }
 

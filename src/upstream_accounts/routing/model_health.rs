@@ -726,18 +726,14 @@ async fn mark_model_route_cache_usage_missing(
     }
     let first_missing_sample = row.cache_usage_missing_since.is_none();
     let (state_before, priority_before, _) = effective_row_state(&row, Utc::now());
-    let cooling_is_active = row.state == MODEL_ROUTE_STATE_COOLING_DOWN
-        && row
-            .cooldown_until
-            .as_deref()
-            .and_then(parse_to_utc_datetime)
-            .is_some_and(|until| until > Utc::now());
-    let state_after = if cooling_is_active {
+    let cooling_or_probe =
+        row.state == MODEL_ROUTE_STATE_COOLING_DOWN && row.cooldown_until.is_some();
+    let state_after = if cooling_or_probe {
         MODEL_ROUTE_STATE_COOLING_DOWN
     } else {
         MODEL_ROUTE_STATE_DEGRADED
     };
-    let priority_after = if cooling_is_active {
+    let priority_after = if cooling_or_probe {
         MODEL_ROUTE_PRIORITY_EXCLUDED
     } else {
         MODEL_ROUTE_PRIORITY_DEMOTED
@@ -754,7 +750,7 @@ async fn mark_model_route_cache_usage_missing(
     .bind(priority_after)
     .bind(if changed { 1 } else { 0 })
     .bind(&now)
-    .bind(if cooling_is_active { 1 } else { 0 })
+    .bind(if cooling_or_probe { 1 } else { 0 })
     .bind(reason)
     .execute(&mut *tx)
     .await?;

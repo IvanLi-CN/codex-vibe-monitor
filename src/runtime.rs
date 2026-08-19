@@ -192,6 +192,8 @@ pub(crate) async fn run() -> Result<()> {
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
@@ -209,6 +211,8 @@ pub(crate) async fn run() -> Result<()> {
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+    warm_pool_routing_snapshot_best_effort(state.as_ref()).await;
+    spawn_pool_routing_snapshot_reconcile(state.clone());
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
@@ -235,6 +239,32 @@ pub(crate) async fn refresh_pool_routing_runtime_cache_best_effort(
             "failed to refresh pool routing runtime cache; falling back to lazy pool routing resolution"
         );
     }
+}
+
+pub(crate) async fn warm_pool_routing_snapshot_best_effort(state: &AppState) {
+    if let Err(err) = refresh_pool_routing_snapshot(state).await {
+        warn!(error = %err, "failed to warm pool routing snapshot; routing will fail closed");
+    }
+}
+
+pub(crate) fn spawn_pool_routing_snapshot_reconcile(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut refreshes = state.pool_routing_snapshot.subscribe_refresh();
+        let mut ticker = interval(POOL_ROUTING_SNAPSHOT_RECONCILE_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // Tokio intervals tick immediately; startup has already warmed the snapshot.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => break,
+                _ = refreshes.changed() => {},
+                _ = ticker.tick() => {},
+            }
+            if let Err(err) = refresh_pool_routing_snapshot(state.as_ref()).await {
+                warn!(error = %err, "failed to reconcile pool routing snapshot");
+            }
+        }
+    });
 }
 
 pub(crate) fn begin_runtime_shutdown_if_requested<F>(

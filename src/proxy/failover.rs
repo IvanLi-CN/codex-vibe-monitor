@@ -534,6 +534,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolutionWithWait> {
     let mut availability = state.pool_routing_availability.subscribe();
+    let mut no_candidate_waiter = None;
 
     loop {
         let now = Instant::now();
@@ -569,10 +570,19 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         match resolution {
-            resolution @ (PoolAccountResolution::Unavailable
-            | PoolAccountResolution::NoCandidate(_))
-                if wait_for_no_available =>
-            {
+            PoolAccountResolution::NoCandidate(audit) if wait_for_no_available => {
+                if no_candidate_waiter.is_none() {
+                    let Ok(permit) = state.pool_no_candidate_waiters.clone().try_acquire_owned()
+                    else {
+                        return Ok(PoolAccountResolutionWithWait::Resolution(
+                            PoolAccountResolution::NoCandidate(
+                                capacity_saturated_no_candidate_audit(audit),
+                            ),
+                        ));
+                    };
+                    no_candidate_waiter = Some(permit);
+                }
+                let resolution = PoolAccountResolution::NoCandidate(audit);
                 let next_eligible_delay = match &resolution {
                     PoolAccountResolution::NoCandidate(audit) => {
                         no_candidate_next_eligible_delay(audit)
@@ -608,6 +618,35 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                         let _ = changed;
                     }
                     _ = tokio::time::sleep(wake_after) => {}
+                }
+            }
+            PoolAccountResolution::Unavailable if wait_for_no_available => {
+                // This bulkhead applies only to the NoCandidate wait stage.
+                no_candidate_waiter.take();
+                let resolution = PoolAccountResolution::Unavailable;
+                let wait_deadline = if let Some(deadline) = *wait_deadline {
+                    deadline
+                } else {
+                    let deadline = Instant::now() + state.pool_no_available_wait.timeout;
+                    *wait_deadline = Some(deadline);
+                    deadline
+                };
+                let effective_deadline = total_timeout_deadline
+                    .map(|deadline| std::cmp::min(wait_deadline, deadline))
+                    .unwrap_or(wait_deadline);
+                let now = Instant::now();
+                if now >= effective_deadline {
+                    if total_timeout_deadline.is_some_and(|deadline| deadline <= wait_deadline) {
+                        return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+                    }
+                    return Ok(PoolAccountResolutionWithWait::Resolution(resolution));
+                }
+                notify_pool_no_available_wait_hook(state);
+                tokio::select! {
+                    changed = availability.changed() => {
+                        let _ = changed;
+                    }
+                    _ = tokio::time::sleep(effective_deadline.saturating_duration_since(now)) => {}
                 }
             }
             _ => return Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
@@ -703,6 +742,19 @@ pub(crate) fn build_pool_route_selection_failure_error(
         requested_service_tier: None,
         request_body_for_capture: None,
     }
+}
+
+pub(crate) const POOL_NO_CANDIDATE_WAITER_LIMIT: usize = 32;
+
+pub(crate) fn capacity_saturated_no_candidate_audit(
+    mut audit: PoolRoutingNoCandidateAudit,
+) -> PoolRoutingNoCandidateAudit {
+    audit.terminal_reason_code = "capacitySaturated".to_string();
+    *audit
+        .excluded_reason_counts
+        .entry("capacitySaturated".to_string())
+        .or_default() += 1;
+    audit
 }
 
 async fn maybe_build_and_record_single_account_binding_terminal_error(

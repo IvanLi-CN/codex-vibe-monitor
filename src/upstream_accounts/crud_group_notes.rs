@@ -2071,6 +2071,7 @@ pub(crate) async fn update_upstream_account_group(
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .map_err(internal_error_tuple)?;
+    state.pool_routing_snapshot.request_refresh();
 
     let saved = load_group_metadata(&state.pool, Some(&group_name))
         .await
@@ -2224,6 +2225,7 @@ pub(crate) async fn reset_upstream_account_model_routing(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_snapshot.request_refresh();
     publish_pool_routing_availability(state.as_ref());
     Ok(Json(model_state))
 }

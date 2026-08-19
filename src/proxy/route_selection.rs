@@ -3804,6 +3804,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             let mut no_available_wait_deadline = None;
                             let mut availability =
                                 state_for_wait.pool_routing_availability.subscribe();
+                            let mut no_candidate_waiter = None;
                             loop {
                                 let now = Instant::now();
                                 if pre_attempt_total_timeout_deadline
@@ -3847,6 +3848,31 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
                                         no_available_wait_deadline,
                                     );
+                                }
+                                if let Ok(PoolAccountResolution::NoCandidate(audit)) = &resolution
+                                    && no_candidate_waiter.is_none()
+                                {
+                                    let Ok(permit) = state_for_wait
+                                        .pool_no_candidate_waiters
+                                        .clone()
+                                        .try_acquire_owned()
+                                    else {
+                                        break (
+                                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                                PoolAccountResolution::NoCandidate(
+                                                    capacity_saturated_no_candidate_audit(
+                                                        audit.clone(),
+                                                    ),
+                                                ),
+                                            )),
+                                            no_available_wait_deadline,
+                                        );
+                                    };
+                                    no_candidate_waiter = Some(permit);
+                                }
+                                if matches!(resolution, Ok(PoolAccountResolution::Unavailable)) {
+                                    // Header-stickiness retains the same NoCandidate-only limit.
+                                    no_candidate_waiter.take();
                                 }
                                 match resolution {
                                     Ok(

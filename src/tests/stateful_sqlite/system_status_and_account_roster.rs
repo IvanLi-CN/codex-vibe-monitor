@@ -2539,6 +2539,9 @@ pub(crate) async fn set_test_account_degraded_route_state(
     .await
     .expect("set test pool account degraded route state");
     state.pool_routing_runtime_cache.lock().await.take();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after test account degraded route update");
 }
 
 async fn set_test_account_route_cooldown(
