@@ -2724,6 +2724,10 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(reset_upstream_account_model_routing),
         )
         .route(
+            "/api/pool/upstream-accounts/:id/model-mappings",
+            put(update_upstream_account_model_mappings),
+        )
+        .route(
             "/api/pool/upstream-accounts/:id",
             get(get_upstream_account)
                 .patch(update_upstream_account)
@@ -3134,6 +3138,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
         ("request_model", "TEXT"),
+        ("upstream_request_model", "TEXT"),
+        ("model_mapping_pattern", "TEXT"),
         ("routing_source", "TEXT"),
         ("routing_selection_audit_json", "TEXT"),
         ("request_summary_json", "TEXT"),
@@ -3197,6 +3203,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
         ("request_model", "TEXT"),
+        ("upstream_request_model", "TEXT"),
+        ("model_mapping_pattern", "TEXT"),
         ("routing_selection_audit_json", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),

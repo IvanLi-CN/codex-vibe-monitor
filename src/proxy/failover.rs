@@ -1862,6 +1862,47 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             same_account_attempt_budget,
         );
         let group_upstream_429_max_retries = account.effective_upstream_429_max_retries();
+        let model_mapping = load_model_mapping_for_account(
+            state.as_ref(),
+            account.account_id,
+            requested_model.as_deref().or_else(|| {
+                trace_context
+                    .as_ref()
+                    .and_then(|trace| trace.request_model.as_deref())
+            }),
+        )
+        .await
+        .map_err(|err| PoolUpstreamError {
+            codex_imagegen_rewrite: None,
+            account: Some(account.clone()),
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to resolve account model mapping: {err}"),
+            canonical_error_message: None,
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            blocked_binding: None,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            proxy_binding_key_snapshot: None,
+            oauth_responses_debug: None,
+            attempt_summary: PoolAttemptSummary::default(),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        })?;
+        let upstream_request_model = model_mapping
+            .as_ref()
+            .map(|mapping| mapping.target_model.as_str())
+            .or(requested_model.as_deref())
+            .or_else(|| {
+                trace_context
+                    .as_ref()
+                    .and_then(|trace| trace.request_model.as_deref())
+            });
+        let model_mapping_pattern = model_mapping
+            .as_ref()
+            .map(|mapping| mapping.source_model.as_str());
         let same_account_attempt_loop_budget = overload_same_account_attempt_budget
             .saturating_add(1)
             .saturating_add(group_upstream_429_max_retries);
@@ -1977,6 +2018,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 runtime_snapshot_context
                     .as_ref()
                     .and_then(|context| context.hosted_image_intent),
+                model_mapping.as_ref(),
             )
             .await
             {
@@ -2229,6 +2271,21 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                            &state.pool,
+                            pending_attempt_record,
+                            upstream_request_model,
+                            model_mapping_pattern,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool model mapping attempt metadata"
+                        );
+                    }
                     if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
                         && let Err(err) =
                             annotate_pool_upstream_request_attempt_request_compression(
@@ -3059,6 +3116,21 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                            &state.pool,
+                            pending_attempt_record,
+                            upstream_request_model,
+                            model_mapping_pattern,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool model mapping attempt metadata"
+                        );
+                    }
                     let forwarded_request_compression = (method != Method::GET)
                         .then(|| forwarded_request_compression_observation(headers))
                         .flatten();
@@ -3263,10 +3335,15 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
-                let requested_model_for_failure = requested_model.as_deref().or_else(|| {
-                    trace_context
-                        .as_ref()
-                        .and_then(|trace| trace.request_model.as_deref())
+                // Upstream compatibility errors describe the model that was actually sent.
+                // Keep route health keyed by the original request model elsewhere, but classify
+                // an upstream "model not found" response against the mapped target here.
+                let requested_model_for_failure = upstream_request_model.or_else(|| {
+                    requested_model.as_deref().or_else(|| {
+                        trace_context
+                            .as_ref()
+                            .and_then(|trace| trace.request_model.as_deref())
+                    })
                 });
                 let explicit_model_failure = requested_model_for_failure.map_or_else(
                     || is_explicit_model_failure(status, Some(&route_error_message)),

@@ -900,15 +900,23 @@ pub(crate) fn build_pool_routing_runtime_cache(
         api_key,
         request_compression: resolve_pool_request_compression_settings_from_row(row),
         timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
+        model_routing: PoolModelRoutingRuntimeCache::default(),
     })
 }
 
 pub(crate) async fn refresh_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {
+    let _model_cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
     let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
-    let cache = build_pool_routing_runtime_cache(state, &row)?;
+    let mut cache = build_pool_routing_runtime_cache(state, &row)?;
+    let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
     let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    model_routing.generation = runtime_cache
+        .as_ref()
+        .map(|previous| previous.model_routing.generation.saturating_add(1))
+        .unwrap_or(1);
+    cache.model_routing = model_routing;
     *runtime_cache = Some(cache.clone());
     Ok(cache)
 }

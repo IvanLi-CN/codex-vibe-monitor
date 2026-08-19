@@ -426,6 +426,17 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
   modelRoutingStates?: ModelRoutingState[];
+  modelMappings?: ModelMapping[];
+}
+
+export interface ModelMapping {
+  sourceModel: string;
+  targetModel: string;
+  enabled: boolean;
+}
+
+export interface UpdateUpstreamAccountModelMappingsPayload {
+  modelMappings: ModelMapping[];
 }
 
 export interface UpstreamAccountActionEventListResponse {
@@ -1699,6 +1710,23 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
           .map(normalizeModelRoutingState)
           .filter((item): item is ModelRoutingState => item != null)
       : [],
+    modelMappings: Array.isArray(payload.modelMappings)
+      ? payload.modelMappings
+          .map(normalizeModelMapping)
+          .filter((item): item is ModelMapping => item != null)
+      : [],
+  };
+}
+
+function normalizeModelMapping(raw: unknown): ModelMapping | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const sourceModel = typeof payload.sourceModel === "string" ? payload.sourceModel.trim() : "";
+  const targetModel = typeof payload.targetModel === "string" ? payload.targetModel.trim() : "";
+  if (!sourceModel || !targetModel) return null;
+  return {
+    sourceModel,
+    targetModel,
+    enabled: payload.enabled !== false,
   };
 }
 
@@ -2691,6 +2719,20 @@ export async function updateUpstreamAccount(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function updateUpstreamAccountModelMappings(
+  accountId: number,
+  payload: UpdateUpstreamAccountModelMappingsPayload,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/model-mappings`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+  );
   return normalizeUpstreamAccountDetail(response);
 }
 

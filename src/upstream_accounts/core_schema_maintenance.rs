@@ -103,6 +103,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_compact_stream_timeout_secs INTEGER,
             bound_proxy_keys_json TEXT,
             upstream_base_url TEXT,
+            model_mappings_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -149,6 +150,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "compact_support_reason")
         .await
         .context("failed to ensure pool_upstream_accounts.compact_support_reason")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_upstream_accounts",
+        "model_mappings_json",
+        "'[]'",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.model_mappings_json")?;
     ensure_text_column_with_default(
         pool,
         "pool_upstream_accounts",

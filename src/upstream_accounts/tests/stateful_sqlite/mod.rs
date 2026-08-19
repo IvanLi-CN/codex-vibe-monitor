@@ -9,6 +9,7 @@ pub(crate) use super::*;
 )]
 mod external_api_keys_and_oauth_upserts;
 mod maintenance_scheduler_and_schema;
+mod model_mappings;
 mod prompt_cache_bindings_and_route_penalties;
 #[expect(
     clippy::too_many_arguments,

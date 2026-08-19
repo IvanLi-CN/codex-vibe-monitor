@@ -1146,63 +1146,88 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 // model-level degraded candidate, not an unavailable account.
                 saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
-                if sticky_source_rule.as_ref().is_none_or(|rule| {
-                    !requested_model_is_system_denied(requested_model, rule)
-                        && ((bypass_requested_model_filter
-                            && !conversation_available_models_override)
-                            || account_accepts_requested_model(requested_model, rule))
-                }) && account_accepts_request_capabilities(
-                    request_capability_requirements_after_codex_imagegen_rewrite(
-                        endpoint,
-                        image_intent,
-                        requested_model,
-                        codex_imagegen_request,
-                        sticky_source_rule
-                            .as_ref()
-                            .expect("sticky source rule should be loaded"),
-                    ),
-                    effective_capability_support(
-                        decode_capability_support(row.response_endpoint_capability.as_deref()),
-                        decode_capability_override(
-                            row.policy_response_endpoint_capability_override.as_deref(),
-                        ),
-                    ),
-                    effective_capability_support(
-                        decode_capability_support(row.chat_completions_capability.as_deref()),
-                        decode_capability_override(
-                            row.policy_chat_completions_capability_override.as_deref(),
-                        ),
-                    ),
-                    effective_capability_support(
-                        decode_capability_support(row.image_endpoint_capability.as_deref()),
-                        decode_capability_override(
-                            row.policy_image_endpoint_capability_override.as_deref(),
-                        ),
-                    ),
-                    effective_capability_support(
-                        decode_capability_support(row.response_image_tool_capability.as_deref()),
-                        decode_capability_override(
-                            row.policy_response_image_tool_capability_override
-                                .as_deref(),
-                        ),
-                    ),
-                    effective_capability_support(
-                        decode_capability_support(row.codex_imagegen_capability.as_deref()),
-                        decode_capability_override(
-                            row.policy_codex_imagegen_capability_override.as_deref(),
-                        ),
-                    ),
-                    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-                        effective_capability_support(
-                            decode_capability_support(row.standalone_search_capability.as_deref()),
-                            decode_capability_override(
-                                row.policy_standalone_search_capability_override.as_deref(),
-                            ),
+                let sticky_model_accepted = match sticky_source_rule.as_ref() {
+                    None => true,
+                    Some(rule)
+                        if bypass_requested_model_filter
+                            && !conversation_available_models_override =>
+                    {
+                        !requested_model_is_system_denied(requested_model, rule)
+                    }
+                    // Conversation-scoped model policy is an explicit caller constraint.
+                    // A local account mapping can bypass its ordinary availability policy,
+                    // but must not broaden this per-conversation restriction.
+                    Some(rule) if conversation_available_models_override => {
+                        account_accepts_requested_model(requested_model, rule)
+                    }
+                    Some(rule) => {
+                        account_accepts_requested_model_or_cached_mapping(
+                            state,
+                            row.id,
+                            requested_model,
+                            rule,
                         )
-                    } else {
-                        CapabilitySupport::Supported
-                    },
-                ) {
+                        .await?
+                    }
+                };
+                if sticky_model_accepted
+                    && account_accepts_request_capabilities(
+                        request_capability_requirements_after_codex_imagegen_rewrite(
+                            endpoint,
+                            image_intent,
+                            requested_model,
+                            codex_imagegen_request,
+                            sticky_source_rule
+                                .as_ref()
+                                .expect("sticky source rule should be loaded"),
+                        ),
+                        effective_capability_support(
+                            decode_capability_support(row.response_endpoint_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_response_endpoint_capability_override.as_deref(),
+                            ),
+                        ),
+                        effective_capability_support(
+                            decode_capability_support(row.chat_completions_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_chat_completions_capability_override.as_deref(),
+                            ),
+                        ),
+                        effective_capability_support(
+                            decode_capability_support(row.image_endpoint_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_image_endpoint_capability_override.as_deref(),
+                            ),
+                        ),
+                        effective_capability_support(
+                            decode_capability_support(
+                                row.response_image_tool_capability.as_deref(),
+                            ),
+                            decode_capability_override(
+                                row.policy_response_image_tool_capability_override
+                                    .as_deref(),
+                            ),
+                        ),
+                        effective_capability_support(
+                            decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                            decode_capability_override(
+                                row.policy_codex_imagegen_capability_override.as_deref(),
+                            ),
+                        ),
+                        if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+                            effective_capability_support(
+                                decode_capability_support(
+                                    row.standalone_search_capability.as_deref(),
+                                ),
+                                decode_capability_override(
+                                    row.policy_standalone_search_capability_override.as_deref(),
+                                ),
+                            )
+                        } else {
+                            CapabilitySupport::Supported
+                        },
+                    )
+                {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
                     let group_readiness = if row.bound_proxy_keys().is_empty() {
@@ -1481,7 +1506,25 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         );
     }
 
+    let warmed_model_account_ids =
+        warmed_routing_account_ids_for_model(state, requested_model).await;
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    if let Some(warmed_model_account_ids) = warmed_model_account_ids {
+        let warmed_rank = warmed_model_account_ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, account_id)| (account_id, index))
+            .collect::<HashMap<_, _>>();
+        // The prewarmed index is only a stable ordering hint. Every candidate remains in the
+        // exact routing pass so a cold key or an ineligible cache entry cannot create a false
+        // negative.
+        candidates.sort_by_key(|candidate| {
+            warmed_rank
+                .get(&candidate.id)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+    }
     let candidate_count =
         candidates.len() + usize::from(sticky_queue_reservation_conflict.is_some());
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
@@ -1632,10 +1675,21 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             );
             continue;
         }
-        if requested_model_is_system_denied(requested_model, effective_rule)
-            || ((!bypass_requested_model_filter || conversation_available_models_override)
-                && !account_accepts_requested_model(requested_model, effective_rule))
-        {
+        let model_accepted =
+            if bypass_requested_model_filter && !conversation_available_models_override {
+                !requested_model_is_system_denied(requested_model, effective_rule)
+            } else if conversation_available_models_override {
+                account_accepts_requested_model(requested_model, effective_rule)
+            } else {
+                account_accepts_requested_model_or_cached_mapping(
+                    state,
+                    row.id,
+                    requested_model,
+                    effective_rule,
+                )
+                .await?
+            };
+        if !model_accepted {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
                 &row,

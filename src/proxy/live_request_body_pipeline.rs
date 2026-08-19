@@ -9,7 +9,7 @@ pub(crate) struct LiveOauthResponsesTransform {
     pub(crate) installation_seed: Option<[u8; 32]>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct LiveResponsesBodyTransformConfig {
     pub(crate) target_encoding: RequestBodyContentEncoding,
     pub(crate) compression_level: RequestCompressionLevelPreset,
@@ -19,6 +19,7 @@ pub(crate) struct LiveResponsesBodyTransformConfig {
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
     pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
     pub(crate) codex_imagegen_protocol: Option<CodexImagegenProtocol>,
+    pub(crate) model_mapping_target: Option<String>,
 }
 
 pub(crate) struct LiveResponsesRequestBodyPipeline {
@@ -371,6 +372,7 @@ struct LiveRootFieldTransformer {
     request_stream_tx: watch::Sender<Option<bool>>,
     rewrite_fields: serde_json::Map<String, Value>,
     oauth_rewrite: oauth_bridge::OauthResponsesRewriteSummary,
+    model_mapping_applied: bool,
 }
 
 impl LiveRootFieldTransformer {
@@ -388,6 +390,7 @@ impl LiveRootFieldTransformer {
             request_stream_tx,
             rewrite_fields: serde_json::Map::new(),
             oauth_rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
+            model_mapping_applied: false,
         }
     }
 
@@ -410,6 +413,7 @@ impl LiveRootFieldTransformer {
                         | "reasoning"
                         | "parallel_tool_calls"
                 )
+            || (self.config.model_mapping_target.is_some() && key == "model")
     }
 
     fn account_rewrite_required(&self) -> bool {
@@ -430,6 +434,26 @@ impl LiveRootFieldTransformer {
         let value: Value = serde_json::from_slice(raw_value)
             .map_err(|_| invalid_live_json("request field value is invalid"))?;
         match key {
+            "model" if self.config.model_mapping_target.is_some() => {
+                if !value.is_string() {
+                    return Err(invalid_live_json(
+                        "model mapping requires a top-level string model field",
+                    ));
+                }
+                self.model_mapping_applied = true;
+                writer
+                    .write_field_value(
+                        "model",
+                        &Value::String(
+                            self.config
+                                .model_mapping_target
+                                .as_ref()
+                                .expect("model mapping target should be present")
+                                .clone(),
+                        ),
+                    )
+                    .await?;
+            }
             "instructions" if self.config.oauth.is_some() => self.instructions = Some(value),
             "store" if self.config.oauth.is_some() => self.store = Some(value),
             "stream" => {
@@ -464,6 +488,11 @@ impl LiveRootFieldTransformer {
     }
 
     async fn finish(&mut self, writer: &mut LiveLogicalJsonWriter) -> io::Result<()> {
+        if self.config.model_mapping_target.is_some() && !self.model_mapping_applied {
+            return Err(invalid_live_json(
+                "model mapping requires a top-level string model field",
+            ));
+        }
         if self.account_rewrite_required() {
             let mut rewrite_value = Value::Object(std::mem::take(&mut self.rewrite_fields));
             rewrite_request_service_tier_for_fast_mode(
@@ -1064,6 +1093,7 @@ mod tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
             codex_imagegen_protocol: None,
+            model_mapping_target: None,
         }));
 
         let mut upstream = pipeline.body.into_data_stream();
@@ -1115,6 +1145,7 @@ mod tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
             codex_imagegen_protocol: None,
+            model_mapping_target: None,
         }));
         let oauth_rewrite_rx = pipeline.oauth_rewrite_rx.clone();
         let output = collect_body(pipeline.body).await;
@@ -1164,6 +1195,7 @@ mod tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::ForceAdd,
             codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
             codex_imagegen_protocol: None,
+            model_mapping_target: None,
         }));
         let output = collect_body(pipeline.body).await;
         let value: Value = serde_json::from_slice(&output).expect("decode rewritten body");
@@ -1175,6 +1207,73 @@ mod tests {
                 .expect("rewritten tools")
                 .iter()
                 .any(|tool| tool["type"] == "image_generation")
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_streaming_transform_rewrites_mapped_model_and_fails_closed() {
+        let mut mapped = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(
+                br#"{"model":"client-fast","input":"hello"}"#,
+            )),
+            None,
+        );
+        let probe =
+            wait_for_replay_body_sticky_key_probe(&mapped.routing_probe_rx, Duration::from_secs(1))
+                .await;
+        assert_eq!(probe.model.as_deref(), Some("client-fast"));
+        assert!(mapped.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: Some("upstream-model".to_string()),
+        }));
+        let value: Value = serde_json::from_slice(&collect_body(mapped.body).await)
+            .expect("decode mapped live body");
+        assert_eq!(value["model"], "upstream-model");
+
+        let mut unsafe_payload = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(br#"{"model":7,"input":"hello"}"#)),
+            None,
+        );
+        let _ = wait_for_replay_body_sticky_key_probe(
+            &unsafe_payload.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(unsafe_payload.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: Some("upstream-model".to_string()),
+        }));
+        let mut upstream = unsafe_payload.body.into_data_stream();
+        let error = loop {
+            let Some(chunk) = upstream.next().await else {
+                panic!("unsafe mapped payload must fail before upstream forwarding");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert!(error.to_string().contains("top-level string model field"));
+        assert_eq!(
+            unsafe_payload
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
         );
     }
 
@@ -1281,6 +1380,7 @@ mod tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
             codex_imagegen_protocol: None,
+            model_mapping_target: None,
         }));
 
         let mut upstream = pipeline.body.into_data_stream();
@@ -1360,6 +1460,7 @@ mod tests {
                 image_tool_rewrite_mode: ImageToolRewriteMode::ForceAdd,
                 codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
                 codex_imagegen_protocol: None,
+                model_mapping_target: None,
             }),
             "large rewrite fields must choose the raw replay path rather than materializing"
         );
@@ -1401,6 +1502,7 @@ mod tests {
                 image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
                 codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
                 codex_imagegen_protocol: None,
+                model_mapping_target: None,
             }));
             let output = collect_body(pipeline.body).await;
             assert_eq!(
@@ -1441,6 +1543,7 @@ mod tests {
                 image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
                 codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
                 codex_imagegen_protocol: None,
+                model_mapping_target: None,
             }));
             let output = collect_body(pipeline.body).await;
             let decoded =

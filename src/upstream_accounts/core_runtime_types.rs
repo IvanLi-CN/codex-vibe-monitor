@@ -208,6 +208,7 @@ pub(crate) struct UpstreamAccountsRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccountCommand {
     UpdateAccount,
+    UpdateModelMappings,
     ExternalOauthUpsert,
     DeleteAccount,
     ManualSync,
@@ -611,6 +612,26 @@ impl AccountOpCoordinator {
         .await
         .map_err(map_account_dispatch_http)?
         .expect_completed(AccountCommand::UpdateAccount)
+    }
+
+    pub(crate) async fn run_update_model_mappings(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        payload: UpdateModelMappingsRequest,
+    ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::UpdateModelMappings,
+            false,
+            move |state, id| async move {
+                update_upstream_account_model_mappings_inner(state.as_ref(), id, payload).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::UpdateModelMappings)
     }
 
     pub(crate) async fn run_external_oauth_upsert(
@@ -1915,6 +1936,7 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) last_refreshed_at: Option<String>,
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
+    pub(crate) model_mappings: Vec<ModelMapping>,
     pub(crate) model_routing_states: Vec<ModelRoutingState>,
 }
 
@@ -1946,6 +1968,13 @@ pub(crate) struct ModelRoutingState {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ResetModelRoutingRequest {
     pub(crate) model: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateModelMappingsRequest {
+    #[serde(default)]
+    pub(crate) model_mappings: Vec<ModelMapping>,
 }
 
 #[derive(Debug, Clone, Serialize)]

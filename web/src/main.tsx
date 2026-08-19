@@ -1,6 +1,6 @@
 import { type ComponentType, Fragment, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { HashRouter } from "react-router-dom";
+import { createHashRouter, RouterProvider } from "react-router-dom";
 import App from "./App.tsx";
 import "./index.css";
 import { SystemNotificationProvider } from "./components/ui/system-notifications";
@@ -31,16 +31,23 @@ async function bootstrap() {
       RuntimeShell = module.DemoShell;
     }
 
+    const router = createHashRouter([
+      {
+        path: "*",
+        element: (
+          <RuntimeShell>
+            <App />
+          </RuntimeShell>
+        ),
+      },
+    ]);
+
     root.render(
       <StrictMode>
         <ThemeProvider>
           <I18nProvider>
             <SystemNotificationProvider>
-              <HashRouter>
-                <RuntimeShell>
-                  <App />
-                </RuntimeShell>
-              </HashRouter>
+              <RouterProvider router={router} />
             </SystemNotificationProvider>
           </I18nProvider>
         </ThemeProvider>

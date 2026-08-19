@@ -481,6 +481,8 @@ export interface ApiPoolUpstreamRequestAttempt {
   upstreamAccountName?: string | null;
   model?: string | null;
   requestModel?: string | null;
+  upstreamRequestModel?: string | null;
+  modelMappingPattern?: string | null;
   responseModel?: string | null;
   compactionRequestKind?: ApiInvocation["compactionRequestKind"];
   compactionResponseKind?: ApiInvocation["compactionResponseKind"];

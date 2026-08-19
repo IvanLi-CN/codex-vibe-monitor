@@ -136,6 +136,7 @@ impl ModelRoutingLiveRouteRow {
 #[derive(Debug, Clone, FromRow)]
 struct AttemptRouteContext {
     request_model: Option<String>,
+    upstream_request_model: Option<String>,
     started_at: Option<String>,
 }
 
@@ -1048,7 +1049,7 @@ async fn load_attempt_route_context(
     attempt_id: i64,
 ) -> Result<Option<AttemptRouteContext>> {
     let Some(mut context) = sqlx::query_as::<_, AttemptRouteContext>(
-        "SELECT request_model, started_at FROM pool_upstream_request_attempts WHERE id = ?1",
+        "SELECT request_model, upstream_request_model, started_at FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(pool)
@@ -1058,6 +1059,11 @@ async fn load_attempt_route_context(
     };
     context.request_model = context
         .request_model
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    context.upstream_request_model = context
+        .upstream_request_model
         .take()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -1587,7 +1593,10 @@ pub(crate) async fn attempt_has_explicit_model_failure(
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
         return Ok(false);
     };
-    let Some(model) = attempt_context.request_model else {
+    let Some(model) = attempt_context
+        .upstream_request_model
+        .or(attempt_context.request_model)
+    else {
         return Ok(false);
     };
     Ok(is_explicit_model_failure_for_model(
@@ -1642,22 +1651,23 @@ async fn record_model_route_failure_from_attempt_inner(
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
         return Ok(false);
     };
-    let Some(model) = attempt_context.request_model else {
+    let AttemptRouteContext {
+        request_model: Some(model),
+        upstream_request_model,
+        started_at,
+    } = attempt_context
+    else {
         return Ok(false);
     };
+    let failure_evidence_model = upstream_request_model.as_deref().unwrap_or(model.as_str());
     if require_explicit_model_failure
-        && !is_explicit_model_failure_for_model(status, error_message, Some(&model))
+        && !is_explicit_model_failure_for_model(status, error_message, Some(failure_evidence_model))
     {
         return Ok(false);
     }
     let attempt_started_at = request_started_at
         .and_then(parse_to_utc_datetime)
-        .or_else(|| {
-            attempt_context
-                .started_at
-                .as_deref()
-                .and_then(parse_to_utc_datetime)
-        });
+        .or_else(|| started_at.as_deref().and_then(parse_to_utc_datetime));
     record_model_route_failure_inner(
         pool,
         account_id,
@@ -1667,7 +1677,7 @@ async fn record_model_route_failure_from_attempt_inner(
         error_message,
         failure_kind,
         attempt_started_at,
-        require_explicit_model_failure,
+        false,
         reason_code,
     )
     .await

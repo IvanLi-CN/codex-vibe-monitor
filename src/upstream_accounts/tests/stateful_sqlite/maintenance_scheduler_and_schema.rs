@@ -211,6 +211,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
         fallback_proxy_429_retry_delay_override: None,
@@ -3488,6 +3489,26 @@ async fn ensure_upstream_accounts_schema_migrates_legacy_block_policy_to_no_new_
     ensure_upstream_accounts_schema(&pool)
         .await
         .expect("upgrade legacy policy columns");
+
+    let legacy_model_mappings = sqlx::query_as::<_, (String, String)>(
+        r#"
+            SELECT display_name, model_mappings_json
+            FROM pool_upstream_accounts
+            ORDER BY display_name
+            "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load migrated model mappings");
+    assert_eq!(
+        legacy_model_mappings,
+        vec![
+            ("legacy-allow".to_string(), "[]".to_string()),
+            ("legacy-block".to_string(), "[]".to_string()),
+            ("legacy-inherit".to_string(), "[]".to_string()),
+        ],
+        "legacy accounts must receive an empty mapping list during the online migration"
+    );
 
     let account_values = sqlx::query_as::<_, (String, Option<String>)>(
         r#"

@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
+import type { ModelMapping } from "../../lib/api";
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT } from "../../lib/upstreamAccountsEvents";
 import UpstreamAccountsPage, {
   SharedUpstreamAccountDetailDrawer,
@@ -21,21 +22,39 @@ const meta = {
     layout: "fullscreen",
   },
   decorators: [
-    (Story) => (
-      <I18nProvider>
-        <SystemNotificationProvider>
-          <StorybookUpstreamAccountsMock>
-            <Story />
-          </StorybookUpstreamAccountsMock>
-        </SystemNotificationProvider>
-      </I18nProvider>
-    ),
+    (Story, context) => {
+      const modelMappings = Array.isArray(context.parameters.modelMappings)
+        ? (context.parameters.modelMappings as ModelMapping[])
+        : undefined;
+      return (
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <StorybookUpstreamAccountsMock modelMappings={modelMappings}>
+              <Story />
+            </StorybookUpstreamAccountsMock>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      );
+    },
   ],
 } satisfies Meta<typeof UpstreamAccountsPage>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
+
+const routingMappingsFixture: ModelMapping[] = [
+  {
+    sourceModel: "gpt-5.6-*",
+    targetModel: "gpt-5.6-terra",
+    enabled: true,
+  },
+  {
+    sourceModel: "legacy-fast",
+    targetModel: "o3-mini",
+    enabled: false,
+  },
+];
 
 function detailRouteEntry(accountId: number, state?: Record<string, unknown>) {
   return {
@@ -604,6 +623,32 @@ export const DetailDrawerRoutingRules: Story = {
     await expect(
       within(proxyDialog).getByRole("button", { name: /应用选择|apply selection/i }),
     ).toBeInTheDocument();
+  },
+};
+
+export const DetailDrawerRoutingMappings: Story = {
+  parameters: {
+    modelMappings: routingMappingsFixture,
+    viewport: { defaultViewport: "desktop1440x1024" },
+  },
+  render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(101)} />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const dialog = await findTokyoDetailDialog(documentScope);
+    await userEvent.click(within(dialog).getByRole("tab", { name: /路由|routing/i }));
+    const mappingEditor = within(dialog).getByTestId("model-mapping-editor");
+    await expect(mappingEditor).toBeVisible();
+    await expect(within(mappingEditor).getByDisplayValue("gpt-5.6-*")).toBeVisible();
+    await expect(within(mappingEditor).getByDisplayValue("gpt-5.6-terra")).toBeVisible();
+    await expect(within(mappingEditor).getAllByRole("combobox")).toHaveLength(4);
+  },
+};
+
+export const DetailDrawerRoutingMappingsMobile: Story = {
+  ...DetailDrawerRoutingMappings,
+  parameters: {
+    modelMappings: routingMappingsFixture,
+    viewport: { defaultViewport: "mobile393" },
   },
 };
 

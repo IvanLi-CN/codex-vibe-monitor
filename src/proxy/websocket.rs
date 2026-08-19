@@ -819,14 +819,19 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             }
         };
 
-    let upstream_url = match build_websocket_upstream_url(&account.upstream_base_url, original_uri)
+    let model_mapping = match load_model_mapping_for_account(
+        state.as_ref(),
+        account.account_id,
+        trace.request_model.as_deref(),
+    )
+    .await
     {
-        Ok(url) => url,
+        Ok(mapping) => mapping,
         Err(err) => {
             reservation_guard.release();
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
-                message: format!("failed to build pool websocket upstream url: {err}"),
+                message: format!("failed to resolve websocket model mapping: {err}"),
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 retryable: false,
                 account_id: Some(account.account_id),
@@ -834,6 +839,23 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             });
         }
     };
+    let mut upstream_url =
+        match build_websocket_upstream_url(&account.upstream_base_url, original_uri) {
+            Ok(url) => url,
+            Err(err) => {
+                reservation_guard.release();
+                return Err(WsAttemptFailure {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to build pool websocket upstream url: {err}"),
+                    retryable: false,
+                    account_id: Some(account.account_id),
+                    upstream_route_key: Some(account.upstream_route_key()),
+                });
+            }
+        };
+    if let Some(mapping) = model_mapping.as_ref() {
+        rewrite_websocket_upstream_url_model(&mut upstream_url, &mapping.target_model);
+    }
 
     let proxy_binding_key_snapshot =
         live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
@@ -860,6 +882,22 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await,
     );
+    if let Some(pending) = pending_attempt_record.as_ref()
+        && let Some(mapping) = model_mapping.as_ref()
+        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+            &state.pool,
+            pending,
+            Some(&mapping.target_model),
+            Some(&mapping.source_model),
+        )
+        .await
+    {
+        warn!(
+            invoke_id = %pending.invoke_id,
+            error = %err,
+            "failed to persist websocket model mapping audit"
+        );
+    }
     if let Some(pending) = pending_attempt_record.as_ref()
         && let Err(err) = advance_pool_upstream_request_attempt_phase(
             state.as_ref(),
@@ -1260,7 +1298,7 @@ pub(crate) async fn proxy_websocket_tunnel(
     loop {
         if let Some(timestamped_message) = pending_downstream_messages.pop_front() {
             let TimestampedWsDownstreamMessage {
-                message,
+                mut message,
                 received_at,
                 received_at_rfc3339,
             } = timestamped_message;
@@ -1319,6 +1357,43 @@ pub(crate) async fn proxy_websocket_tunnel(
                     }
                 }
             }
+            match rewrite_ws_downstream_message_model(
+                state.as_ref(),
+                usage_tracker.account.account_id,
+                message,
+            )
+            .await
+            {
+                Ok((rewritten, mapping)) => {
+                    message = rewritten;
+                    if let Some(mapping) = mapping
+                        && let Some(pending) = pending_attempt_record.as_ref()
+                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                            &state.pool,
+                            pending,
+                            Some(&mapping.target_model),
+                            Some(&mapping.source_model),
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending.invoke_id,
+                            error = %err,
+                            "failed to persist websocket frame model mapping audit"
+                        );
+                    }
+                }
+                Err(err) => {
+                    failure = Some(format!("failed to rewrite websocket model mapping: {err}"));
+                    let _ = downstream_tx
+                        .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                            code: axum::extract::ws::close_code::AGAIN,
+                            reason: "model_mapping_rewrite_failed; retry".into(),
+                        })))
+                        .await;
+                    break;
+                }
+            }
             if close_seen && active_turn_waiting_terminal {
                 drain_upstream_after_downstream_close = true;
                 break;
@@ -1342,7 +1417,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                 match downstream_msg {
                     Some(Ok(message)) => {
                         let timestamped_message = TimestampedWsDownstreamMessage::now(message);
-                        let message = timestamped_message.message;
+                        let mut message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
                         if ws_message_starts_response_create_turn(&message) {
                             if active_turn_waiting_terminal {
@@ -1406,6 +1481,47 @@ pub(crate) async fn proxy_websocket_tunnel(
                                     }
                                     break;
                                 }
+                            }
+                        }
+                        match rewrite_ws_downstream_message_model(
+                            state.as_ref(),
+                            usage_tracker.account.account_id,
+                            message,
+                        )
+                        .await
+                        {
+                            Ok((rewritten, mapping)) => {
+                                message = rewritten;
+                                if let Some(mapping) = mapping
+                                    && let Some(pending) = pending_attempt_record.as_ref()
+                                    && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                                        &state.pool,
+                                        pending,
+                                        Some(&mapping.target_model),
+                                        Some(&mapping.source_model),
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        invoke_id = %pending.invoke_id,
+                                        error = %err,
+                                        "failed to persist websocket frame model mapping audit"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                failure = Some(format!(
+                                    "failed to rewrite websocket model mapping: {err}"
+                                ));
+                                let _ = downstream_tx
+                                    .send(AxumWsMessage::Close(Some(
+                                        axum::extract::ws::CloseFrame {
+                                            code: axum::extract::ws::close_code::AGAIN,
+                                            reason: "model_mapping_rewrite_failed; retry".into(),
+                                        },
+                                    )))
+                                    .await;
+                                break;
                             }
                         }
                         if close_seen && active_turn_waiting_terminal {
@@ -2648,6 +2764,53 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
     Ok(outcome.owner_guard_blocked)
 }
 
+async fn rewrite_ws_downstream_message_model(
+    state: &AppState,
+    account_id: i64,
+    message: AxumWsMessage,
+) -> Result<(AxumWsMessage, Option<ResolvedModelMapping>)> {
+    let AxumWsMessage::Text(text) = message else {
+        return Ok((message, None));
+    };
+    let Ok(mut payload) = serde_json::from_str::<Value>(text.as_str()) else {
+        return Ok((AxumWsMessage::Text(text), None));
+    };
+    let Some(object) = payload.as_object() else {
+        return Ok((AxumWsMessage::Text(text), None));
+    };
+    let Some(model) = object.get("model") else {
+        return Ok((AxumWsMessage::Text(text), None));
+    };
+    let Some(requested_model) = model.as_str().map(str::to_string) else {
+        return Err(anyhow!(
+            "websocket model mapping requires a top-level string model field"
+        ));
+    };
+    let Some(mapping) =
+        load_model_mapping_for_account(state, account_id, Some(&requested_model)).await?
+    else {
+        return Ok((AxumWsMessage::Text(text), None));
+    };
+    rewrite_websocket_json_payload_model(&mut payload, &mapping.target_model)?;
+    let rewritten = serde_json::to_string(&payload)
+        .context("failed to serialize mapped websocket JSON frame")?;
+    Ok((AxumWsMessage::Text(rewritten), Some(mapping)))
+}
+
+fn rewrite_websocket_json_payload_model(payload: &mut Value, target_model: &str) -> Result<()> {
+    let object = payload
+        .as_object_mut()
+        .context("websocket model mapping requires a top-level JSON object")?;
+    let model = object
+        .get_mut("model")
+        .context("websocket model mapping requires a top-level model field")?;
+    if !model.is_string() {
+        bail!("websocket model mapping requires a top-level string model field");
+    }
+    *model = Value::String(target_model.to_string());
+    Ok(())
+}
+
 pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
     match event.event_type.as_str() {
         "response.completed" => true,
@@ -2972,6 +3135,29 @@ pub(crate) fn build_websocket_upstream_url(base: &Url, original_uri: &Uri) -> Re
         .set_scheme(ws_scheme)
         .map_err(|_| anyhow!("failed to set websocket upstream scheme"))?;
     build_proxy_upstream_url(&ws_base, original_uri)
+}
+
+pub(crate) fn rewrite_websocket_upstream_url_model(url: &mut Url, target_model: &str) -> bool {
+    let query_pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    if !query_pairs.iter().any(|(key, _)| key == "model") {
+        return false;
+    }
+    let mut query = url.query_pairs_mut();
+    query.clear();
+    for (key, value) in query_pairs {
+        query.append_pair(
+            &key,
+            if key == "model" {
+                target_model
+            } else {
+                value.as_str()
+            },
+        );
+    }
+    true
 }
 
 pub(crate) fn build_upstream_ws_request(
@@ -3691,6 +3877,35 @@ mod websocket_tests {
         assert_eq!(
             target.as_str(),
             "wss://api.example.test/gateway/v1/responses?model=gpt-5.5"
+        );
+    }
+
+    #[test]
+    fn websocket_model_mapping_rewrites_query_and_json_frames() {
+        let mut url =
+            Url::parse("wss://api.example.test/v1/realtime?model=client-fast&session=keep")
+                .expect("valid upstream url");
+        assert!(rewrite_websocket_upstream_url_model(
+            &mut url,
+            "upstream-model"
+        ));
+        assert_eq!(
+            url.as_str(),
+            "wss://api.example.test/v1/realtime?model=upstream-model&session=keep"
+        );
+
+        let mut payload = serde_json::json!({
+            "type": "response.create",
+            "model": "client-fast",
+            "input": "hello",
+        });
+        rewrite_websocket_json_payload_model(&mut payload, "upstream-model")
+            .expect("rewrite mapped JSON frame");
+        assert_eq!(payload["model"], "upstream-model");
+
+        let mut unsafe_payload = serde_json::json!({"model": 7});
+        assert!(
+            rewrite_websocket_json_payload_model(&mut unsafe_payload, "upstream-model").is_err()
         );
     }
 

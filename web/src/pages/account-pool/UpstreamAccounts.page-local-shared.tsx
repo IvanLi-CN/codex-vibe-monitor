@@ -1,6 +1,15 @@
 /* eslint-disable react-refresh/only-export-components */
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import {
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { UNSAFE_DataRouterContext, useBlocker, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import {
@@ -30,6 +39,14 @@ import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDetailDrawerShell";
 import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
+import {
+  areModelMappingDraftsEqual,
+  createModelMappingDrafts,
+  ModelMappingEditor,
+  type ModelMappingDraft,
+  toModelMappings,
+  validateModelMappingDrafts,
+} from "../../features/account-pool/ModelMappingEditor";
 import { ModelRoutingHealthPanel } from "../../features/account-pool/ModelRoutingHealthPanel";
 import {
   MotherAccountChip,
@@ -66,7 +83,10 @@ import type {
   UpstreamAccountSummary,
   UpstreamCapabilityState,
 } from "../../lib/api";
-import { resetUpstreamAccountModelRouting } from "../../lib/api";
+import {
+  resetUpstreamAccountModelRouting,
+  updateUpstreamAccountModelMappings,
+} from "../../lib/api";
 import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import {
   type AccountDraft,
@@ -273,6 +293,40 @@ type PendingSaveSession = {
   sessionKey: string | null;
   fallbackDraft: AccountDraft;
 };
+
+type ModelMappingDiscardPrompt = {
+  discard: () => void;
+  stay?: () => void;
+};
+
+function ActiveModelMappingNavigationBlocker({
+  when,
+  onBlocked,
+}: {
+  when: boolean;
+  onBlocked: (actions: { proceed: () => void; reset: () => void }) => void;
+}) {
+  const blocker = useBlocker(when);
+
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    onBlocked({ proceed: blocker.proceed, reset: blocker.reset });
+  }, [blocker, onBlocked]);
+
+  return null;
+}
+
+export function ModelMappingNavigationBlocker({
+  when,
+  onBlocked,
+}: {
+  when: boolean;
+  onBlocked: (actions: { proceed: () => void; reset: () => void }) => void;
+}) {
+  const dataRouterContext = useContext(UNSAFE_DataRouterContext);
+  if (dataRouterContext == null) return null;
+  return <ActiveModelMappingNavigationBlocker when={when} onBlocked={onBlocked} />;
+}
 
 function normalizeProxyKeys(values?: string[]): string[] {
   if (!Array.isArray(values)) return [];
@@ -1035,6 +1089,13 @@ function SharedUpstreamAccountDetailDrawerInner({
   const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null));
+  const [modelMappingDrafts, setModelMappingDrafts] = useState<ModelMappingDraft[]>([]);
+  const [modelMappingBaseline, setModelMappingBaseline] = useState<ModelMappingDraft[]>([]);
+  const [modelMappingSaving, setModelMappingSaving] = useState(false);
+  const [modelMappingSaveError, setModelMappingSaveError] = useState<string | null>(null);
+  const [modelMappingDiscardPrompt, setModelMappingDiscardPrompt] =
+    useState<ModelMappingDiscardPrompt | null>(null);
+  const [modelMappingNavigationBypass, setModelMappingNavigationBypass] = useState(false);
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
     accountMessages: {},
@@ -1088,6 +1149,8 @@ function SharedUpstreamAccountDetailDrawerInner({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const nextAttemptFocusVersionRef = useRef(0);
+  const nextModelMappingDraftIdRef = useRef(0);
+  const modelMappingAccountIdRef = useRef<number | null>(null);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -1122,11 +1185,25 @@ function SharedUpstreamAccountDetailDrawerInner({
   }
   const activeDraftSessionKey =
     open && accountId != null ? `${draftSessionVersion}:${accountId}` : null;
+  const createModelMappingDraftId = useCallback(() => {
+    nextModelMappingDraftIdRef.current += 1;
+    return `model-mapping-${nextModelMappingDraftIdRef.current}`;
+  }, []);
+  const modelMappingsDirty = useMemo(
+    () => !areModelMappingDraftsEqual(modelMappingDrafts, modelMappingBaseline),
+    [modelMappingBaseline, modelMappingDrafts],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: drawer session identity intentionally resets transient model routing state.
   useEffect(() => {
     setModelRoutingResetting(null);
     setModelRoutingError(null);
+    modelMappingAccountIdRef.current = null;
+    setModelMappingDrafts([]);
+    setModelMappingBaseline([]);
+    setModelMappingSaveError(null);
+    setModelMappingDiscardPrompt(null);
+    setModelMappingNavigationBypass(false);
   }, [activeDraftSessionKey]);
 
   selectedIdRef.current = selectedId;
@@ -1686,6 +1763,113 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  useEffect(() => {
+    if (!selectedDetail) return;
+    if (modelMappingAccountIdRef.current === selectedDetail.id) return;
+
+    const nextMappings = createModelMappingDrafts(
+      selectedDetail.modelMappings,
+      createModelMappingDraftId,
+    );
+    modelMappingAccountIdRef.current = selectedDetail.id;
+    setModelMappingDrafts(nextMappings);
+    setModelMappingBaseline(nextMappings);
+    setModelMappingSaveError(null);
+  }, [createModelMappingDraftId, selectedDetail]);
+
+  const discardModelMappingDrafts = useCallback(() => {
+    setModelMappingDrafts(modelMappingBaseline);
+    setModelMappingSaveError(null);
+  }, [modelMappingBaseline]);
+
+  const requestModelMappingDiscard = useCallback(
+    (action: () => void, stay?: () => void) => {
+      if (!modelMappingsDirty) {
+        action();
+        return;
+      }
+      setModelMappingDiscardPrompt({
+        discard: () => {
+          setModelMappingNavigationBypass(true);
+          discardModelMappingDrafts();
+          setModelMappingDiscardPrompt(null);
+          window.setTimeout(() => {
+            action();
+            window.setTimeout(() => setModelMappingNavigationBypass(false), 0);
+          }, 0);
+        },
+        stay: () => {
+          stay?.();
+          setModelMappingDiscardPrompt(null);
+        },
+      });
+    },
+    [discardModelMappingDrafts, modelMappingsDirty],
+  );
+
+  const handleBlockedModelMappingNavigation = useCallback(
+    ({ proceed, reset }: { proceed: () => void; reset: () => void }) => {
+      setModelMappingDiscardPrompt({
+        discard: () => {
+          setModelMappingNavigationBypass(true);
+          discardModelMappingDrafts();
+          setModelMappingDiscardPrompt(null);
+          proceed();
+          window.setTimeout(() => setModelMappingNavigationBypass(false), 0);
+        },
+        stay: () => {
+          reset();
+          setModelMappingDiscardPrompt(null);
+        },
+      });
+    },
+    [discardModelMappingDrafts],
+  );
+
+  useEffect(() => {
+    if (!modelMappingsDirty || typeof window === "undefined") return undefined;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [modelMappingsDirty]);
+
+  const handleSaveModelMappings = useCallback(async () => {
+    if (!selectedDetail || modelMappingSaving) return;
+    if (validateModelMappingDrafts(modelMappingDrafts) != null) return;
+
+    const savedAccountId = selectedDetail.id;
+    setModelMappingSaving(true);
+    setModelMappingSaveError(null);
+    try {
+      const response = await updateUpstreamAccountModelMappings(savedAccountId, {
+        modelMappings: toModelMappings(modelMappingDrafts),
+      });
+      const nextMappings = createModelMappingDrafts(
+        response.modelMappings,
+        createModelMappingDraftId,
+      );
+      if (selectedIdRef.current === savedAccountId) {
+        modelMappingAccountIdRef.current = savedAccountId;
+        setModelMappingDrafts(nextMappings);
+        setModelMappingBaseline(nextMappings);
+        void loadDetail(savedAccountId, { silent: true, includeRecentActions: true });
+      }
+    } catch (error) {
+      setModelMappingSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setModelMappingSaving(false);
+    }
+  }, [
+    createModelMappingDraftId,
+    loadDetail,
+    modelMappingDrafts,
+    modelMappingSaving,
+    selectedDetail,
+  ]);
+
   const routingBlockUntil = selectedDetail?.routingBlockUntil ?? null;
   const refreshExpiredRoutingBlock = useCallback(() => {
     if (selectedId != null) void loadDetail(selectedId, { silent: true });
@@ -1734,39 +1918,44 @@ function SharedUpstreamAccountDetailDrawerInner({
     void loadDetail(accountId, { silent: true, includeRecentActions: true });
   }, [accountId, detailTab, isDetailRecentActionsHydrated, loadDetail, open, selectedId]);
   const handleDetailDrawerClose = useCallback(() => {
-    onClose();
-  }, [onClose]);
+    requestModelMappingDiscard(() => onClose());
+  }, [onClose, requestModelMappingDiscard]);
   const handleSelectDetailTab = useCallback(
     (nextTab: AccountDetailTab) => {
-      setAttemptFocusRequest(null);
-      setDetailTab(nextTab);
-      if (accountId != null) {
-        openUpstreamAccount(accountId, {
-          replace: true,
-          tab: nextTab,
-        });
-      }
+      if (nextTab === detailTab) return;
+      requestModelMappingDiscard(() => {
+        setAttemptFocusRequest(null);
+        setDetailTab(nextTab);
+        if (accountId != null) {
+          openUpstreamAccount(accountId, {
+            replace: true,
+            tab: nextTab,
+          });
+        }
+      });
     },
-    [accountId, openUpstreamAccount],
+    [accountId, detailTab, openUpstreamAccount, requestModelMappingDiscard],
   );
   const locateAccountAttempt = useCallback(
     (attemptId: string | null | undefined) => {
       const normalizedAttemptId = attemptId?.trim() ?? "";
       if (!normalizedAttemptId) return;
       nextAttemptFocusVersionRef.current += 1;
-      setAttemptFocusRequest({
-        attemptId: normalizedAttemptId,
-        version: nextAttemptFocusVersionRef.current,
-      });
-      setDetailTab("records");
-      if (accountId != null) {
-        openUpstreamAccount(accountId, {
-          replace: true,
-          tab: "records",
+      requestModelMappingDiscard(() => {
+        setAttemptFocusRequest({
+          attemptId: normalizedAttemptId,
+          version: nextAttemptFocusVersionRef.current,
         });
-      }
+        setDetailTab("records");
+        if (accountId != null) {
+          openUpstreamAccount(accountId, {
+            replace: true,
+            tab: "records",
+          });
+        }
+      });
     },
-    [accountId, openUpstreamAccount],
+    [accountId, openUpstreamAccount, requestModelMappingDiscard],
   );
   const selectedPlanChip = upstreamPlanChipRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
@@ -2352,6 +2541,37 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   return (
     <>
+      <ModelMappingNavigationBlocker
+        when={Boolean(open && modelMappingsDirty && !modelMappingNavigationBypass)}
+        onBlocked={handleBlockedModelMappingNavigation}
+      />
+      <Dialog
+        open={modelMappingDiscardPrompt != null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) modelMappingDiscardPrompt?.stay?.();
+        }}
+      >
+        <DialogContent
+          container={detailDrawerPortalContainer}
+          mobileLayout="centered"
+          className="max-w-md rounded-lg"
+        >
+          <DialogHeader>
+            <DialogTitle>{t("accountPool.upstreamAccounts.modelMappings.discardTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("accountPool.upstreamAccounts.modelMappings.discardDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => modelMappingDiscardPrompt?.stay?.()}>
+              {t("accountPool.upstreamAccounts.modelMappings.keepEditing")}
+            </Button>
+            <Button type="button" variant="destructive" onClick={() => modelMappingDiscardPrompt?.discard()}>
+              {t("accountPool.upstreamAccounts.modelMappings.discard")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {open && accountId != null ? (
         <AccountDetailDrawerShell
           open={open}
@@ -3708,6 +3928,20 @@ function SharedUpstreamAccountDetailDrawerInner({
                         "accountPool.upstreamAccounts.routing.timeout.compactStream",
                       ),
                     }}
+                  />
+                  <ModelMappingEditor
+                    mappings={modelMappingDrafts}
+                    availableModelOptions={availableModelOptions}
+                    disabled={!writesEnabled}
+                    saving={modelMappingSaving}
+                    dirty={modelMappingsDirty}
+                    saveError={modelMappingSaveError}
+                    onChange={(nextMappings) => {
+                      setModelMappingDrafts(nextMappings);
+                      setModelMappingSaveError(null);
+                    }}
+                    onSave={() => void handleSaveModelMappings()}
+                    createId={createModelMappingDraftId}
                   />
                   <Alert variant="info">
                     <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" />

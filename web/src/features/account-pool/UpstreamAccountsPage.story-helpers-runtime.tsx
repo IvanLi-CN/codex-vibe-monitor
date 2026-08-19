@@ -6,6 +6,7 @@ import type {
   CreateApiKeyAccountPayload,
   EffectiveRoutingRule,
   ImportOauthCredentialFilePayload,
+  ModelMapping,
   OauthMailboxStatus,
   StatsResponse,
   TimeseriesResponse,
@@ -13,6 +14,7 @@ import type {
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
+  UpdateUpstreamAccountModelMappingsPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
 } from "../../lib/api";
@@ -304,8 +306,14 @@ function buildStoryAccountActivityTimeseries(
   };
 }
 
-export function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
-  const storeRef = useRef<StoryStore>(createStore());
+export function StorybookUpstreamAccountsMock({
+  children,
+  modelMappings,
+}: {
+  children: ReactNode;
+  modelMappings?: ModelMapping[];
+}) {
+  const storeRef = useRef<StoryStore>(createStore({ modelMappings }));
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
   const installedRef = useRef(false);
@@ -1025,6 +1033,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       }
 
       const detailMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/);
+      const modelMappingsMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/model-mappings$/,
+      );
       const modelRoutingMatch = path.match(
         /^\/api\/pool\/upstream-accounts\/(\d+)\/model-routing$/,
       );
@@ -1057,6 +1068,25 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const detail = store.details[accountId];
         if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
         return jsonResponse(clone(detail));
+      }
+
+      if (modelMappingsMatch && method === "PUT") {
+        const accountId = Number(modelMappingsMatch[1]);
+        const detail = store.details[accountId];
+        if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
+        const body = parseBody<UpdateUpstreamAccountModelMappingsPayload>(init?.body, {
+          modelMappings: [],
+        });
+        const modelMappings = Array.isArray(body.modelMappings)
+          ? body.modelMappings.map((mapping) => ({
+              sourceModel: mapping.sourceModel.trim(),
+              targetModel: mapping.targetModel.trim(),
+              enabled: mapping.enabled !== false,
+            }))
+          : [];
+        const updated = { ...detail, modelMappings };
+        store.details[accountId] = updated;
+        return jsonResponse(clone(updated));
       }
 
       const attemptMatch = path.match(
