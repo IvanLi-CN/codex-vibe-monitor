@@ -1638,6 +1638,7 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    publish_pool_routing_availability(state);
     load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?

@@ -1,5 +1,7 @@
 use super::*;
-use crate::tests::seed_pool_routing_api_key;
+use crate::tests::{
+    seed_pool_routing_api_key, test_state_with_openai_base_and_pool_no_available_wait,
+};
 
 fn mapping(source_model: &str, target_model: &str, enabled: bool) -> ModelMapping {
     ModelMapping {
@@ -255,6 +257,91 @@ async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
             .expect("mapping should remain")
             .target_model,
         "upstream-fast"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        url::Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_millis(100),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Mapping waiter account",
+        "sk-mapping-waiter",
+        None,
+        Some("https://mapping-waiter.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_available_models_json = '["ordinary-model"]',
+            policy_available_models_mode = 'allowlist'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed account model allowlist");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("refresh account model allowlist");
+
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let update_state = state.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let update_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("request should enter the no-candidate wait");
+        runtime_handle.block_on(async move {
+            let Json(_) = update_upstream_account_model_mappings(
+                State(update_state),
+                HeaderMap::new(),
+                AxumPath(account_id),
+                Json(UpdateModelMappingsRequest {
+                    model_mappings: vec![mapping("client-*", "ordinary-model", true)],
+                }),
+            )
+            .await
+            .expect("save mapping should wake the waiting request");
+        });
+    });
+
+    let started = std::time::Instant::now();
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        Some("client-fast"),
+        &[],
+        &std::collections::HashSet::new(),
+        None,
+        true,
+        &mut wait_deadline,
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+    )
+    .await
+    .expect("waiting request should resolve");
+    let elapsed = started.elapsed();
+    update_task
+        .join()
+        .expect("mapping update thread should join");
+
+    match resolution {
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
+            assert_eq!(account.account_id, account_id);
+        }
+        other => panic!("mapped account should resolve after save, got {other:?}"),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_millis(800),
+        "mapping save should wake the request before its deadline, elapsed={elapsed:?}"
     );
 }
 
