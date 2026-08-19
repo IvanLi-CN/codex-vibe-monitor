@@ -1095,6 +1095,7 @@ pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<System
                 entry.cached_at.elapsed().as_millis() as u64,
             )
         })
+        .filter(|(_, snapshot_age_ms)| *snapshot_age_ms <= SYSTEM_STATUS_CACHE_TTL_SECS * 1_000)
     {
         debug!(
             metrics_source = "system_status_memory_snapshot",
@@ -1103,11 +1104,7 @@ pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<System
         return Ok(response);
     }
 
-    #[cfg(test)]
-    return load_system_status_uncached(state).await;
-
-    #[cfg(not(test))]
-    Err(anyhow!("system status snapshot is warming"))
+    Err(anyhow!("system status snapshot is unavailable or stale"))
 }
 
 pub(crate) async fn invalidate_system_status_cache(state: &AppState) {
@@ -1449,12 +1446,32 @@ pub(crate) fn summarize_retention_run_for_system_task(
 
 #[cfg(test)]
 mod runtime_pressure_health_tests {
-    use super::runtime_pressure_state;
+    use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn active_event_lag_and_writer_pressure_never_report_healthy() {
         assert_eq!(runtime_pressure_state(false, true, false), "degraded");
         assert_eq!(runtime_pressure_state(false, false, true), "deferred");
         assert_eq!(runtime_pressure_state(false, false, false), "healthy");
+    }
+
+    #[tokio::test]
+    async fn stale_status_snapshot_never_falls_back_to_request_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_system_status_snapshot(state.as_ref())
+            .await
+            .expect("hydrate status snapshot");
+        {
+            let mut cache = state.system_status_cache.lock().await;
+            cache.latest.as_mut().expect("hydrated entry").cached_at =
+                Instant::now() - Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS + 1);
+        }
+        state.pool.close().await;
+
+        assert!(load_system_status_cached(state.as_ref()).await.is_err());
     }
 }

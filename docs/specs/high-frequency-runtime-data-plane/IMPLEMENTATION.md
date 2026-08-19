@@ -4,7 +4,7 @@
 
 Activity、summary 与 network topic 已有 typed projection/materializer。working-conversations、parallel-work open range 与 open-window timeseries 仍可能进入通用 subscription builder；其迁移、健康判责与完整 Dashboard bundle 性能门禁由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/IMPLEMENTATION.md) 跟踪。在该规范验收前，高频 Dashboard delivery 不视为全部完成。
 
-`GET /api/stats/summary` 使用启动 hydration 的 `SummaryProjection` 作为唯一 HTTP 真值。projection 保留按账号和 UTC bucket 的历史、rollup/archive coverage、usage/model 与延迟聚合、bounded recent-N 索引、runtime overlay 和 maintenance last-good；请求仅规范化选择并在内存中派生精确 `StatsResponse`。48 条 LRU 只缓存已序列化响应，不能限制合法选择。typed runtime/persistence events 标记对应 projection scope，后台 reconciler 合并更新并在 15 秒 freshness 预算内发布新 revision；请求不执行 SQLite 或文件 I/O，且只有同一选择未过期的 last-good 才可在刷新失败时返回。
+`GET /api/stats/summary` 使用启动 hydration 的 `SummaryProjection` 作为唯一 HTTP 真值。projection 保留按账号和 UTC bucket 的历史、rollup/archive coverage、usage/model 与延迟聚合、bounded recent-N 索引、runtime overlay 和 maintenance last-good；归档在后台流式归并，已 materialize 的小时只保留 compact rollup。请求仅规范化选择并在内存中派生精确 `StatsResponse`。48 条 LRU 只缓存已序列化响应，不能限制合法选择。typed runtime/persistence events 标记对应 projection scope，后台 reconciler 合并更新并在 15 秒 freshness 预算内发布新 revision；请求不执行 SQLite 或文件 I/O，刷新失败仅在 exact last-good 仍处于 freshness 预算时返回，超过预算采用端点 unavailable 契约。
 
 ## Typed Runtime Event Bus Boundary
 

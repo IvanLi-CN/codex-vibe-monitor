@@ -7093,9 +7093,6 @@ impl SummaryProjection {
         params: &SummaryQuery,
         default_limit: i64,
     ) -> Result<StatsResponse, ApiError> {
-        // A failed or deadline-cancelled background rebuild retains this complete, exact
-        // projection.  Do not manufacture a zero response or turn a recoverable refresh miss
-        // into an HTTP error; readiness supervision owns the stale-age availability boundary.
         let last_good_age_ms = self
             .refreshed_at
             .map(|refreshed_at| refreshed_at.elapsed().as_millis() as u64);
@@ -7114,6 +7111,14 @@ impl SummaryProjection {
         };
         let key = SummarySnapshotKey::try_from_query(params, default_limit)
             .map_err(ApiError::bad_request)?;
+        if self
+            .refreshed_at
+            .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+        {
+            return Err(ApiError::from(anyhow!(
+                "summary projection last-good snapshot exceeded the freshness budget"
+            )));
+        }
         if let Some(response) = self.closed_window_by_key.get(&key) {
             return Ok(response.clone());
         }
@@ -7365,9 +7370,13 @@ fn summary_projection_archive_column(column: &str, available: bool, fallback: &s
     }
 }
 
-async fn load_summary_projection_archive_records(
+async fn merge_summary_projection_archive_records(
     pool: &Pool<Sqlite>,
-) -> Result<Vec<SummaryProjectionRecord>> {
+    persisted_live_ids: &HashSet<String>,
+    hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+    records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
+    exact_record_budget: &mut usize,
+) -> Result<()> {
     let mut columns = HashMap::new();
     for column in [
         "source",
@@ -7457,73 +7466,87 @@ async fn load_summary_projection_archive_records(
         summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
         upstream_account_id,
     );
-    let rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
-            Some(SummaryProjectionRecord {
-                occurred_at,
-                row: UpstreamAccountInvocationPreviewRow {
-                    upstream_account_id: row.upstream_account_id,
-                    id: row.id,
-                    invoke_id: row.invoke_id,
-                    prompt_cache_key: None,
-                    occurred_at: row.occurred_at,
-                    conversation_created_at: None,
-                    status: row.status,
-                    live_phase: None,
-                    failure_class: row.failure_class,
-                    route_mode: None,
-                    model: row.model,
-                    request_model: None,
-                    response_model: row.response_model,
-                    total_tokens: row.total_tokens,
-                    cost: row.cost,
-                    cost_input: row.cost_input,
-                    cost_cache_write: row.cost_cache_write,
-                    cost_cache_read: row.cost_cache_read,
-                    cost_output: row.cost_output,
-                    cost_reasoning: row.cost_reasoning,
-                    source: Some(row.source),
-                    input_tokens: Some(row.input_tokens),
-                    output_tokens: Some(row.output_tokens),
-                    cache_input_tokens: Some(row.cache_input_tokens),
-                    reasoning_tokens: Some(row.reasoning_tokens),
-                    reasoning_effort: row.reasoning_effort,
-                    error_message: row.error_message,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
-                    failure_kind: row.failure_kind,
-                    is_actionable: None,
-                    proxy_display_name: None,
-                    upstream_account_name: None,
-                    upstream_account_plan_type: None,
-                    response_content_encoding: None,
-                    request_compression_algorithm: None,
-                    transport: None,
-                    requested_service_tier: None,
-                    service_tier: None,
-                    billing_service_tier: None,
-                    t_req_read_ms: None,
-                    t_req_parse_ms: None,
-                    t_upstream_connect_ms: None,
-                    t_upstream_ttfb_ms: None,
-                    first_token_ms: None,
-                    t_upstream_stream_ms: None,
-                    t_resp_parse_ms: None,
-                    t_persist_ms: None,
-                    t_total_ms: None,
-                    endpoint: None,
-                    compaction_request_kind: None,
-                    compaction_response_kind: None,
-                    image_intent: None,
-                },
-            })
-        })
-        .collect())
+    let mut rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query).fetch(pool);
+    while let Some(row) = rows.try_next().await? {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+        // Persisted/live rows are the richer, authoritative copy. A fully materialized hour is
+        // represented by its compact rollup rather than an unbounded archive row collection.
+        if persisted_live_ids.contains(&row.invoke_id)
+            || hourly_rollup_totals.contains_key(&(bucket, None))
+            || records_by_invoke_id.contains_key(&row.invoke_id)
+        {
+            continue;
+        }
+        *exact_record_budget = exact_record_budget.saturating_add(1);
+        if *exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+            return Err(anyhow!(
+                "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
+            ));
+        }
+        let record = SummaryProjectionRecord {
+            occurred_at,
+            row: UpstreamAccountInvocationPreviewRow {
+                upstream_account_id: row.upstream_account_id,
+                id: row.id,
+                invoke_id: row.invoke_id,
+                prompt_cache_key: None,
+                occurred_at: row.occurred_at,
+                conversation_created_at: None,
+                status: row.status,
+                live_phase: None,
+                failure_class: row.failure_class,
+                route_mode: None,
+                model: row.model,
+                request_model: None,
+                response_model: row.response_model,
+                total_tokens: row.total_tokens,
+                cost: row.cost,
+                cost_input: row.cost_input,
+                cost_cache_write: row.cost_cache_write,
+                cost_cache_read: row.cost_cache_read,
+                cost_output: row.cost_output,
+                cost_reasoning: row.cost_reasoning,
+                source: Some(row.source),
+                input_tokens: Some(row.input_tokens),
+                output_tokens: Some(row.output_tokens),
+                cache_input_tokens: Some(row.cache_input_tokens),
+                reasoning_tokens: Some(row.reasoning_tokens),
+                reasoning_effort: row.reasoning_effort,
+                error_message: row.error_message,
+                downstream_status_code: None,
+                downstream_error_message: None,
+                failure_kind: row.failure_kind,
+                is_actionable: None,
+                proxy_display_name: None,
+                upstream_account_name: None,
+                upstream_account_plan_type: None,
+                response_content_encoding: None,
+                request_compression_algorithm: None,
+                transport: None,
+                requested_service_tier: None,
+                service_tier: None,
+                billing_service_tier: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                first_token_ms: None,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+                t_total_ms: None,
+                endpoint: None,
+                compaction_request_kind: None,
+                compaction_response_kind: None,
+                image_intent: None,
+            },
+        };
+        records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
+    }
+    Ok(())
 }
 
 impl SummarySnapshotEntry {
@@ -7705,9 +7728,8 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         ));
     }
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
-    // an archived hour. Read those durable rows only while constructing the projection. A
-    // missing/unreadable archive is intentionally skipped here: HTTP never opens or probes
-    // archive files, and materialized coverage remains available through aggregate buckets.
+    // an archived hour. Archive rows are streamed into the bounded exact set while building;
+    // HTTP never opens or probes archive files.
     let mut exact_record_budget = records_by_invoke_id.len();
     for archive in crate::stats::load_completed_invocation_archive_paths(&state.pool).await? {
         let Some((archive_pool, temp_cleanup)) =
@@ -7716,36 +7738,22 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         else {
             continue;
         };
-        let archive_rows = load_summary_projection_archive_records(&archive_pool)
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "summary projection archive hydration failed for {}: {error:?}",
-                    archive.file_path()
-                )
-            })?;
+        merge_summary_projection_archive_records(
+            &archive_pool,
+            &persisted_live_ids,
+            &hourly_rollup_totals,
+            &mut records_by_invoke_id,
+            &mut exact_record_budget,
+        )
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "summary projection archive hydration failed for {}: {error:?}",
+                archive.file_path()
+            )
+        })?;
         archive_pool.close().await;
         drop(temp_cleanup);
-        for record in archive_rows {
-            // Match the established archive preview contract: persisted/live rows are the
-            // authoritative representation and archive replays are excluded by invocation id.
-            let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
-            // Once a durable overall rollup covers this hour, the archive row is represented by
-            // its compact aggregate and must not be retained in the canonical exact-record set.
-            if !persisted_live_ids.contains(&record.row.invoke_id)
-                && !hourly_rollup_totals.contains_key(&(bucket, None))
-            {
-                exact_record_budget = exact_record_budget.saturating_add(1);
-                if exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
-                    return Err(anyhow!(
-                        "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
-                    ));
-                }
-                records_by_invoke_id
-                    .entry(record.row.invoke_id.clone())
-                    .or_insert(record);
-            }
-        }
     }
     // Runtime is an authoritative typed overlay until the terminal writer persists it.  Replace
     // only matching live keys; a new in-flight record is inserted exactly once.
@@ -22874,7 +22882,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_handler_serves_expired_last_good_projection_without_sqlite() {
+    async fn summary_handler_rejects_expired_projection_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -22899,11 +22907,8 @@ mod request_compression_query_tests {
             .await;
         state.pool.close().await;
 
-        let Json(response) = fetch_summary(State(state), Query(query))
-            .await
-            .expect("serve exact last-good projection after its refresh deadline");
-        assert_eq!(response.total_count, 1);
-        assert_eq!(response.total_tokens, 17);
+        let response = fetch_summary(State(state), Query(query)).await;
+        assert!(matches!(response, Err(ApiError::Internal(_))));
     }
 
     #[tokio::test]

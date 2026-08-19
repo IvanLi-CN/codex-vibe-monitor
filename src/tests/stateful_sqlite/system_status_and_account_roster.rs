@@ -243,6 +243,9 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     refresh_system_raw_payload_metrics_inventory(state.as_ref())
         .await
         .expect("refresh persisted raw metrics snapshot");
+    hydrate_system_status_snapshot(state.as_ref())
+        .await
+        .expect("hydrate system status snapshot");
     let response = load_system_status_cached(state.as_ref())
         .await
         .expect("load cached system status");

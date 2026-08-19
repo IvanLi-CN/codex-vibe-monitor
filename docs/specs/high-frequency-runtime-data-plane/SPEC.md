@@ -16,7 +16,7 @@
 - 每个 topic revision 只序列化一次，并以共享不可变 frame 进入 cache、replay ring、broadcaster 与 subscriber。
 - 修复 writer accounting 的所有权和不变量，使运行健康与内存归因可被验证；生产镜像默认 `MALLOC_ARENA_MAX=8`，同时保留部署环境覆盖能力。
 - `GET /api/system/status` additive 暴露 `runtimePressureHealth`，不改变 Dashboard、统计、raw detail 或 SSE 的既有 wire shape。
-- `GET /api/stats/summary` 由事件驱动的内存 last-good snapshots 提供，启动 hydration 后后台刷新最长间隔为 15 秒；HTTP 请求（包括 cache miss 或 TTL 到期）不得执行 SQLite 或启动 snapshot rebuild，刷新失败必须保留既有响应形状的 last-good 数据。
+- `GET /api/stats/summary` 由事件驱动的内存 projection 提供，启动 hydration 后后台刷新最长间隔为 15 秒；HTTP 请求（包括 cache miss 或 TTL 到期）不得执行 SQLite 或启动 snapshot rebuild。刷新失败仅可在 exact last-good 未超过 15 秒时保留既有响应形状；超过边界使用既有 unavailable 错误契约，不得返回过期或零值数据。
 
 ### Summary Projection
 

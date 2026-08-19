@@ -201,12 +201,9 @@ pub(crate) async fn run() -> Result<()> {
     hydrate_summary_snapshots(state.as_ref())
         .await
         .context("summary projection startup hydration failed")?;
-    if let Err(error) = hydrate_system_status_snapshot(state.as_ref()).await {
-        warn!(
-            ?error,
-            "system status startup hydration failed; background refresh will retry"
-        );
-    }
+    hydrate_system_status_snapshot(state.as_ref())
+        .await
+        .context("system status startup hydration failed")?;
     warm_dashboard_runtime_projection(state.as_ref()).await;
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
