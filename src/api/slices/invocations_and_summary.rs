@@ -7042,14 +7042,14 @@ fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
     // These are the finite rolling windows exposed by the stats UI and the dashboard
     // bootstrap snapshots.  Keep their start/end partial hours exact even when the enclosing
     // projection range is much wider and the middle is served from hourly rollups.
+    for days in 1..=30 {
+        add_bucket(end - ChronoDuration::days(days));
+    }
     for duration in [
         ChronoDuration::minutes(30),
         ChronoDuration::hours(1),
         ChronoDuration::hours(6),
         ChronoDuration::hours(12),
-        ChronoDuration::days(1),
-        ChronoDuration::days(7),
-        ChronoDuration::days(30),
     ] {
         add_bucket(end - duration);
     }
@@ -7639,31 +7639,72 @@ fn summary_projection_archive_exact_ranges(
     archive_has_materialized_rollups: bool,
     exact_range: ExactUtcRange,
     protected_boundary_buckets: &HashSet<i64>,
+    hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+    hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
+    known_account_ids: &HashSet<i64>,
 ) -> Vec<ExactUtcRange> {
     if !archive_has_materialized_rollups {
         return vec![exact_range];
     }
 
-    protected_boundary_buckets
-        .iter()
-        .filter_map(|bucket| {
-            let start = Utc.timestamp_opt(*bucket, 0).single()?;
-            let end = start + ChronoDuration::hours(1);
-            let start = start.max(exact_range.start);
-            let end = end.min(exact_range.end);
-            (start < end).then_some(ExactUtcRange { start, end })
-        })
-        .collect()
+    let first_bucket = align_bucket_epoch(exact_range.start.timestamp(), 3_600, 0);
+    let last_bucket = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
+    let first_full_bucket = ceil_hour_epoch(exact_range.start.timestamp());
+    let mut exact_buckets = protected_boundary_buckets.clone();
+    let mut bucket = first_bucket;
+    while bucket <= last_bucket {
+        let bucket_end = bucket.saturating_add(3_600);
+        let is_full_bucket =
+            bucket >= first_full_bucket && bucket_end <= exact_range.end.timestamp();
+        if is_full_bucket && !exact_buckets.contains(&bucket) {
+            let global_covered = hourly_rollup_totals.contains_key(&(bucket, None));
+            let global_usage_covered = hourly_rollup_usage.contains_key(&(bucket, None));
+            let accounts_covered = known_account_ids.iter().all(|account_id| {
+                hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
+                    && hourly_rollup_usage.contains_key(&(bucket, Some(*account_id)))
+            });
+            if !global_covered || !global_usage_covered || !accounts_covered {
+                exact_buckets.insert(bucket);
+            }
+        }
+        bucket = bucket.saturating_add(3_600);
+    }
+
+    let mut sorted_buckets = exact_buckets.into_iter().collect::<Vec<_>>();
+    sorted_buckets.sort_unstable();
+    let mut ranges = Vec::<ExactUtcRange>::new();
+    for bucket in sorted_buckets {
+        let start = Utc.timestamp_opt(bucket, 0).single();
+        let end = Utc.timestamp_opt(bucket.saturating_add(3_600), 0).single();
+        let (Some(start), Some(end)) = (start, end) else {
+            continue;
+        };
+        let start = start.max(exact_range.start);
+        let end = end.min(exact_range.end);
+        if start >= end {
+            continue;
+        }
+        if let Some(previous) = ranges.last_mut()
+            && previous.end >= start
+        {
+            previous.end = previous.end.max(end);
+        } else {
+            ranges.push(ExactUtcRange { start, end });
+        }
+    }
+    ranges
 }
 
 async fn merge_summary_projection_archive_records(
     pool: &Pool<Sqlite>,
     persisted_live_ids: &HashSet<String>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+    hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
     archive_has_materialized_rollups: bool,
     exact_range: ExactUtcRange,
     protected_boundary_buckets: &HashSet<i64>,
     usage_rollup_cursor: Option<i64>,
+    known_account_ids: &HashSet<i64>,
     records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
     exact_record_budget: &mut usize,
 ) -> Result<()> {
@@ -7760,6 +7801,9 @@ async fn merge_summary_projection_archive_records(
         archive_has_materialized_rollups,
         exact_range,
         protected_boundary_buckets,
+        hourly_rollup_totals,
+        hourly_rollup_usage,
+        known_account_ids,
     );
     let mut bind_index = 1usize;
     let mut bounded_query = query;
@@ -7803,17 +7847,27 @@ async fn merge_summary_projection_archive_records(
         {
             continue;
         }
-        let global_rollup_covered = hourly_rollup_totals.contains_key(&(bucket, None));
-        let account_rollup_covered =
-            hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
+        let global_rollup_covered =
+            archive_has_materialized_rollups && hourly_rollup_totals.contains_key(&(bucket, None));
+        let account_rollup_covered = archive_has_materialized_rollups
+            && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
         let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
         let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
         let bucket_is_full_rollup = bucket >= full_rollup_start
             && bucket < full_rollup_end
             && !protected_boundary_buckets.contains(&bucket);
-        let usage_rollup_covered = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor)
-            || (archive_has_materialized_rollups && bucket_is_full_rollup);
-        if bucket_is_full_rollup && global_rollup_covered && account_rollup_covered {
+        let usage_cursor_covers_row = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor);
+        let usage_global_rollup_covered = hourly_rollup_usage.contains_key(&(bucket, None))
+            && (archive_has_materialized_rollups || usage_cursor_covers_row);
+        let usage_account_rollup_covered = hourly_rollup_usage
+            .contains_key(&(bucket, row.upstream_account_id))
+            && (archive_has_materialized_rollups || usage_cursor_covers_row);
+        if bucket_is_full_rollup
+            && global_rollup_covered
+            && account_rollup_covered
+            && usage_global_rollup_covered
+            && usage_account_rollup_covered
+        {
             continue;
         }
         *exact_record_budget = exact_record_budget.saturating_add(1);
@@ -7826,8 +7880,8 @@ async fn merge_summary_projection_archive_records(
             occurred_at,
             global_rollup_covered,
             account_rollup_covered,
-            usage_global_rollup_covered: usage_rollup_covered,
-            usage_account_rollup_covered: usage_rollup_covered,
+            usage_global_rollup_covered,
+            usage_account_rollup_covered,
             is_persisted_live_record: false,
             row: UpstreamAccountInvocationPreviewRow {
                 upstream_account_id: row.upstream_account_id,
@@ -8131,6 +8185,29 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         })
         .collect::<HashMap<_, _>>();
     let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
+    let mut known_account_ids = records_by_invoke_id
+        .values()
+        .filter_map(|record| record.row.upstream_account_id)
+        .filter(|account_id| *account_id > 0)
+        .collect::<HashSet<_>>();
+    known_account_ids.extend(
+        sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts")
+            .fetch_all(&state.pool)
+            .await
+            .context("summary projection account coverage hydration failed")?,
+    );
+    known_account_ids.extend(
+        hourly_rollup_totals
+            .keys()
+            .filter_map(|(_, account_id)| *account_id)
+            .filter(|account_id| *account_id > 0),
+    );
+    known_account_ids.extend(
+        hourly_rollup_usage
+            .keys()
+            .filter_map(|(_, account_id)| *account_id)
+            .filter(|account_id| *account_id > 0),
+    );
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
@@ -8161,6 +8238,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
             &archive_pool,
             &persisted_live_ids,
             &hourly_rollup_totals,
+            &hourly_rollup_usage,
             archive.has_materialized_historical_rollups(),
             ExactUtcRange {
                 start: archive_start,
@@ -8168,6 +8246,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
             },
             &protected_boundary_buckets,
             usage_rollup_progress.get(archive.file_path()).copied(),
+            &known_account_ids,
             &mut records_by_invoke_id,
             &mut exact_record_budget,
         )
@@ -8246,11 +8325,14 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     // Account ids are finite durable state at the hydration boundary. Include ids which only
     // survive in archived/rollup data as well as ids visible in the live record view, so `all`
     // never falls back to a differently scoped aggregate.
-    let mut account_ids = records
-        .iter()
-        .filter_map(|record| record.row.upstream_account_id)
-        .filter(|account_id| *account_id > 0)
-        .collect::<HashSet<_>>();
+    let mut account_ids = known_account_ids;
+    account_ids.extend(
+        records
+            .iter()
+            .filter_map(|record| record.row.upstream_account_id)
+            .filter(|account_id| *account_id > 0)
+            .collect::<HashSet<_>>(),
+    );
     account_ids.extend(
         sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts")
             .fetch_all(&state.pool)
@@ -23229,6 +23311,84 @@ mod request_compression_query_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
+    #[test]
+    fn summary_projection_archive_ranges_include_missing_scope_coverage() {
+        let end = Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("valid range end");
+        assert!(
+            summary_projection_boundary_buckets(end).contains(&align_bucket_epoch(
+                (end - ChronoDuration::days(14)).timestamp(),
+                3_600,
+                0,
+            ))
+        );
+        let exact_range = ExactUtcRange {
+            start: end - ChronoDuration::hours(3),
+            end,
+        };
+        let protected = HashSet::from([align_bucket_epoch(end.timestamp(), 3_600, 0)]);
+        let known_accounts = HashSet::from([42_i64]);
+        let usage = UsageBreakdownResponse {
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            costs: None,
+            models: Vec::new(),
+        };
+        let mut totals = HashMap::new();
+        let mut usage_totals = HashMap::new();
+        for bucket in [
+            align_bucket_epoch((end - ChronoDuration::hours(3)).timestamp(), 3_600, 0),
+            align_bucket_epoch((end - ChronoDuration::hours(2)).timestamp(), 3_600, 0),
+        ] {
+            totals.insert((bucket, None), StatsTotals::default());
+            usage_totals.insert((bucket, None), usage.clone());
+            totals.insert((bucket, Some(42)), StatsTotals::default());
+            usage_totals.insert((bucket, Some(42)), usage.clone());
+        }
+        // The middle full hour has a global rollup but no account rollup. It must remain an
+        // exact archive read until the account scope catches up.
+        let missing_account_bucket =
+            align_bucket_epoch((end - ChronoDuration::hours(1)).timestamp(), 3_600, 0);
+        totals.insert((missing_account_bucket, None), StatsTotals::default());
+        usage_totals.insert((missing_account_bucket, None), usage.clone());
+        let ranges = summary_projection_archive_exact_ranges(
+            true,
+            exact_range,
+            &protected,
+            &totals,
+            &usage_totals,
+            &known_accounts,
+        );
+        assert!(ranges.iter().any(|range| {
+            range.start <= Utc.timestamp_opt(missing_account_bucket, 0).unwrap()
+                && range.end
+                    >= Utc
+                        .timestamp_opt(missing_account_bucket + 3_600, 0)
+                        .unwrap()
+        }));
+
+        totals.insert((missing_account_bucket, Some(42)), StatsTotals::default());
+        usage_totals.insert((missing_account_bucket, Some(42)), usage);
+        let covered_ranges = summary_projection_archive_exact_ranges(
+            true,
+            exact_range,
+            &protected,
+            &totals,
+            &usage_totals,
+            &known_accounts,
+        );
+        assert!(!covered_ranges.iter().any(|range| {
+            range.start <= Utc.timestamp_opt(missing_account_bucket, 0).unwrap()
+                && range.end
+                    >= Utc
+                        .timestamp_opt(missing_account_bucket + 3_600, 0)
+                        .unwrap()
+        }));
+    }
+
     #[tokio::test]
     async fn request_compression_prefers_the_final_pool_attempt_without_using_earlier_attempts() {
         let pool = SqlitePoolOptions::new()
@@ -23851,6 +24011,7 @@ mod request_compression_query_tests {
             &pool,
             &HashSet::new(),
             &HashMap::new(),
+            &HashMap::new(),
             false,
             ExactUtcRange {
                 start: now - ChronoDuration::hours(2),
@@ -23858,6 +24019,7 @@ mod request_compression_query_tests {
             },
             &HashSet::new(),
             None,
+            &HashSet::new(),
             &mut records,
             &mut budget,
         )
@@ -23875,6 +24037,7 @@ mod request_compression_query_tests {
                 (align_bucket_epoch(now.timestamp(), 3_600, 0), None),
                 StatsTotals::default(),
             )]),
+            &HashMap::new(),
             true,
             ExactUtcRange {
                 start: now - ChronoDuration::hours(2),
@@ -23882,6 +24045,7 @@ mod request_compression_query_tests {
             },
             &HashSet::new(),
             None,
+            &HashSet::new(),
             &mut materialized_records,
             &mut materialized_budget,
         )
