@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{FromRow, SqliteConnection};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tracing::debug;
 
@@ -6989,11 +6989,17 @@ pub(crate) async fn load_in_progress_conversation_count(
 
 pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
 pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
-const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = SUMMARY_SNAPSHOT_MAX_STALE;
-// Leave a small hand-off budget before the advertised 15s freshness cadence. A timed-out build
-// is discarded atomically, so it can never turn the request path into a partial projection.
-const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(14);
+const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = SUMMARY_SNAPSHOT_REFRESH_INTERVAL;
+// Reconcile before the 15-second serving budget expires; a timed-out build is discarded
+// atomically and cannot expose a partial projection to the request path.
+const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
+
+// Startup hydration, the cadence, and event coalescing can overlap during a slow archive
+// replay. Serialize complete rebuilds so a burst cannot multiply SQLite/archive work; readers
+// keep the last atomically-installed projection while the next build is in flight.
+static SUMMARY_PROJECTION_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SummarySnapshotKey {
@@ -7115,7 +7121,7 @@ impl SummaryProjection {
             .refreshed_at
             .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
         {
-            return Err(ApiError::from(anyhow!(
+            return Err(ApiError::unavailable(anyhow!(
                 "summary projection last-good snapshot exceeded the freshness budget"
             )));
         }
@@ -7655,6 +7661,7 @@ pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
+    let _refresh_guard = SUMMARY_PROJECTION_REFRESH_LOCK.lock().await;
     let projection = tokio::time::timeout(
         SUMMARY_PROJECTION_BUILD_DEADLINE,
         build_summary_projection(state),
@@ -7889,13 +7896,12 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut receiver = state.broadcaster.subscribe();
-        let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_MAX_STALE);
-        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_refresh = Instant::now() - SUMMARY_SNAPSHOT_EVENT_DEBOUNCE;
+        let mut next_refresh = tokio::time::Instant::now() + SUMMARY_SNAPSHOT_REFRESH_INTERVAL;
+        let mut last_refresh = Instant::now();
         loop {
             let should_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
-                _ = cadence.tick() => true,
+                _ = tokio::time::sleep_until(next_refresh) => true,
                 payload = receiver.recv() => matches!(
                     payload,
                     Ok(BroadcastPayload::DashboardCurrentSlice { .. })
@@ -7914,6 +7920,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 );
             }
             last_refresh = Instant::now();
+            next_refresh = tokio::time::Instant::now() + SUMMARY_SNAPSHOT_REFRESH_INTERVAL;
         }
     });
 }
@@ -20481,7 +20488,9 @@ pub(crate) async fn fetch_summary(
         .subscription_hub
         .summary_projection()
         .await
-        .ok_or_else(|| ApiError::from(anyhow!("summary projection has not completed hydration")))?;
+        .ok_or_else(|| {
+            ApiError::unavailable(anyhow!("summary projection has not completed hydration"))
+        })?;
     Ok(Json(projection.response_for_query(
         &params,
         state.config.list_limit_max as i64,
@@ -22899,7 +22908,7 @@ mod request_compression_query_tests {
             .summary_projection()
             .await
             .expect("hydrated projection");
-        projection.refreshed_at =
+        Arc::make_mut(&mut projection).refreshed_at =
             Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
         state
             .subscription_hub
@@ -22908,7 +22917,7 @@ mod request_compression_query_tests {
         state.pool.close().await;
 
         let response = fetch_summary(State(state), Query(query)).await;
-        assert!(matches!(response, Err(ApiError::Internal(_))));
+        assert!(matches!(response, Err(ApiError::Unavailable(_))));
     }
 
     #[tokio::test]

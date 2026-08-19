@@ -1283,7 +1283,11 @@ pub(crate) fn try_enqueue_system_task_run_finish(
 pub(crate) async fn fetch_system_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SystemStatusResponse>, ApiError> {
-    Ok(Json(load_system_status_cached(state.as_ref()).await?))
+    Ok(Json(
+        load_system_status_cached(state.as_ref())
+            .await
+            .map_err(ApiError::unavailable)?,
+    ))
 }
 
 pub(crate) async fn list_system_task_runs(

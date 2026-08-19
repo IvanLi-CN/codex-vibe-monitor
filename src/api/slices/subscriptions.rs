@@ -732,7 +732,7 @@ struct SubscriptionHubState {
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
-    summary_projection: Option<SummaryProjection>,
+    summary_projection: Option<Arc<SummaryProjection>>,
     summary_projection_revision: u64,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
     prompt_cache_prebaseline_key_hydrations: HashMap<String, BTreeSet<String>>,
@@ -3006,7 +3006,7 @@ impl SubscriptionHub {
             .and_then(SummarySnapshotEntry::fresh_response)
     }
 
-    pub(crate) async fn summary_projection(&self) -> Option<SummaryProjection> {
+    pub(crate) async fn summary_projection(&self) -> Option<Arc<SummaryProjection>> {
         self.state.lock().await.summary_projection.clone()
     }
 
@@ -3017,7 +3017,7 @@ impl SubscriptionHub {
     }
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
-        self.state.lock().await.summary_projection = Some(projection);
+        self.state.lock().await.summary_projection = Some(Arc::new(projection));
     }
 
     pub(crate) async fn ensure_summary_snapshot_key(&self, key: SummarySnapshotKey) -> bool {

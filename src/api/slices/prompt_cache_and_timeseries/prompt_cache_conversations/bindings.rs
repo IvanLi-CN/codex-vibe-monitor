@@ -3929,7 +3929,9 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                     prompt_cache_key,
                     ok: false,
                     error: Some(match err {
-                        ApiError::BadRequest(err) | ApiError::Internal(err) => err.to_string(),
+                        ApiError::BadRequest(err)
+                        | ApiError::Unavailable(err)
+                        | ApiError::Internal(err) => err.to_string(),
                     }),
                     binding: None,
                 });

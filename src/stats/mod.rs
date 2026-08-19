@@ -5205,6 +5205,7 @@ pub(crate) async fn resolve_default_source_scope(
 #[derive(Debug)]
 pub(crate) enum ApiError {
     BadRequest(anyhow::Error),
+    Unavailable(anyhow::Error),
     Internal(anyhow::Error),
 }
 
@@ -5215,12 +5216,20 @@ impl ApiError {
     {
         Self::BadRequest(err.into())
     }
+
+    pub(crate) fn unavailable<E>(err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::Unavailable(err.into())
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, err) = match self {
             ApiError::BadRequest(err) => (StatusCode::BAD_REQUEST, err),
+            ApiError::Unavailable(err) => (StatusCode::SERVICE_UNAVAILABLE, err),
             ApiError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
         };
         let message = format!("{err}");
