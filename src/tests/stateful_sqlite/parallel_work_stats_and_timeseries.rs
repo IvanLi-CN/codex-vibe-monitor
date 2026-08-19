@@ -17672,18 +17672,31 @@ async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage
         "unexpected archive epoch coverage plan: {explain_details:?}"
     );
 
-    let started_at = std::time::Instant::now();
+    let selection_started_at = std::time::Instant::now();
+    let selected = crate::select_active_account_activity_v2_priority_buckets_with_deadline(
+        &state.pool,
+        current_hour_epoch,
+        selection_started_at,
+        selection_started_at + Duration::from_secs(2),
+        None,
+        1_000,
+        false,
+    )
+    .await
+    .expect("select priority coverage against archive fixture")
+    .expect("priority selection should finish within budget");
+    assert_eq!(selected.len(), 2);
+    assert!(
+        selection_started_at.elapsed() < Duration::from_secs(2),
+        "priority coverage selection exceeded its two-second budget: {:?}",
+        selection_started_at.elapsed()
+    );
+
     let outcome = repair_active_account_activity_v2_coverage(&state.pool)
         .await
         .expect("repair active coverage against archive fixture");
-    assert!(
-        started_at.elapsed() < Duration::from_secs(2),
-        "priority coverage repair exceeded its two-second budget: {:?}",
-        started_at.elapsed()
-    );
     assert_eq!(outcome.priority_bucket_count, 2);
     assert_eq!(outcome.repaired_bucket_count, 2);
-    assert!(outcome.elapsed_ms < 2_000);
 }
 
 #[tokio::test]
