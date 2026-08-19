@@ -2695,6 +2695,65 @@ async fn fetch_invocation_summary_p95_ignores_zero_response_duration_placeholder
 }
 
 #[tokio::test]
+async fn fetch_invocation_summary_ignores_stale_retry_timing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, first_token_ms,
+            t_upstream_stream_ms, raw_response
+        ) VALUES (?1, ?2, ?3, 'failed', ?4, ?5, '{}')
+        "#,
+    )
+    .bind("summary-stale-retry-timing")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(900.0_f64)
+    .bind(800.0_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert stale retry invocation");
+    for (public_id, index, status, stream_ms, first_byte_ms) in [
+        ("STALE1", 1_i64, "failed", Some(800.0_f64), Some(100.0_f64)),
+        ("STALE2", 2_i64, "failed", None, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                attempt_index, distinct_account_index, same_account_retry_index,
+                requester_ip, started_at, finished_at, status, phase,
+                stream_latency_ms, first_byte_latency_ms, created_at
+            ) VALUES (?1, ?2, ?3, '/v1/responses', 'pool', ?4, 1, 0,
+                      '127.0.0.1', ?3, ?3, ?5, 'completed', ?6, ?7, ?3)
+            "#,
+        )
+        .bind(public_id)
+        .bind("summary-stale-retry-timing")
+        .bind(&occurred_at)
+        .bind(index)
+        .bind(status)
+        .bind(stream_ms)
+        .bind(first_byte_ms)
+        .execute(&state.pool)
+        .await
+        .expect("insert retry attempt timing");
+    }
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary should ignore stale retry timing");
+    assert_eq!(summary.network.avg_first_token_ms, None);
+    assert_eq!(summary.network.p95_first_token_ms, None);
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
+}
+
+#[tokio::test]
 async fn fetch_invocation_new_records_count_requires_snapshot_id() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

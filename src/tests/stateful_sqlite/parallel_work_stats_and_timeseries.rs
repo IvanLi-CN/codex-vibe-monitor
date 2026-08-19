@@ -20272,3 +20272,72 @@ async fn dashboard_activity_response_duration_includes_success_without_cost() {
         750.0,
     );
 }
+
+#[tokio::test]
+async fn dashboard_account_model_performance_ignores_stale_retry_timing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, model, status, total_tokens, cost,
+            first_token_ms, t_upstream_stream_ms, payload, raw_response
+        ) VALUES (?1, ?2, ?3, 'gpt-retry', 'success', 100, 0.01, ?4, ?5, ?6, '{}')
+        "#,
+    )
+    .bind("account-stale-retry-timing")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(900.0_f64)
+    .bind(800.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-account-stale-retry",
+            "upstreamAccountId": 42_i64,
+        })
+        .to_string(),
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert account retry invocation");
+    for (public_id, index, stream_ms, first_byte_ms) in [
+        ("ACCOUNTSTALE1", 1_i64, Some(800.0_f64), Some(100.0_f64)),
+        ("ACCOUNTSTALE2", 2_i64, None, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                attempt_index, distinct_account_index, same_account_retry_index,
+                requester_ip, started_at, finished_at, status, phase,
+                stream_latency_ms, first_byte_latency_ms, created_at
+            ) VALUES (?1, ?2, ?3, '/v1/responses', 'pool', ?4, 1, 0,
+                      '127.0.0.1', ?3, ?3, 'success', 'completed', ?5, ?6, ?3)
+            "#,
+        )
+        .bind(public_id)
+        .bind("account-stale-retry-timing")
+        .bind(&occurred_at)
+        .bind(index)
+        .bind(stream_ms)
+        .bind(first_byte_ms)
+        .execute(&state.pool)
+        .await
+        .expect("insert account retry attempt");
+    }
+
+    let activity =
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 2, true, false, None)
+            .await
+            .expect("load account model performance snapshot");
+    let account = activity
+        .accounts()
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("account model performance row");
+    assert_eq!(account.model_performance.total.avg_first_token_ms, None);
+    assert_eq!(account.model_performance.total.avg_response_ms, None);
+}
