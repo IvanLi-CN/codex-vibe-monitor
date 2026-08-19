@@ -3374,14 +3374,31 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         while bucket_start_epoch >= oldest_bucket
             && missing_buckets.len() < ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT
         {
+            if Instant::now() >= selection_deadline {
+                return Err(anyhow!(
+                    "active account activity v2 coverage selection deadline reached during archive scan"
+                ));
+            }
             let month_key = active_account_activity_v2_month_key(bucket_start_epoch)?;
-            let is_archive_covered = archive_legacy_month_keys.contains(&month_key)
-                || archive_epoch_coverage.iter().any(
-                    |(coverage_start_epoch, coverage_end_epoch)| {
-                        *coverage_start_epoch < bucket_start_epoch + 3_600
-                            && *coverage_end_epoch >= bucket_start_epoch
-                    },
-                );
+            let is_archive_covered = if archive_legacy_month_keys.contains(&month_key) {
+                true
+            } else {
+                let mut covered = false;
+                for (coverage_start_epoch, coverage_end_epoch) in &archive_epoch_coverage {
+                    if Instant::now() >= selection_deadline {
+                        return Err(anyhow!(
+                            "active account activity v2 coverage selection deadline reached during archive scan"
+                        ));
+                    }
+                    if *coverage_start_epoch < bucket_start_epoch + 3_600
+                        && *coverage_end_epoch >= bucket_start_epoch
+                    {
+                        covered = true;
+                        break;
+                    }
+                }
+                covered
+            };
             if !covered_buckets.contains(&bucket_start_epoch) && !is_archive_covered {
                 missing_buckets.push(bucket_start_epoch);
             }
